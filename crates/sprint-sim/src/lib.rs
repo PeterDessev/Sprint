@@ -12,9 +12,11 @@ mod planner;
 mod rng;
 mod sd;
 mod settings;
+mod tcp;
 mod thermal;
 
 pub use config::{MAX_SYNTHETIC_FILE_SIZE, SimConfig};
 pub use link::{
     RECEIVED_LOG_CAPACITY, SimControl, SimLink, SimReader, SimSnapshot, SimWriter, spawn,
 };
+pub use tcp::{SimServer, serve_tcp};
