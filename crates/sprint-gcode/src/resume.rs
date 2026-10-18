@@ -20,7 +20,8 @@ pub struct ResumeOptions {
     /// Also home Z (default false: homing Z would crash into the part).
     pub home_z: bool,
     /// Lift above the resume Z before travelling, mm (default 2.0; at least
-    /// 0.5 mm is always used so the nozzle never drags across the part).
+    /// 0.5 mm is always used so the nozzle never drags across the part; a
+    /// non-finite value uses the default).
     pub z_clearance: f32,
     /// `M190`/`M109` with the targets in effect at the line (default true).
     pub wait_for_temps: bool,
@@ -29,9 +30,11 @@ pub struct ResumeOptions {
     /// the nozzle stayed where the print stopped. Default false: trust the
     /// firmware's Z.
     pub restore_z_position: bool,
-    /// Feedrate of the XY travel to the resume position, mm/min (3000).
+    /// Feedrate of the XY travel to the resume position, mm/min (3000;
+    /// non-positive or non-finite values use the default).
     pub travel_feedrate_mm_min: f32,
-    /// Feedrate of Z moves, mm/min (600).
+    /// Feedrate of Z moves, mm/min (600; non-positive or non-finite values
+    /// use the default).
     pub z_feedrate_mm_min: f32,
 }
 
@@ -108,9 +111,35 @@ fn walk(file: &GcodeFile, line: usize) -> (MachineState, bool) {
 pub fn resume_preamble(file: &GcodeFile, line: usize, options: &ResumeOptions) -> Vec<String> {
     let (state, leveling) = walk(file, line);
     let mut out: Vec<String> = Vec::new();
-    let clearance = f64::from(options.z_clearance).max(MIN_CLEARANCE);
-    let z_feed = num(f64::from(options.z_feedrate_mm_min.max(1.0)), 0);
-    let travel_feed = num(f64::from(options.travel_feedrate_mm_min.max(1.0)), 0);
+    // Unusable option values fall back to the defaults: an infinite
+    // clearance would otherwise be written as `Z0` and drive the nozzle
+    // into the part.
+    let defaults = ResumeOptions::default();
+    let sane = |v: f32, default: f32| {
+        if v.is_finite() && v > 0.0 && v < 1e6 {
+            f64::from(v)
+        } else {
+            f64::from(default)
+        }
+    };
+    let clearance = if options.z_clearance.is_finite() && options.z_clearance < 1e6 {
+        f64::from(options.z_clearance)
+    } else {
+        f64::from(defaults.z_clearance)
+    }
+    .max(MIN_CLEARANCE);
+    let z_feed = num(
+        sane(options.z_feedrate_mm_min, defaults.z_feedrate_mm_min).max(1.0),
+        0,
+    );
+    let travel_feed = num(
+        sane(
+            options.travel_feedrate_mm_min,
+            defaults.travel_feedrate_mm_min,
+        )
+        .max(1.0),
+        0,
+    );
 
     // Positions below are written in millimetres.
     out.push("G21".into());
@@ -443,5 +472,23 @@ mod tests {
         assert!(!lines.iter().any(|l| l.contains("NaN") || l.contains("inf")));
         // A minimum lift is always applied.
         assert!(lines.contains(&"G1 Z0.5 F600".to_string()), "{lines:?}");
+        assert!(lines.contains(&"G1 X70 Y40 F3000".to_string()), "{lines:?}");
+    }
+
+    #[test]
+    fn unusable_options_fall_back_to_defaults() {
+        // An infinite clearance used to be written as "G1 Z0": no lift, then
+        // a travel at the bed's height.
+        let f = file("G28\nG1 Z5 F600\nG1 X10 Y10\n");
+        let options = ResumeOptions {
+            z_clearance: f32::INFINITY,
+            travel_feedrate_mm_min: f32::NAN,
+            z_feedrate_mm_min: -5.0,
+            ..ResumeOptions::default()
+        };
+        let lines = resume_preamble(&f, f.len(), &options);
+        for expected in ["G1 Z2 F600", "G1 Z7 F600", "G1 X10 Y10 F3000", "G1 Z5 F600"] {
+            assert!(lines.contains(&expected.to_string()), "{lines:?}");
+        }
     }
 }
