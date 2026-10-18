@@ -93,6 +93,9 @@ impl HeaterState {
 const MIN_BAR: usize = 4;
 /// Longest custom label, in columns (longer ones are cut with `…`).
 const MAX_LABEL: usize = 12;
+/// Columns the temperatures are padded to when a bar follows
+/// (`"205.3/210.5°C"`).
+const TEMPS_COLS: usize = 13;
 
 /// A compact one-line heater readout:
 ///
@@ -209,34 +212,47 @@ impl Widget for HeaterGauge<'_> {
             " ".repeat(label_cols - util::width(&label_text))
         );
         let temps = self.temperatures();
-        let mut spans = vec![
-            Span::styled(
-                label.clone(),
-                theme
-                    .fg(theme.heater(self.kind))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(temps.clone(), theme.heater_state(state)),
-        ];
-        let used = util::width(&label) + util::width(&temps);
-        let remaining = total.saturating_sub(used);
-        if let Some(power) = self.power.filter(|p| p.is_finite()) {
-            let power = util::clamp01(power);
-            let power_text = format!(" {:>4}", format!("{:.0}%", power * 100.0));
-            let power_cols = util::width(&power_text);
-            if remaining >= power_cols + 1 + MIN_BAR {
-                let mut cells = remaining - power_cols - 1;
-                if let Some(max) = self.bar_width {
-                    cells = cells.min(max.max(MIN_BAR));
+        let label_span = Span::styled(
+            label.clone(),
+            theme
+                .fg(theme.heater(self.kind))
+                .add_modifier(Modifier::BOLD),
+        );
+        let temp_style = theme.heater_state(state);
+        let label_cols = util::width(&label);
+        let temps_cols = util::width(&temps);
+        let mut spans = Vec::with_capacity(6);
+        spans.push(label_span);
+        match self.power.filter(|p| p.is_finite()) {
+            Some(power) => {
+                let power = util::clamp01(power);
+                let power_text = format!(" {:>4}", format!("{:.0}%", power * 100.0));
+                let power_cols = util::width(&power_text);
+                // With a bar, the temperatures are padded so the bars of
+                // stacked gauges line up.
+                let padded_cols = temps_cols.max(TEMPS_COLS);
+                let bar_room = total.saturating_sub(label_cols + padded_cols);
+                if bar_room >= power_cols + 1 + MIN_BAR {
+                    let mut cells = bar_room - power_cols - 1;
+                    if let Some(max) = self.bar_width {
+                        cells = cells.min(max.max(MIN_BAR));
+                    }
+                    let (filled, empty) = util::bar(power, cells, '░');
+                    let pad = " ".repeat(padded_cols - temps_cols);
+                    spans.push(Span::styled(temps, temp_style));
+                    spans.push(Span::raw(format!("{pad} ")));
+                    spans.push(Span::styled(filled, theme.fg(theme.heater(self.kind))));
+                    spans.push(Span::styled(empty, theme.dim()));
+                    spans.push(Span::styled(power_text, theme.dim()));
+                } else {
+                    let fits = total.saturating_sub(label_cols + temps_cols) >= power_cols;
+                    spans.push(Span::styled(temps, temp_style));
+                    if fits {
+                        spans.push(Span::styled(power_text, theme.dim()));
+                    }
                 }
-                let (filled, empty) = util::bar(power, cells, '░');
-                spans.push(Span::raw(" "));
-                spans.push(Span::styled(filled, theme.fg(theme.heater(self.kind))));
-                spans.push(Span::styled(empty, theme.dim()));
-                spans.push(Span::styled(power_text, theme.dim()));
-            } else if remaining >= power_cols {
-                spans.push(Span::styled(power_text, theme.dim()));
             }
+            None => spans.push(Span::styled(temps, temp_style)),
         }
         buf.set_line(area.x, area.y, &Line::from(spans), area.width);
     }
@@ -290,8 +306,8 @@ mod tests {
     fn full_readout_with_power_bar() {
         let gauge = HeaterGauge::new(HeaterKind::Hotend(0), 205.26, Some(210.0)).power(Some(0.5));
         let buf = render(gauge, 30, 1);
-        // "T0 " + "205.3/210°C" = 14 columns, power " 50%" = 4, one space.
-        assert_eq!(lines(&buf), vec!["T0 205.3/210°C █████░░░░░  50%"]);
+        // "T0 " + "205.3/210°C" padded to 13 columns, a space, the bar, "  50%".
+        assert_eq!(lines(&buf), vec!["T0 205.3/210°C   ████░░░░  50%"]);
     }
 
     #[test]
@@ -326,7 +342,7 @@ mod tests {
             .power(Some(7.0))
             .bar_width(4);
         let buf = render(gauge, 40, 1);
-        assert_eq!(lines(&buf)[0].trim_end(), "T0 100.0/200°C ████ 100%");
+        assert_eq!(lines(&buf)[0].trim_end(), "T0 100.0/200°C   ████ 100%");
     }
 
     #[test]
