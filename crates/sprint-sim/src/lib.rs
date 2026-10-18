@@ -7,5 +7,6 @@ mod format;
 mod line;
 mod parse;
 mod rng;
+mod thermal;
 
 pub use config::{MAX_SYNTHETIC_FILE_SIZE, SimConfig};
