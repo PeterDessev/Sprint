@@ -480,20 +480,23 @@ impl GcodeViewer {
             Legend::Features(rows) => {
                 let id = ui.id().with("sprint-viewer-feature-legend");
                 egui::Grid::new(id)
-                    .num_columns(4)
-                    .spacing([6.0, 3.0])
+                    .num_columns(2)
+                    .spacing([12.0, 3.0])
                     .show(ui, |ui| {
                         for row in rows {
-                            let mut visible = !self.options.is_feature_hidden(row.feature);
-                            if ui
-                                .checkbox(&mut visible, "")
-                                .on_hover_text("Show or hide this feature")
-                                .changed()
-                            {
-                                self.options.set_feature_hidden(row.feature, !visible);
-                            }
-                            swatch(ui, row.color);
-                            ui.label(row.feature.name());
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 5.0;
+                                let mut visible = !self.options.is_feature_hidden(row.feature);
+                                if ui
+                                    .checkbox(&mut visible, "")
+                                    .on_hover_text("Show or hide this feature")
+                                    .changed()
+                                {
+                                    self.options.set_feature_hidden(row.feature, !visible);
+                                }
+                                swatch(ui, row.color);
+                                ui.label(row.feature.name());
+                            });
                             match row.time_share {
                                 Some(share) => ui.label(
                                     egui::RichText::new(format!(
