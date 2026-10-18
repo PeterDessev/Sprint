@@ -235,6 +235,8 @@ struct Analyzer {
     simplify3d: bool,
     /// RepRapFirmware flavor: M203 feedrates are in mm/min.
     reprapfirmware: bool,
+    /// Klipper flavor: `M204 P T` sets one acceleration, the smaller one.
+    klipper: bool,
 }
 
 impl Analyzer {
@@ -309,6 +311,10 @@ impl Analyzer {
                 .as_deref()
                 .is_some_and(|s| s.starts_with("Simplify3D")),
             reprapfirmware: meta.flavor.as_deref().is_some_and(is_reprapfirmware),
+            klipper: meta
+                .flavor
+                .as_deref()
+                .is_some_and(|f| f.trim().eq_ignore_ascii_case("klipper")),
         }
     }
 
@@ -394,6 +400,17 @@ impl Analyzer {
                     if let Some(v) = p.get(axis).filter(|v| v.is_finite() && *v > 0.0) {
                         *slot = (v / 60.0).min(1e9) as f32;
                     }
+                }
+            }
+            (b'M', 204, None) if self.klipper && p.get('S').is_none() => {
+                // Klipper has a single acceleration: `M204 P T` sets it to
+                // the smaller value and needs both.
+                let accel = |l| p.get(l).filter(|v: &f64| v.is_finite() && *v > 0.0);
+                if let (Some(print), Some(travel)) = (accel('P'), accel('T')) {
+                    let a = print.min(travel).min(1e9) as f32;
+                    let limits = self.planner.limits_mut();
+                    limits.print_accel = a;
+                    limits.travel_accel = a;
                 }
             }
             (b'M', 201 | 203 | 204 | 205, None) => {
@@ -1727,6 +1744,21 @@ mod tests {
         );
         assert!((rrf.stats.estimated_time - marlin.stats.estimated_time).abs() < 1e-6);
         assert!(is_reprapfirmware("RepRap") && !is_reprapfirmware("marlin2"));
+    }
+
+    #[test]
+    fn klipper_m204_sets_one_acceleration() {
+        // Marlin-style "M204 P R T" (start G-code, machine limits): Klipper
+        // uses the smaller of P and T for every move.
+        let moves = "M204 P500 R1000 T5000\nG1 X100 F6000\nG1 X0 Y1 E1 F6000\n";
+        let klipper = run(&format!("{moves}; gcode_flavor = klipper\n"));
+        let slow = run("M204 P500 T500\nG1 X100 F6000\nG1 X0 Y1 E1 F6000\n");
+        let marlin = run(&format!("{moves}; gcode_flavor = marlin2\n"));
+        assert!((klipper.stats.estimated_time - slow.stats.estimated_time).abs() < 1e-6);
+        assert!(marlin.stats.estimated_time < klipper.stats.estimated_time - 0.1);
+        // Without both values Klipper ignores the command.
+        let ignored = run(&format!("M204 P100\n{moves}; gcode_flavor = klipper\n"));
+        assert!((ignored.stats.estimated_time - klipper.stats.estimated_time).abs() < 1e-6);
     }
 
     #[test]

@@ -297,7 +297,9 @@ pub fn resume_preamble(file: &GcodeFile, line: usize, options: &ResumeOptions) -
   past that an arc gets at most 16 segments), so crafted multi-turn arcs
   cannot exhaust memory. In files whose metadata flavor is RepRapFirmware
   (`gcode_flavor = reprapfirmware`, Cura `;FLAVOR:RepRap`) M203 is read in
-  mm/min, as RepRapFirmware defines it.
+  mm/min, as RepRapFirmware defines it; in Klipper-flavored files
+  (`gcode_flavor = klipper`) `M204 P.. T..` sets print and travel
+  acceleration to the smaller value, as Klipper does.
 * `meta`: `is_layer_marker`, `parse_duration`; `SlicerMetadata` gained
   `filament_density`, `layer_count`, `flavor`.
 
