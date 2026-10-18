@@ -723,7 +723,9 @@ impl Analyzer {
     /// new layer.
     fn layer_for_extrusion(&mut self, index: usize, z_start: f64, z_end: f64, ln: u32) {
         let sloped = (z_end - z_start).abs() > LAYER_EPS;
-        let marker = std::mem::take(&mut self.marker_pending);
+        // A pending marker is kept until it starts a layer: in a spiral the
+        // first extrusion after it can still be at the current layer's Z.
+        let marker = self.marker_pending;
         let Some(current) = self.layers.last().copied() else {
             if self.markers_seen {
                 self.first_marked_layer_done = true;
@@ -731,9 +733,16 @@ impl Analyzer {
             self.push_layer(index, z_end, sloped, ln, false);
             return;
         };
+        // Slicers round Z (PrusaSlicer and Cura to 3 decimals), so short
+        // segments of a spiral often do not change Z at all. Such a flat
+        // extrusion within the Z range the spiral layer has climbed through
+        // continues that layer instead of starting a new one.
+        let in_spiral = current.sloped
+            && z_end >= current.z_base - LAYER_EPS
+            && z_end <= current.z_max + LAYER_EPS;
         let new_layer = if (z_end - current.z_base).abs() <= LAYER_EPS {
             false
-        } else if !sloped {
+        } else if !sloped && !in_spiral {
             // Planar extrusion at another Z: a new layer (Z hops are travel
             // and never get here).
             true
@@ -758,6 +767,7 @@ impl Analyzer {
     }
 
     fn push_layer(&mut self, index: usize, z: f64, sloped: bool, ln: u32, first_marked: bool) {
+        self.marker_pending = false;
         let height = self.new_layer_height(z, sloped);
         // Purge lines and other start G-code extrusions before the first
         // slicer layer marker belong to the first marked layer.
@@ -1303,6 +1313,55 @@ mod tests {
         for l in &tp.layers[1..] {
             assert!((l.height - 0.2).abs() < 0.01, "{}", l.height);
         }
+    }
+
+    /// A spiral of radius 30 with 600 segments (0.31 mm) per 0.2 mm turn and
+    /// Z rounded to 3 decimals, as slicers write it: about every third
+    /// segment does not change Z.
+    fn quantized_spiral(markers: bool) -> String {
+        let mut g = String::from("M83\n");
+        if markers {
+            g.push_str(";LAYER:0\n");
+        }
+        g.push_str("G1 Z0.2\nG1 X30 Y0\n");
+        let point = |k: i32| {
+            let a = TAU * f64::from(k) / 600.0;
+            (30.0 * a.cos(), 30.0 * a.sin())
+        };
+        for k in 1..=600 {
+            let (x, y) = point(k);
+            g.push_str(&format!("G1 X{x:.3} Y{y:.3} E0.01\n"));
+        }
+        let mut z = 0.2;
+        for layer in 1..=5 {
+            if markers {
+                g.push_str(&format!(";LAYER:{layer}\n"));
+            }
+            for k in 1..=600 {
+                let (x, y) = point(k);
+                z += 0.2 / 600.0;
+                g.push_str(&format!("G1 X{x:.3} Y{y:.3} Z{z:.3} E0.01\n"));
+            }
+        }
+        g
+    }
+
+    #[test]
+    fn spiral_with_rounded_z_follows_markers() {
+        let tp = run(&quantized_spiral(true));
+        let zs: Vec<f32> = tp.layers.iter().map(|l| l.z).collect();
+        assert_eq!(tp.layers.len(), 6, "{zs:?}");
+        for (i, l) in tp.layers.iter().enumerate() {
+            assert!((l.z - 0.2 * (i + 1) as f32).abs() < 2e-3, "{zs:?}");
+            assert!((l.height - 0.2).abs() < 2e-3, "{zs:?}");
+        }
+    }
+
+    #[test]
+    fn spiral_with_rounded_z_without_markers_is_bucketed() {
+        let tp = run(&quantized_spiral(false));
+        let zs: Vec<f32> = tp.layers.iter().map(|l| l.z).collect();
+        assert!((5..=7).contains(&tp.layers.len()), "{zs:?}");
     }
 
     #[test]
