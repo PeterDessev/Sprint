@@ -69,7 +69,9 @@ fn num(v: f64, decimals: usize) -> String {
 }
 
 /// State at the line plus whether bed leveling had been enabled
-/// (G29 or `M420 S1`, until `M420 S0`).
+/// (G29 or `M420 S1`, until `M420 S0` or a G28, which turns leveling off
+/// in Marlin; firmware that restores it after homing does so again after
+/// the preamble's own G28).
 fn walk(file: &GcodeFile, line: usize) -> (MachineState, bool) {
     let mut state = MachineState::new();
     let mut leveling = false;
@@ -77,7 +79,9 @@ fn walk(file: &GcodeFile, line: usize) -> (MachineState, bool) {
     for i in 0..line.min(file.len()) {
         parse_into(file.line(i), &mut parsed);
         if let Some(code) = parsed.code {
-            if code.letter == b'G' && code.number == 29 {
+            if code.letter == b'G' && code.number == 28 {
+                leveling = false;
+            } else if code.letter == b'G' && code.number == 29 {
                 leveling = true;
             } else if code.is('M', 420)
                 && let Some(s) = parsed.get('S')
@@ -416,6 +420,14 @@ mod tests {
         let f = file("G28\nM420 S1 Z10\nG1 Z1\n");
         let lines = resume_preamble(&f, f.len(), &ResumeOptions::default());
         assert!(lines.contains(&"M420 S1".to_string()));
+        // Marlin's G28 turns leveling off: enabling it before homing means
+        // the print ran without it, so the preamble must not turn it on.
+        let f = file("M420 S1\nG28\nG1 Z1\nG1 X1 Y1\n");
+        let lines = resume_preamble(&f, f.len(), &ResumeOptions::default());
+        assert!(!lines.contains(&"M420 S1".to_string()), "{lines:?}");
+        let f = file("G28\nG29\nG28 X\nG1 Z1\n");
+        let lines = resume_preamble(&f, f.len(), &ResumeOptions::default());
+        assert!(!lines.contains(&"M420 S1".to_string()), "{lines:?}");
     }
 
     #[test]
