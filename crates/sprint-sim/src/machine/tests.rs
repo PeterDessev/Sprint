@@ -850,6 +850,29 @@ fn m600_prompt_flow() {
 }
 
 #[test]
+fn m876_without_a_response_keeps_the_prompt_open() {
+    // OctoPrint sends "M876 P1" to announce prompt support; Marlin's
+    // emergency parser only answers prompts for "M876 S<digit>".
+    let mut r = Rig::booted();
+    r.ok("G28");
+    r.send("M600");
+    r.run(30.0);
+    assert!(r.take().contains(&"//action:prompt_show".to_string()));
+    r.send("M876 P1");
+    r.send("M876");
+    r.run(30.0);
+    let out = r.take();
+    assert!(!out.contains(&"//action:resumed".to_string()), "{out:?}");
+    assert!(out.contains(&"echo:busy: paused for user".to_string()));
+    r.send("M876 S0");
+    r.run(30.0);
+    let out = r.take();
+    assert!(out.contains(&"//action:resumed".to_string()), "{out:?}");
+    // M600 and the three M876 lines are all acknowledged.
+    assert_eq!(out.iter().filter(|l| *l == "ok").count(), 4, "{out:?}");
+}
+
+#[test]
 fn runout_triggers_filament_change() {
     let mut r = Rig::booted();
     r.m.filament_runout();

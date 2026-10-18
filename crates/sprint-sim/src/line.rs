@@ -85,7 +85,7 @@ pub(crate) enum Emergency {
     M112,
     /// M410: quickstop.
     M410,
-    /// M876 S<n>: host prompt response.
+    /// M876 S<digit>: host prompt response.
     M876(i64),
 }
 
@@ -117,12 +117,13 @@ pub(crate) fn emergency(raw: &str) -> Option<Emergency> {
         "112" => Some(Emergency::M112),
         "410" => Some(Emergency::M410),
         "876" => {
+            // Marlin's state machine: spaces, 'S', spaces, then one digit
+            // is the response; anything else (e.g. OctoPrint's "M876 P1")
+            // is not a prompt response.
             let r = rest.trim_start();
-            let s = r
-                .find(['S', 's'])
-                .map(|i| strtol(&r[i + 1..]))
-                .unwrap_or(-1);
-            Some(Emergency::M876(s))
+            let after_s = r.strip_prefix(['S', 's'])?.trim_start();
+            let digit = after_s.bytes().next().filter(u8::is_ascii_digit)?;
+            Some(Emergency::M876(i64::from(digit - b'0')))
         }
         _ => None,
     }
@@ -196,7 +197,13 @@ mod tests {
         assert_eq!(emergency("M410 ; stop"), Some(Emergency::M410));
         assert_eq!(emergency("M876 S1"), Some(Emergency::M876(1)));
         assert_eq!(emergency("M876S0"), Some(Emergency::M876(0)));
-        assert_eq!(emergency("M876"), Some(Emergency::M876(-1)));
+        // Marlin's parser needs S and a digit; the reason is that digit.
+        assert_eq!(emergency("M876"), None);
+        assert_eq!(emergency("M876 P1"), None);
+        assert_eq!(emergency("M876 S"), None);
+        assert_eq!(emergency("M876 P1 S0"), None);
+        assert_eq!(emergency("M876 S 1"), Some(Emergency::M876(1)));
+        assert_eq!(emergency("M876 S12"), Some(Emergency::M876(1)));
         assert_eq!(emergency("M1120"), None);
         assert_eq!(emergency("M11"), None);
         assert_eq!(emergency("G112"), None);
