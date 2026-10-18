@@ -102,13 +102,17 @@ impl Machine {
             (b'M', 141) => self.cmd_set_chamber(c, false),
             (b'M', 191) => self.cmd_set_chamber(c, true),
             (b'M', 154) if self.cfg.auto_report_position => {
-                self.pos_interval = auto_interval(c);
-                self.next_pos = self.now + self.pos_interval;
+                if let Some(interval) = auto_interval(c) {
+                    self.pos_interval = interval;
+                    self.next_pos = self.now + interval;
+                }
                 Outcome::Done
             }
             (b'M', 155) if self.cfg.auto_report_temps => {
-                self.temp_interval = auto_interval(c);
-                self.next_temp = self.now + self.temp_interval;
+                if let Some(interval) = auto_interval(c) {
+                    self.temp_interval = interval;
+                    self.next_temp = self.now + interval;
+                }
                 Outcome::Done
             }
             (b'M', 211) => self.cmd_soft_endstops(c),
@@ -298,9 +302,10 @@ impl Machine {
     }
 }
 
-/// Interval in seconds for M154/M155/M27 S<n> (clamped to 0..=60).
-pub(super) fn auto_interval(c: &Command) -> f64 {
-    c.value('S').map_or(0.0, |v| {
+/// Interval in seconds for M154/M155/M27 S<n> (clamped to 0..=60), or
+/// `None` without an S value (Marlin's `seenval('S')`: leave it as is).
+pub(super) fn auto_interval(c: &Command) -> Option<f64> {
+    c.value('S').map(|v| {
         if v.is_finite() {
             v.clamp(0.0, 60.0).trunc()
         } else {

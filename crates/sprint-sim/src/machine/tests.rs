@@ -583,6 +583,26 @@ fn autoreports() {
 }
 
 #[test]
+fn autoreport_commands_without_a_value_change_nothing() {
+    // Marlin only changes the interval for seenval('S').
+    let mut r = Rig::booted();
+    r.ok("M155 S1");
+    r.ok("M154 S1");
+    r.ok("M155");
+    r.ok("M154 S");
+    r.run(2.05);
+    let out = r.take();
+    let temps = out.iter().filter(|l| l.starts_with(" T:")).count();
+    let pos = out.iter().filter(|l| l.starts_with("X:")).count();
+    assert_eq!((temps, pos), (2, 2), "{out:?}");
+    r.ok("M27 S1");
+    assert_eq!(r.ok("M27 S"), vec!["Not SD printing", "ok"]);
+    r.ok("M27");
+    r.run(1.05);
+    assert!(r.take().contains(&"Not SD printing".to_string()));
+}
+
+#[test]
 fn dwell_and_sync() {
     let mut r = Rig::booted();
     let start = r.m.now;

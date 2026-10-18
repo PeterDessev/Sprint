@@ -69,9 +69,9 @@ impl Machine {
                         None => "Current file: (no file)".to_string(),
                     };
                     self.emit(line);
-                } else if c.seen('S') {
-                    self.sd_interval = super::commands::auto_interval(c);
-                    self.next_sd = self.now + self.sd_interval;
+                } else if let Some(interval) = super::commands::auto_interval(c) {
+                    self.sd_interval = interval;
+                    self.next_sd = self.now + interval;
                 } else {
                     let line = self.sd_status_line();
                     self.emit(line);
