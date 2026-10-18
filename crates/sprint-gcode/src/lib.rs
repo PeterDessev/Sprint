@@ -5,12 +5,14 @@
 
 pub mod estimate;
 pub mod file;
+pub mod meta;
 pub mod parse;
 pub mod state;
 pub mod toolpath;
 
 pub use estimate::*;
 pub use file::*;
+pub use meta::*;
 pub use parse::*;
 pub use state::*;
 pub use toolpath::*;

@@ -351,6 +351,14 @@ pub struct SlicerMetadata {
     /// `; key = value` settings block (PrusaSlicer/Orca config dump, Cura
     /// `;SETTING_3` is not decoded). Kept in file order.
     pub settings: Vec<(String, String)>,
+    /// Filament density in g/cm³ (`filament_density`, Simplify3D
+    /// `filamentDensities`, ideaMaker `Filament Density #1`).
+    pub filament_density: Option<f32>,
+    /// Number of layers reported by the slicer (Cura `;LAYER_COUNT:`,
+    /// Orca/Bambu `total layer number`).
+    pub layer_count: Option<u32>,
+    /// G-code flavor (Cura `;FLAVOR:`, PrusaSlicer/Orca `gcode_flavor`).
+    pub flavor: Option<String>,
 }
 
 /// Result of analysing a G-code file.
