@@ -6,7 +6,7 @@ use std::sync::Arc;
 use glam::{Vec2, Vec3};
 use sprint_gcode::{Feature, Layer, MoveKind, Segment, Toolpath};
 use sprint_viewer::{
-    ColorMode, GcodeViewer, RenderStyle, ViewMode, ViewPreset, demo, headless_device, wgpu,
+    BedSpec, ColorMode, GcodeViewer, RenderStyle, ViewMode, ViewPreset, demo, headless_device, wgpu,
 };
 
 const W: u32 = 320;
@@ -482,6 +482,57 @@ fn fitting_while_the_scene_builds_uses_the_scene_bounds() {
             "{preset:?}: camera {got:?}, expected {want:?}"
         );
     }
+}
+
+#[test]
+fn clearing_during_a_camera_animation_frames_the_bed() {
+    let Some((device, queue)) = device() else {
+        return;
+    };
+    // The animation's orientation is kept, framing the bed.
+    let mut empty = GcodeViewer::new_headless(&device, &queue);
+    empty.render_offscreen(W, H);
+    empty.set_view(ViewPreset::Front);
+    empty.render_offscreen(W, H);
+    let want = *empty.camera();
+
+    let mut viewer = GcodeViewer::new_headless(&device, &queue);
+    viewer.render_offscreen(W, H);
+    viewer.set_toolpath(Arc::new(block()));
+    viewer.wait_until_loaded();
+    viewer.set_view(ViewPreset::Front);
+    viewer.clear();
+    viewer.render_offscreen(W, H);
+    let got = *viewer.camera();
+    assert!(
+        (got.target - want.target).length() < 0.5
+            && (got.distance / want.distance - 1.0).abs() < 0.02
+            && (got.yaw - want.yaw).abs() < 1e-4
+            && (got.pitch - want.pitch).abs() < 1e-4,
+        "camera {got:?}, expected the empty bed's {want:?}"
+    );
+
+    // Same for a bed change while a preset animation runs.
+    let bed = BedSpec {
+        size: [350.0, 350.0],
+        max_z: 300.0,
+        origin_center: true,
+    };
+    let mut reference = GcodeViewer::new_headless(&device, &queue);
+    reference.render_offscreen(W, H);
+    reference.set_bed(bed);
+    reference.set_view(ViewPreset::Right);
+    reference.render_offscreen(W, H);
+    let want = *reference.camera();
+    viewer.set_view(ViewPreset::Right);
+    viewer.set_bed(bed);
+    viewer.render_offscreen(W, H);
+    let got = *viewer.camera();
+    assert!(
+        (got.target - want.target).length() < 0.5
+            && (got.distance / want.distance - 1.0).abs() < 0.02,
+        "camera {got:?}, expected the new bed's {want:?}"
+    );
 }
 
 #[test]

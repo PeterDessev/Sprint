@@ -232,6 +232,15 @@ impl GcodeViewer {
         self.last_frame = None;
         self.options.layer_range = (0, usize::MAX);
         self.auto_fit = true;
+        // Keep the orientation a running animation was heading for, but
+        // stop it: it would otherwise end framing the removed toolpath.
+        if let Some(anim) = self.anim.take() {
+            if anim.top {
+                self.camera_top = anim.to;
+            } else {
+                self.camera = anim.to;
+            }
+        }
         self.fit_now(self.fit_aspect);
     }
 
@@ -240,9 +249,7 @@ impl GcodeViewer {
         self.bed = bed.sanitized();
         self.renderer.set_bed(&self.bed);
         self.last_frame = None;
-        if self.auto_fit {
-            self.fit_now(self.fit_aspect);
-        }
+        self.refit_if_auto();
     }
 
     /// The printer bed.
@@ -662,12 +669,18 @@ impl GcodeViewer {
             pick: None,
         });
         self.last_frame = None;
+        // The scene's bounds ignore start/end G-code and so can differ from
+        // the toolpath's.
+        self.refit_if_auto();
+    }
+
+    /// Refit the cameras after the fit box changed, when auto-fitting. A
+    /// running animation (e.g. a fit_to_view or set_view issued right after
+    /// set_toolpath) is retargeted instead of being left to undo the fit.
+    fn refit_if_auto(&mut self) {
         if !self.auto_fit {
             return;
         }
-        // The scene's bounds ignore start/end G-code and so can differ from
-        // the toolpath's: refit, retargeting a running animation (e.g. a
-        // fit_to_view or set_view issued right after set_toolpath).
         let aspect = self.fit_aspect;
         let (min, max) = self.fit_box();
         let radius = self.scene_radius();
