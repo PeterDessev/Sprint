@@ -662,8 +662,29 @@ impl GcodeViewer {
             pick: None,
         });
         self.last_frame = None;
-        if self.auto_fit && self.anim.is_none() {
-            self.fit_now(self.fit_aspect);
+        if !self.auto_fit {
+            return;
+        }
+        // The scene's bounds ignore start/end G-code and so can differ from
+        // the toolpath's: refit, retargeting a running animation (e.g. a
+        // fit_to_view or set_view issued right after set_toolpath).
+        let aspect = self.fit_aspect;
+        let (min, max) = self.fit_box();
+        let radius = self.scene_radius();
+        match self.anim.as_mut() {
+            None => self.fit_now(aspect),
+            Some(anim) => {
+                anim.to.scene_radius = radius;
+                anim.to.fit_bounds(min, max, aspect);
+                let other = if anim.top {
+                    &mut self.camera
+                } else {
+                    &mut self.camera_top
+                };
+                other.scene_radius = radius;
+                other.fit_bounds(min, max, aspect);
+                self.top_fitted = true;
+            }
         }
     }
 

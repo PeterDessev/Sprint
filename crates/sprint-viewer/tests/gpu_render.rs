@@ -404,6 +404,66 @@ fn picking_through_the_screen_finds_the_projected_bead() {
 }
 
 #[test]
+fn fitting_while_the_scene_builds_uses_the_scene_bounds() {
+    // Regression: fit_to_view / set_view right after set_toolpath animate
+    // towards the toolpath's raw bounds, which include start G-code such as
+    // a purge line. The scene's own bounds (which ignore it) arrived during
+    // the animation and were dropped, so the camera ended up zoomed out.
+    let Some((device, queue)) = device() else {
+        return;
+    };
+    let mut tp = block();
+    let purge = Segment {
+        start: [0.0, 5.0, 0.2],
+        end: [210.0, 5.0, 0.2],
+        width: 0.6,
+        height: 0.2,
+        line: tp.line_count,
+        layer: 9,
+        kind: MoveKind::Extrude,
+        feature: Feature::Custom,
+        ..Default::default()
+    };
+    tp.segments.push(purge);
+    if let Some(last) = tp.layers.last_mut() {
+        last.segments.end = tp.segments.len();
+    }
+    tp.bounds.include(purge.start);
+    tp.bounds.include(purge.end);
+    tp.line_count += 1;
+    let tp = Arc::new(tp);
+
+    let fresh = |tp: &Arc<Toolpath>| {
+        let mut viewer = GcodeViewer::new_headless(&device, &queue);
+        // A running UI has drawn frames of this size before the file arrives.
+        viewer.render_offscreen(W, H);
+        viewer.set_toolpath(Arc::clone(tp));
+        viewer
+    };
+    let mut reference = fresh(&tp);
+    reference.wait_until_loaded();
+    reference.render_offscreen(W, H);
+    let want = *reference.camera();
+    assert!(want.target.x > 105.0, "the purge line is ignored: {want:?}");
+
+    for preset in [None, Some(ViewPreset::Iso)] {
+        let mut viewer = fresh(&tp);
+        match preset {
+            None => viewer.fit_to_view(),
+            Some(p) => viewer.set_view(p),
+        }
+        viewer.wait_until_loaded();
+        viewer.render_offscreen(W, H);
+        let got = *viewer.camera();
+        assert!(
+            (got.target - want.target).length() < 0.5
+                && (got.distance / want.distance - 1.0).abs() < 0.02,
+            "{preset:?}: camera {got:?}, expected {want:?}"
+        );
+    }
+}
+
+#[test]
 fn replacing_the_toolpath_keeps_the_latest() {
     let Some((device, queue)) = device() else {
         return;
