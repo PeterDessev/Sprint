@@ -643,6 +643,27 @@ fn full_circle_arcs_despite_rounding() {
 }
 
 #[test]
+fn small_arcs_use_minimum_segments() {
+    // Small arcs still get Marlin's minimum segment count
+    // (MIN_CIRCLE_SEGMENTS), so a 1.8 mm circle is not a no-op and a
+    // 1.6 mm semicircle is not a 1 mm chord.
+    let mut r = Rig::booted();
+    r.ok("G28");
+    r.ok("G1 X0.1 Y0.1 F6000");
+    r.ok("M400");
+    let start = r.m.now;
+    r.ok("G2 X0.1 Y0.1 I0.2 J0.2 F600");
+    r.ok("M400");
+    let t = r.m.now - start;
+    assert!(t > 0.17, "1.78 mm circle at 10 mm/s took {t}s");
+    let start = r.m.now;
+    r.ok("G2 X1.1 Y0.1 I0.5 J0 F60");
+    r.ok("M400");
+    let t = r.m.now - start;
+    assert!(t > 1.5, "1.57 mm semicircle at 1 mm/s took {t}s");
+}
+
+#[test]
 fn cold_extrusion_prevented() {
     let mut r = Rig::booted();
     r.ok("G28");

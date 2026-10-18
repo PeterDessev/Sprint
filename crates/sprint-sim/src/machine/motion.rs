@@ -12,6 +12,8 @@ use std::collections::VecDeque;
 const EXTRUDE_MAXLENGTH: f64 = 200.0;
 /// Marlin MAX_ARC_SEGMENT_MM.
 const ARC_SEGMENT_MM: f64 = 1.0;
+/// Marlin MIN_CIRCLE_SEGMENTS (segments in a full circle at least).
+const MIN_CIRCLE_SEGMENTS: f64 = 72.0;
 /// Homing feedrates (HOMING_FEEDRATE_MM_M / 60).
 const HOMING_FEED_XY: f64 = 50.0;
 const HOMING_FEED_Z: f64 = 4.0;
@@ -349,11 +351,14 @@ impl Machine {
             }
             t
         };
+        // Marlin: at least MIN_CIRCLE_SEGMENTS per full circle (before
+        // adding P turns), otherwise one segment per MAX_ARC_SEGMENT_MM.
+        let min_segments = (MIN_CIRCLE_SEGMENTS * travel.abs() / std::f64::consts::TAU).ceil();
         let turns = c.int('P').unwrap_or(0).clamp(0, 100) as f64;
         travel += travel.signum() * turns * std::f64::consts::TAU;
         let dz = target[2] - start[2];
-        let length = ((travel * radius).powi(2) + dz * dz).sqrt();
-        let n = ((length / ARC_SEGMENT_MM).floor() as usize).clamp(1, 20_000);
+        let flat = travel.abs() * radius;
+        let n = ((flat / ARC_SEGMENT_MM).round().max(min_segments) as usize).clamp(1, 20_000);
         let de_total = self.physical_e_delta(target[3] - start[3]);
         let e0 = self.planner.target()[3];
         let feed = self.motion.feedrate * self.motion.feedrate_pct / 100.0;
