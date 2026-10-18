@@ -9,6 +9,8 @@ mod motion;
 mod reports;
 mod sdcmds;
 mod temps;
+#[cfg(test)]
+mod tests;
 
 use crate::config::SimConfig;
 use crate::line::{self, Emergency};
