@@ -429,6 +429,38 @@ pub enum HostAction {
 Tested against real-world reply samples from Marlin 1.1/2.0/2.1, Prusa
 firmware, Klipper, RepRapFirmware and Smoothieware.
 
+Parsing conventions (implemented in sprint-proto):
+* A line may yield zero replies (rows of a pending mesh block, partial
+  autotune lines) or several (`ok T:...` -> `Ok` + `Temperatures`; Klipper
+  `x:open y:open z:TRIGGERED` -> three `Endstop`s).
+* `HeaterReading::power` is normalised to 0..=1 (Marlin 0..127, or 0..255
+  when any value on the line exceeds 127; Smoothieware `@<pwm>` 0..255).
+  Gaps in `hotends` (e.g. only `T1:` reported) are filled with readings
+  whose `current` is NaN.
+* File-list entries are only recognised between `Begin file list` and
+  `End file list`; an `ok` closes a listing whose end line was lost.
+  `echo:Now fresh file:` / `Now doing file:` give `SdReply::Opened` with
+  size 0; `open failed, File: x.` is a non-fatal `Reply::Error`.
+* Mesh blocks end at a blank line, `ok` or any non-row line; interleaved
+  temperature/busy lines pass through. `BedMesh::kind` is `"bilinear"`,
+  `"mbl"`, `"ubl"`, `"klipper_probed"` or `"klipper_mesh"`.
+* PID autotune: exactly one `AutotuneResult` per M303 run (from the
+  `#define DEFAULT_*K*` triple, the last estimate for Prusa's "from above",
+  or Klipper's `PID parameters:` line); per-cycle estimates inside a run
+  are `Other`.
+
+Additional public API: `ReplyParser::flush()` (emit a pending mesh at end
+of input) and `reset()`; standalone `parse_temperatures`, `parse_position`
+and `parse_duration` ("1d 2h 3m 4s" -> seconds); `StatsReport::merge`;
+`framing::parse_framed` / `FrameError` (verify `N.. cmd*cs` lines);
+`FirmwareFlavor::detect`, `FirmwareInfo::get`, `known_capabilities`;
+`BedMesh::from_rows`, `set_bounds`, `get`, `values`, `count`;
+`SettingCommand::new`, `has`, `remove`; `PrinterSettings::new`, `get_mut`,
+`remove`, `keys` (+ `FromIterator`/`Extend`); `SettingCategory::ALL`/`name`;
+`GcodeCategory::name`. Reply, firmware, settings and mesh data types
+(not the static catalog/reference structs) derive `serde::{Serialize,
+Deserialize}`.
+
 ### firmware
 
 ```rust
@@ -568,6 +600,11 @@ pub fn gcode_doc(code: &str) -> Option<&'static GcodeDoc>; // case-insensitive, 
 /// Prefix search for autocomplete ("M1" -> M104, M105, M106, ...), ordered by relevance.
 pub fn search_gcode(prefix: &str) -> Vec<&'static GcodeDoc>;
 ```
+`search_gcode` returns the exact code first, then codes starting with the
+query in numeric order (a zero-padded query such as "G01" is treated as a
+complete code); word queries ("temp", "bed level") match names first, then
+descriptions. Empty queries return nothing. Dangerous entries: M30, M42,
+M81, M112, M502, M994, M997, M999.
 
 ---
 
