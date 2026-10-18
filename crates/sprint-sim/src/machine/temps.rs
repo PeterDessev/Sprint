@@ -136,12 +136,14 @@ impl Machine {
         }
     }
 
-    /// Target from S (or R) in °C; R selects "wait for cooling too".
-    fn temp_param(c: &Command) -> Option<(f64, bool)> {
-        if let Some(r) = c.value('R') {
-            Some((r, false))
-        } else {
-            c.value('S').map(|s| (s, true))
+    /// Target in °C and "don't wait for cooling", like Marlin: S wins
+    /// (heat only); R (wait for heating or cooling) only counts for the
+    /// waiting commands M109/M190/M191.
+    fn temp_param(c: &Command, wait: bool) -> Option<(f64, bool)> {
+        match (c.value('S'), c.value('R')) {
+            (Some(s), _) => Some((s, true)),
+            (None, Some(r)) if wait => Some((r, false)),
+            _ => None,
         }
     }
 
@@ -150,13 +152,13 @@ impl Machine {
         let Some(tool) = self.target_tool(c) else {
             return Outcome::Done;
         };
-        let param = Machine::temp_param(c);
-        if let Some((t, _)) = param
-            && let Some(h) = self.hotends.get_mut(tool)
-        {
-            h.set_target(t);
+        let param = Machine::temp_param(c, wait);
+        if let Some((t, _)) = param {
+            if let Some(h) = self.hotends.get_mut(tool) {
+                h.set_target(t);
+            }
+            self.auto_job_check(wait, true);
         }
-        self.auto_job_check(wait, true);
         match (wait, param) {
             (true, Some((_, no_wait_for_cooling))) => {
                 self.wait_task(HeaterId::Hotend(tool), no_wait_for_cooling)
@@ -170,11 +172,12 @@ impl Machine {
         if self.bed.is_none() {
             return self.unknown(c);
         }
-        let param = Machine::temp_param(c);
+        let param = Machine::temp_param(c, wait);
         if let (Some((t, _)), Some(b)) = (param, self.bed.as_mut()) {
             b.set_target(t);
+            // M140 may stop the job timer, M190 may only start it.
+            self.auto_job_check(wait, !wait);
         }
-        self.auto_job_check(wait, true);
         match (wait, param) {
             (true, Some((_, no_wait_for_cooling))) => {
                 self.wait_task(HeaterId::Bed, no_wait_for_cooling)
@@ -188,7 +191,7 @@ impl Machine {
         if self.chamber.is_none() {
             return self.unknown(c);
         }
-        let param = Machine::temp_param(c);
+        let param = Machine::temp_param(c, wait);
         if let (Some((t, _)), Some(ch)) = (param, self.chamber.as_mut()) {
             ch.set_target(t);
         }

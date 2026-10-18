@@ -1040,6 +1040,44 @@ fn m109_r_waits_for_cooling() {
 }
 
 #[test]
+fn temperature_parameters_follow_marlin() {
+    let mut r = Rig::booted();
+    // S wins over R; M104 / M140 ignore R entirely.
+    r.ok("M104 S200 R180");
+    assert_eq!(r.m.snapshot().hotend_targets, vec![200.0]);
+    r.ok("M104 R150");
+    assert_eq!(r.m.snapshot().hotend_targets, vec![200.0]);
+    r.ok("M140 S60 R40");
+    r.ok("M140 R50");
+    assert_eq!(r.m.snapshot().bed_target, 60.0);
+    r.ok("M104 S0");
+    r.ok("M140 S0");
+    // "M109 S50 R180": S selects "heat only", so with the nozzle already
+    // above 50 C there is no wait (R would wait for cooling to 180).
+    r.ok("M109 S190");
+    let start = r.m.now;
+    r.ok("M109 S50 R180");
+    assert_eq!(r.m.snapshot().hotend_targets, vec![50.0]);
+    assert!(r.m.now - start < 1.0, "waited {}s", r.m.now - start);
+}
+
+#[test]
+fn print_timer_autostart_rules() {
+    // PRINTJOB_TIMER_AUTOSTART: only commands that set a temperature touch
+    // the timer, and M190 may start it but never stops it.
+    let mut r = Rig::booted();
+    r.ok("M75");
+    r.ok("M104");
+    r.ok("M104 T0");
+    r.ok("M190 S0");
+    let stats = r.ok("M78");
+    assert_eq!(stats[0], "Stats: Prints: 1, Finished: 0, Failed: 0");
+    r.ok("M140 S0");
+    let stats = r.ok("M78");
+    assert_eq!(stats[0], "Stats: Prints: 1, Finished: 1, Failed: 0");
+}
+
+#[test]
 fn chamber_heater() {
     let mut r = Rig::new(SimConfig {
         heated_chamber: true,
