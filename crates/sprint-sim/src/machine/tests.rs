@@ -738,6 +738,32 @@ fn sd_listing_write_and_print() {
 }
 
 #[test]
+fn emergency_parser_is_off_while_writing_to_sd() {
+    // Marlin disables the emergency parser between M28 and M29, so an
+    // uploaded file may contain M112 / M108 / M410 without side effects.
+    let mut r = Rig::booted();
+    r.ok("M110 N0");
+    r.ok(&frame(1, "M28 estop.gco"));
+    for (i, l) in ["M112", "M108", "M410", "M876 S0"].iter().enumerate() {
+        assert_eq!(r.ok(&frame(i as i64 + 2, l)), vec!["ok"]);
+    }
+    assert!(!r.m.snapshot().halted);
+    assert_eq!(r.ok(&frame(6, "M29")), vec!["Done saving file.", "ok"]);
+    let index = r.m.sd.find("estop.gco").expect("file saved");
+    assert_eq!(
+        r.m.sd.data(index),
+        b"M112
+M108
+M410
+M876 S0
+"
+    );
+    // Enabled again after M29.
+    r.send("M112");
+    assert!(r.m.snapshot().halted);
+}
+
+#[test]
 fn sd_status_auto_report() {
     let mut r = Rig::booted();
     r.ok("M23 calibration_cube.gcode");

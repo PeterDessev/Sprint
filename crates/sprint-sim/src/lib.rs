@@ -18,7 +18,8 @@
 //! * `N<n> <cmd>*<cs>` framing with Marlin's error, `Resend:` and `ok`
 //!   replies, M110, a BUFSIZE command buffer and an `ok` delayed while the
 //!   planner is full; optional ADVANCED_OK;
-//! * M108/M112/M410/M876 acted on immediately on receipt;
+//! * M108/M112/M410/M876 acted on immediately on receipt (except while
+//!   writing to SD, where Marlin stores them in the file);
 //! * a planner with trapezoidal profiles and look-ahead, homing and probing
 //!   times, arcs, leveling, babystepping, soft endstops, cold extrusion
 //!   prevention;

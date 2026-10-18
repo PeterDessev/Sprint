@@ -557,7 +557,11 @@ impl Machine {
     // ----- line protocol -----
 
     fn on_line(&mut self, raw: String) {
-        if let Some(e) = line::emergency(&raw) {
+        // Marlin disables the emergency parser while writing to SD (M28 to
+        // M29), so such lines are stored in the file like any other.
+        if self.saving.is_none()
+            && let Some(e) = line::emergency(&raw)
+        {
             self.emergency(e);
             if self.run != RunState::Running {
                 return;
