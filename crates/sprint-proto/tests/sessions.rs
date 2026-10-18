@@ -476,3 +476,130 @@ fn rrf_and_smoothieware_sessions() {
     }));
     assert!(replies.contains(&Reply::Other(";Steps per unit:".into())));
 }
+
+const KLIPPER_RAW_OUTPUT: &str = "\
+ok
+Begin file list
+benchy.gcode 1234567
+my part v2.gcode 4321
+subdir/other part.gcode 99
+End file list
+ok
+// Mesh Leveling Probed Z positions:
+//  0.012500 0.025000 0.037500
+//  0.050000 0.062500 0.075000
+Mesh X,Y: 3,2
+Search Height: 5
+Mesh Offsets: X=0.0000, Y=0.0000
+Mesh Average: 0.04
+Mesh Range: min=0.0125 max=0.0750
+Interpolation Algorithm: lagrange
+Measured points:
+  0.050000  0.062500  0.075000
+  0.012500  0.025000  0.037500
+
+ok
+File opened:my part v2.gcode Size:4321
+File selected
+ok
+ok
+SD printing byte 1000/4321
+ok
+!! Heater extruder not heating at expected rate
+// See the 'verify_heater' section in docs/Config_Reference.md
+// for the parameters that control this check.
+ok
+";
+
+#[test]
+fn klipper_raw_output_session() {
+    let replies = run(KLIPPER_RAW_OUTPUT);
+    let files: Vec<(&str, Option<u64>)> = replies
+        .iter()
+        .filter_map(|r| match r {
+            Reply::SdCard(SdReply::File(f)) => Some((f.name.as_str(), f.size)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        files,
+        vec![
+            ("benchy.gcode", Some(1_234_567)),
+            ("my part v2.gcode", Some(4321)),
+            ("subdir/other part.gcode", Some(99)),
+        ]
+    );
+    let meshes: Vec<&sprint_proto::BedMesh> = replies
+        .iter()
+        .filter_map(|r| match r {
+            Reply::Mesh(m) => Some(m),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(meshes.len(), 2);
+    assert_eq!(meshes[0].kind, "klipper_probed");
+    assert_eq!(meshes[1].kind, "klipper_mesh");
+    // Both are front row first, so they agree.
+    assert_eq!(meshes[0].points, meshes[1].points);
+    assert!(replies.contains(&Reply::SdCard(SdReply::Opened {
+        name: "my part v2.gcode".into(),
+        size: 4321
+    })));
+    assert!(replies.contains(&Reply::SdCard(SdReply::Progress {
+        done: 1000,
+        total: 4321
+    })));
+    assert!(replies.contains(&Reply::Error {
+        message: "Heater extruder not heating at expected rate".into(),
+        fatal: true
+    }));
+}
+
+const PRUSA_AND_RRF3_LISTINGS: &str = "\
+Begin file list
+DIR_ENTER: /PARTS/ \"Parts\"
+/PARTS/BENCHY~1.GCO 98765 0x5A3B1C2D \"3DBenchy.gcode\"
+DIR_EXIT
+CUBE~1.GCO 12345 0x5A3B1C2E \"cube.gcode\"
+End file list
+ok
+Begin file list
+benchy.gcode
+my part.gcode
+End file list
+ok
+Endstops - X: at min stop, Y: not stopped, Z: no endstop, Z probe: not stopped
+ok
+";
+
+#[test]
+fn prusa_and_rrf3_listing_session() {
+    let replies = run(PRUSA_AND_RRF3_LISTINGS);
+    let files: Vec<(&str, Option<&str>)> = replies
+        .iter()
+        .filter_map(|r| match r {
+            Reply::SdCard(SdReply::File(f)) => Some((f.name.as_str(), f.long_name.as_deref())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        files,
+        vec![
+            ("/PARTS/BENCHY~1.GCO", Some("3DBenchy.gcode")),
+            ("CUBE~1.GCO", Some("cube.gcode")),
+            ("benchy.gcode", None),
+            ("my part.gcode", None),
+        ]
+    );
+    let endstops: Vec<(&str, bool)> = replies
+        .iter()
+        .filter_map(|r| match r {
+            Reply::Endstop { name, triggered } => Some((name.as_str(), *triggered)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        endstops,
+        vec![("X", true), ("Y", false), ("Z probe", false)]
+    );
+}
