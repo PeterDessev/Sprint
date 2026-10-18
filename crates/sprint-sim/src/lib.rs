@@ -6,6 +6,7 @@ mod config;
 mod format;
 mod line;
 mod parse;
+mod planner;
 mod rng;
 mod thermal;
 
