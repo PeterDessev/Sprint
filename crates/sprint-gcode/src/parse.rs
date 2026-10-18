@@ -220,19 +220,21 @@ fn scan_prefix(b: &[u8]) -> Option<Prefix> {
     }
     let mut line_number = None;
     let mut numbered = false;
-    // Repeated N words ("N5 N6 G1") are all skipped so that cleaning is
-    // idempotent; the first one is the line number.
-    while let Some((num, end)) = line_number_at(b, i) {
-        if !numbered {
-            line_number = num;
-            numbered = true;
-        }
-        i = skip_ws(b, end);
-    }
     let mut paren_comment = None;
     loop {
         if i >= n {
             return None;
+        }
+        // Repeated N words ("N5 N6 G1"), also after a removed comment
+        // ("(c) N5 G1"), are all skipped so that cleaning is idempotent; the
+        // first one is the line number.
+        if let Some((num, end)) = line_number_at(b, i) {
+            if !numbered {
+                line_number = num;
+                numbered = true;
+            }
+            i = skip_ws(b, end);
+            continue;
         }
         match b[i] {
             b';' | b'*' | b'%' => return None,
@@ -1128,6 +1130,22 @@ mod tests {
         let p = parse_line("N5 N6 G1 X1");
         assert_eq!(p.line_number, Some(5));
         assert_eq!(p.code, Some(Code::g(1)));
+    }
+
+    #[test]
+    fn line_number_after_paren_comment() {
+        // Found by fuzzing: "(c)N05.19" cleaned to "N05.19", which cleaned
+        // again to ".19".
+        let line = "(1e-30-0)N05.196";
+        assert_eq!(clean_line(line).as_deref(), Some(".196"));
+        assert_eq!(clean_line(".196").as_deref(), Some(".196"));
+        let p = parse_line("(note) N7 G1 X1*12");
+        assert_eq!(p.line_number, Some(7));
+        assert_eq!(p.code, Some(Code::g(1)));
+        assert_eq!(p.comment, Some("note"));
+        assert_eq!(p.checksum, Some(12));
+        assert_eq!(clean_line("(note) N7 G1 X1*12").as_deref(), Some("G1 X1"));
+        assert_eq!(clean_line("(a) N7 (b)"), None);
     }
 
     #[test]
