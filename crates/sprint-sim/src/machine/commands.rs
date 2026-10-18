@@ -162,6 +162,9 @@ impl Machine {
             }
             (b'M', 502) => {
                 self.settings = Settings::defaults(self.hotends.len());
+                // MarlinSettings::reset() also calls reset_bed_level().
+                self.mesh = None;
+                self.leveling = false;
                 self.emit("echo:Hardcoded Default Settings Loaded");
                 Outcome::Done
             }

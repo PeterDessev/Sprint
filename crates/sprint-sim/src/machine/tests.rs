@@ -535,6 +535,17 @@ fn bed_leveling_grid() {
     assert!(out.contains(&"echo:Bed Leveling ON".to_string()));
     let out = r.ok("M503");
     assert!(out.contains(&"echo:  M420 S1 Z10.00 ; Leveling ON".to_string()));
+    // M502 resets the bed leveling too (reset_bed_level()); a mesh saved
+    // with M500 comes back with M501.
+    r.ok("M500");
+    r.ok("M502");
+    assert_eq!(
+        r.ok("M420 V"),
+        vec!["echo:Bed Leveling OFF", "echo:Fade Height 10.00", "ok"]
+    );
+    assert_eq!(r.ok("M420 S1")[0], "Error:Failed to enable Bed Leveling");
+    r.ok("M501");
+    assert_eq!(r.ok("M420 V")[0], "Bilinear Leveling Grid:");
 }
 
 #[test]
