@@ -29,6 +29,19 @@ impl MeshKind {
     }
 }
 
+/// Which firmware printed the header lines that precede an unprefixed
+/// `Measured points:` block (they decide the row order and the kind).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum MblHeader {
+    /// Marlin `Num X,Y:` / `... mesh. Z offset:` (or nothing): front row first.
+    #[default]
+    Marlin,
+    /// Prusa G81 `Z search height:`: back row first.
+    Prusa,
+    /// Klipper `BED_MESH_OUTPUT` via respond_raw (`Mesh X,Y:`): back row first.
+    Klipper,
+}
+
 /// What a line meant to an open block.
 #[derive(Debug)]
 pub(crate) enum Step {
@@ -134,9 +147,9 @@ impl MeshBlock {
     }
 
     /// Recognise the header line of a mesh report (already trimmed, with
-    /// any `echo:` prefix removed). `prusa_mbl` tells whether a Prusa-style
-    /// MBL header ("Z search height:") preceded "Measured points:".
-    pub(crate) fn start(line: &str, prusa_mbl: bool) -> Option<MeshBlock> {
+    /// any `echo:` prefix removed). `header` tells which firmware's header
+    /// lines preceded an unprefixed "Measured points:".
+    pub(crate) fn start(line: &str, header: MblHeader) -> Option<MeshBlock> {
         if let Some(body) = line.strip_prefix("//") {
             let body = body.trim();
             let lower = body.to_ascii_lowercase();
@@ -162,7 +175,11 @@ impl MeshBlock {
             return Some(MeshBlock::new(MeshKind::Ubl, true, false));
         }
         if lower.starts_with("measured points") {
-            return Some(MeshBlock::new(MeshKind::Mbl, prusa_mbl, false));
+            return Some(match header {
+                MblHeader::Marlin => MeshBlock::new(MeshKind::Mbl, false, false),
+                MblHeader::Prusa => MeshBlock::new(MeshKind::Mbl, true, false),
+                MblHeader::Klipper => MeshBlock::new(MeshKind::KlipperMesh, true, false),
+            });
         }
         None
     }

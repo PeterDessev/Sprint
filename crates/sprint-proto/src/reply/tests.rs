@@ -919,6 +919,58 @@ fn klipper_bed_mesh_output() {
 }
 
 #[test]
+fn klipper_raw_mesh_output() {
+    // Regression: BED_MESH_OUTPUT prints the probed matrix with
+    // respond_info ("// ") but the interpolated mesh with respond_raw (no
+    // prefix, back row first). The raw "Measured points:" block was read as
+    // a front-row-first Marlin MBL mesh, flipping it front to back.
+    let mut p = ReplyParser::new();
+    let replies = feed_all(
+        &mut p,
+        &[
+            "// Mesh Leveling Probed Z positions:",
+            "//  0.012500 0.025000 0.037500",
+            "//  0.050000 0.062500 0.075000",
+            "Mesh X,Y: 3,2",
+            "Search Height: 5",
+            "Mesh Offsets: X=0.0000, Y=0.0000",
+            "Mesh Average: 0.04",
+            "Mesh Range: min=0.0125 max=0.0750",
+            "Interpolation Algorithm: lagrange",
+            "Measured points:",
+            "  0.050000  0.062500  0.075000",
+            "  0.012500  0.025000  0.037500",
+            "",
+            "ok",
+        ],
+    );
+    let m = meshes(&replies);
+    assert_eq!(m.len(), 2, "{replies:?}");
+    assert_eq!(m[0].kind, "klipper_probed");
+    assert_row(m[0], 0, &[0.0125, 0.025, 0.0375]);
+    assert_eq!(m[1].kind, "klipper_mesh");
+    assert_row(m[1], 0, &[0.0125, 0.025, 0.0375]);
+    assert_row(m[1], 1, &[0.05, 0.0625, 0.075]);
+    assert_eq!(replies.last(), Some(&ok(None, None, None)));
+
+    // A Marlin MBL report afterwards is not affected.
+    let replies = feed_all(
+        &mut p,
+        &[
+            "Num X,Y: 2,2",
+            "Z offset: 0.00000",
+            "Measured points:",
+            "  0.10000  0.20000",
+            "  0.30000  0.40000",
+            "ok",
+        ],
+    );
+    let m = meshes(&replies);
+    assert_eq!(m[0].kind, "mbl");
+    assert_row(m[0], 0, &[0.1, 0.2]);
+}
+
+#[test]
 fn klipper_matrix_forms() {
     let mut p = ReplyParser::new();
     let replies = feed_all(&mut p, &["// probed_matrix: [[0.1, 0.2], [0.3, 0.4]]"]);

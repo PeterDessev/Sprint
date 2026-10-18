@@ -16,7 +16,7 @@ pub use text::parse_duration;
 pub use types::*;
 
 use crate::{BedMesh, SettingCommand, parse_firmware_line, setting_def};
-use mesh_block::{MeshBlock, Step};
+use mesh_block::{MblHeader, MeshBlock, Step};
 use text::{
     is_fatal_error, parse_host_action, parse_u32, strip_prefix_ci, tokens_with_offsets, unquote,
 };
@@ -31,9 +31,9 @@ pub struct ReplyParser {
     sd_listing: bool,
     /// An open leveling report.
     mesh: Option<MeshBlock>,
-    /// A Prusa-style MBL header ("Z search height:") was seen, so the
-    /// following "Measured points:" rows are printed back row first.
-    prusa_mbl: bool,
+    /// Whose header lines (Marlin "Num X,Y:", Prusa "Z search height:",
+    /// Klipper "Mesh X,Y:") preceded the next unprefixed "Measured points:".
+    mbl_header: MblHeader,
     /// PID autotune session state.
     pid: autotune::PidTracker,
 }
@@ -85,10 +85,10 @@ impl ReplyParser {
 
     /// Start a mesh block if `line` is a mesh report header.
     fn start_mesh(&mut self, line: &str) -> bool {
-        match MeshBlock::start(line, self.prusa_mbl) {
+        match MeshBlock::start(line, self.mbl_header) {
             Some(block) => {
                 self.mesh = Some(block);
-                self.prusa_mbl = false;
+                self.mbl_header = MblHeader::default();
                 true
             }
             None => false,
@@ -195,9 +195,11 @@ impl ReplyParser {
             return;
         }
         if strip_prefix_ci(line, "Num X,Y:").is_some() {
-            self.prusa_mbl = false;
+            self.mbl_header = MblHeader::Marlin;
         } else if strip_prefix_ci(line, "Z search height:").is_some() {
-            self.prusa_mbl = true;
+            self.mbl_header = MblHeader::Prusa;
+        } else if strip_prefix_ci(line, "Mesh X,Y:").is_some() {
+            self.mbl_header = MblHeader::Klipper;
         }
         if let Some(endstops) = status::parse_endstops(line) {
             out.extend(

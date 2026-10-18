@@ -443,7 +443,10 @@ Parsing conventions (implemented in sprint-proto):
   size 0; `open failed, File: x.` is a non-fatal `Reply::Error`.
 * Mesh blocks end at a blank line, `ok` or any non-row line; interleaved
   temperature/busy lines pass through. `BedMesh::kind` is `"bilinear"`,
-  `"mbl"`, `"ubl"`, `"klipper_probed"` or `"klipper_mesh"`.
+  `"mbl"`, `"ubl"`, `"klipper_probed"` or `"klipper_mesh"`. Unlabelled
+  `Measured points:` rows are back row first after Prusa's `Z search
+  height:` or Klipper's `Mesh X,Y:` header (Klipper prints the interpolated
+  mesh without the `// ` prefix); such a Klipper block is `"klipper_mesh"`.
 * PID autotune: exactly one `AutotuneResult` per M303 run (from the
   `#define DEFAULT_*K*` triple, the last estimate for Prusa's "from above",
   or Klipper's `PID parameters:` line); per-cycle estimates inside a run
