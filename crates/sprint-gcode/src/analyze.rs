@@ -352,6 +352,17 @@ impl Analyzer {
                     self.e_only(-self.fw_retract_length, self.fw_retract_feed, ln);
                 }
             }
+            (b'G', 10, None) => {
+                // RepRapFirmware tool temperatures: G10 P<tool> S<active>.
+                self.state.apply(p);
+                if let Some(tool) = p
+                    .get('P')
+                    .filter(|t| (0.0..=255.0).contains(t))
+                    .map(|t| t as u8)
+                {
+                    self.record_hotend(tool);
+                }
+            }
             (b'G', 11, None) => {
                 self.uses_firmware_retraction = true;
                 let was = self.state.firmware_retracted;

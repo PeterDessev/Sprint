@@ -426,7 +426,8 @@ G1 X50 Y30 E1
 #[test]
 fn reprapfirmware() {
     let (file, tp) = analyzed(RRF);
-    assert_eq!(tp.stats.hotend_temps.len(), 0);
+    // G10 P S is a tool temperature, not a retraction.
+    assert_eq!(tp.stats.hotend_temps, [(0, 215.0)]);
     assert!(tp.stats.uses_firmware_retraction);
     let amounts: Vec<f32> = tp.retractions.iter().map(|r| r.amount).collect();
     assert_eq!(amounts, [-0.6, 0.6]);
