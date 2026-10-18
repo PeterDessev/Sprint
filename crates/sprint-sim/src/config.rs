@@ -46,7 +46,7 @@ pub struct SimConfig {
     pub auto_report_temps: bool,
     /// Advertise and honour M154 position auto-reports. Default true.
     pub auto_report_position: bool,
-    /// Reply "ok N<line> P<planner free> B<buffer free>". Default false.
+    /// Reply `ok N<line> P<planner free> B<buffer free>`. Default false.
     pub advanced_ok: bool,
     /// G29 grid size (columns, rows), each 2..=15. Default (5, 5).
     pub mesh_size: (usize, usize),
