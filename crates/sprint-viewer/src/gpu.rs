@@ -283,6 +283,12 @@ fn sample_shading_supported(device: &wgpu::Device) -> bool {
     )
 }
 
+/// Bytes per row of a read-back copy of a `width` pixels wide RGBA8 image.
+fn padded_row_bytes(width: u32) -> u64 {
+    let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as u64;
+    (width as u64 * 4).div_ceil(align) * align
+}
+
 fn segment_attributes() -> [wgpu::VertexAttribute; 8] {
     wgpu::vertex_attr_array![
         2 => Float32x3, 3 => Float32, 4 => Float32x3, 5 => Float32,
@@ -533,7 +539,8 @@ impl Renderer {
     }
 
     /// Make sure the targets of `slot` have the given size. Returns true if
-    /// they were (re)created.
+    /// they were (re)created. When the GPU cannot allocate them, the slot is
+    /// left without targets (drawing into it does nothing).
     pub fn ensure_targets(&mut self, slot: Slot, width: u32, height: u32) -> bool {
         let max = self.max_texture_size().max(1);
         let size = (width.clamp(1, max), height.clamp(1, max));
@@ -544,12 +551,47 @@ impl Renderer {
         if current.as_ref().is_some_and(|t| t.size == size) {
             return false;
         }
+        // Free the old targets first so a resize does not need both at once.
+        match slot {
+            Slot::Ui => self.ui_targets = None,
+            Slot::Offscreen => self.offscreen_targets = None,
+        }
+        // Huge sizes can exhaust video memory: report that instead of
+        // letting wgpu's uncaptured-error handler panic.
+        let oom = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         let targets = self.create_targets(size);
+        if let Some(err) = pollster::block_on(oom.pop()) {
+            log::warn!(
+                "sprint-viewer: cannot allocate {}x{} render targets: {err}",
+                size.0,
+                size.1
+            );
+            return true;
+        }
         match slot {
             Slot::Ui => self.ui_targets = Some(targets),
             Slot::Offscreen => self.offscreen_targets = Some(targets),
         }
         true
+    }
+
+    /// The size `render_to_image` can actually produce for a request of
+    /// `width x height`: within the texture limit, and small enough that the
+    /// read-back buffer fits `max_buffer_size` (scaled down keeping the
+    /// aspect ratio).
+    pub fn readback_size(&self, width: u32, height: u32) -> (u32, u32) {
+        let max = self.max_texture_size().max(1);
+        let (w, h) = (width.clamp(1, max), height.clamp(1, max));
+        let max_bytes = self.device.limits().max_buffer_size.max(1);
+        let bytes = padded_row_bytes(w) * h as u64;
+        if bytes <= max_bytes {
+            return (w, h);
+        }
+        let scale = (max_bytes as f64 / bytes as f64).sqrt();
+        let w = ((w as f64 * scale) as u32).clamp(1, w);
+        let rows = (max_bytes / padded_row_bytes(w)).clamp(1, u32::MAX as u64) as u32;
+        let h = ((h as f64 * scale) as u32).clamp(1, rows);
+        (w, h)
     }
 
     /// The targets of a slot, if created.
@@ -770,9 +812,12 @@ impl Renderer {
     pub fn read_pixels(&mut self, slot: Slot) -> Option<(u32, u32, Vec<u8>)> {
         let (width, height) = self.targets(slot)?.size;
         let unpadded = width as u64 * 4;
-        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as u64;
-        let padded = unpadded.div_ceil(align) * align;
+        let padded = padded_row_bytes(width);
         let size = padded * height as u64;
+        if size > self.device.limits().max_buffer_size {
+            log::warn!("sprint-viewer: {width}x{height} is too big to read back");
+            return None;
+        }
         if self.readback.as_ref().is_none_or(|(_, s)| *s < size) {
             let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("sprint-viewer readback"),

@@ -279,6 +279,68 @@ fn odd_sizes_and_zero_sizes() {
     assert!(w <= device.limits().max_texture_dimension_2d);
 }
 
+/// A device whose `max_buffer_size` is only `max_buffer` bytes.
+fn small_buffer_device(max_buffer: u64) -> Option<(wgpu::Device, wgpu::Queue)> {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::from_env().unwrap_or(wgpu::Backends::PRIMARY),
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
+    });
+    let adapter = [false, true].into_iter().find_map(|fallback| {
+        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            force_fallback_adapter: fallback,
+            ..Default::default()
+        }))
+        .ok()
+    })?;
+    let base = if adapter.get_info().backend == wgpu::Backend::Gl {
+        wgpu::Limits::downlevel_webgl2_defaults()
+    } else {
+        wgpu::Limits::default()
+    };
+    let limits = wgpu::Limits {
+        max_buffer_size: max_buffer,
+        ..base.using_resolution(adapter.limits())
+    };
+    pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        required_limits: limits,
+        ..Default::default()
+    }))
+    .ok()
+}
+
+#[test]
+fn images_beyond_the_read_back_limit_are_scaled_down() {
+    // Regression: the read-back buffer exceeded `max_buffer_size` and wgpu
+    // panicked (e.g. 9000 x 9000 with the default 256 MiB limit).
+    const MAX: u64 = 4 << 20;
+    let Some((device, queue)) = small_buffer_device(MAX) else {
+        eprintln!("skipping GPU test: no wgpu adapter available");
+        return;
+    };
+    let mut viewer = loaded_viewer(&device, &queue, block());
+    for (w, h) in [(2000, 1500), (4000, 300), (1, 3000)] {
+        let (rw, rh, img) = viewer.render_to_image(w, h).expect("scaled down");
+        assert_eq!(img.len(), (rw * rh * 4) as usize);
+        assert!(rw <= w && rh <= h && rw >= 1 && rh >= 1, "{rw}x{rh}");
+        let padded = (rw as u64 * 4).div_ceil(256) * 256;
+        assert!(padded * rh as u64 <= MAX, "{rw}x{rh} does not fit");
+        // The aspect ratio is kept (within rounding).
+        let want = w as f64 / h as f64;
+        let got = rw as f64 / rh as f64;
+        assert!(
+            (got / want - 1.0).abs() < 0.02 || rw == 1,
+            "{rw}x{rh} for {w}x{h}"
+        );
+        assert!(
+            img.chunks_exact(4)
+                .any(|p| !near([p[0], p[1], p[2], 255], BACKGROUND, 6))
+        );
+    }
+    // Small requests are untouched.
+    let (w, h, _) = viewer.render_to_image(320, 240).expect("rendered");
+    assert_eq!((w, h), (320, 240));
+}
+
 #[test]
 fn empty_viewer_shows_the_bed() {
     let Some((device, queue)) = device() else {

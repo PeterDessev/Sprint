@@ -564,9 +564,15 @@ impl GcodeViewer {
     /// Render one frame offscreen and return RGBA8 pixels (tests,
     /// thumbnails). Waits for a pending toolpath to finish loading. The
     /// returned size may be smaller than requested when it exceeds the GPU's
-    /// texture limit.
+    /// texture or buffer limits (very large requests are scaled down keeping
+    /// the aspect ratio). `None` for a zero size or when the GPU cannot
+    /// allocate the image.
     pub fn render_to_image(&mut self, width: u32, height: u32) -> Option<(u32, u32, Vec<u8>)> {
         self.wait_until_loaded();
+        if width == 0 || height == 0 {
+            return None;
+        }
+        let (width, height) = self.renderer.readback_size(width, height);
         if !self.render_offscreen(width, height) {
             return None;
         }
