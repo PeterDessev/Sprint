@@ -611,15 +611,7 @@ impl Machine {
         self.injected.clear();
         self.task = None;
         self.planner.quick_stop();
-        for h in &mut self.hotends {
-            h.off();
-        }
-        if let Some(b) = &mut self.bed {
-            b.off();
-        }
-        if let Some(c) = &mut self.chamber {
-            c.off();
-        }
+        self.disable_all_heaters();
         self.fans = [0; FAN_COUNT];
         if self.timer.is_active() {
             self.timer.abort(self.now, &mut self.stats);

@@ -1145,6 +1145,31 @@ fn chamber_heater() {
 }
 
 #[test]
+fn sd_abort_and_autotune_turn_every_heater_off() {
+    // Marlin's disable_all_heaters() includes the chamber.
+    let mut r = Rig::new(SimConfig {
+        heated_chamber: true,
+        ..cfg()
+    });
+    r.take();
+    r.ok("M141 S40");
+    r.ok("M23 calibration_cube.gcode");
+    r.ok("M24");
+    r.run(1.0);
+    r.ok("M524");
+    let report = r.ok("M105");
+    assert!(
+        report[0].contains(" C:") && report[0].contains(" /0.0 @:"),
+        "{report:?}"
+    );
+    assert!(!report[0].contains("/40.0"), "{report:?}");
+    r.ok("M141 S40");
+    r.ok("M303 E0 S200 C3");
+    let report = r.ok("M105");
+    assert!(!report[0].contains("/40.0"), "{report:?}");
+}
+
+#[test]
 fn no_heated_bed() {
     let mut r = Rig::new(SimConfig {
         heated_bed: false,

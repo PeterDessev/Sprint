@@ -48,6 +48,16 @@ impl Machine {
         }
     }
 
+    /// Marlin's `disable_all_heaters()`: hotends, bed and chamber off.
+    pub(super) fn disable_all_heaters(&mut self) {
+        for h in &mut self.hotends {
+            h.off();
+        }
+        for h in self.bed.iter_mut().chain(self.chamber.iter_mut()) {
+            h.off();
+        }
+    }
+
     pub(super) fn heater_mut(&mut self, id: HeaterId) -> Option<&mut Heater> {
         match id {
             HeaterId::Hotend(i) => self.hotends.get_mut(i),
@@ -314,12 +324,7 @@ impl Machine {
         }
         self.emit("PID Autotune start");
         // Marlin turns every heater off before tuning.
-        for h in &mut self.hotends {
-            h.off();
-        }
-        if let Some(b) = &mut self.bed {
-            b.off();
-        }
+        self.disable_all_heaters();
         let tune = Autotune::new(target, cycles, is_bed, self.now);
         let initial = tune.initial_output();
         let last_sample = self.heater(heater).map_or(0, Heater::samples);

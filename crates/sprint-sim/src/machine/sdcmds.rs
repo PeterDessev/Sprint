@@ -227,12 +227,7 @@ impl Machine {
         }
         self.quickstop();
         self.timer.abort(self.now, &mut self.stats);
-        for h in &mut self.hotends {
-            h.off();
-        }
-        if let Some(b) = &mut self.bed {
-            b.off();
-        }
+        self.disable_all_heaters();
         self.fans = [0; FAN_COUNT];
         self.wait_for_heatup = false;
     }
