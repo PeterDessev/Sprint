@@ -4,10 +4,10 @@ use super::StatsReport;
 use super::text::{parse_duration, parse_u32, strip_prefix_ci};
 
 /// Endstop state word: "open" / "TRIGGERED" (Marlin, Klipper), RRF "not
-/// stopped" / "at min stop" / "at max stop" / "stopped".
+/// stopped" / "near min stop" / "at min stop" / "at max stop" / "stopped".
 fn endstop_state(word: &str) -> Option<bool> {
     match word.trim().to_ascii_lowercase().as_str() {
-        "open" | "not stopped" | "not triggered" => Some(false),
+        "open" | "not stopped" | "not triggered" | "near min stop" | "near max stop" => Some(false),
         "triggered" | "hit" | "at min stop" | "at max stop" | "stopped" => Some(true),
         _ => None,
     }
@@ -26,7 +26,8 @@ fn valid_name(name: &str) -> bool {
 /// Parse an endstop report line into `(name, triggered)` pairs:
 /// Marlin "x_min: open" / "z_probe: TRIGGERED", Klipper
 /// "x:open y:open z:TRIGGERED" and RRF "Endstops - X: not stopped, Y: at
-/// min stop, Z probe: not stopped".
+/// min stop, Z probe: not stopped" (axes reported as "no endstop" are
+/// skipped).
 pub(crate) fn parse_endstops(line: &str) -> Option<Vec<(String, bool)>> {
     if let Some(rest) = strip_prefix_ci(line, "Endstops - ") {
         let mut out = Vec::new();
@@ -34,6 +35,9 @@ pub(crate) fn parse_endstops(line: &str) -> Option<Vec<(String, bool)>> {
             let (name, state) = part.split_once(':')?;
             if !valid_name(name) {
                 return None;
+            }
+            if state.trim().eq_ignore_ascii_case("no endstop") {
+                continue;
             }
             out.push((name.trim().to_string(), endstop_state(state)?));
         }
@@ -164,6 +168,18 @@ mod tests {
                 "Endstops - X: not stopped, Y: at min stop, Z: not stopped, Z probe: not stopped"
             ),
             es(&[("X", false), ("Y", true), ("Z", false), ("Z probe", false)])
+        );
+        // Regression: RRF 3 reports axes without an endstop as "no endstop"
+        // (and "near min stop"), which made the whole line unrecognised.
+        assert_eq!(
+            parse_endstops(
+                "Endstops - X: at min stop, Y: near min stop, Z: no endstop, U: no endstop, Z probe: at min stop"
+            ),
+            es(&[("X", true), ("Y", false), ("Z probe", true)])
+        );
+        assert_eq!(
+            parse_endstops("Endstops - X: no endstop, Y: no endstop"),
+            None
         );
         for line in [
             "Reporting endstop status",
