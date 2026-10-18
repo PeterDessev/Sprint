@@ -922,3 +922,144 @@ fn garbage_never_panics() {
     r.take();
     assert!(r.ok("M105")[0].starts_with("ok T:"));
 }
+
+#[test]
+fn m109_r_waits_for_cooling() {
+    let mut r = Rig::booted();
+    r.ok("M109 S200");
+    let start = r.m.now;
+    let out = r.ok("M109 R150");
+    let t = r.m.now - start;
+    assert!(t > 20.0, "cooling wait took {t}s");
+    let temp = r.m.snapshot().hotend_temps[0];
+    assert!((temp - 150.0).abs() < 3.0, "{temp}");
+    assert!(out.iter().any(|l| l.contains(" /150.00 ")));
+    // R0 cannot be reached: the cooling-slope check ends the wait.
+    let out = r.cmd("M109 R0", 2000.0);
+    assert_eq!(out.last().map(String::as_str), Some("ok"));
+}
+
+#[test]
+fn chamber_heater() {
+    let mut r = Rig::new(SimConfig {
+        heated_chamber: true,
+        ..cfg()
+    });
+    r.take();
+    assert!(
+        r.ok("M115")
+            .contains(&"Cap:CHAMBER_TEMPERATURE:1".to_string())
+    );
+    let out = r.ok("M191 S35");
+    assert!(
+        out.iter()
+            .any(|l| l.contains(" C:") && l.contains(" /35.00")),
+        "{out:?}"
+    );
+    let report = r.ok("M105");
+    assert!(report[0].contains(" C:3"), "{report:?}");
+    let mut plain = Rig::booted();
+    assert_eq!(
+        plain.ok("M141 S40"),
+        vec!["echo:Unknown command: \"M141 S40\"", "ok"]
+    );
+}
+
+#[test]
+fn no_heated_bed() {
+    let mut r = Rig::new(SimConfig {
+        heated_bed: false,
+        ..cfg()
+    });
+    r.take();
+    let out = r.ok("M105");
+    assert!(!out[0].contains("B:"), "{out:?}");
+    assert_eq!(
+        r.ok("M190 S60"),
+        vec!["echo:Unknown command: \"M190 S60\"", "ok"]
+    );
+    assert!(!r.ok("M503").iter().any(|l| l.contains("M304")));
+}
+
+#[test]
+fn firmware_retraction_and_offsets() {
+    let mut r = Rig::booted();
+    r.ok("M302 P1");
+    r.ok("G28");
+    r.ok("G10");
+    assert!(r.ok("M114")[0].contains("E:-3.00"));
+    r.ok("G10");
+    assert!(
+        r.ok("M114")[0].contains("E:-3.00"),
+        "double G10 retracts once"
+    );
+    r.ok("G11");
+    assert!(r.ok("M114")[0].contains("E:0.00"));
+    r.ok("M206 X5");
+    assert!(r.ok("M114")[0].starts_with("X:5.00"));
+    r.ok("G1 X10");
+    let out = r.ok("M114");
+    assert!(
+        out[0].starts_with("X:10.00") && out[0].contains("Count X:400"),
+        "{out:?}"
+    );
+    r.ok("M206 X0");
+    r.ok("G20");
+    r.ok("G1 X1");
+    assert!(r.ok("M114")[0].starts_with("X:25.40"));
+    r.ok("G21");
+    // M83 relative E survives G91/G90 only until G90 resets it.
+    r.ok("M83");
+    r.ok("G1 E1");
+    r.ok("G1 E1");
+    assert!(r.ok("M114")[0].contains("E:2.00"));
+    r.ok("G90");
+    r.ok("G1 E1");
+    assert!(r.ok("M114")[0].contains("E:1.00"));
+}
+
+#[test]
+fn soft_endstops_clamp_homed_axes() {
+    let mut r = Rig::booted();
+    r.ok("G28");
+    r.ok("G1 X500 Y-20 Z999");
+    assert!(r.ok("M114")[0].starts_with("X:220.00 Y:0.00 Z:250.00"));
+    let out = r.ok("M211");
+    assert_eq!(out[0], "echo:; Soft endstops:");
+    assert_eq!(out[1], "echo:  M211 S1 ; ON");
+    r.ok("M211 S0");
+    r.ok("G1 X500");
+    assert!(r.ok("M114")[0].starts_with("X:500.00"));
+}
+
+#[test]
+fn multi_extruder_targets_and_flow() {
+    let mut r = Rig::new(SimConfig {
+        extruders: 2,
+        ..cfg()
+    });
+    r.take();
+    r.ok("M104 T1 S180");
+    assert_eq!(r.m.snapshot().hotend_targets, vec![0.0, 180.0]);
+    assert_eq!(r.ok("M104 T2 S180"), vec!["echo:T2 Invalid extruder", "ok"]);
+    r.ok("M221 T1 S80");
+    assert_eq!(r.ok("M221 T1"), vec!["echo:E1 Flow: 80%", "ok"]);
+    let out = r.ok("M115");
+    assert!(out[0].contains("EXTRUDER_COUNT:2"));
+    let out = r.ok("M503");
+    assert!(out.contains(&"echo:  M906 T1 E800".to_string()));
+}
+
+#[test]
+fn time_scale_is_honoured_by_the_machine_clock() {
+    // The machine only sees simulated seconds; the link multiplies real
+    // time by the scale. Advancing 10 simulated seconds runs a 10 s dwell.
+    let mut r = Rig::booted();
+    r.send("G4 S10");
+    r.run(9.9);
+    let out = r.take();
+    assert!(!out.contains(&"ok".to_string()));
+    assert_eq!(out.len(), 4, "keepalive every 2 s: {out:?}");
+    r.run(0.2);
+    assert_eq!(r.take(), vec!["ok"]);
+}

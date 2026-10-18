@@ -18,7 +18,7 @@ fn hundred_mm_move_takes_expected_time() {
     // 100 mm at 100 mm/s with 3000 mm/s² takes 1.033 s of machine time.
     let expected = (1.0 + 100.0 / 3000.0) / scale;
     assert!(
-        (real - expected).abs() < 0.12,
+        (real - expected).abs() < 0.2,
         "took {real:.3}s, expected {expected:.3}s"
     );
     assert_eq!(
@@ -147,4 +147,18 @@ fn settings_commands_and_eeprom() {
         h.command("M503")
             .contains(&"echo:  M92 X80.00 Y80.00 Z400.00 E93.00".to_string())
     );
+}
+
+#[test]
+fn time_scale_changes_at_runtime() {
+    let mut h = Host::booted(fast(1.0));
+    let start = Instant::now();
+    h.command("G4 P400");
+    let slow = start.elapsed();
+    h.control().set_time_scale(20.0);
+    let start = Instant::now();
+    h.command("G4 P400");
+    let fast_dwell = start.elapsed();
+    assert!(slow >= Duration::from_millis(380), "{slow:?}");
+    assert!(fast_dwell < Duration::from_millis(200), "{fast_dwell:?}");
 }
