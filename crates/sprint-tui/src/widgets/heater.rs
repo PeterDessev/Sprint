@@ -1,5 +1,17 @@
 //! Heater identities and states, and the one-line heater readout.
 
+use std::borrow::Cow;
+
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+use ratatui::style::Modifier;
+use ratatui::text::{Line, Span};
+use ratatui::widgets::Widget;
+
+use crate::format;
+use crate::theme::{Theme, default_theme};
+use crate::widgets::util::{self, sanitize};
+
 /// Which heater a reading belongs to.
 ///
 /// Mirrors the host's heater identities so applications can map them one
@@ -77,9 +89,163 @@ impl HeaterState {
     }
 }
 
+/// Narrowest power bar worth drawing, in columns.
+const MIN_BAR: usize = 4;
+/// Longest custom label, in columns (longer ones are cut with `…`).
+const MAX_LABEL: usize = 12;
+
+/// A compact one-line heater readout:
+///
+/// ```text
+/// T0  205.3/210°C ████████▌        64%
+/// Bed  22.1°C off ░░░░░░░░░░░░░░░   0%
+/// ```
+///
+/// The label is drawn in the heater's color, the temperatures in the color
+/// of the [`HeaterState`] (heating, cooling, at target, off), followed by a
+/// bar of the heater power and the power in percent. When the area is too
+/// narrow the bar, then the power, are left out. Only the first row of the
+/// area is used.
+#[derive(Clone, Debug)]
+pub struct HeaterGauge<'a> {
+    kind: HeaterKind,
+    label: Option<Cow<'a, str>>,
+    current: f32,
+    target: Option<f32>,
+    power: Option<f32>,
+    label_width: usize,
+    bar_width: Option<usize>,
+    theme: &'a Theme,
+}
+
+impl<'a> HeaterGauge<'a> {
+    /// A readout of `current` °C against `target` °C (`None` or 0 = off).
+    pub fn new(kind: HeaterKind, current: f32, target: Option<f32>) -> HeaterGauge<'a> {
+        HeaterGauge {
+            kind,
+            label: None,
+            current,
+            target,
+            power: None,
+            label_width: 0,
+            bar_width: None,
+            theme: default_theme(),
+        }
+    }
+
+    /// Heater power in `0..=1`; enables the power bar.
+    #[must_use]
+    pub fn power(mut self, power: Option<f32>) -> Self {
+        self.power = power;
+        self
+    }
+
+    /// Replace the default label (`"T0"`, `"Bed"`, ...).
+    #[must_use]
+    pub fn label(mut self, label: impl Into<Cow<'a, str>>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+
+    /// Pad the label to this many columns so several gauges line up.
+    #[must_use]
+    pub fn label_width(mut self, width: usize) -> Self {
+        self.label_width = width;
+        self
+    }
+
+    /// Limit the power bar to this many columns (default: fill the row).
+    #[must_use]
+    pub fn bar_width(mut self, width: usize) -> Self {
+        self.bar_width = Some(width);
+        self
+    }
+
+    /// Draw with this theme.
+    #[must_use]
+    pub fn theme(mut self, theme: &'a Theme) -> Self {
+        self.theme = theme;
+        self
+    }
+
+    /// The state the readout is colored by.
+    pub fn state(&self) -> HeaterState {
+        HeaterState::classify(self.current, self.target)
+    }
+
+    /// The temperature part of the readout: `"205.3/210°C"`, `" 22.1°C off"`.
+    fn temperatures(&self) -> String {
+        let current = format!("{:>5}", format::temperature(self.current));
+        match self.state() {
+            HeaterState::Off => format!("{current}°C off"),
+            HeaterState::Unknown if self.target.is_none_or(|t| !t.is_finite() || t <= 0.0) => {
+                format!("{current}°C")
+            }
+            _ => {
+                let target = self
+                    .target
+                    .map_or(String::new(), |t| format::trimmed(f64::from(t), 1));
+                format!("{current}/{target}°C")
+            }
+        }
+    }
+}
+
+impl Widget for HeaterGauge<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        if area.is_empty() {
+            return;
+        }
+        let theme = self.theme;
+        let total = usize::from(area.width);
+        let state = self.state();
+        let label_text = match &self.label {
+            Some(l) => util::truncate(&sanitize(l), MAX_LABEL).into_owned(),
+            None => self.kind.label(),
+        };
+        let label_cols = util::width(&label_text).max(self.label_width);
+        let label = format!(
+            "{label_text}{} ",
+            " ".repeat(label_cols - util::width(&label_text))
+        );
+        let temps = self.temperatures();
+        let mut spans = vec![
+            Span::styled(
+                label.clone(),
+                theme
+                    .fg(theme.heater(self.kind))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(temps.clone(), theme.heater_state(state)),
+        ];
+        let used = util::width(&label) + util::width(&temps);
+        let remaining = total.saturating_sub(used);
+        if let Some(power) = self.power.filter(|p| p.is_finite()) {
+            let power = util::clamp01(power);
+            let power_text = format!(" {:>4}", format!("{:.0}%", power * 100.0));
+            let power_cols = util::width(&power_text);
+            if remaining >= power_cols + 1 + MIN_BAR {
+                let mut cells = remaining - power_cols - 1;
+                if let Some(max) = self.bar_width {
+                    cells = cells.min(max.max(MIN_BAR));
+                }
+                let (filled, empty) = util::bar(power, cells, '░');
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled(filled, theme.fg(theme.heater(self.kind))));
+                spans.push(Span::styled(empty, theme.dim()));
+                spans.push(Span::styled(power_text, theme.dim()));
+            } else if remaining >= power_cols {
+                spans.push(Span::styled(power_text, theme.dim()));
+            }
+        }
+        buf.set_line(area.x, area.y, &Line::from(spans), area.width);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widgets::testutil::{lines, render};
 
     #[test]
     fn classify_states() {
@@ -118,5 +284,75 @@ mod tests {
         assert_eq!(HeaterKind::Bed.label(), "Bed");
         assert_eq!(HeaterKind::Chamber.label(), "Chamber");
         assert_eq!(HeaterState::AtTarget.name(), "at target");
+    }
+
+    #[test]
+    fn full_readout_with_power_bar() {
+        let gauge = HeaterGauge::new(HeaterKind::Hotend(0), 205.26, Some(210.0)).power(Some(0.5));
+        let buf = render(gauge, 30, 1);
+        // "T0 " + "205.3/210°C" = 14 columns, power " 50%" = 4, one space.
+        assert_eq!(lines(&buf), vec!["T0 205.3/210°C █████░░░░░  50%"]);
+    }
+
+    #[test]
+    fn off_heater_and_alignment() {
+        let gauge = HeaterGauge::new(HeaterKind::Bed, 22.14, None).label_width(4);
+        let buf = render(gauge, 24, 1);
+        assert_eq!(lines(&buf), vec!["Bed   22.1°C off        "]);
+    }
+
+    #[test]
+    fn narrow_area_drops_bar_then_power() {
+        let make = || HeaterGauge::new(HeaterKind::Hotend(1), 60.0, Some(60.0)).power(Some(0.25));
+        // Room for the power but not the bar.
+        let buf = render(make(), 18, 1);
+        assert_eq!(lines(&buf), vec!["T1  60.0/60°C  25%"]);
+        // Not even the power: the text is cut.
+        let buf = render(make(), 8, 1);
+        assert_eq!(lines(&buf), vec!["T1  60.0"]);
+    }
+
+    #[test]
+    fn bar_width_limit_and_bad_values() {
+        let gauge = HeaterGauge::new(HeaterKind::Chamber, f32::NAN, Some(f32::INFINITY))
+            .power(Some(f32::NAN))
+            .label("C")
+            .bar_width(4);
+        let buf = render(gauge, 30, 1);
+        // NaN power is ignored; NaN temperature shows the placeholder.
+        assert_eq!(lines(&buf)[0].trim_end(), "C    --°C");
+
+        let gauge = HeaterGauge::new(HeaterKind::Hotend(0), 100.0, Some(200.0))
+            .power(Some(7.0))
+            .bar_width(4);
+        let buf = render(gauge, 40, 1);
+        assert_eq!(lines(&buf)[0].trim_end(), "T0 100.0/200°C ████ 100%");
+    }
+
+    #[test]
+    fn state_colors_follow_theme() {
+        let theme = Theme::dark();
+        let gauge = HeaterGauge::new(HeaterKind::Hotend(0), 150.0, Some(200.0)).theme(&theme);
+        assert_eq!(gauge.state(), HeaterState::Heating);
+        let buf = render(gauge, 20, 1);
+        // The temperature text uses the heating (accent) color.
+        assert_eq!(buf[(3, 0)].fg, theme.accent);
+        // The label uses the hotend color.
+        assert_eq!(buf[(0, 0)].fg, theme.heater(HeaterKind::Hotend(0)));
+    }
+
+    #[test]
+    fn empty_area_is_fine() {
+        let gauge = HeaterGauge::new(HeaterKind::Bed, 60.0, Some(60.0));
+        let mut buf = Buffer::empty(Rect::new(0, 0, 0, 0));
+        gauge.render(Rect::new(0, 0, 0, 0), &mut buf);
+    }
+
+    #[test]
+    fn long_and_hostile_labels_are_cut() {
+        let gauge = HeaterGauge::new(HeaterKind::Hotend(0), 20.0, None)
+            .label("Extruder\u{1b}[31m number one with a long name");
+        let buf = render(gauge, 30, 1);
+        assert_eq!(lines(&buf)[0].trim_end(), "Extruder·[3…  20.0°C off");
     }
 }

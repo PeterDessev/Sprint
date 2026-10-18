@@ -6,6 +6,9 @@
 
 pub mod console;
 pub mod heater;
+#[cfg(test)]
+pub(crate) mod testutil;
+pub(crate) mod util;
 
 pub use console::{ConsoleKind, ConsoleLine};
-pub use heater::{HeaterKind, HeaterState};
+pub use heater::{HeaterGauge, HeaterKind, HeaterState};
