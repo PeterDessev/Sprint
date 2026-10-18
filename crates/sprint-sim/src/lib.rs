@@ -4,6 +4,8 @@
 
 mod config;
 mod format;
+mod line;
+mod parse;
 mod rng;
 
 pub use config::{MAX_SYNTHETIC_FILE_SIZE, SimConfig};
