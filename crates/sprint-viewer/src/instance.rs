@@ -1,9 +1,14 @@
 //! GPU instance data packed from a [`Toolpath`], built off the UI thread.
 //!
 //! Each segment becomes one 48-byte [`SegmentInstance`]. Extrusions and
-//! travels go into separate buffers in file order, so every layer maps to a
-//! contiguous instance sub-range of each ([`LayerRanges`]). Retractions get
-//! their own 24-byte [`RetractionInstance`].
+//! travels go into separate buffers in layer order, so every layer maps to a
+//! contiguous instance sub-range of each ([`LayerRanges`]). Inside a layer,
+//! extrusions are sorted along a Z-order curve and cut into spatially
+//! coherent [`Cluster`]s, which the renderer culls against the view frustum
+//! and draws either as prisms or as cheap ribbons depending on their size
+//! on screen. Nothing depends on the order inside a layer: line limits,
+//! progress and highlights are evaluated per instance from its source line.
+//! Retractions get their own 24-byte [`RetractionInstance`].
 
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -168,6 +173,9 @@ impl RetractionInstance {
     }
 }
 
+/// Extrusion instances per cluster.
+pub const CLUSTER_SIZE: usize = 2048;
+
 /// Instance sub-ranges of one layer.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LayerRanges {
@@ -175,6 +183,21 @@ pub struct LayerRanges {
     pub extrusions: Range<u32>,
     /// Range into [`SceneData::travels`].
     pub travels: Range<u32>,
+    /// Range into [`SceneData::clusters`] covering `extrusions`.
+    pub clusters: Range<u32>,
+}
+
+/// A run of spatially close extrusion instances inside one layer.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Cluster {
+    /// Range into [`SceneData::extrusions`].
+    pub instances: Range<u32>,
+    /// Minimum corner of the beads' bounding box (mm).
+    pub min: [f32; 3],
+    /// Maximum corner of the beads' bounding box (mm).
+    pub max: [f32; 3],
+    /// Widest rendered bead in the cluster (mm).
+    pub max_width: f32,
 }
 
 /// Everything the viewer derives from a toolpath on the CPU.
@@ -189,6 +212,8 @@ pub struct SceneData {
     /// Per-layer instance ranges (one entry per toolpath layer, or a single
     /// synthetic layer when the toolpath has segments but no layers).
     pub layers: Vec<LayerRanges>,
+    /// Spatial clusters of extrusion instances, in layer order.
+    pub clusters: Vec<Cluster>,
     /// Legend inputs (feature/tool tallies and scalar ranges).
     pub legend: LegendData,
     /// Bounds of the extrusions as rendered, ignoring start/end G-code
@@ -357,11 +382,12 @@ pub fn build_scene(toolpath: &Toolpath, cancel: &AtomicBool) -> Option<SceneData
     ext_prefix.push(extrusions.len() as u32);
     travel_prefix.push(travels.len() as u32);
 
-    let layers: Vec<LayerRanges> = layer_segment_ranges(toolpath)
+    let mut layers: Vec<LayerRanges> = layer_segment_ranges(toolpath)
         .into_iter()
         .map(|r| LayerRanges {
             extrusions: ext_prefix[r.start]..ext_prefix[r.end],
             travels: travel_prefix[r.start]..travel_prefix[r.end],
+            clusters: 0..0,
         })
         .collect();
     drop(ext_prefix);
@@ -369,6 +395,7 @@ pub fn build_scene(toolpath: &Toolpath, cancel: &AtomicBool) -> Option<SceneData
     if cancel.load(Ordering::Relaxed) {
         return None;
     }
+    let clusters = cluster_layers(&mut extrusions, &mut layers, cancel)?;
 
     let retractions = toolpath
         .retractions
@@ -414,6 +441,7 @@ pub fn build_scene(toolpath: &Toolpath, cancel: &AtomicBool) -> Option<SceneData
         travels,
         retractions,
         layers,
+        clusters,
         legend: LegendData {
             features,
             stat_times,
@@ -422,6 +450,87 @@ pub fn build_scene(toolpath: &Toolpath, cancel: &AtomicBool) -> Option<SceneData
         },
         bounds,
     })
+}
+
+/// Sort each layer's extrusions along a Z-order curve (when the layer ranges
+/// are disjoint and ordered, as they are for well-formed toolpaths) and cut
+/// them into [`Cluster`]s of at most [`CLUSTER_SIZE`] instances.
+fn cluster_layers(
+    extrusions: &mut [SegmentInstance],
+    layers: &mut [LayerRanges],
+    cancel: &AtomicBool,
+) -> Option<Vec<Cluster>> {
+    let disjoint = layers
+        .windows(2)
+        .all(|w| w[0].extrusions.end <= w[1].extrusions.start);
+    let mut clusters = Vec::with_capacity(extrusions.len() / CLUSTER_SIZE + layers.len());
+    for layer in layers.iter_mut() {
+        if cancel.load(Ordering::Relaxed) {
+            return None;
+        }
+        let start = (layer.extrusions.start as usize).min(extrusions.len());
+        let end = (layer.extrusions.end as usize).clamp(start, extrusions.len());
+        let first = clusters.len() as u32;
+        let Some(slice) = extrusions.get_mut(start..end) else {
+            layer.clusters = first..first;
+            continue;
+        };
+        if disjoint && slice.len() > CLUSTER_SIZE {
+            sort_z_order(slice);
+        }
+        for (k, chunk) in slice.chunks(CLUSTER_SIZE).enumerate() {
+            let mut b = BeadBox::default();
+            let mut max_width = 0.0f32;
+            for inst in chunk {
+                b.include(inst);
+                max_width = max_width.max(inst.width);
+            }
+            let (min, max) = b.get().unwrap_or(([0.0; 3], [0.0; 3]));
+            let s = (start + k * CLUSTER_SIZE) as u32;
+            clusters.push(Cluster {
+                instances: s..s + chunk.len() as u32,
+                min,
+                max,
+                max_width,
+            });
+        }
+        layer.clusters = first..clusters.len() as u32;
+    }
+    Some(clusters)
+}
+
+/// Sort instances by the Morton code of their XY midpoint.
+fn sort_z_order(slice: &mut [SegmentInstance]) {
+    let mut lo = [f32::INFINITY; 2];
+    let mut hi = [f32::NEG_INFINITY; 2];
+    for inst in slice.iter() {
+        for k in 0..2 {
+            let m = (inst.start[k] + inst.end[k]) * 0.5;
+            lo[k] = lo[k].min(m);
+            hi[k] = hi[k].max(m);
+        }
+    }
+    let scale = [
+        65535.0 / (hi[0] - lo[0]).max(1e-3),
+        65535.0 / (hi[1] - lo[1]).max(1e-3),
+    ];
+    slice.sort_by_cached_key(|inst| {
+        let q = |k: usize| {
+            let m = (inst.start[k] + inst.end[k]) * 0.5;
+            ((m - lo[k]) * scale[k]).clamp(0.0, 65535.0) as u32
+        };
+        interleave_bits(q(0)) | (interleave_bits(q(1)) << 1)
+    });
+}
+
+/// Spread the low 16 bits of `v` to the even bit positions.
+fn interleave_bits(v: u32) -> u32 {
+    let mut x = v & 0xFFFF;
+    x = (x | (x << 8)) & 0x00FF_00FF;
+    x = (x | (x << 4)) & 0x0F0F_0F0F;
+    x = (x | (x << 2)) & 0x3333_3333;
+    x = (x | (x << 1)) & 0x5555_5555;
+    x
 }
 
 /// Speed range helper used by tests and callers that only need ranges.

@@ -285,6 +285,86 @@ fn vs_tube(v: TubeVertex, s: SegmentIn) -> LitOut {
     return out;
 }
 
+// ---------------------------------------------------------------- ribbons
+//
+// Level of detail for beads only a few pixels wide: a camera-facing strip
+// across the bead's silhouette (two triangles instead of 24). The fragment
+// shader rebuilds the normal of the elliptic cross-section analytically, so
+// shading matches the prisms and averages correctly when sub-pixel.
+
+struct RibbonOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) /*SAMPLE*/ world: vec3<f32>,
+    @location(1) /*SAMPLE*/ u: f32,
+    @location(2) @interpolate(flat) color: vec4<f32>,
+    @location(3) @interpolate(flat) n_mid: vec3<f32>,
+    @location(4) @interpolate(flat) n_edge: vec3<f32>,
+};
+
+@vertex
+fn vs_ribbon(@builtin(vertex_index) vi: u32, s: SegmentIn) -> RibbonOut {
+    var out: RibbonOut;
+    if (!extrusion_visible(s)) {
+        out.clip = HIDDEN_POS;
+        return out;
+    }
+    let along = f32(vi >> 1u);
+    let side = f32(vi & 1u) * 2.0 - 1.0;
+    let d = s.end - s.start;
+    let len = length(d);
+    var dir = vec3<f32>(1.0, 0.0, 0.0);
+    if (len > 1e-5) {
+        dir = d / len;
+    }
+    let right = segment_right(dir);
+    let up = cross(right, dir);
+    let a = 0.5 * s.width;
+    let b = 0.5 * s.height;
+    let mid = (s.start + s.end) * 0.5 - vec3<f32>(0.0, 0.0, b);
+    let v = view_vector(mid);
+    let vr = dot(v, right);
+    let vu = dot(v, up);
+    // Silhouette half-chord p, the normal at the silhouette (n_edge) and the
+    // mean visible normal (n_mid) of the ellipse x^2/a^2 + y^2/b^2 = 1.
+    var p = right * a;
+    var n_edge = right;
+    var n_mid = v;
+    let q = a * a * vu * vu + b * b * vr * vr;
+    if (q > 1e-14) {
+        p = (right * (a * a * vu) - up * (b * b * vr)) * inverseSqrt(q);
+        n_edge = normalize(right * vu - up * vr);
+        n_mid = normalize(right * (b * b * vr) + up * (a * a * vu));
+    }
+    // Never thinner than ~0.6 px so distant beads do not break up.
+    let min_half = 0.3 * pixel_size_at(mid);
+    let plen = length(p);
+    if (plen < min_half) {
+        p = p * (min_half / max(plen, 1e-9));
+    }
+    // Pull the strip towards the viewer to roughly the bead's front surface.
+    let support = sqrt(a * a * vr * vr + b * b * vu * vu);
+    let end_sign = along * 2.0 - 1.0;
+    let base = mix(s.start, s.end, along) - vec3<f32>(0.0, 0.0, b) + dir * (end_sign * 0.5 * a);
+    let world = base + p * side + v * (0.7 * support);
+    out.world = world;
+    out.u = side;
+    out.clip = g.view_proj * vec4<f32>(world, 1.0);
+    out.color = segment_shade(s);
+    out.n_mid = n_mid;
+    out.n_edge = n_edge;
+    return out;
+}
+
+@fragment
+fn fs_ribbon(in: RibbonOut) -> @location(0) vec4<f32> {
+    let u = clamp(in.u, -1.0, 1.0);
+    // Flatten the middle a little: printed beads are squashed on top.
+    let w = mix(u, u * u * u, 0.45);
+    let n = in.n_mid * sqrt(max(1.0 - w * w, 0.0)) + in.n_edge * w;
+    let c = shade(in.world, n, in.color.rgb, in.color.a);
+    return finish(vec4<f32>(c, 1.0));
+}
+
 // ------------------------------------------------------------ flat output
 
 struct FlatOut {

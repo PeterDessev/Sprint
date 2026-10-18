@@ -401,6 +401,40 @@ impl Camera {
     }
 }
 
+/// View frustum for culling: a point `p` is inside when
+/// `dot(plane.xyz, p) + plane.w >= 0` for all six planes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Frustum {
+    planes: [Vec4; 6],
+}
+
+impl Frustum {
+    /// Extract the planes of a view-projection matrix with clip depth in
+    /// `0..=w` (both normal and reversed depth work; infinite far planes
+    /// degenerate into "always inside").
+    pub fn from_matrix(m: Mat4) -> Frustum {
+        let (r0, r1, r2, r3) = (m.row(0), m.row(1), m.row(2), m.row(3));
+        Frustum {
+            planes: [r3 + r0, r3 - r0, r3 + r1, r3 - r1, r2, r3 - r2],
+        }
+    }
+
+    /// Conservative box test: false only when the box is entirely outside.
+    pub fn intersects_aabb(&self, min: Vec3, max: Vec3) -> bool {
+        if !min.is_finite() || !max.is_finite() {
+            return true;
+        }
+        self.planes.iter().all(|p| {
+            let n = p.truncate();
+            if n.length_squared() < 1e-24 {
+                return p.w >= 0.0;
+            }
+            let v = Vec3::select(n.cmpge(Vec3::ZERO), max, min);
+            n.dot(v) + p.w >= 0.0
+        })
+    }
+}
+
 /// Wrap an angle into `-pi..=pi`.
 pub fn wrap_angle(a: f32) -> f32 {
     if !a.is_finite() {

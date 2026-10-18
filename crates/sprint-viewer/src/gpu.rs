@@ -66,7 +66,11 @@ pub(crate) struct DrawParams {
     /// Clear color (linear, or sRGB-encoded when gamma is encoded manually).
     pub clear: [f64; 4],
     pub style: RenderStyle,
-    pub extrusions: Range<u32>,
+    /// Extrusion instance ranges drawn as prisms (or as lines in
+    /// `RenderStyle::Lines`), in this order (front to back).
+    pub prisms: Vec<Range<u32>>,
+    /// Extrusion instance ranges drawn as ribbon impostors.
+    pub ribbons: Vec<Range<u32>>,
     pub travels: Option<Range<u32>>,
     pub retractions: bool,
     pub bed: bool,
@@ -97,26 +101,21 @@ pub(crate) enum Slot {
 
 /// An instance array split across several vertex buffers.
 struct ChunkedBuffer {
+    label: &'static str,
+    stride: usize,
+    /// Created lazily as uploading reaches each chunk, so allocating a huge
+    /// scene is spread over frames too.
     buffers: Vec<wgpu::Buffer>,
     len: usize,
     uploaded: usize,
 }
 
 impl ChunkedBuffer {
-    fn new(device: &wgpu::Device, label: &str, len: usize, stride: usize) -> ChunkedBuffer {
-        let buffers = (0..len.div_ceil(CHUNK_INSTANCES))
-            .map(|i| {
-                let n = (len - i * CHUNK_INSTANCES).min(CHUNK_INSTANCES);
-                device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some(label),
-                    size: (n * stride) as u64,
-                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                })
-            })
-            .collect();
+    fn new(label: &'static str, len: usize, stride: usize) -> ChunkedBuffer {
         ChunkedBuffer {
-            buffers,
+            label,
+            stride,
+            buffers: Vec::with_capacity(len.div_ceil(CHUNK_INSTANCES)),
             len,
             uploaded: 0,
         }
@@ -124,13 +123,29 @@ impl ChunkedBuffer {
 
     /// Upload up to `budget` more instances from `data`; returns how many
     /// were written.
-    fn upload<T: Pod>(&mut self, queue: &wgpu::Queue, data: &[T], budget: usize) -> usize {
+    fn upload<T: Pod>(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        data: &[T],
+        budget: usize,
+    ) -> usize {
         let mut written = 0;
         while written < budget && self.uploaded < self.len.min(data.len()) {
             let chunk = self.uploaded / CHUNK_INSTANCES;
             let in_chunk = self.uploaded % CHUNK_INSTANCES;
             let chunk_end = ((chunk + 1) * CHUNK_INSTANCES).min(self.len);
             let n = (chunk_end - self.uploaded).min(budget - written);
+            if self.buffers.len() <= chunk {
+                let count = (self.len - chunk * CHUNK_INSTANCES).min(CHUNK_INSTANCES);
+                self.buffers
+                    .push(device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some(self.label),
+                        size: (count * self.stride) as u64,
+                        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                        mapped_at_creation: false,
+                    }));
+            }
             let Some(buffer) = self.buffers.get(chunk) else {
                 break;
             };
@@ -213,6 +228,7 @@ impl MeshBuffers {
 
 struct Pipelines {
     tube: wgpu::RenderPipeline,
+    ribbon: wgpu::RenderPipeline,
     extrusion_lines: wgpu::RenderPipeline,
     travel: wgpu::RenderPipeline,
     marker: wgpu::RenderPipeline,
@@ -428,22 +444,18 @@ impl Renderer {
         travels: Vec<SegmentInstance>,
         retractions: Vec<RetractionInstance>,
     ) {
-        let d = &self.device;
         self.scene = Some(GpuScene {
             extrusions: ChunkedBuffer::new(
-                d,
                 "sprint-viewer extrusions",
                 extrusions.len(),
                 SegmentInstance::SIZE,
             ),
             travels: ChunkedBuffer::new(
-                d,
                 "sprint-viewer travels",
                 travels.len(),
                 SegmentInstance::SIZE,
             ),
             retractions: ChunkedBuffer::new(
-                d,
                 "sprint-viewer retractions",
                 retractions.len(),
                 RetractionInstance::SIZE,
@@ -472,6 +484,7 @@ impl Renderer {
         };
         let mut budget = budget_bytes.max(SegmentInstance::SIZE);
         let n = scene.extrusions.upload(
+            &self.device,
             &self.queue,
             &pending.extrusions,
             budget / SegmentInstance::SIZE,
@@ -479,6 +492,7 @@ impl Renderer {
         budget = budget.saturating_sub(n * SegmentInstance::SIZE);
         if scene.extrusions.is_complete() && budget > 0 {
             let n = scene.travels.upload(
+                &self.device,
                 &self.queue,
                 &pending.travels,
                 budget / SegmentInstance::SIZE,
@@ -487,6 +501,7 @@ impl Renderer {
         }
         if scene.travels.is_complete() && budget > 0 {
             scene.retractions.upload(
+                &self.device,
                 &self.queue,
                 &pending.retractions,
                 budget / RetractionInstance::SIZE,
@@ -676,16 +691,27 @@ impl Renderer {
                     pass.set_pipeline(&p.tube);
                     pass.set_vertex_buffer(0, self.tube.vertices.slice(..));
                     pass.set_index_buffer(self.tube.indices.slice(..), wgpu::IndexFormat::Uint32);
-                    for (buffer, range) in scene.extrusions.draws(params.extrusions.clone()) {
-                        pass.set_vertex_buffer(1, buffer.slice(..));
-                        pass.draw_indexed(0..self.tube.count, 0, range);
+                    for batch in &params.prisms {
+                        for (buffer, range) in scene.extrusions.draws(batch.clone()) {
+                            pass.set_vertex_buffer(1, buffer.slice(..));
+                            pass.draw_indexed(0..self.tube.count, 0, range);
+                        }
+                    }
+                    pass.set_pipeline(&p.ribbon);
+                    for batch in &params.ribbons {
+                        for (buffer, range) in scene.extrusions.draws(batch.clone()) {
+                            pass.set_vertex_buffer(0, buffer.slice(..));
+                            pass.draw(0..4, range);
+                        }
                     }
                 }
                 RenderStyle::Lines => {
                     pass.set_pipeline(&p.extrusion_lines);
-                    for (buffer, range) in scene.extrusions.draws(params.extrusions.clone()) {
-                        pass.set_vertex_buffer(0, buffer.slice(..));
-                        pass.draw(0..2, range);
+                    for batch in params.prisms.iter().chain(&params.ribbons) {
+                        for (buffer, range) in scene.extrusions.draws(batch.clone()) {
+                            pass.set_vertex_buffer(0, buffer.slice(..));
+                            pass.draw(0..2, range);
+                        }
                     }
                 }
             }
@@ -930,7 +956,7 @@ fn create_pipelines(
         })
     };
     use wgpu::CompareFunction::{GreaterEqual, Less};
-    use wgpu::PrimitiveTopology::{LineList, TriangleList};
+    use wgpu::PrimitiveTopology::{LineList, TriangleList, TriangleStrip};
     Pipelines {
         tube: make(
             "sprint-viewer tubes",
@@ -939,6 +965,17 @@ fn create_pipelines(
             &[Some(tube_vertices), Some(segment_instances.clone())],
             TriangleList,
             Some(wgpu::Face::Back),
+            true,
+            false,
+            GreaterEqual,
+        ),
+        ribbon: make(
+            "sprint-viewer ribbons",
+            "vs_ribbon",
+            "fs_ribbon",
+            &[Some(segment_instances.clone())],
+            TriangleStrip,
+            None,
             true,
             false,
             GreaterEqual,

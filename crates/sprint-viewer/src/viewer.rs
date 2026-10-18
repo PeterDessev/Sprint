@@ -5,27 +5,30 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
 
 use egui_wgpu::wgpu;
-use glam::{Vec2, Vec3};
+use glam::{Mat4, Vec2, Vec3};
 use sprint_gcode::{Feature, Toolpath};
 
-use crate::camera::{Camera, Projection, Ray};
+use crate::camera::{Camera, Frustum, Projection, Ray};
 use crate::color::{
     self, Legend, LegendData, ScalarRanges, format_duration, format_value, ramp_color,
     srgb_to_linear, srgb_to_linear_rgb,
 };
 use crate::gpu::{self, DrawParams, Globals, Renderer, Slot, flags};
-use crate::instance::{self, LayerRanges, MAX_COORD, SceneData};
+use crate::instance::{self, Cluster, LayerRanges, MAX_COORD, SceneData};
 use crate::options::{BedSpec, ColorMode, ViewMode, ViewPreset, ViewerOptions};
 use crate::pick::{PickFilter, PickHit, PickIndex};
 
-/// Bytes of instance data uploaded per frame while a toolpath streams in.
-const UPLOAD_BUDGET: usize = 48 << 20;
+/// Bytes of instance data uploaded per frame while a toolpath streams in
+/// (a 5M-segment file needs about 15 frames).
+const UPLOAD_BUDGET: usize = 16 << 20;
 /// Duration of animated camera transitions (seconds).
 const ANIM_SECONDS: f32 = 0.35;
 /// Orbit speed in radians per point dragged.
 const ORBIT_SPEED: f32 = 0.0085;
 /// Retraction marker radius in pixels.
 const MARKER_PX: f32 = 3.5;
+/// Default bead width (pixels) below which beads are drawn as ribbons.
+pub const DEFAULT_LOD_PIXELS: f32 = 3.0;
 /// Pick tolerance in pixels for thin beads.
 const PICK_TOLERANCE_PX: f32 = 2.5;
 
@@ -52,6 +55,7 @@ struct Loader {
 /// CPU-side information about the loaded scene.
 struct SceneInfo {
     layers: Vec<LayerRanges>,
+    clusters: Vec<Cluster>,
     legend: LegendData,
     bounds: Option<([f32; 3], [f32; 3])>,
     pick: Option<PickIndex>,
@@ -105,6 +109,7 @@ pub struct GcodeViewer {
     last_frame: Option<FrameKey>,
     hover: Option<Hover>,
     hover_query: Option<HoverQuery>,
+    lod_pixels: f32,
 }
 
 impl GcodeViewer {
@@ -143,6 +148,7 @@ impl GcodeViewer {
             last_frame: None,
             hover: None,
             hover_query: None,
+            lod_pixels: DEFAULT_LOD_PIXELS,
         };
         viewer.fit_now(viewer.fit_aspect);
         viewer
@@ -287,9 +293,36 @@ impl GcodeViewer {
         self.start_anim(to, top);
     }
 
+    /// Level of detail: beads narrower than `pixels` on screen are drawn as
+    /// shaded ribbon impostors (2 triangles) instead of prisms (24). 0 forces
+    /// prisms everywhere; a huge value forces ribbons. Default
+    /// [`DEFAULT_LOD_PIXELS`].
+    pub fn set_lod_pixels(&mut self, pixels: f32) {
+        self.lod_pixels = if pixels.is_finite() {
+            pixels.max(0.0)
+        } else {
+            DEFAULT_LOD_PIXELS
+        };
+    }
+
+    /// Current level-of-detail threshold (see [`GcodeViewer::set_lod_pixels`]).
+    pub fn lod_pixels(&self) -> f32 {
+        self.lod_pixels
+    }
+
     /// True while the toolpath is still being prepared or uploaded.
     pub fn is_loading(&self) -> bool {
         self.loader.is_some() || self.renderer.is_uploading()
+    }
+
+    /// Advance background loading by one frame's worth of work without
+    /// drawing: accept finished build results and upload the next slice of
+    /// instance data. [`GcodeViewer::ui`] does this automatically; call it
+    /// when driving the viewer headlessly. Returns true while still loading.
+    pub fn poll(&mut self) -> bool {
+        self.poll_loader();
+        let uploading = !self.renderer.upload_step(UPLOAD_BUDGET);
+        self.loader.is_some() || uploading
     }
 
     /// Block until the scene is built, indexed and fully on the GPU.
@@ -522,10 +555,21 @@ impl GcodeViewer {
     /// returned size may be smaller than requested when it exceeds the GPU's
     /// texture limit.
     pub fn render_to_image(&mut self, width: u32, height: u32) -> Option<(u32, u32, Vec<u8>)> {
-        if width == 0 || height == 0 {
+        self.wait_until_loaded();
+        if !self.render_offscreen(width, height) {
             return None;
         }
-        self.wait_until_loaded();
+        self.renderer.read_pixels(Slot::Offscreen)
+    }
+
+    /// Submit one frame to the offscreen target used by
+    /// [`GcodeViewer::render_to_image`] without reading it back (warm-up and
+    /// benchmarks). Uses whatever data is uploaded so far; finishes camera
+    /// animations. Returns false for a zero size.
+    pub fn render_offscreen(&mut self, width: u32, height: u32) -> bool {
+        if width == 0 || height == 0 {
+            return false;
+        }
         if let Some(anim) = self.anim.take() {
             if anim.top {
                 self.camera_top = anim.to;
@@ -534,11 +578,13 @@ impl GcodeViewer {
             }
         }
         self.renderer.ensure_targets(Slot::Offscreen, width, height);
-        let size = self.renderer.targets(Slot::Offscreen)?.size;
+        let Some(size) = self.renderer.targets(Slot::Offscreen).map(|t| t.size) else {
+            return false;
+        };
         self.prepare_cameras(size.0 as f32 / size.1 as f32);
         let params = self.build_params(size);
         self.renderer.render(Slot::Offscreen, &params);
-        self.renderer.read_pixels(Slot::Offscreen)
+        true
     }
 
     // ------------------------------------------------------------ internals
@@ -586,12 +632,14 @@ impl GcodeViewer {
             travels,
             retractions,
             layers,
+            clusters,
             legend,
             bounds,
         } = scene;
         self.renderer.set_scene(extrusions, travels, retractions);
         self.info = Some(SceneInfo {
             layers,
+            clusters,
             legend,
             bounds,
             pick: None,
@@ -1018,9 +1066,24 @@ impl GcodeViewer {
                 Some(first.start..last.end.max(first.start))
             })
         };
-        let extrusions = range
-            .and_then(|(a, b)| layer_slice(|l| l.extrusions.clone(), a, b))
-            .unwrap_or(0..0);
+        let (prisms, ribbons) = match (range, &self.info) {
+            (Some((a, b)), Some(info)) => {
+                let lod = if o.style == crate::options::RenderStyle::Lines {
+                    0.0
+                } else {
+                    self.lod_pixels
+                };
+                select_clusters(
+                    info,
+                    (a, b),
+                    &Frustum::from_matrix(Mat4::from_cols_array_2d(&globals.view_proj)),
+                    cam,
+                    pixel,
+                    lod,
+                )
+            }
+            _ => (Vec::new(), Vec::new()),
+        };
         let travels = if o.show_travel {
             range.and_then(|(a, b)| {
                 let a = if top_mode { b } else { a };
@@ -1045,7 +1108,8 @@ impl GcodeViewer {
             globals,
             clear,
             style: o.style,
-            extrusions,
+            prisms,
+            ribbons,
             travels,
             retractions: o.show_retractions && range.is_some(),
             bed: o.show_bed,
@@ -1145,6 +1209,65 @@ impl Drop for GcodeViewer {
             r.write().free_texture(&id);
         }
     }
+}
+
+/// Append `r` to `ranges`, merging with the last range when contiguous.
+fn push_range(ranges: &mut Vec<std::ops::Range<u32>>, r: std::ops::Range<u32>) {
+    if r.is_empty() {
+        return;
+    }
+    match ranges.last_mut() {
+        Some(last) if last.end == r.start => last.end = r.end,
+        _ => ranges.push(r),
+    }
+}
+
+/// Choose what to draw for the visible layers `a..=b`: clusters outside the
+/// frustum are skipped; the rest are split into prisms (beads at least
+/// `lod_pixels` wide on screen) and ribbon impostors. Layers are visited
+/// front to back for the camera (top layers first when looking down) so
+/// early depth testing rejects most hidden fragments.
+fn select_clusters(
+    info: &SceneInfo,
+    (a, b): (usize, usize),
+    frustum: &Frustum,
+    cam: &Camera,
+    pixel: f32,
+    lod_pixels: f32,
+) -> (Vec<std::ops::Range<u32>>, Vec<std::ops::Range<u32>>) {
+    let mut prisms = Vec::new();
+    let mut ribbons = Vec::new();
+    let eye = cam.eye();
+    let forward = cam.forward();
+    let near = cam.near();
+    let mut visit = |layer: &LayerRanges| {
+        let range = layer.clusters.start as usize..layer.clusters.end as usize;
+        for c in info.clusters.get(range).unwrap_or_default() {
+            let (min, max) = (Vec3::from(c.min), Vec3::from(c.max));
+            if c.instances.is_empty() || !frustum.intersects_aabb(min, max) {
+                continue;
+            }
+            let world_per_px = match cam.projection {
+                Projection::Perspective => {
+                    let closest = eye.clamp(min, max);
+                    (closest - eye).dot(forward).max(near) * pixel
+                }
+                Projection::Orthographic => pixel,
+            };
+            let wide = c.max_width >= lod_pixels * world_per_px;
+            push_range(
+                if wide { &mut prisms } else { &mut ribbons },
+                c.instances.clone(),
+            );
+        }
+    };
+    let layers = info.layers.get(a..=b).unwrap_or_default();
+    if forward.z <= 0.0 {
+        layers.iter().rev().for_each(&mut visit);
+    } else {
+        layers.iter().for_each(&mut visit);
+    }
+    (prisms, ribbons)
 }
 
 /// A small color square.
