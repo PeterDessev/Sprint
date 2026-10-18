@@ -470,8 +470,12 @@ impl Analyzer {
                 }
             }
             b'L' => {
+                // Bambu Studio / OrcaSlicer: "; LAYER_HEIGHT: 0.2",
+                // "; LINE_WIDTH: 0.42".
                 if let Some(v) = c.strip_prefix("LAYER_HEIGHT:") {
                     self.height_hint = sane_size(first_number(v)).or(self.height_hint);
+                } else if let Some(v) = c.strip_prefix("LINE_WIDTH:") {
+                    self.width_hint = sane_size(first_number(v)).or(self.width_hint);
                 } else if is_layer_marker(c) {
                     self.marker();
                 }
@@ -1418,6 +1422,25 @@ mod tests {
         let tp = run("; tool H0.300 W0.600\nG1 Z0.3\nG1 X10 E1\n");
         let s = tp.segments.iter().find(|s| s.is_extrusion());
         assert_eq!(s.map(|s| (s.width, s.height)), Some((0.6, 0.3)));
+    }
+
+    #[test]
+    fn bambu_and_orca_tags() {
+        // Bambu Studio writes its own layer, height and width tags.
+        let tp = run(
+            "M83\n; CHANGE_LAYER\n; Z_HEIGHT: 0.2\n; LAYER_HEIGHT: 0.2\nG1 Z0.2\n; FEATURE: Outer wall\n; LINE_WIDTH: 0.42\nG1 X10 E1\n; FEATURE: Sparse infill\n; LINE_WIDTH: 0.45\nG1 X20 E1\n; CHANGE_LAYER\n; Z_HEIGHT: 0.4\n; LAYER_HEIGHT: 0.2\nG1 Z0.4\nG1 X10 E1\n",
+        );
+        let ext: Vec<_> = tp.segments.iter().filter(|s| s.is_extrusion()).collect();
+        let got: Vec<_> = ext.iter().map(|s| (s.feature, s.width, s.height)).collect();
+        assert_eq!(
+            got,
+            vec![
+                (Feature::ExternalPerimeter, 0.42, 0.2),
+                (Feature::InternalInfill, 0.45, 0.2),
+                (Feature::InternalInfill, 0.45, 0.2),
+            ]
+        );
+        assert_eq!(tp.layers.len(), 2);
     }
 
     #[test]
