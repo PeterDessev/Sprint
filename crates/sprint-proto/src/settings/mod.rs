@@ -2,5 +2,9 @@
 //! setting commands.
 
 mod catalog;
+mod command;
+mod store;
 
 pub use catalog::*;
+pub use command::SettingCommand;
+pub use store::{MotionLimits, PrinterSettings};
