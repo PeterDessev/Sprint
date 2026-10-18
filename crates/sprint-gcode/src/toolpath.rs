@@ -412,9 +412,11 @@ pub struct SlicerMetadata {
     pub filament_diameter: Option<f32>,
     /// Filament type such as "PLA" (first extruder).
     pub filament_type: Option<String>,
-    /// Hotend temperature (first commanded, else from the settings), °C.
+    /// Hotend temperature, °C: the one the start G-code waits for before the
+    /// first layer (else the last one set there, else the first commanded),
+    /// or from the settings when the file commands none.
     pub hotend_temp: Option<f32>,
-    /// Bed temperature (first commanded, else from the settings), °C.
+    /// Bed temperature, °C, chosen like `hotend_temp`.
     pub bed_temp: Option<f32>,
     /// Object labels (`EXCLUDE_OBJECT_DEFINE`, `M486`, `; printing object`,
     /// Cura `;MESH:`, Simplify3D `applyToModels`), in first-seen order.
