@@ -7,6 +7,7 @@
 pub mod console;
 pub mod heater;
 pub mod job;
+pub mod layer_canvas;
 pub mod temp_chart;
 #[cfg(test)]
 pub(crate) mod testutil;
@@ -15,4 +16,5 @@ pub(crate) mod util;
 pub use console::{ConsoleKind, ConsoleLine};
 pub use heater::{HeaterGauge, HeaterKind, HeaterState};
 pub use job::{JobProgress, JobTone};
+pub use layer_canvas::{FeatureLegend, LayerCanvas, LayerFit, object_bounds};
 pub use temp_chart::{TempChart, TempPoint};
