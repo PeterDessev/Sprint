@@ -115,7 +115,8 @@ impl Mesh {
         self.y.len()
     }
 
-    /// Marlin's "Bilinear Leveling Grid:" report.
+    /// Marlin's "Bilinear Leveling Grid:" report (ending with an empty
+    /// line, as Marlin prints it).
     pub(crate) fn report(&self) -> Vec<String> {
         let mut out = vec!["Bilinear Leveling Grid:".to_string()];
         let mut header = String::new();
@@ -137,6 +138,8 @@ impl Mesh {
             }
             out.push(line);
         }
+        // Marlin's print_2d_array ends with one more SERIAL_EOL().
+        out.push(String::new());
         out
     }
 
@@ -207,8 +210,11 @@ mod tests {
         let r = m.report();
         assert_eq!(r[0], "Bilinear Leveling Grid:");
         assert_eq!(r[1], "      0      1      2      3      4");
-        assert_eq!(r.len(), 2 + 3);
-        for line in &r[2..] {
+        // Title, header, three rows and the empty line print_2d_array ends
+        // with.
+        assert_eq!(r.len(), 2 + 3 + 1);
+        assert_eq!(r[5], "");
+        for line in &r[2..5] {
             let parts: Vec<&str> = line.split_whitespace().collect();
             assert_eq!(parts.len(), 6, "{line}");
             for v in &parts[1..] {
