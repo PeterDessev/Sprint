@@ -687,6 +687,31 @@ fn sd_listing_write_and_print() {
 }
 
 #[test]
+fn sd_status_auto_report() {
+    let mut r = Rig::booted();
+    r.ok("M23 calibration_cube.gcode");
+    r.ok("M27 S2");
+    r.ok("M24");
+    r.run(4.05);
+    let out = r.take();
+    let reports: Vec<&String> = out
+        .iter()
+        .filter(|l| l.starts_with("SD printing byte "))
+        .collect();
+    assert_eq!(reports.len(), 2, "{out:?}");
+    assert!(reports[0].ends_with("/48213"));
+    r.ok("M27 S0");
+    r.run(3.0);
+    assert!(!r.take().iter().any(|l| l.starts_with("SD printing byte ")));
+    // Queued behind the file's heating commands, so look at the end.
+    let out = r.ok("M27 C");
+    assert_eq!(
+        &out[out.len() - 2..],
+        &["Current file: CALIBR~1.GCO calibration_cube.gcode", "ok"]
+    );
+}
+
+#[test]
 fn sd_pause_resume_prompt_and_abort() {
     let mut r = Rig::booted();
     r.ok("M302 P1");
