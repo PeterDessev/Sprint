@@ -235,6 +235,8 @@ pub(crate) struct ReportContext {
     pub extruders: usize,
     pub heated_bed: bool,
     pub leveling_active: bool,
+    /// X and Y bed size in mm (M851's probe offset range).
+    pub bed_size: [f64; 2],
 }
 
 /// One section of the M503 report.
@@ -604,7 +606,8 @@ impl Settings {
     /// Apply a settings command (M92 M201 M203 M204 M205 M206 M145 M301
     /// M304 M851 M900 M906 M913 M569 M593 M207 M208 M209 M413 M412 M200
     /// M603). Returns `None` when the command is not a settings command.
-    /// Commands without parameters print their report section.
+    /// Commands without parameters print their report section (M900 prints
+    /// its own "Advance K=" line, as in Marlin).
     pub(crate) fn apply(&mut self, c: &Command, ctx: ReportContext) -> Option<Applied> {
         if c.letter != b'M' {
             return None;
@@ -640,7 +643,9 @@ impl Settings {
         }
         let selector_only = match code {
             "M301" => !(c.seen('P') || c.seen('I') || c.seen('D')),
-            "M900" => !c.seen('K'),
+            "M851" => !(c.seen('X') || c.seen('Y') || c.seen('Z')),
+            // M900 has its own one-line report (below).
+            "M900" => false,
             _ => !c.has_params(),
         };
         if selector_only {
@@ -717,7 +722,8 @@ impl Settings {
                     .ok()
                     .and_then(|i| self.preheat.get_mut(i))
                 else {
-                    return Some(Applied::line("Error:?Invalid material."));
+                    // Marlin STR_ERR_MATERIAL_INDEX.
+                    return Some(Applied::line("Error:M145 S<index> out of range (0-1)"));
                 };
                 if let Some(v) = non_negative(c, 'H') {
                     p.hotend = v.min(260.0);
@@ -757,38 +763,59 @@ impl Settings {
                 }
             }
             "M851" => {
-                for (i, a) in AXES[..2].iter().enumerate() {
-                    if let Some(v) = c.value(*a) {
-                        if (-1000.0..=1000.0).contains(&v) {
-                            self.probe_offset[i] = v;
-                        } else {
-                            return Some(Applied::line(format!(
-                                "Error:?{a} out of range (-1000 to 1000)"
-                            )));
-                        }
-                    }
-                }
-                if let Some(v) = c.value('Z') {
-                    if (-20.0..=20.0).contains(&v) {
-                        self.probe_offset[2] = v;
+                // Marlin checks every axis, reports each bad one and only
+                // applies the offsets when all are in range.
+                let mut offset = self.probe_offset;
+                let mut errors = Vec::new();
+                for (i, a) in AXES[..3].iter().enumerate() {
+                    let Some(v) = c.value(*a) else { continue };
+                    let limit = if i < 2 { ctx.bed_size[i] } else { 20.0 };
+                    if (-limit..=limit).contains(&v) {
+                        offset[i] = v;
                     } else {
-                        return Some(Applied::line("Error:?Z out of range (-20 to 20)"));
+                        let l = int(limit);
+                        errors.push(format!("?{a} out of range (-{l} to {l})"));
                     }
                 }
+                if errors.is_empty() {
+                    self.probe_offset = offset;
+                }
+                return Some(Applied { output: errors });
             }
             "M900" => {
+                // Marlin's echo_value_oor() messages; no "Error:" prefix.
                 let Some(e) = extruder_index(c, 'T', n) else {
-                    return Some(Applied::line("Error:Invalid extruder"));
+                    return Some(Applied::line("?T value out of range."));
                 };
+                let mut output = Vec::new();
                 if let Some(k) = c.value('K') {
                     if (0.0..=10.0).contains(&k) {
                         if let Some(slot) = self.lin_advance_k.get_mut(e) {
                             *slot = k;
                         }
                     } else {
-                        return Some(Applied::line("Error:?K value out of range (0-10)."));
+                        output.push("?K value out of range (0-10).".to_string());
                     }
                 }
+                if !c.has_params() {
+                    output.push(if n < 2 {
+                        format!(
+                            "echo:Advance K={}",
+                            f2(self.lin_advance_k.first().copied().unwrap_or(0.0))
+                        )
+                    } else {
+                        let ks: Vec<String> = (0..n)
+                            .map(|i| {
+                                format!(
+                                    "{i}:{}",
+                                    f2(self.lin_advance_k.get(i).copied().unwrap_or(0.0))
+                                )
+                            })
+                            .collect();
+                        format!("echo:Advance K {}", ks.join(" "))
+                    });
+                }
+                return Some(Applied { output });
             }
             "M906" | "M913" => {
                 let Some(e) = extruder_index(c, 'T', n) else {
@@ -935,7 +962,56 @@ mod tests {
             extruders: n,
             heated_bed: true,
             leveling_active: false,
+            bed_size: [220.0, 220.0],
         }
+    }
+
+    fn reply(s: &mut Settings, cmd: &str, n: usize) -> Vec<String> {
+        s.apply(&Command::parse(cmd), ctx(n))
+            .map(|a| a.output)
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn range_errors_match_marlin() {
+        let mut s = Settings::defaults(1);
+        // M851: +-bed size for X/Y, -20..20 for Z, nothing applied on error.
+        assert_eq!(
+            reply(&mut s, "M851 X5 Z-30", 1),
+            vec!["?Z out of range (-20 to 20)"]
+        );
+        assert_eq!(s.probe_offset, [10.0, 10.0, 0.0]);
+        assert_eq!(
+            reply(&mut s, "M851 X-300 Y500", 1),
+            vec![
+                "?X out of range (-220 to 220)",
+                "?Y out of range (-220 to 220)"
+            ]
+        );
+        assert!(reply(&mut s, "M851 X-25 Y5 Z-1.5", 1).is_empty());
+        assert_eq!(s.probe_offset, [-25.0, 5.0, -1.5]);
+        assert_eq!(reply(&mut s, "M851", 1)[0], "echo:; Z-Probe Offset:");
+        // M900: echo_value_oor() messages and the plain "Advance K=" report.
+        assert_eq!(
+            reply(&mut s, "M900 K12", 1),
+            vec!["?K value out of range (0-10)."]
+        );
+        assert_eq!(reply(&mut s, "M900", 1), vec!["echo:Advance K=0.22"]);
+        let mut multi = Settings::defaults(2);
+        assert_eq!(
+            reply(&mut multi, "M900 T5 K0.1", 2),
+            vec!["?T value out of range."]
+        );
+        assert!(reply(&mut multi, "M900 T1 K0.1", 2).is_empty());
+        assert_eq!(
+            reply(&mut multi, "M900", 2),
+            vec!["echo:Advance K 0:0.22 1:0.10"]
+        );
+        // M145: STR_ERR_MATERIAL_INDEX.
+        assert_eq!(
+            reply(&mut s, "M145 S2 H200", 1),
+            vec!["Error:M145 S<index> out of range (0-1)"]
+        );
     }
 
     #[test]

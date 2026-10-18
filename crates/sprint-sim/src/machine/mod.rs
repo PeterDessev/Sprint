@@ -520,6 +520,10 @@ impl Machine {
             extruders: self.hotends.len(),
             heated_bed: self.bed.is_some(),
             leveling_active: self.leveling,
+            bed_size: [
+                f64::from(self.cfg.build_volume[0]),
+                f64::from(self.cfg.build_volume[1]),
+            ],
         }
     }
 
