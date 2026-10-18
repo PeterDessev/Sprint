@@ -1,6 +1,10 @@
 //! Deterministic fuzz-style tests: thousands of pseudo-random lines and
 //! files must never make the lexer, analyzer, metadata reader or resume
 //! generator panic, and the lexer's invariants must hold for all of them.
+//!
+//! Each test uses a fixed seed; set `FUZZ_SEED=<n>` to explore other inputs,
+//! e.g. `for s in $(seq 100 200); do FUZZ_SEED=$s cargo test --release -p
+//! sprint-gcode --test fuzz -q; done`.
 
 mod common;
 
@@ -9,6 +13,14 @@ use sprint_gcode::{
     AnalyzeOptions, GcodeFile, ParsedLine, ResumeOptions, analyze, analyze_simple, clean_line,
     has_command, parse_into, parse_line, read_metadata, resume_preamble, state_at_line,
 };
+
+/// The `FUZZ_SEED` environment variable, or `default`.
+fn seed(default: u64) -> u64 {
+    std::env::var("FUZZ_SEED")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
 
 /// xorshift64* — small, fast and reproducible.
 struct Rng(u64);
@@ -230,11 +242,7 @@ fn same_words(a: &ParsedLine<'_>, b: &ParsedLine<'_>) -> bool {
 
 #[test]
 fn lexer_invariants_hold_for_random_lines() {
-    let seed: u64 = std::env::var("FUZZ_SEED")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(1);
-    let mut rng = Rng::new(seed);
+    let mut rng = Rng::new(seed(1));
     let lines: Vec<String> = (0..30_000).map(|_| random_line(&mut rng)).collect();
     let mut reused = ParsedLine::default();
     let mut commands = 0;
@@ -294,11 +302,7 @@ fn random_file(rng: &mut Rng, lines: usize) -> String {
 
 #[test]
 fn analysis_never_panics_on_random_files() {
-    let seed: u64 = std::env::var("FUZZ_SEED")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(2);
-    let mut rng = Rng::new(seed);
+    let mut rng = Rng::new(seed(2));
     for i in 0..400 {
         let lines = rng.below(300);
         let text = random_file(&mut rng, lines);
@@ -323,11 +327,7 @@ fn analysis_never_panics_on_random_files() {
 
 #[test]
 fn analysis_never_panics_on_random_bytes() {
-    let seed: u64 = std::env::var("FUZZ_SEED")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(3);
-    let mut rng = Rng::new(seed);
+    let mut rng = Rng::new(seed(3));
     let alphabet = b"G0123456789XYZEFIJRPSTMN .-;()*%\"\n\r\t";
     for i in 0..300 {
         let len = rng.below(3000);
