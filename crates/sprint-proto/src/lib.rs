@@ -34,6 +34,7 @@
 pub mod firmware;
 pub mod framing;
 pub mod mesh;
+mod nan;
 pub mod reference;
 pub mod reply;
 pub mod settings;

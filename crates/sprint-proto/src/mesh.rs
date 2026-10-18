@@ -5,9 +5,11 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::nan::same_f32_slice;
+
 /// Bed leveling grid. `points[row][col]`, row 0 = front (min Y), col 0 =
-/// left (min X). Missing points are NaN.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+/// left (min X). Missing points are NaN (and compare equal to each other).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct BedMesh {
     /// Z offsets in mm, `points[row][col]`.
     pub points: Vec<Vec<f32>>,
@@ -109,6 +111,27 @@ impl BedMesh {
     }
 }
 
+impl PartialEq for BedMesh {
+    /// Field-wise equality where missing points (NaN) equal each other, so
+    /// a mesh with holes equals its own clone.
+    fn eq(&self, other: &Self) -> bool {
+        let positions_eq = |a: &Option<Vec<f32>>, b: &Option<Vec<f32>>| match (a, b) {
+            (Some(a), Some(b)) => same_f32_slice(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        self.kind == other.kind
+            && self.points.len() == other.points.len()
+            && self
+                .points
+                .iter()
+                .zip(&other.points)
+                .all(|(a, b)| same_f32_slice(a, b))
+            && positions_eq(&self.x_positions, &other.x_positions)
+            && positions_eq(&self.y_positions, &other.y_positions)
+    }
+}
+
 /// `n` evenly spaced values from `start` to `end` inclusive.
 pub(crate) fn linspace(start: f32, end: f32, n: usize) -> Vec<f32> {
     match n {
@@ -175,6 +198,27 @@ mod tests {
         mesh.set_bounds(10.0, 210.0, 20.0, 200.0);
         assert_eq!(mesh.x_positions, Some(vec![10.0, 110.0, 210.0]));
         assert_eq!(mesh.y_positions, Some(vec![20.0, 200.0]));
+    }
+
+    #[test]
+    fn missing_points_compare_equal() {
+        // Regression: derived equality made a mesh with NaN holes unequal
+        // to its own clone.
+        let mut mesh = BedMesh::from_rows(vec![vec![0.1, f32::NAN], vec![0.2, 0.3]], "ubl");
+        mesh.set_bounds(0.0, 200.0, 0.0, 200.0);
+        assert_eq!(mesh, mesh.clone());
+        let mut other = mesh.clone();
+        other.points[0][1] = 0.0;
+        assert_ne!(mesh, other);
+        let mut other = mesh.clone();
+        other.kind = "bilinear".into();
+        assert_ne!(mesh, other);
+        let mut other = mesh.clone();
+        other.x_positions = None;
+        assert_ne!(mesh, other);
+        let mut other = mesh.clone();
+        other.points.pop();
+        assert_ne!(mesh, other);
     }
 
     #[test]

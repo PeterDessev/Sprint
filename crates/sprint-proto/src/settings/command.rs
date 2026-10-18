@@ -3,14 +3,15 @@
 use serde::{Deserialize, Serialize};
 
 use super::catalog::setting_def;
+use crate::nan::same_f64;
 
 /// One configuration command as reported by M503 (or edited by the user),
 /// e.g. `M92 X80 Y80 Z400 E93`.
 ///
 /// Parameters without a value (`M569 S1 X Y Z`, `M593 X F40`, `M149 C`) are
 /// flags and stored as `f64::NAN`; [`to_gcode`](Self::to_gcode) prints them
-/// as the bare letter.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// as the bare letter. Equality treats two flags as equal (unlike IEEE NaN).
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SettingCommand {
     /// Normalised code: uppercase, no leading zeros (`"M92"`, `"G21"`).
     pub code: String,
@@ -222,6 +223,21 @@ impl SettingCommand {
     }
 }
 
+impl PartialEq for SettingCommand {
+    /// Field-wise equality where flags (NaN values) equal each other, so a
+    /// command with flags equals its own clone.
+    fn eq(&self, other: &Self) -> bool {
+        self.code == other.code
+            && self.raw == other.raw
+            && self.params.len() == other.params.len()
+            && self
+                .params
+                .iter()
+                .zip(&other.params)
+                .all(|(a, b)| a.0 == b.0 && same_f64(a.1, b.1))
+    }
+}
+
 impl std::fmt::Display for SettingCommand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.to_gcode())
@@ -343,6 +359,23 @@ mod tests {
         );
         let c = parse("G29.1 S1");
         assert_eq!(c.code, "G29.1");
+    }
+
+    #[test]
+    fn flags_compare_equal() {
+        // Regression: flags are NaN, and derived (IEEE) equality made a
+        // command with flags unequal to its own clone.
+        let c = parse("M569 S1 X Y Z");
+        assert_eq!(c, c.clone());
+        assert_eq!(c, parse("M569 S1 X Y Z"));
+        assert_ne!(c, parse("M569 S1 X Y"));
+        assert_ne!(c, parse("M569 S0 X Y Z"));
+        let mut valued = c.clone();
+        valued.set('X', 1.0);
+        assert_ne!(c, valued);
+        let settings: crate::PrinterSettings =
+            [c.clone(), parse("M593 X F40")].into_iter().collect();
+        assert_eq!(settings, settings.clone());
     }
 
     #[test]

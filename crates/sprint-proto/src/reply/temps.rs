@@ -280,6 +280,7 @@ pub fn parse_temperatures(line: &str) -> Option<TempReport> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Reply;
 
     fn h(current: f32, target: Option<f32>, power: Option<f32>) -> HeaterReading {
         HeaterReading {
@@ -424,6 +425,21 @@ mod tests {
         ] {
             assert!(parse_temperatures(line).is_none(), "{line:?}");
         }
+    }
+
+    #[test]
+    fn reports_with_placeholders_compare_equal() {
+        // Regression: the NaN placeholder for an unreported tool made the
+        // report unequal to itself under derived equality.
+        let r = parse_temperatures("T1:200.0 /200.0 B:60.0 /60.0").unwrap();
+        assert!(r.hotends[0].current.is_nan());
+        assert_eq!(r, r.clone());
+        assert_eq!(
+            Reply::Temperatures(r.clone()),
+            Reply::Temperatures(r.clone())
+        );
+        let other = parse_temperatures("T0:20.0 T1:200.0 /200.0 B:60.0 /60.0").unwrap();
+        assert_ne!(r, other);
     }
 
     #[test]

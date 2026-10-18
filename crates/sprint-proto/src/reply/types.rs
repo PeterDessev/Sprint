@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::nan::same_f32;
 use crate::{BedMesh, FirmwareInfo, SettingCommand};
 
 /// One logical reply from the printer. A received line may produce several
@@ -93,14 +94,25 @@ pub enum Reply {
 }
 
 /// One heater (or sensor) reading.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct HeaterReading {
-    /// Current temperature (°C). NaN for a placeholder entry.
+    /// Current temperature (°C). NaN for a placeholder entry (placeholders
+    /// compare equal to each other).
     pub current: f32,
     /// Target temperature, when reported.
     pub target: Option<f32>,
     /// Heater power 0..=1, when reported.
     pub power: Option<f32>,
+}
+
+impl PartialEq for HeaterReading {
+    /// Field-wise equality where a NaN placeholder `current` equals another
+    /// placeholder, so a report with gaps equals its own clone.
+    fn eq(&self, other: &Self) -> bool {
+        same_f32(self.current, other.current)
+            && self.target == other.target
+            && self.power == other.power
+    }
 }
 
 /// A temperature report.
