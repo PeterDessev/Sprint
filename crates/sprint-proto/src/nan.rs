@@ -5,6 +5,35 @@
 //!
 //! A sentinel NaN means "no value here", so two of them compare equal
 //! (IEEE equality would make such values unequal even to themselves).
+//!
+//! Formats without NaN (JSON) serialise it as `null`; the `de_*` functions
+//! (used with `#[serde(deserialize_with)]`) read `null` back as NaN, while
+//! formats that do support NaN (TOML, RON) keep working unchanged.
+
+use serde::{Deserialize, Deserializer};
+
+/// Deserialise `SettingCommand::params`, reading `null` values as NaN flags.
+pub(crate) fn de_params<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<(char, f64)>, D::Error> {
+    let raw: Vec<(char, Option<f64>)> = Vec::deserialize(d)?;
+    Ok(raw
+        .into_iter()
+        .map(|(letter, v)| (letter, v.unwrap_or(f64::NAN)))
+        .collect())
+}
+
+/// Deserialise `BedMesh::points`, reading `null` points as NaN (missing).
+pub(crate) fn de_grid<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Vec<f32>>, D::Error> {
+    let raw: Vec<Vec<Option<f32>>> = Vec::deserialize(d)?;
+    Ok(raw
+        .into_iter()
+        .map(|row| row.into_iter().map(|v| v.unwrap_or(f32::NAN)).collect())
+        .collect())
+}
+
+/// Deserialise an `f32` sentinel field, reading `null` as NaN.
+pub(crate) fn de_f32<'de, D: Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+    Ok(Option::<f32>::deserialize(d)?.unwrap_or(f32::NAN))
+}
 
 /// `a == b`, with NaN equal to NaN.
 pub(crate) fn same_f32(a: f32, b: f32) -> bool {

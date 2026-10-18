@@ -459,7 +459,9 @@ and `parse_duration` ("1d 2h 3m 4s" -> seconds); `StatsReport::merge`;
 `remove`, `keys` (+ `FromIterator`/`Extend`); `SettingCategory::ALL`/`name`;
 `GcodeCategory::name`. Reply, firmware, settings and mesh data types
 (not the static catalog/reference structs) derive `serde::{Serialize,
-Deserialize}`.
+Deserialize}`. The NaN sentinels (setting flags, missing mesh points,
+placeholder hotend readings) compare equal to each other in `PartialEq`,
+and JSON's `null` for them deserialises back to NaN.
 
 ### firmware
 

@@ -16,6 +16,7 @@ pub struct SettingCommand {
     /// Normalised code: uppercase, no leading zeros (`"M92"`, `"G21"`).
     pub code: String,
     /// Parameters in their original order. Letters are uppercase.
+    #[serde(deserialize_with = "crate::nan::de_params")]
     pub params: Vec<(char, f64)>,
     /// The text this command was parsed from (trimmed, `echo:` prefix
     /// removed, comment kept). Not updated by [`set`](Self::set).

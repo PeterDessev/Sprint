@@ -98,6 +98,7 @@ pub enum Reply {
 pub struct HeaterReading {
     /// Current temperature (°C). NaN for a placeholder entry (placeholders
     /// compare equal to each other).
+    #[serde(deserialize_with = "crate::nan::de_f32")]
     pub current: f32,
     /// Target temperature, when reported.
     pub target: Option<f32>,

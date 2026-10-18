@@ -12,6 +12,7 @@ use crate::nan::same_f32_slice;
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct BedMesh {
     /// Z offsets in mm, `points[row][col]`.
+    #[serde(deserialize_with = "crate::nan::de_grid")]
     pub points: Vec<Vec<f32>>,
     /// X coordinate of each column, when the firmware reported it.
     pub x_positions: Option<Vec<f32>>,
