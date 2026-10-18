@@ -1062,11 +1062,14 @@ fn create_pipelines(
 
 /// Create a device and queue without a window (tests, thumbnails,
 /// examples). Prefers a discrete GPU and falls back to a software adapter
-/// (WARP / llvmpipe) when no hardware adapter is available. Returns `None`
-/// when no adapter at all can be created.
+/// (WARP / llvmpipe) when no hardware adapter is available. The
+/// `WGPU_BACKEND` environment variable (e.g. `dx12`, `vulkan`, `gl`)
+/// restricts the backends tried. Returns `None` when no adapter at all can
+/// be created.
 pub fn headless_device() -> Option<(wgpu::Device, wgpu::Queue)> {
+    let backends = wgpu::Backends::from_env().unwrap_or(wgpu::Backends::PRIMARY);
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-        backends: wgpu::Backends::PRIMARY,
+        backends,
         ..wgpu::InstanceDescriptor::new_without_display_handle()
     });
     let adapter = [false, true].into_iter().find_map(|fallback| {
@@ -1084,9 +1087,14 @@ pub fn headless_device() -> Option<(wgpu::Device, wgpu::Queue)> {
         info.name,
         info.backend
     );
+    let base = if info.backend == wgpu::Backend::Gl {
+        wgpu::Limits::downlevel_webgl2_defaults()
+    } else {
+        wgpu::Limits::default()
+    };
     pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("sprint-viewer headless device"),
-        required_limits: wgpu::Limits::default().using_resolution(adapter.limits()),
+        required_limits: base.using_resolution(adapter.limits()),
         ..Default::default()
     }))
     .ok()
