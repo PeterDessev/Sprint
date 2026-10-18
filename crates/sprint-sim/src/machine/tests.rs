@@ -791,14 +791,7 @@ fn emergency_parser_is_off_while_writing_to_sd() {
     assert!(!r.m.snapshot().halted);
     assert_eq!(r.ok(&frame(6, "M29")), vec!["Done saving file.", "ok"]);
     let index = r.m.sd.find("estop.gco").expect("file saved");
-    assert_eq!(
-        r.m.sd.data(index),
-        b"M112
-M108
-M410
-M876 S0
-"
-    );
+    assert_eq!(r.m.sd.data(index), b"M112\nM108\nM410\nM876 S0\n");
     // Enabled again after M29.
     r.send("M112");
     assert!(r.m.snapshot().halted);

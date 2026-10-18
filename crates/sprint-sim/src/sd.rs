@@ -326,22 +326,36 @@ pub(crate) fn synthesize(name: &str, size: u64, seed: u64) -> Vec<u8> {
             z += 0.2;
         }
         out.push_str(&body);
+        // Pad before the footer so the print still ends with it.
+        pad_to(&mut out, size - footer.len());
         out.push_str(footer);
     }
-    // Pad with a comment so the size is exact.
-    let missing = size.saturating_sub(out.len());
-    match missing {
-        0 => {}
-        1 => out.push('\n'),
-        n => {
-            out.push(';');
-            out.push_str(&" ".repeat(n - 2));
-            out.push('\n');
-        }
-    }
+    pad_to(&mut out, size);
     let mut bytes = out.into_bytes();
     bytes.truncate(size);
     bytes
+}
+
+/// Append short comment lines (at most 80 bytes each, like a slicer's
+/// thumbnail block) until `out` is `len` bytes long.
+fn pad_to(out: &mut String, len: usize) {
+    const LINE: usize = 80;
+    while out.len() < len {
+        let left = len - out.len();
+        // Never leave a single byte over for the last line.
+        let n = if left > LINE && left - LINE == 1 {
+            LINE - 1
+        } else {
+            left.min(LINE)
+        };
+        if n == 1 {
+            out.push('\n');
+        } else {
+            out.push(';');
+            out.extend(std::iter::repeat_n(' ', n - 2));
+            out.push('\n');
+        }
+    }
 }
 
 #[cfg(test)]
@@ -402,6 +416,28 @@ mod tests {
             synthesize("cube.gcode", 5000, 3),
             synthesize("cube.gcode", 5000, 3)
         );
+    }
+
+    #[test]
+    fn large_synthetic_files_have_short_lines_and_end_with_the_footer() {
+        // Far more than the layers fill (they stop at the top of the
+        // volume): the rest must still be ordinary short lines, before
+        // the end-of-print footer.
+        for size in [12_000_000u64, 5_000_000, 700, 1000] {
+            let d = synthesize("big.gcode", size, 3);
+            assert_eq!(d.len() as u64, size);
+            let longest = d.split(|&b| b == b'\n').map(<[u8]>::len).max();
+            assert!(
+                longest.unwrap_or(0) <= 96,
+                "size {size}: line of {longest:?}"
+            );
+            let text = String::from_utf8(d).unwrap();
+            assert!(
+                text.ends_with("M84\n; end of synthetic print\n"),
+                "size {size}: {}",
+                &text[text.len().saturating_sub(80)..]
+            );
+        }
     }
 
     #[test]
