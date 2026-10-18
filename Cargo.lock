@@ -4360,6 +4360,7 @@ dependencies = [
  "parking_lot",
  "rfd",
  "serde",
+ "skrifa",
  "sprint-gcode",
  "sprint-host",
  "sprint-proto",

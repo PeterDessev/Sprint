@@ -3,6 +3,10 @@
 
 use std::path::PathBuf;
 
+pub mod fonts;
+pub mod icons;
+pub mod theme;
+
 /// Options for launching the GUI.
 #[derive(Clone, Debug, Default)]
 pub struct GuiOptions {

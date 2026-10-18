@@ -24,6 +24,10 @@ crossbeam-channel.workspace = true
 serde.workspace = true
 anyhow.workspace = true
 log.workspace = true
+# Validates system font files before they reach egui's font loader (which
+# panics on unparsable fonts). Same version and a subset of the features
+# epaint already uses, so it adds nothing to the build.
+skrifa = { version = "0.44", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 egui_kittest.workspace = true
