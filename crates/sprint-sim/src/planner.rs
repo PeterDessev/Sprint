@@ -98,8 +98,9 @@ impl Profile {
     }
 }
 
-/// Duration of a trapezoidal move (used by tests and estimates).
-pub(crate) fn trapezoid_time(v0: f64, v1: f64, nominal: f64, accel: f64, length: f64) -> f64 {
+/// Duration of a trapezoidal move.
+#[cfg(test)]
+fn trapezoid_time(v0: f64, v1: f64, nominal: f64, accel: f64, length: f64) -> f64 {
     Profile::plan(v0, v1, nominal, accel, length).duration()
 }
 
@@ -389,19 +390,6 @@ impl Planner {
             }
         }
         extruded
-    }
-
-    /// Time until every queued block has finished.
-    pub(crate) fn time_remaining(&self) -> f64 {
-        let mut t = 0.0;
-        for b in &self.blocks {
-            if b.started {
-                t += b.duration - b.elapsed;
-            } else {
-                t += Profile::plan(b.entry, b.exit, b.nominal, b.accel, b.length).duration();
-            }
-        }
-        t
     }
 
     /// Quickstop: drop every block and stop where the tool is now.

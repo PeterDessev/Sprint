@@ -1,10 +1,11 @@
 //! A virtual Marlin-style 3D printer used for tests, demos and development
 //! without real hardware. See `ARCHITECTURE.md` for the public contract.
-#![allow(dead_code)]
 
 mod config;
 mod format;
 mod line;
+mod link;
+mod machine;
 mod mesh;
 mod parse;
 mod planner;
@@ -14,3 +15,6 @@ mod settings;
 mod thermal;
 
 pub use config::{MAX_SYNTHETIC_FILE_SIZE, SimConfig};
+pub use link::{
+    RECEIVED_LOG_CAPACITY, SimControl, SimLink, SimReader, SimSnapshot, SimWriter, spawn,
+};

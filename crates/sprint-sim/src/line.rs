@@ -128,7 +128,8 @@ pub(crate) fn emergency(raw: &str) -> Option<Emergency> {
     }
 }
 
-/// XOR checksum of a payload (for tests and the in-crate host helpers).
+/// XOR checksum of a payload (for tests).
+#[cfg(test)]
 pub(crate) fn checksum(payload: &str) -> u8 {
     payload.bytes().fold(0u8, |acc, b| acc ^ b)
 }

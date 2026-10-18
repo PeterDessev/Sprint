@@ -126,6 +126,7 @@ pub(crate) struct Heater {
     d_term: f64,
     pid_reset: bool,
     sample_timer: f64,
+    samples: u64,
 }
 
 impl Heater {
@@ -146,7 +147,23 @@ impl Heater {
             d_term: 0.0,
             pid_reset: true,
             sample_timer: 0.0,
+            samples: 0,
         }
+    }
+
+    /// Number of controller samples taken so far.
+    pub(crate) fn samples(&self) -> u64 {
+        self.samples
+    }
+
+    /// Keep the physical state (temperatures, heater element) of `other`
+    /// while resetting everything the firmware controls (board reset).
+    pub(crate) fn keep_physics_of(&mut self, other: &Heater) {
+        self.block = other.block;
+        self.sensor = other.sensor;
+        self.power = other.power;
+        self.measured = other.measured;
+        self.d_state = other.measured;
     }
 
     /// Reported temperature.
@@ -157,11 +174,6 @@ impl Heater {
     /// Heater parameters.
     pub(crate) fn params(&self) -> &HeaterParams {
         &self.params
-    }
-
-    /// Current PWM (0..=255).
-    pub(crate) fn pwm(&self) -> f64 {
-        self.output
     }
 
     /// Marlin's reported power (`@:`), 0..=127.
@@ -210,6 +222,7 @@ impl Heater {
                 None => self.controller(gains),
             };
             sampled = true;
+            self.samples += 1;
         }
         let p = &self.params;
         let commanded = self.output / PWM_MAX * p.max_power;
