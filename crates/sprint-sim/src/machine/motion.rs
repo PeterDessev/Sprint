@@ -513,6 +513,9 @@ impl Machine {
             return false;
         }
         self.finish_homing(h.axes);
+        // Marlin's G28 ends with report_current_position().
+        let line = self.position_line();
+        self.emit(line);
         true
     }
 
@@ -598,6 +601,9 @@ impl Machine {
         let e = self.planner.target()[3];
         let pos = self.physical(self.motion.native, e);
         self.planner.set_position(pos);
+        // Marlin's G29 ends with report_current_position().
+        let line = self.position_line();
+        self.emit(line);
         true
     }
 

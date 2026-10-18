@@ -267,6 +267,27 @@ fn position_report_after_homing() {
 }
 
 #[test]
+fn homing_probing_and_home_offsets_report_the_position() {
+    // Marlin's G28, G29 and M206 end with report_current_position().
+    let mut r = Rig::booted();
+    let out = r.ok("G28");
+    assert_eq!(
+        &out[out.len() - 2..],
+        &["X:0.00 Y:0.00 Z:0.00 E:0.00 Count X:0 Y:0 Z:0", "ok"]
+    );
+    let out = r.ok("M206 X5");
+    assert_eq!(
+        out,
+        vec!["X:5.00 Y:0.00 Z:0.00 E:0.00 Count X:0 Y:0 Z:0", "ok"]
+    );
+    let out = r.ok("G29");
+    let pos = r.ok("M114");
+    assert_eq!(&out[out.len() - 2..], &[pos[0].clone(), "ok".to_string()]);
+    // Errors and reports do not move anything.
+    assert_eq!(r.ok("M206")[0], "echo:; Home offset:");
+}
+
+#[test]
 fn homing_takes_realistic_time() {
     let mut r = Rig::booted();
     r.send("G28");

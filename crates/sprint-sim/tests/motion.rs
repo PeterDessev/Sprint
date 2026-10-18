@@ -83,7 +83,9 @@ fn leveling_probe_and_report() {
         .position(|l| l == "Bilinear Leveling Grid:")
         .unwrap();
     assert_eq!(out[i + 1], "      0      1      2");
-    assert_eq!(out.len() - i - 1, 1 + 4 + 1, "{out:?}");
+    // Header, four rows, the final position report and the ok.
+    assert_eq!(out.len() - i - 1, 1 + 4 + 1 + 1, "{out:?}");
+    assert!(out[out.len() - 2].starts_with("X:"), "{out:?}");
     let v = h.command("M420 V");
     assert_eq!(v[0], "Bilinear Leveling Grid:");
     assert_eq!(&v[1..6], &out[i + 1..i + 6]);

@@ -16,7 +16,13 @@ impl Machine {
             return self.unknown(c);
         }
         if let Some(applied) = self.settings.apply(c, self.report_context()) {
+            // M206 with offsets ends with report_current_position().
+            let moved = c.is(b'M', 206) && c.has_params() && applied.output.is_empty();
             self.out.extend(applied.output);
+            if moved {
+                let line = self.position_line();
+                self.emit(line);
+            }
             return Outcome::Done;
         }
         match (c.letter, c.code) {
