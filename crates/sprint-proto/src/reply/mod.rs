@@ -2,6 +2,8 @@
 //! values. See [`ReplyParser`].
 
 mod position;
+mod sd;
+mod status;
 mod temps;
 mod text;
 mod types;
@@ -21,7 +23,10 @@ use text::{
 ///
 /// Never panics, whatever the input.
 #[derive(Clone, Debug, Default)]
-pub struct ReplyParser {}
+pub struct ReplyParser {
+    /// Inside "Begin file list" ... "End file list".
+    sd_listing: bool,
+}
 
 impl ReplyParser {
     /// A parser with no pending block.
@@ -41,6 +46,23 @@ impl ReplyParser {
     fn dispatch(&mut self, line: &str, out: &mut Vec<Reply>) {
         if line.is_empty() {
             return;
+        }
+        if self.sd_listing {
+            if sd::is_list_end(line) {
+                self.sd_listing = false;
+                out.push(Reply::SdCard(SdReply::ListEnd));
+                return;
+            }
+            if ok_remainder(line).is_some() {
+                // The "End file list" line was lost; close the listing.
+                self.sd_listing = false;
+                out.push(Reply::SdCard(SdReply::ListEnd));
+            } else if is_file_candidate(line)
+                && let Some(file) = sd::parse_sd_file(line)
+            {
+                out.push(Reply::SdCard(SdReply::File(file)));
+                return;
+            }
         }
         if let Some(rest) = ok_remainder(line) {
             self.parse_ok(rest, out);
@@ -107,6 +129,14 @@ impl ReplyParser {
         if self.classify_message(line, out) {
             return;
         }
+        if let Some(endstops) = status::parse_endstops(line) {
+            out.extend(
+                endstops
+                    .into_iter()
+                    .map(|(name, triggered)| Reply::Endstop { name, triggered }),
+            );
+            return;
+        }
         // Settings printed without "echo:" (Smoothieware, RRF config dumps):
         // only codes the catalog knows, so stray G-code echoes are not
         // mistaken for settings.
@@ -134,6 +164,23 @@ impl ReplyParser {
                 return true;
             }
             return false;
+        }
+        if let Some(reply) = sd::parse_sd_message(body) {
+            match reply {
+                Reply::SdCard(SdReply::ListBegin) => self.sd_listing = true,
+                Reply::SdCard(SdReply::ListEnd) => self.sd_listing = false,
+                _ => {}
+            }
+            out.push(reply);
+            return true;
+        }
+        if let Some(secs) = status::parse_print_time(body) {
+            out.push(Reply::PrintTime(secs));
+            return true;
+        }
+        if let Some(stats) = status::parse_stats(body) {
+            out.push(Reply::Stats(stats));
+            return true;
         }
         false
     }
@@ -177,6 +224,15 @@ impl ReplyParser {
             out.push(Reply::Firmware(info));
         }
     }
+}
+
+/// Whether a line inside a file listing can be a file entry (and not an
+/// interleaved status line).
+fn is_file_candidate(line: &str) -> bool {
+    const PREFIXES: [&str; 6] = ["echo:", "//", "!!", "error:", "busy:", "resend:"];
+    !PREFIXES.iter().any(|p| strip_prefix_ci(line, p).is_some())
+        && !line.eq_ignore_ascii_case("wait")
+        && !line.eq_ignore_ascii_case("start")
 }
 
 /// The text after a leading `ok` token, if the line starts with one.

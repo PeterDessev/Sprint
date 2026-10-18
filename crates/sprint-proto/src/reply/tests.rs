@@ -410,3 +410,200 @@ fn other_lines_are_kept_raw() {
     assert!(feed("").is_empty());
     assert!(feed("   \r\n").is_empty());
 }
+
+fn feed_all(parser: &mut ReplyParser, lines: &[&str]) -> Vec<Reply> {
+    lines.iter().flat_map(|l| parser.feed(l)).collect()
+}
+
+fn file(name: &str, size: Option<u64>, long: Option<&str>) -> Reply {
+    Reply::SdCard(SdReply::File(SdFile {
+        name: name.into(),
+        long_name: long.map(Into::into),
+        size,
+    }))
+}
+
+#[test]
+fn sd_file_listing() {
+    let mut p = ReplyParser::new();
+    let replies = feed_all(
+        &mut p,
+        &[
+            "Begin file list",
+            "CUBE~1.GCO 12345",
+            "CUBE~2.GCO 12345 cube_long_name.gcode",
+            " T:210.00 /210.00 B:60.00 /60.00 @:64 B@:0",
+            "/SUBDIR/FILE.GCO 123",
+            "End file list",
+            "ok",
+            "CUBE~1.GCO 12345",
+        ],
+    );
+    assert_eq!(replies[0], Reply::SdCard(SdReply::ListBegin));
+    assert_eq!(replies[1], file("CUBE~1.GCO", Some(12345), None));
+    assert_eq!(
+        replies[2],
+        file("CUBE~2.GCO", Some(12345), Some("cube_long_name.gcode"))
+    );
+    assert!(matches!(replies[3], Reply::Temperatures(_)));
+    assert_eq!(replies[4], file("/SUBDIR/FILE.GCO", Some(123), None));
+    assert_eq!(replies[5], Reply::SdCard(SdReply::ListEnd));
+    assert_eq!(replies[6], ok(None, None, None));
+    // Outside a listing, file-like lines are not files.
+    assert_eq!(replies[7], Reply::Other("CUBE~1.GCO 12345".into()));
+    assert_eq!(replies.len(), 8);
+}
+
+#[test]
+fn sd_listing_closed_by_ok_when_end_is_lost() {
+    let mut p = ReplyParser::new();
+    let replies = feed_all(&mut p, &["Begin file list", "A.GCO 1", "ok", "B.GCO 2"]);
+    assert_eq!(
+        replies,
+        vec![
+            Reply::SdCard(SdReply::ListBegin),
+            file("A.GCO", Some(1), None),
+            Reply::SdCard(SdReply::ListEnd),
+            ok(None, None, None),
+            Reply::Other("B.GCO 2".into()),
+        ]
+    );
+}
+
+#[test]
+fn sd_status_messages() {
+    let cases = [
+        ("echo:SD card ok", SdReply::CardOk),
+        (
+            "echo:SD init fail",
+            SdReply::CardFailed("SD init fail".into()),
+        ),
+        ("echo:No SD card", SdReply::NoCard),
+        (
+            "File opened: x.gco Size: 12345",
+            SdReply::Opened {
+                name: "x.gco".into(),
+                size: 12345,
+            },
+        ),
+        (
+            "echo:Now fresh file: x.gco",
+            SdReply::Opened {
+                name: "x.gco".into(),
+                size: 0,
+            },
+        ),
+        (
+            "echo:Now doing file: x.gco",
+            SdReply::Opened {
+                name: "x.gco".into(),
+                size: 0,
+            },
+        ),
+        ("File selected", SdReply::Selected),
+        (
+            "SD printing byte 1234/5678",
+            SdReply::Progress {
+                done: 1234,
+                total: 5678,
+            },
+        ),
+        ("Not SD printing", SdReply::NotPrinting),
+        ("Done printing file", SdReply::DonePrinting),
+        ("Writing to file: x.gco", SdReply::WritingTo("x.gco".into())),
+        ("Done saving file.", SdReply::Saved),
+        ("File deleted:x.gco", SdReply::Deleted("x.gco".into())),
+        (
+            "Deletion failed, File: x.gco.",
+            SdReply::DeleteFailed("x.gco".into()),
+        ),
+    ];
+    for (line, expected) in cases {
+        assert_eq!(one(line), Reply::SdCard(expected), "{line:?}");
+    }
+    assert_eq!(
+        one("open failed, File: x.gco."),
+        err("open failed, File: x.gco.", false)
+    );
+    assert_eq!(
+        one("echo:open failed, File: x.gco."),
+        err("open failed, File: x.gco.", false)
+    );
+}
+
+#[test]
+fn endstop_reports() {
+    let mut p = ReplyParser::new();
+    let replies = feed_all(
+        &mut p,
+        &[
+            "Reporting endstop status",
+            "x_min: open",
+            "y_min: open",
+            "z_probe: TRIGGERED",
+            "filament: open",
+            "ok",
+        ],
+    );
+    let endstop = |name: &str, triggered: bool| Reply::Endstop {
+        name: name.into(),
+        triggered,
+    };
+    assert_eq!(
+        replies,
+        vec![
+            Reply::Other("Reporting endstop status".into()),
+            endstop("x_min", false),
+            endstop("y_min", false),
+            endstop("z_probe", true),
+            endstop("filament", false),
+            ok(None, None, None),
+        ]
+    );
+    assert_eq!(
+        feed("x:open y:open z:TRIGGERED"),
+        vec![endstop("x", false), endstop("y", false), endstop("z", true)]
+    );
+}
+
+#[test]
+fn stats_and_print_time() {
+    assert_eq!(
+        one("echo:Stats: Prints: 12, Finished: 10, Failed: 2"),
+        Reply::Stats(StatsReport {
+            prints: Some(12),
+            finished: Some(10),
+            failed: Some(2),
+            ..Default::default()
+        })
+    );
+    assert_eq!(
+        one("Stats: Total time: 2d 3h 4m 5s, Longest job: 1h 2m 3s"),
+        Reply::Stats(StatsReport {
+            total_time: Some(183_845),
+            longest_job: Some(3723),
+            ..Default::default()
+        })
+    );
+    let Reply::Stats(s) = one("echo:Stats: Filament used: 1.50m") else {
+        panic!("not stats")
+    };
+    assert_eq!(s.filament_used_mm, Some(1500.0));
+    let mut merged = StatsReport::default();
+    merged.merge(&StatsReport {
+        prints: Some(3),
+        ..Default::default()
+    });
+    merged.merge(&StatsReport {
+        failed: Some(1),
+        ..Default::default()
+    });
+    assert_eq!((merged.prints, merged.failed), (Some(3), Some(1)));
+
+    assert_eq!(one("echo:Print time: 1h 2m 3s"), Reply::PrintTime(3723));
+    assert_eq!(
+        one("echo:Print time: 2d 3h 4m 5s"),
+        Reply::PrintTime(183_845)
+    );
+    assert_eq!(one("echo:1 min, 23 sec"), Reply::PrintTime(83));
+}
