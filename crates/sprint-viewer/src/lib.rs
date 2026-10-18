@@ -3,8 +3,10 @@
 
 pub mod camera;
 pub mod color;
+pub mod demo;
 pub mod instance;
 mod options;
 pub mod pick;
+pub mod scene;
 
 pub use options::{BedSpec, ColorMode, RenderStyle, ViewMode, ViewPreset, ViewerOptions};
