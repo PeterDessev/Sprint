@@ -224,14 +224,14 @@ fn hit_point_lies_on_the_bead_surface() {
     assert!((hit.t - 29.8).abs() < 1e-3);
 }
 
-#[test]
-fn spiral_vase_with_one_layer_per_segment() {
-    // Regression: vase mode can produce a "layer" per segment.
+/// A spiral vase with `n` segments of `step` radians, each its own layer
+/// (vase mode as a Z-change layer detector reports it).
+fn vase(n: u32, step: f32) -> Toolpath {
     let mut segments = Vec::new();
     let mut prev = [20.0f32, 0.0, 0.2];
-    for i in 1..4000u32 {
-        let a = i as f32 * 0.06;
-        let z = 0.2 + i as f32 * 0.0025;
+    for i in 1..=n {
+        let a = i as f32 * step;
+        let z = 0.2 + a / std::f32::consts::TAU * 0.2;
         let p = [20.0 * a.cos(), 20.0 * a.sin(), z];
         segments.push(extrude(prev, p, i, i - 1, Feature::ExternalPerimeter));
         prev = p;
@@ -241,15 +241,53 @@ fn spiral_vase_with_one_layer_per_segment() {
         tp.bounds.include(s.start);
         tp.bounds.include(s.end);
     }
+    tp
+}
+
+#[test]
+fn spiral_vase_with_one_layer_per_segment() {
+    // Regression: vase mode can produce a "layer" per segment.
+    let tp = vase(4000, 0.06);
     assert_eq!(tp.layers.len(), tp.segments.len());
     let index = build(&tp);
-    let filter = PickFilter::default();
+    let filters = [
+        PickFilter::default(),
+        PickFilter {
+            layers: (1000, 2777),
+            ..Default::default()
+        },
+        PickFilter {
+            layers: (37, 38),
+            ..Default::default()
+        },
+    ];
     let mut hits = 0;
-    for ray in rays_for(&tp).iter().step_by(2) {
-        assert_same(&tp, &index, ray, &filter, 0.0);
-        hits += usize::from(index.pick(&tp, ray, &filter, 0.0).is_some());
+    for filter in &filters {
+        for ray in rays_for(&tp).iter().step_by(2) {
+            assert_same(&tp, &index, ray, filter, 0.0);
+            hits += usize::from(index.pick(&tp, ray, filter, 0.0).is_some());
+        }
     }
     assert!(hits > 0);
+}
+
+#[test]
+fn picking_stays_fast_with_one_layer_per_segment() {
+    // 300k layers: testing every layer's box per pick took ~3.5 ms on
+    // average (25 ms worst) even in release builds.
+    let tp = vase(300_000, std::f32::consts::TAU / 200.0);
+    let index = build(&tp);
+    let (avg, worst, hits) = timed_picks(&tp, &index);
+    println!("vase, 300k layers: avg {avg:.3} ms, worst {worst:.3} ms, {hits} hits");
+    assert!(hits > 0);
+    assert!(avg < 1.0, "average pick {avg:.2} ms");
+    let filter = PickFilter {
+        layers: (100_000, 200_000),
+        ..Default::default()
+    };
+    for ray in rays_for(&tp).iter().step_by(23) {
+        assert_same(&tp, &index, ray, &filter, 0.2);
+    }
 }
 
 #[test]

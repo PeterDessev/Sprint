@@ -293,10 +293,17 @@ struct LayerEntry {
     grid: Option<LayerGrid>,
 }
 
+/// Consecutive layers per [`PickIndex`] group. Groups let a pick skip most
+/// layers with one box test per group, which matters when a file has a
+/// layer per segment (spiral vase mode).
+const LAYERS_PER_GROUP: usize = 32;
+
 /// Spatial index over the extrusion segments of one toolpath.
 #[derive(Clone, Debug, Default)]
 pub struct PickIndex {
     layers: Vec<LayerEntry>,
+    /// Union box of each run of [`LAYERS_PER_GROUP`] layers.
+    groups: Vec<Aabb>,
     cell_starts: Vec<u32>,
     cell_items: Vec<u32>,
     segment_count: usize,
@@ -341,6 +348,19 @@ impl PickIndex {
                 grid,
             });
         }
+        index.groups = index
+            .layers
+            .chunks(LAYERS_PER_GROUP)
+            .map(|group| {
+                group.iter().fold(Aabb::EMPTY, |mut acc, l| {
+                    if !l.aabb.is_empty() {
+                        acc.include(l.aabb.min);
+                        acc.include(l.aabb.max);
+                    }
+                    acc
+                })
+            })
+            .collect();
         Some(index)
     }
 
@@ -434,13 +454,14 @@ impl PickIndex {
         let last = self.layers.len() - 1;
         let lo = filter.layers.0.min(last);
         let hi = filter.layers.1.min(last).max(lo);
-        let mut candidates: Vec<(f32, f32, usize)> = (lo..=hi)
-            .filter_map(|i| {
-                let entry = &self.layers[i];
-                entry.aabb.ray_interval(ray).map(|(t0, t1)| (t0, t1, i))
+        // Groups hit by the ray, nearest entry first.
+        let mut groups: Vec<(f32, usize)> = (lo / LAYERS_PER_GROUP..=hi / LAYERS_PER_GROUP)
+            .filter_map(|g| {
+                let aabb = self.groups.get(g)?;
+                aabb.ray_interval(ray).map(|(t0, _)| (t0, g))
             })
             .collect();
-        candidates.sort_by(|a, b| a.0.total_cmp(&b.0));
+        groups.sort_by(|a, b| a.0.total_cmp(&b.0));
 
         let mut best: Option<PickHit> = None;
         let mut best_t = f32::INFINITY;
@@ -462,21 +483,39 @@ impl PickIndex {
                 });
             }
         };
-        for (t0, t1, layer) in candidates {
-            if t0 > best_t {
+        let mut candidates: Vec<(f32, f32, usize)> = Vec::with_capacity(LAYERS_PER_GROUP);
+        for (group_t0, group) in groups {
+            // A group's box holds all its layers: nothing in it (or in the
+            // groups after it) can beat a hit in front of it.
+            if group_t0 > best_t {
                 break;
             }
-            let entry = &self.layers[layer];
-            match &entry.grid {
-                None => {
-                    for i in entry.segments.clone() {
-                        consider(i, layer, &mut best_t);
-                    }
+            let first = (group * LAYERS_PER_GROUP).max(lo);
+            let end = ((group + 1) * LAYERS_PER_GROUP).min(hi + 1);
+            candidates.clear();
+            candidates.extend((first..end).filter_map(|i| {
+                let entry = self.layers.get(i)?;
+                entry.aabb.ray_interval(ray).map(|(t0, t1)| (t0, t1, i))
+            }));
+            candidates.sort_by(|a, b| a.0.total_cmp(&b.0));
+            for &(t0, t1, layer) in &candidates {
+                if t0 > best_t {
+                    break;
                 }
-                Some(grid) => {
-                    self.walk_grid(grid, ray, t0, t1, &mut best_t, |i, bt| {
-                        consider(i, layer, bt);
-                    });
+                let Some(entry) = self.layers.get(layer) else {
+                    continue;
+                };
+                match &entry.grid {
+                    None => {
+                        for i in entry.segments.clone() {
+                            consider(i, layer, &mut best_t);
+                        }
+                    }
+                    Some(grid) => {
+                        self.walk_grid(grid, ray, t0, t1, &mut best_t, |i, bt| {
+                            consider(i, layer, bt);
+                        });
+                    }
                 }
             }
         }
