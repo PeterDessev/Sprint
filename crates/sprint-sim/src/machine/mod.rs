@@ -661,8 +661,25 @@ impl Machine {
         self.pending_bytes = 0;
         self.out
             .push(format!("Resend: {}", self.last_n.saturating_add(1)));
-        self.out.push("ok".to_string());
+        let ok = self.error_ok();
+        self.out.push(ok);
         self.resends += 1;
+    }
+
+    /// The ok after a framing error. Marlin prints it with the same
+    /// ok_to_send(), so with ADVANCED_OK it carries the planner and
+    /// buffer space too.
+    fn error_ok(&self) -> String {
+        if self.cfg.advanced_ok {
+            let used = self.queue.len() + usize::from(self.task.is_some());
+            format!(
+                "ok P{} B{}",
+                self.planner.free(),
+                self.cfg.rx_buffer.saturating_sub(used)
+            )
+        } else {
+            "ok".to_string()
+        }
     }
 
     /// Validate framing and queue the command.
@@ -707,7 +724,8 @@ impl Machine {
                         "Error:No Line Number with checksum, Last Line: {}",
                         self.last_n
                     ));
-                    self.out.push("ok".to_string());
+                    let ok = self.error_ok();
+                    self.out.push(ok);
                     return;
                 }
                 if self.saving.is_some() && !is_m29 {

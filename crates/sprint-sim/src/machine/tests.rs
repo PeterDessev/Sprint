@@ -342,6 +342,15 @@ fn advanced_ok_format() {
     r.take();
     assert_eq!(r.ok(&frame(1, "G90")), vec!["ok N1 P16 B3"]);
     assert_eq!(r.ok("G90"), vec!["ok P16 B3"]);
+    // The ok after a resend request comes from the same ok_to_send().
+    assert_eq!(
+        r.ok("N3 G90*0"),
+        vec![
+            "Error:Line Number is not Last Line Number+1, Last Line: 1",
+            "Resend: 2",
+            "ok P16 B4"
+        ]
+    );
 }
 
 #[test]
