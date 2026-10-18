@@ -19,7 +19,7 @@ pub struct GcodeDoc {
     pub code: &'static str,
     /// Short name, e.g. "Linear move".
     pub name: &'static str,
-    /// Usage, e.g. "G1 [X<pos>] [Y<pos>] [Z<pos>] [E<pos>] [F<mm/min>]".
+    /// Usage, e.g. `"G1 [X<pos>] [Y<pos>] [Z<pos>] [E<pos>] [F<mm/min>]"`.
     pub usage: &'static str,
     /// One or two sentences on what the command does.
     pub description: &'static str,
