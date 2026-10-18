@@ -1,0 +1,21 @@
+[package]
+name = "sprint-host"
+description = "Printer host engine for Sprint: transports, send queue, print jobs, printer state and config"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+sprint-gcode.workspace = true
+sprint-proto.workspace = true
+sprint-sim.workspace = true
+serialport.workspace = true
+crossbeam-channel.workspace = true
+parking_lot.workspace = true
+serde.workspace = true
+toml.workspace = true
+directories.workspace = true
+thiserror.workspace = true
+log.workspace = true

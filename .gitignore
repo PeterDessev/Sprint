@@ -1,0 +1,12 @@
+/target
+**/*.rs.bk
+*.pdb
+
+# Agent worktrees and local tool state
+/.worktrees/
+/.claude/worktrees/
+
+# Snapshot-test diffs (egui_kittest writes *.diff.png / *.new.png next to snapshots)
+*.diff.png
+*.new.png
+*.old.png

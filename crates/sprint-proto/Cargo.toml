@@ -1,0 +1,12 @@
+[package]
+name = "sprint-proto"
+description = "Printer firmware protocol: line framing, reply parsing, firmware/settings models and G-code reference for Sprint"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true

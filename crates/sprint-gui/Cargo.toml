@@ -1,0 +1,29 @@
+[package]
+name = "sprint-gui"
+description = "Sprint desktop GUI (eframe/egui)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+sprint-gcode.workspace = true
+sprint-proto.workspace = true
+sprint-host.workspace = true
+sprint-viewer.workspace = true
+eframe.workspace = true
+egui.workspace = true
+egui_extras.workspace = true
+egui_plot.workspace = true
+egui-phosphor.workspace = true
+image.workspace = true
+rfd.workspace = true
+parking_lot.workspace = true
+crossbeam-channel.workspace = true
+serde.workspace = true
+anyhow.workspace = true
+log.workspace = true
+
+[dev-dependencies]
+egui_kittest.workspace = true

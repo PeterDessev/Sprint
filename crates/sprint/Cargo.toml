@@ -1,0 +1,25 @@
+[package]
+name = "sprint"
+description = "Sprint: a fast, modern 3D printer host (GUI, TUI and CLI)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "sprint"
+path = "src/main.rs"
+
+[dependencies]
+sprint-gcode.workspace = true
+sprint-proto.workspace = true
+sprint-sim.workspace = true
+sprint-host.workspace = true
+sprint-gui.workspace = true
+sprint-tui.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+log.workspace = true
+env_logger.workspace = true
+serde_json.workspace = true

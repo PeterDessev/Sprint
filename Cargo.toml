@@ -1,0 +1,68 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+default-members = ["crates/sprint"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+authors = ["Peter Dessev"]
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+# Internal crates
+sprint-gcode = { path = "crates/sprint-gcode" }
+sprint-proto = { path = "crates/sprint-proto" }
+sprint-sim = { path = "crates/sprint-sim" }
+sprint-host = { path = "crates/sprint-host" }
+sprint-viewer = { path = "crates/sprint-viewer" }
+sprint-gui = { path = "crates/sprint-gui" }
+sprint-tui = { path = "crates/sprint-tui" }
+
+# General
+anyhow = "1"
+thiserror = "2"
+log = "0.4"
+env_logger = "0.11"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"
+base64 = "0.22"
+crossbeam-channel = "0.5"
+parking_lot = "0.12"
+directories = "6"
+clap = { version = "4.6", features = ["derive"] }
+
+# Hardware link
+serialport = "4.10"
+
+# GUI (egui 0.36 family; egui_plot 0.37 and egui-phosphor 0.14 target egui 0.36)
+eframe = { version = "0.36.2", features = ["persistence"] }
+egui = "0.36"
+egui-wgpu = "0.36"
+egui_extras = "0.36"
+egui_plot = "0.37"
+egui-phosphor = "0.14"
+egui_kittest = { version = "0.36", features = ["wgpu", "snapshot"] }
+bytemuck = { version = "1", features = ["derive"] }
+glam = { version = "0.34", features = ["bytemuck"] }
+pollster = "0.4"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+rfd = "0.17"
+
+# Terminal
+ratatui = "0.30"
+crossterm = "0.29"
+
+[profile.dev]
+opt-level = 1
+
+# Dependencies (egui, wgpu, ...) are optimized even in dev builds so the GUI
+# and the G-code analyzer stay responsive while iterating.
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+lto = "thin"
+codegen-units = 4

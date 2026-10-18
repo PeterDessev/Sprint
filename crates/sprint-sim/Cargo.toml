@@ -1,0 +1,12 @@
+[package]
+name = "sprint-sim"
+description = "Virtual Marlin-style 3D printer for testing Sprint without hardware"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+log.workspace = true

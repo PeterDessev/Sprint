@@ -1,0 +1,13 @@
+[package]
+name = "sprint-gcode"
+description = "G-code parsing, toolpath analysis and print-time estimation for Sprint"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+base64.workspace = true
+thiserror.workspace = true
