@@ -450,7 +450,7 @@ impl Autotune {
         let rule = if self.no_overshoot {
             " No overshoot"
         } else {
-            " Classic PID"
+            " Classic PID " // Marlin's STR_CLASSIC_PID, trailing space included
         };
         vec![
             report,
@@ -617,7 +617,7 @@ mod tests {
                 .iter()
                 .any(|l| l.contains(" Ku: ") && l.contains(" Tu: "))
         );
-        assert!(lines.iter().any(|l| l == " Classic PID"));
+        assert!(lines.iter().any(|l| l == " Classic PID "));
         assert!((8.0..60.0).contains(&g.kp), "{g:?}");
         assert!((0.3..6.0).contains(&g.ki), "{g:?}");
         assert!((20.0..300.0).contains(&g.kd), "{g:?}");

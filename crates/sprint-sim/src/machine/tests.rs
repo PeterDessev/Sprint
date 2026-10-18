@@ -967,7 +967,7 @@ fn autotune_hotend() {
         out.iter()
             .any(|l| l.contains(" Ku: ") && l.contains(" Tu: "))
     );
-    assert!(out.contains(&" Classic PID".to_string()));
+    assert!(out.contains(&" Classic PID ".to_string()), "{out:?}");
     assert!(out.iter().any(|l| l.starts_with(" Kp: ")));
     assert!(out.contains(
         &"PID Autotune finished! Put the last Kp, Ki and Kd constants from below into Configuration.h"

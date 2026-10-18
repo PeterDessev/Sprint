@@ -136,7 +136,7 @@ fn pid_autotune_output() {
         bias.iter()
             .any(|l| l.contains(" Ku: ") && l.contains(" Tu: "))
     );
-    assert!(out.iter().any(|l| l == " Classic PID"));
+    assert!(out.iter().any(|l| l == " Classic PID "), "{out:?}");
     let kp_line = out.iter().rev().find(|l| l.starts_with(" Kp: ")).unwrap();
     let defines: Vec<&String> = out
         .iter()
