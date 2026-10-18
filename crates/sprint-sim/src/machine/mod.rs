@@ -142,7 +142,8 @@ pub(crate) struct Machine {
 
     // Serial link and command buffer.
     partial: Vec<u8>,
-    pending: VecDeque<String>,
+    /// Complete raw lines waiting for command-buffer space.
+    pending: VecDeque<Vec<u8>>,
     pending_bytes: usize,
     last_n: i64,
     queue: VecDeque<Queued>,
@@ -346,8 +347,7 @@ impl Machine {
             }
             if b == b'\n' || b == b'\r' {
                 if !self.partial.is_empty() {
-                    let raw = String::from_utf8_lossy(&self.partial).into_owned();
-                    self.partial.clear();
+                    let raw = std::mem::take(&mut self.partial);
                     self.on_line(raw);
                 }
             } else if self.partial.len() < MAX_LINE {
@@ -565,11 +565,11 @@ impl Machine {
 
     // ----- line protocol -----
 
-    fn on_line(&mut self, raw: String) {
+    fn on_line(&mut self, raw: Vec<u8>) {
         // Marlin disables the emergency parser while writing to SD (M28 to
         // M29), so such lines are stored in the file like any other.
         if self.saving.is_none()
-            && let Some(e) = line::emergency(&raw)
+            && let Some(e) = line::emergency(&String::from_utf8_lossy(&raw))
         {
             self.emergency(e);
             if self.run != RunState::Running {
@@ -683,10 +683,14 @@ impl Machine {
     }
 
     /// Validate framing and queue the command.
-    fn accept_line(&mut self, raw: &str) {
-        let Some(framed) = line::frame(raw) else {
+    fn accept_line(&mut self, raw: &[u8]) {
+        let text = String::from_utf8_lossy(raw);
+        let Some(framed) = line::frame(&text) else {
             return;
         };
+        // Marlin XORs the bytes as received; the lossy text may differ from
+        // them where the line is not valid UTF-8.
+        let computed = line::raw_checksum(raw);
         let parsed = Command::parse(framed.command);
         let is_m29 = parsed.is(b'M', 29);
         let line_number = match framed.number {
@@ -700,7 +704,7 @@ impl Machine {
                     return;
                 }
                 match framed.checksum {
-                    Some(cs) if cs != i64::from(framed.computed) => {
+                    Some(cs) if cs != i64::from(computed) => {
                         self.line_error("checksum mismatch, Last Line: ");
                         return;
                     }

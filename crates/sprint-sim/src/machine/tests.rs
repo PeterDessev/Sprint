@@ -179,6 +179,22 @@ fn numbered_lines_and_errors() {
 }
 
 #[test]
+fn checksums_cover_the_raw_bytes() {
+    // Marlin XORs the bytes it received. A Latin-1 "é" (0xE9) is not
+    // UTF-8, but a host's checksum over the raw bytes must still match.
+    let mut r = Rig::booted();
+    let payload: &[u8] = b"N1 M117 Caf\xe9";
+    let cs = payload.iter().fold(0u8, |a, b| a ^ b);
+    let mut line = payload.to_vec();
+    line.extend_from_slice(format!("*{cs}\n").as_bytes());
+    r.m.on_bytes(&line);
+    r.run(0.1);
+    assert_eq!(r.take(), vec!["ok"]);
+    assert_eq!(r.m.snapshot().last_line_number, 1);
+    assert_eq!(r.m.take_received(), vec!["M117 Caf\u{fffd}"]);
+}
+
+#[test]
 fn m110_sets_line_number() {
     let mut r = Rig::booted();
     r.ok(&frame(1, "G90"));

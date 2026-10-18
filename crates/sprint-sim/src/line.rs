@@ -9,10 +9,9 @@ pub(crate) struct Framed<'a> {
     pub number: Option<i64>,
     /// Command text without the `N` word, checksum and comment, trimmed.
     pub command: &'a str,
-    /// Checksum value transmitted after the last `*`, if any.
+    /// Checksum value transmitted after the last `*`, if any (compare it
+    /// with [`raw_checksum`] of the received bytes).
     pub checksum: Option<i64>,
-    /// XOR of every byte before the last `*` (what the checksum must equal).
-    pub computed: u8,
 }
 
 /// Remove a `;` comment (Marlin drops everything after `;`, even inside an
@@ -50,12 +49,9 @@ pub(crate) fn frame(raw: &str) -> Option<Framed<'_>> {
     if line.trim().is_empty() {
         return None;
     }
-    let (body, checksum, computed) = match line.rfind('*') {
-        Some(star) => {
-            let computed = line.as_bytes()[..star].iter().fold(0u8, |acc, b| acc ^ b);
-            (&line[..star], Some(strtol(&line[star + 1..])), computed)
-        }
-        None => (line, None, 0),
+    let (body, checksum) = match line.rfind('*') {
+        Some(star) => (&line[..star], Some(strtol(&line[star + 1..]))),
+        None => (line, None),
     };
     let bytes = body.as_bytes();
     let (number, command) = if matches!(bytes.first(), Some(b'N' | b'n')) {
@@ -72,8 +68,26 @@ pub(crate) fn frame(raw: &str) -> Option<Framed<'_>> {
         number,
         command,
         checksum,
-        computed,
     })
+}
+
+/// The checksum Marlin computes for a raw received line: the XOR of the
+/// bytes before the last `*` of the line with its `;` comment removed and
+/// leading whitespace skipped. Works on the raw bytes, so it matches the
+/// host's checksum even where the line is not valid UTF-8.
+pub(crate) fn raw_checksum(raw: &[u8]) -> u8 {
+    let line = raw
+        .iter()
+        .position(|&b| b == b';')
+        .map_or(raw, |i| &raw[..i]);
+    let start = line
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .unwrap_or(line.len());
+    let line = &line[start..];
+    line.iter()
+        .rposition(|&b| b == b'*')
+        .map_or(0, |star| line[..star].iter().fold(0u8, |acc, b| acc ^ b))
 }
 
 /// Emergency commands recognised on receipt (Marlin EMERGENCY_PARSER).
@@ -147,7 +161,7 @@ mod tests {
         assert_eq!(f.number, Some(12));
         assert_eq!(f.command, "G1 X10");
         assert_eq!(f.checksum, Some(i64::from(checksum(payload))));
-        assert_eq!(f.computed, checksum(payload));
+        assert_eq!(raw_checksum(raw.as_bytes()), checksum(payload));
     }
 
     #[test]
@@ -160,6 +174,23 @@ mod tests {
         assert_eq!(f.checksum, None);
         let f = frame("M117 Hello  World").unwrap();
         assert_eq!(f.command, "M117 Hello  World");
+    }
+
+    #[test]
+    fn raw_checksum_matches_frame_and_covers_invalid_utf8() {
+        for (raw, payload) in [
+            ("N12 G1 X10*7", "N12 G1 X10"),
+            ("  N3 M105 *1 ; c*9", "N3 M105 "),
+            ("M117 *a*b", "M117 *a"),
+            ("G28", ""),
+        ] {
+            assert_eq!(raw_checksum(raw.as_bytes()), checksum(payload), "{raw}");
+        }
+        let latin1: &[u8] = b"N1 M117 Caf\xe9*0";
+        let expected = b"N1 M117 Caf\xe9".iter().fold(0u8, |a, b| a ^ b);
+        assert_eq!(raw_checksum(latin1), expected);
+        assert_eq!(raw_checksum(b""), 0);
+        assert_eq!(raw_checksum(b"   ;*5"), 0);
     }
 
     #[test]
