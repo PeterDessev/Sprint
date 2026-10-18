@@ -164,12 +164,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     viewer.set_view(ViewPreset::Iso);
 
-    // Highlight a line on the tower.
+    // Highlight the selected G-code line: the longest move of the tower's
+    // top skin.
     {
         let line = toolpath
             .segments
             .iter()
-            .find(|s| s.layer == 30 && s.feature == sprint_gcode::Feature::ExternalPerimeter)
+            .filter(|s| s.feature == sprint_gcode::Feature::TopSolidInfill)
+            .max_by(|a, b| a.length().total_cmp(&b.length()))
             .map(|s| s.line);
         viewer.options_mut().highlight_line = line;
         save(&mut viewer, &dir, "17_highlight.png")?;

@@ -213,6 +213,14 @@ fn segment_shade(s: SegmentIn) -> vec4<f32> {
     return vec4<f32>(c, emissive);
 }
 
+// The highlighted (selected) line is drawn fatter so it stands out.
+fn bead_scale(line: u32) -> f32 {
+    if (has_flag(FLAG_HIGHLIGHT) && line == g.lines.y) {
+        return 1.7;
+    }
+    return 1.0;
+}
+
 // Orthonormal frame around a segment direction; mirrors scene::segment_frame.
 fn segment_right(dir: vec3<f32>) -> vec3<f32> {
     let r = cross(dir, vec3<f32>(0.0, 0.0, 1.0));
@@ -272,9 +280,10 @@ fn vs_tube(v: TubeVertex, s: SegmentIn) -> LitOut {
     }
     let right = segment_right(dir);
     let up = cross(right, dir);
-    let hw = 0.5 * s.width;
-    let hh = 0.5 * s.height;
-    let center = mix(s.start, s.end, v.profile.x) - vec3<f32>(0.0, 0.0, hh);
+    let grow = bead_scale(s.line);
+    let hw = 0.5 * s.width * grow;
+    let hh = 0.5 * s.height * grow;
+    let center = mix(s.start, s.end, v.profile.x) - vec3<f32>(0.0, 0.0, 0.5 * s.height);
     let world = center + right * (v.profile.y * hw) + up * (v.profile.z * hh) + dir * (v.profile.w * hw);
     // Inverse-scale the profile normal (softened so beads read round).
     let sh = mix(hh, hw, 0.3);
@@ -318,9 +327,11 @@ fn vs_ribbon(@builtin(vertex_index) vi: u32, s: SegmentIn) -> RibbonOut {
     }
     let right = segment_right(dir);
     let up = cross(right, dir);
-    let a = 0.5 * s.width;
-    let b = 0.5 * s.height;
-    let mid = (s.start + s.end) * 0.5 - vec3<f32>(0.0, 0.0, b);
+    let grow = bead_scale(s.line);
+    let a = 0.5 * s.width * grow;
+    let b = 0.5 * s.height * grow;
+    let drop = vec3<f32>(0.0, 0.0, 0.5 * s.height);
+    let mid = (s.start + s.end) * 0.5 - drop;
     let v = view_vector(mid);
     let vr = dot(v, right);
     let vu = dot(v, up);
@@ -344,7 +355,7 @@ fn vs_ribbon(@builtin(vertex_index) vi: u32, s: SegmentIn) -> RibbonOut {
     // Pull the strip towards the viewer to roughly the bead's front surface.
     let support = sqrt(a * a * vr * vr + b * b * vu * vu);
     let end_sign = along * 2.0 - 1.0;
-    let base = mix(s.start, s.end, along) - vec3<f32>(0.0, 0.0, b) + dir * (end_sign * 0.5 * a);
+    let base = mix(s.start, s.end, along) - drop + dir * (end_sign * 0.5 * a);
     let world = base + p * side + v * (0.7 * support);
     out.world = world;
     out.u = side;
