@@ -65,7 +65,9 @@ pub(crate) struct MeshBlock {
     /// Lines carry Klipper's "// " prefix.
     klipper: bool,
     rows: Vec<(Option<usize>, Vec<f32>)>,
-    corners: Vec<(f32, f32)>,
+    /// Bounding box `[min x, max x, min y, max y]` of the UBL corner labels
+    /// seen so far (a box, so a flood of corner lines needs no memory).
+    bounds: Option<[f32; 4]>,
 }
 
 enum LineKind {
@@ -142,8 +144,21 @@ impl MeshBlock {
             back_first,
             klipper,
             rows: Vec::new(),
-            corners: Vec::new(),
+            bounds: None,
         }
+    }
+
+    /// Grow the corner bounding box by one (finite) corner coordinate.
+    fn add_corner(&mut self, x: f32, y: f32) {
+        if !(x.is_finite() && y.is_finite()) {
+            return;
+        }
+        self.bounds = Some(match self.bounds {
+            Some([min_x, max_x, min_y, max_y]) => {
+                [min_x.min(x), max_x.max(x), min_y.min(y), max_y.max(y)]
+            }
+            None => [x, x, y, y],
+        });
     }
 
     /// Recognise the header line of a mesh report (already trimmed, with
@@ -213,8 +228,10 @@ impl MeshBlock {
                 Step::Consumed
             }
             LineKind::Decoration => Step::Consumed,
-            LineKind::Corners(c) => {
-                self.corners.extend(c);
+            LineKind::Corners(corners) => {
+                for (x, y) in corners {
+                    self.add_corner(x, y);
+                }
                 Step::Consumed
             }
             LineKind::Foreign => Step::FinishedPassThrough(self.finish()),
@@ -248,13 +265,8 @@ impl MeshBlock {
         if mesh.cols() == 0 {
             return None;
         }
-        let corners = std::mem::take(&mut self.corners);
-        if let (Some(min_x), Some(max_x), Some(min_y), Some(max_y)) = (
-            corners.iter().map(|c| c.0).reduce(f32::min),
-            corners.iter().map(|c| c.0).reduce(f32::max),
-            corners.iter().map(|c| c.1).reduce(f32::min),
-            corners.iter().map(|c| c.1).reduce(f32::max),
-        ) && min_x < max_x
+        if let Some([min_x, max_x, min_y, max_y]) = self.bounds.take()
+            && min_x < max_x
             && min_y < max_y
         {
             mesh.set_bounds(min_x, max_x, min_y, max_y);
@@ -332,6 +344,33 @@ mod tests {
             matches!(classify("(  0,220)      (220,220)"), LineKind::Corners(c) if c.len() == 2)
         );
         assert!(matches!(classify("(abc)"), LineKind::Foreign));
+    }
+
+    #[test]
+    fn corner_lines_need_constant_memory() {
+        // Regression: every "(x,y)" corner inside an open report was pushed
+        // onto a Vec, so a flood of corner lines grew memory without limit.
+        // The corners are now folded into a bounding box.
+        let mut block = MeshBlock::start("Bed Topography Report:", MblHeader::Marlin).unwrap();
+        for _ in 0..10_000 {
+            assert!(matches!(
+                block.feed("(  0,220)    (220,220)"),
+                Step::Consumed
+            ));
+        }
+        assert_eq!(block.bounds, Some([0.0, 220.0, 220.0, 220.0]));
+        assert!(matches!(block.feed(" 0 | +0.1 +0.2"), Step::Consumed));
+        assert!(matches!(block.feed(" 1 | +0.3 +0.4"), Step::Consumed));
+        assert!(matches!(block.feed("(nan,  0)"), Step::Consumed));
+        assert!(matches!(
+            block.feed("(  0,  0)    (220,  0)"),
+            Step::Consumed
+        ));
+        let Step::Finished(Some(mesh)) = block.feed("") else {
+            panic!("block did not finish");
+        };
+        assert_eq!(mesh.x_positions, Some(vec![0.0, 220.0]));
+        assert_eq!(mesh.y_positions, Some(vec![0.0, 220.0]));
     }
 
     #[test]
