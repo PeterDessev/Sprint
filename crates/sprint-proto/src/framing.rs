@@ -1,7 +1,7 @@
 //! Line framing: line numbers and checksums as used by RepRap-style firmware
 //! (Marlin, Prusa, Klipper, RepRapFirmware, Smoothieware, Repetier).
 //!
-//! A framed line looks like `N12 G1 X10*85`: the `N` word, a single space,
+//! A framed line looks like `N12 G1 X10*98`: the `N` word, a single space,
 //! the command, then `*` and the XOR checksum of every byte before the `*`.
 
 /// XOR of all bytes of `payload`.
@@ -59,9 +59,21 @@ pub struct FramedLine<'a> {
     pub checksum: u8,
 }
 
-/// Parse and verify a framed line such as `N12 G1 X10*85` (the inverse of
+/// Parse and verify a framed line such as `N12 G1 X10*98` (the inverse of
 /// [`frame_numbered`]). Useful for tests and for anything that has to
 /// validate host traffic the way firmware does.
+///
+/// ```
+/// use sprint_proto::{FrameError, frame_numbered, parse_framed};
+///
+/// assert_eq!(frame_numbered(12, "G1 X10"), "N12 G1 X10*98");
+/// let line = parse_framed("N12 G1 X10*98").unwrap();
+/// assert_eq!((line.line_number, line.command), (12, "G1 X10"));
+/// assert!(matches!(
+///     parse_framed("N12 G1 X10*85"),
+///     Err(FrameError::ChecksumMismatch { expected: 98, actual: 85 })
+/// ));
+/// ```
 pub fn parse_framed(line: &str) -> Result<FramedLine<'_>, FrameError> {
     let line = line.trim();
     let star = line.rfind('*').ok_or(FrameError::MissingChecksum)?;
