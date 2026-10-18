@@ -60,27 +60,93 @@ fn demo_scene_partitions_every_segment() {
         }
         assert_eq!(got, expected, "layer {i}");
 
-        // Clusters cover the layer exactly, in order, and bound their beads.
+        // The layer's clusters cover its instances (small consecutive
+        // layers may share a cluster) and know they hold this layer.
         let clusters = &s.clusters[layer.clusters.start as usize..layer.clusters.end as usize];
-        let mut cursor = layer.extrusions.start;
-        for c in clusters {
-            assert_eq!(c.instances.start, cursor);
-            assert!(c.instances.end > c.instances.start);
-            assert!((c.instances.end - c.instances.start) as usize <= CLUSTER_SIZE);
-            cursor = c.instances.end;
-            for inst in &s.extrusions[c.instances.start as usize..c.instances.end as usize] {
-                for k in 0..3 {
-                    for p in [inst.start[k], inst.end[k]] {
-                        assert!(p >= c.min[k] - 1e-4 && p <= c.max[k] + 1e-4);
-                    }
-                }
-                assert!(inst.width <= c.max_width);
-            }
+        if layer.extrusions.is_empty() {
+            assert!(clusters.is_empty(), "layer {i}");
+            continue;
         }
-        assert_eq!(cursor, layer.extrusions.end, "layer {i} cluster coverage");
+        let first = clusters.first().expect("non-empty layer has clusters");
+        let last = clusters.last().expect("non-empty layer has clusters");
+        assert!(first.instances.start <= layer.extrusions.start, "layer {i}");
+        assert!(last.instances.end >= layer.extrusions.end, "layer {i}");
+        for c in clusters {
+            assert!(
+                c.layers.contains(&(i as u32)),
+                "layer {i} in {:?}",
+                c.layers
+            );
+        }
     }
     assert_eq!(next_ext as usize, s.extrusions.len());
     assert_eq!(next_travel as usize, s.travels.len());
+
+    // Clusters tile the extrusion array in order and bound their beads.
+    let mut cursor = 0;
+    for c in &s.clusters {
+        assert_eq!(c.instances.start, cursor);
+        assert!(c.instances.end > c.instances.start);
+        assert!((c.instances.end - c.instances.start) as usize <= CLUSTER_SIZE);
+        assert!(c.layers.start < c.layers.end);
+        cursor = c.instances.end;
+        for inst in &s.extrusions[c.instances.start as usize..c.instances.end as usize] {
+            assert!(c.layers.contains(&inst.layer));
+            for k in 0..3 {
+                for p in [inst.start[k], inst.end[k]] {
+                    assert!(p >= c.min[k] - 1e-4 && p <= c.max[k] + 1e-4);
+                }
+            }
+            assert!(inst.width <= c.max_width);
+        }
+    }
+    assert_eq!(cursor as usize, s.extrusions.len());
+}
+
+#[test]
+fn consecutive_tiny_layers_share_clusters() {
+    // Spiral vase as a Z-change layer detector sees it: one layer per
+    // segment. Per-layer clusters would make culling cost one test per
+    // segment every frame.
+    let mut tp = Toolpath::default();
+    let n = 10_000;
+    for i in 0..n {
+        let a = i as f32 * 0.03;
+        let z = 0.2 + i as f32 * 0.001;
+        tp.segments.push(Segment {
+            start: [100.0 + 20.0 * a.cos(), 100.0 + 20.0 * a.sin(), z],
+            end: [
+                100.0 + 20.0 * (a + 0.03).cos(),
+                100.0 + 20.0 * (a + 0.03).sin(),
+                z,
+            ],
+            width: 0.45,
+            height: 0.2,
+            line: i as u32,
+            layer: i as u32,
+            kind: MoveKind::Extrude,
+            ..Default::default()
+        });
+        tp.layers.push(Layer {
+            z,
+            segments: i..i + 1,
+            ..Default::default()
+        });
+    }
+    let s = scene(&tp);
+    assert_eq!(s.layers.len(), n);
+    assert!(
+        s.clusters.len() <= n.div_ceil(CLUSTER_SIZE) + 1,
+        "{} clusters for {n} one-segment layers",
+        s.clusters.len()
+    );
+    for (i, layer) in s.layers.iter().enumerate() {
+        let c = &s.clusters[layer.clusters.start as usize];
+        assert_eq!(layer.clusters.len(), 1);
+        assert!(c.layers.contains(&(i as u32)));
+        assert!(c.instances.start <= layer.extrusions.start);
+        assert!(c.instances.end >= layer.extrusions.end);
+    }
 }
 
 #[test]

@@ -1272,7 +1272,9 @@ fn push_range(ranges: &mut Vec<std::ops::Range<u32>>, r: std::ops::Range<u32>) {
 /// frustum are skipped; the rest are split into prisms (beads at least
 /// `lod_pixels` wide on screen) and ribbon impostors. Layers are visited
 /// front to back for the camera (top layers first when looking down) so
-/// early depth testing rejects most hidden fragments.
+/// early depth testing rejects most hidden fragments. The work is
+/// proportional to the number of clusters in view, not to the number of
+/// layers.
 fn select_clusters(
     info: &SceneInfo,
     (a, b): (usize, usize),
@@ -1286,32 +1288,63 @@ fn select_clusters(
     let eye = cam.eye();
     let forward = cam.forward();
     let near = cam.near();
-    let mut visit = |layer: &LayerRanges| {
-        let range = layer.clusters.start as usize..layer.clusters.end as usize;
-        for c in info.clusters.get(range).unwrap_or_default() {
-            let (min, max) = (Vec3::from(c.min), Vec3::from(c.max));
-            if c.instances.is_empty() || !frustum.intersects_aabb(min, max) {
-                continue;
-            }
-            let world_per_px = match cam.projection {
-                Projection::Perspective => {
-                    let closest = eye.clamp(min, max);
-                    (closest - eye).dot(forward).max(near) * pixel
-                }
-                Projection::Orthographic => pixel,
-            };
-            let wide = c.max_width >= lod_pixels * world_per_px;
-            push_range(
-                if wide { &mut prisms } else { &mut ribbons },
-                c.instances.clone(),
-            );
+    let a = u32::try_from(a).unwrap_or(u32::MAX);
+    let b = u32::try_from(b).unwrap_or(u32::MAX).max(a);
+    // The part of a cluster that lies in the visible layers. Clusters that
+    // span several layers only exist for ordered, disjoint layer ranges, so
+    // their visible part is one contiguous instance range.
+    let visible = |c: &Cluster| -> std::ops::Range<u32> {
+        if c.layers.start >= a && c.layers.end.saturating_sub(1) <= b {
+            return c.instances.clone();
         }
+        let lo = info
+            .layers
+            .get(c.layers.start.max(a) as usize)
+            .map_or(c.instances.start, |l| l.extrusions.start)
+            .max(c.instances.start);
+        let hi = info
+            .layers
+            .get(c.layers.end.saturating_sub(1).min(b) as usize)
+            .map_or(c.instances.end, |l| l.extrusions.end)
+            .min(c.instances.end);
+        lo..hi.max(lo)
     };
-    let layers = info.layers.get(a..=b).unwrap_or_default();
+    let mut visit = |c: &Cluster| {
+        let (min, max) = (Vec3::from(c.min), Vec3::from(c.max));
+        if c.instances.is_empty() || !frustum.intersects_aabb(min, max) {
+            return;
+        }
+        let world_per_px = match cam.projection {
+            Projection::Perspective => {
+                let closest = eye.clamp(min, max);
+                (closest - eye).dot(forward).max(near) * pixel
+            }
+            Projection::Orthographic => pixel,
+        };
+        let wide = c.max_width >= lod_pixels * world_per_px;
+        push_range(if wide { &mut prisms } else { &mut ribbons }, visible(c));
+    };
+    // Clusters are stored in layer order: binary search the visible ones.
+    let first = info.clusters.partition_point(|c| c.layers.end <= a);
+    let last = info
+        .clusters
+        .partition_point(|c| c.layers.start <= b)
+        .max(first);
+    let clusters = info.clusters.get(first..last).unwrap_or_default();
     if forward.z <= 0.0 {
-        layers.iter().rev().for_each(&mut visit);
+        // Top layers first; the clusters of one big layer stay in order so
+        // they merge into one draw.
+        let mut end = clusters.len();
+        while let Some(top) = end.checked_sub(1).and_then(|i| clusters.get(i)) {
+            let mut start = end - 1;
+            while start > 0 && clusters[start - 1].layers == top.layers {
+                start -= 1;
+            }
+            clusters[start..end].iter().for_each(&mut visit);
+            end = start;
+        }
     } else {
-        layers.iter().for_each(&mut visit);
+        clusters.iter().for_each(&mut visit);
     }
     (prisms, ribbons)
 }
@@ -1509,6 +1542,52 @@ mod tests {
                     draws <= 40,
                     "{preset:?} lod {lod}: {draws} draw calls for 20k one-segment layers"
                 );
+            }
+        }
+    }
+
+    /// The selected instance ranges, sorted; panics if they overlap.
+    fn covered(lists: &DrawLists) -> Vec<std::ops::Range<u32>> {
+        let mut all: Vec<_> = lists.0.iter().chain(&lists.1).cloned().collect();
+        all.sort_by_key(|r| r.start);
+        let mut merged: Vec<std::ops::Range<u32>> = Vec::new();
+        for r in all {
+            match merged.last_mut() {
+                Some(last) if last.end == r.start => last.end = r.end,
+                Some(last) => {
+                    assert!(last.end < r.start, "overlapping draws {last:?} {r:?}");
+                    merged.push(r);
+                }
+                None => merged.push(r),
+            }
+        }
+        merged
+    }
+
+    #[test]
+    fn layer_ranges_select_exactly_their_instances() {
+        for tp in [vase(9_000), crate::demo::demo_toolpath()] {
+            let info = info(&tp);
+            let n = info.layers.len();
+            let mut cam = Camera::default();
+            let (min, max) = info.bounds.expect("bounds");
+            cam.fit_bounds(Vec3::from(min), Vec3::from(max), 1.6);
+            let frustum = Frustum::from_matrix(cam.view_proj(1.6));
+            let pixel = 2.0 * (cam.fov_y * 0.5).tan() / 800.0;
+            for (a, b) in [
+                (0, n - 1),
+                (0, 0),
+                (n - 1, n - 1),
+                (3, 7),
+                (n / 3, n / 2),
+                (1, n - 2),
+            ] {
+                for lod in [0.0, f32::MAX] {
+                    let lists = select_clusters(&info, (a, b), &frustum, &cam, pixel, lod);
+                    let want = info.layers[a].extrusions.start..info.layers[b].extrusions.end;
+                    let want: Vec<_> = std::iter::once(want).filter(|r| !r.is_empty()).collect();
+                    assert_eq!(covered(&lists), want, "layers {a}..={b}, lod {lod}");
+                }
             }
         }
     }

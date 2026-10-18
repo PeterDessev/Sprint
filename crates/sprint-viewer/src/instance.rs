@@ -2,11 +2,12 @@
 //!
 //! Each segment becomes one 48-byte [`SegmentInstance`]. Extrusions and
 //! travels go into separate buffers in layer order, so every layer maps to a
-//! contiguous instance sub-range of each ([`LayerRanges`]). Inside a layer,
-//! extrusions are sorted along a Z-order curve and cut into spatially
-//! coherent [`Cluster`]s, which the renderer culls against the view frustum
-//! and draws either as prisms or as cheap ribbons depending on their size
-//! on screen. Nothing depends on the order inside a layer: line limits,
+//! contiguous instance sub-range of each ([`LayerRanges`]). Inside a big
+//! layer, extrusions are sorted along a Z-order curve and cut into spatially
+//! coherent [`Cluster`]s; runs of small consecutive layers share clusters.
+//! The renderer culls clusters against the view frustum and draws them
+//! either as prisms or as cheap ribbons depending on their size on screen.
+//! Nothing depends on the order inside a layer: line limits,
 //! progress and highlights are evaluated per instance from its source line.
 //! Retractions get their own 24-byte [`RetractionInstance`].
 
@@ -183,15 +184,25 @@ pub struct LayerRanges {
     pub extrusions: Range<u32>,
     /// Range into [`SceneData::travels`].
     pub travels: Range<u32>,
-    /// Range into [`SceneData::clusters`] covering `extrusions`.
+    /// Range into [`SceneData::clusters`] covering `extrusions` (a cluster
+    /// may also hold instances of neighbouring small layers, see
+    /// [`Cluster::layers`]).
     pub clusters: Range<u32>,
 }
 
-/// A run of spatially close extrusion instances inside one layer.
+/// A run of spatially close extrusion instances: part of one big layer, or
+/// several consecutive small layers (a spiral vase has one layer per
+/// segment) so the per-frame culling work stays proportional to the number
+/// of instances / [`CLUSTER_SIZE`], not to the number of layers.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Cluster {
     /// Range into [`SceneData::extrusions`].
     pub instances: Range<u32>,
+    /// Indices of the layers whose instances the cluster holds. A cluster
+    /// spans more than one layer only when the layers' instance ranges are
+    /// ordered and disjoint, so a layer sub-range of a cluster is a
+    /// contiguous instance sub-range.
+    pub layers: Range<u32>,
     /// Minimum corner of the beads' bounding box (mm).
     pub min: [f32; 3],
     /// Maximum corner of the beads' bounding box (mm).
@@ -452,51 +463,87 @@ pub fn build_scene(toolpath: &Toolpath, cancel: &AtomicBool) -> Option<SceneData
     })
 }
 
-/// Sort each layer's extrusions along a Z-order curve (when the layer ranges
-/// are disjoint and ordered, as they are for well-formed toolpaths) and cut
-/// them into [`Cluster`]s of at most [`CLUSTER_SIZE`] instances.
+/// Cut the extrusions into [`Cluster`]s of at most [`CLUSTER_SIZE`]
+/// instances. When the layer ranges are disjoint and ordered (as they are
+/// for well-formed toolpaths), big layers are first sorted along a Z-order
+/// curve, and runs of consecutive small layers share clusters.
 fn cluster_layers(
     extrusions: &mut [SegmentInstance],
     layers: &mut [LayerRanges],
     cancel: &AtomicBool,
 ) -> Option<Vec<Cluster>> {
+    const CHECK_EVERY: usize = 1024;
     let disjoint = layers
         .windows(2)
         .all(|w| w[0].extrusions.end <= w[1].extrusions.start);
-    let mut clusters = Vec::with_capacity(extrusions.len() / CLUSTER_SIZE + layers.len());
-    for layer in layers.iter_mut() {
-        if cancel.load(Ordering::Relaxed) {
+    let mut clusters: Vec<Cluster> = Vec::with_capacity(extrusions.len() / CLUSTER_SIZE + 1);
+    // Bead box of the last cluster while later small layers may still join it.
+    let mut open: Option<BeadBox> = None;
+    for (index, layer) in layers.iter_mut().enumerate() {
+        if index % CHECK_EVERY == 0 && cancel.load(Ordering::Relaxed) {
             return None;
         }
+        let index = u32::try_from(index).unwrap_or(u32::MAX);
         let start = (layer.extrusions.start as usize).min(extrusions.len());
         let end = (layer.extrusions.end as usize).clamp(start, extrusions.len());
         let first = clusters.len() as u32;
-        let Some(slice) = extrusions.get_mut(start..end) else {
+        let Some(slice) = extrusions.get_mut(start..end).filter(|s| !s.is_empty()) else {
             layer.clusters = first..first;
             continue;
         };
-        if disjoint && slice.len() > CLUSTER_SIZE {
+        if disjoint && slice.len() <= CLUSTER_SIZE {
+            if let (Some(bead_box), Some(last)) = (open.as_mut(), clusters.last_mut())
+                && last.instances.end as usize == start
+                && (last.instances.end - last.instances.start) as usize + slice.len()
+                    <= CLUSTER_SIZE
+            {
+                for inst in slice.iter() {
+                    bead_box.include(inst);
+                    last.max_width = last.max_width.max(inst.width);
+                }
+                (last.min, last.max) = bead_box.get().unwrap_or((last.min, last.max));
+                last.instances.end = end as u32;
+                last.layers.end = index.saturating_add(1);
+                layer.clusters = first.saturating_sub(1)..first;
+                continue;
+            }
+            let (cluster, bead_box) = new_cluster(slice, start, index);
+            clusters.push(cluster);
+            open = Some(bead_box);
+            layer.clusters = first..first + 1;
+            continue;
+        }
+        open = None;
+        if disjoint {
             sort_z_order(slice);
         }
         for (k, chunk) in slice.chunks(CLUSTER_SIZE).enumerate() {
-            let mut b = BeadBox::default();
-            let mut max_width = 0.0f32;
-            for inst in chunk {
-                b.include(inst);
-                max_width = max_width.max(inst.width);
-            }
-            let (min, max) = b.get().unwrap_or(([0.0; 3], [0.0; 3]));
-            let s = (start + k * CLUSTER_SIZE) as u32;
-            clusters.push(Cluster {
-                instances: s..s + chunk.len() as u32,
-                min,
-                max,
-                max_width,
-            });
+            clusters.push(new_cluster(chunk, start + k * CLUSTER_SIZE, index).0);
         }
         layer.clusters = first..clusters.len() as u32;
     }
     Some(clusters)
+}
+
+/// A cluster of `chunk` (starting at instance `start`) on layer `layer`, and
+/// the box around its beads.
+fn new_cluster(chunk: &[SegmentInstance], start: usize, layer: u32) -> (Cluster, BeadBox) {
+    let mut bead_box = BeadBox::default();
+    let mut max_width = 0.0f32;
+    for inst in chunk {
+        bead_box.include(inst);
+        max_width = max_width.max(inst.width);
+    }
+    let (min, max) = bead_box.get().unwrap_or(([0.0; 3], [0.0; 3]));
+    let s = start as u32;
+    let cluster = Cluster {
+        instances: s..s + chunk.len() as u32,
+        layers: layer..layer.saturating_add(1),
+        min,
+        max,
+        max_width,
+    };
+    (cluster, bead_box)
 }
 
 /// Sort instances by the Morton code of their XY midpoint.
