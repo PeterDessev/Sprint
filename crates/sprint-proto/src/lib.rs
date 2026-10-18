@@ -7,6 +7,8 @@
 
 pub mod firmware;
 pub mod framing;
+pub mod mesh;
 
 pub use firmware::*;
 pub use framing::*;
+pub use mesh::*;
