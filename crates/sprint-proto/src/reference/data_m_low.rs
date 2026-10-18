@@ -252,6 +252,13 @@ pub(super) const DOCS: &[GcodeDoc] = &[
         Control,
     ),
     doc(
+        "M86",
+        "Hotend idle timeout",
+        "M86 [S<s>] [T<°C>] [E<°C>] [B<°C>]",
+        "Lowers the hotend (E) and bed (B) targets after S seconds of idling above T degrees; S0 turns the timeout off.",
+        Temperature,
+    ),
+    doc(
         "M92",
         "Set steps per unit",
         "M92 [X<steps>] [Y<steps>] [Z<steps>] [E<steps>] [T<tool>]",
