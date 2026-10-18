@@ -16,3 +16,4 @@ crossterm.workspace = true
 crossbeam-channel.workspace = true
 anyhow.workspace = true
 log.workspace = true
+unicode-width = "0.2"
