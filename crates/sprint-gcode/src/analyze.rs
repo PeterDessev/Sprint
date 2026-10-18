@@ -132,6 +132,8 @@ const LAYER_EPS: f64 = 1e-4;
 const MAX_ARC_SEGMENTS: usize = 4096;
 /// Upper bound on `P` full turns of one arc.
 const MAX_ARC_TURNS: f64 = 1000.0;
+/// Arcs with a larger radius (mm) are treated as straight moves.
+const MAX_ARC_RADIUS: f64 = 1e6;
 /// Longest dwell honoured (s); larger values are garbage.
 const MAX_DWELL: f64 = 1e7;
 /// Height used when a layer height cannot be determined (mm).
@@ -562,7 +564,7 @@ impl Analyzer {
         };
         let (rx, ry) = (x1 - cx, y1 - cy);
         let radius = (rx * rx + ry * ry).sqrt();
-        if !radius.is_finite() || radius < 1e-6 {
+        if !radius.is_finite() || !(1e-6..=MAX_ARC_RADIUS).contains(&radius) {
             self.add_move(from, to, de, feed, ln);
             return;
         }
@@ -1427,6 +1429,11 @@ mod tests {
         );
         let tp = run("G2 I1 P99999999 E1\n");
         assert!(tp.segments.len() <= MAX_ARC_SEGMENTS);
+        // Found by fuzzing: an astronomic radius made segment lengths
+        // overflow f32.
+        let tp = run("G2 X1 I99999999999999999999 E1\n");
+        assert_eq!(tp.segments.len(), 1);
+        assert!(tp.stats.extrude_distance.is_finite());
     }
 
     #[test]
