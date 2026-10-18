@@ -184,6 +184,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         cam.yaw = -0.6;
         cam.pitch = 0.45;
         save(&mut viewer, &dir, "18_closeup.png")?;
+        // Same view with every bead drawn as a ribbon impostor (LOD path).
+        let lod = viewer.lod_pixels();
+        viewer.set_lod_pixels(f32::MAX);
+        save(&mut viewer, &dir, "18b_closeup_ribbons.png")?;
+        viewer.set_lod_pixels(lod);
         let cam = viewer.camera_mut();
         cam.target = Vec3::new(138.0, 112.0, 26.0);
         cam.distance = 45.0;
