@@ -69,6 +69,18 @@ pub fn check_toolpath(tp: &Toolpath) {
     // Stats add up.
     let st = &tp.stats;
     assert!(st.estimated_time.is_finite() && st.estimated_time >= 0.0);
+    for v in [
+        st.filament_length,
+        st.filament_volume,
+        st.filament_weight,
+        st.travel_distance,
+        st.extrude_distance,
+        st.travel_time,
+        st.other_time,
+        st.avg_print_speed,
+    ] {
+        assert!(v.is_finite(), "{st:?}");
+    }
     let feature_time: f32 = st.features.iter().map(|f| f.time).sum();
     assert!(
         close(
