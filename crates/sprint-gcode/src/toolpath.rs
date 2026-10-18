@@ -309,6 +309,12 @@ pub struct Stats {
     pub uses_firmware_retraction: bool,
     /// Number of blocking heat waits (M109/M190/M191).
     pub heat_waits: usize,
+    /// Estimated seconds spent on travel segments.
+    pub travel_time: f32,
+    /// Estimated seconds not covered by any segment: E-only moves
+    /// (retract/prime), firmware retraction and dwells. The feature times
+    /// plus `travel_time` plus `other_time` add up to `estimated_time`.
+    pub other_time: f32,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
