@@ -286,6 +286,10 @@ pub fn resume_preamble(file: &GcodeFile, line: usize, options: &ResumeOptions) -
   `filament_density` from slicer metadata overrides the option like the
   diameter does. Layer `lines` ranges are contiguous and cover the file; a
   single command spanning several layers (a long helix) leaves empty ranges.
+  Spiral (vase) layers, whose extrusions climb in Z, start at slicer layer
+  markers when the file has any, otherwise after every layer height of
+  climb; a flat extrusion inside the Z range a spiral layer has climbed
+  through (slicers round Z) continues that layer.
   Travel-only files get one layer so every segment has a layer. Arc
   tessellation is bounded per file (2M segments plus 32 per command line;
   past that an arc gets at most 16 segments), so crafted multi-turn arcs
