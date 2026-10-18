@@ -98,7 +98,8 @@ const EMERGENCY_CODES: [u32; 4] = [112, 108, 410, 876];
 /// `M112` (emergency stop), `M108` (break out of a heating/wait loop),
 /// `M410` (quick stop) and `M876` (host prompt response).
 ///
-/// Case-insensitive, with or without parameters (`m876 S1`, `M876S1`). A
+/// Case-insensitive, with or without parameters (`m876 S1`, `M876S1`), and
+/// with spaces after the letter (`M 112`, which Marlin accepts too). A
 /// leading `N` word and a trailing `*checksum` are ignored.
 pub fn is_emergency_command(command: &str) -> bool {
     let mut s = command.trim_start();
@@ -112,6 +113,7 @@ pub fn is_emergency_command(command: &str) -> bool {
     let Some(rest) = s.strip_prefix(['M', 'm']) else {
         return false;
     };
+    let rest = rest.trim_start_matches([' ', '\t']);
     let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
     if digits == 0 || digits > 6 {
         return false;
@@ -193,6 +195,10 @@ mod tests {
             "M112 ; stop",
             "N5 M112*1",
             "M0112",
+            // Marlin skips spaces between the letter and the number.
+            "M 112",
+            "m  410",
+            "N7 M 108",
         ] {
             assert!(is_emergency_command(cmd), "{cmd:?} should be emergency");
         }
