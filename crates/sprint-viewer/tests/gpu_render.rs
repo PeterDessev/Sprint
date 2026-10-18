@@ -342,6 +342,27 @@ fn images_beyond_the_read_back_limit_are_scaled_down() {
 }
 
 #[test]
+fn building_and_drawing_raise_no_gpu_errors() {
+    let Some((device, queue)) = device() else {
+        return;
+    };
+    let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let mut viewer = loaded_viewer(&device, &queue, demo::demo_toolpath());
+    let o = viewer.options_mut();
+    o.show_travel = true;
+    o.show_retractions = true;
+    o.show_build_volume = true;
+    o.progress_line = Some(5000);
+    render(&mut viewer);
+    viewer.options_mut().style = RenderStyle::Lines;
+    viewer.options_mut().view_mode = ViewMode::LayerTop;
+    render(&mut viewer);
+    drop(viewer);
+    let error = pollster::block_on(validation.pop());
+    assert!(error.is_none(), "{error:?}");
+}
+
+#[test]
 fn empty_viewer_shows_the_bed() {
     let Some((device, queue)) = device() else {
         return;

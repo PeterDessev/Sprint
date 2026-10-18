@@ -275,12 +275,42 @@ pub(crate) fn shader_source(sample_shading: bool) -> Cow<'static, str> {
     }
 }
 
-/// Sample-rate shading is available on every native backend except GL.
+/// Sample-rate shading may be available on every native backend except GL
+/// (Vulkan devices without `sampleRateShading` reject it).
 fn sample_shading_supported(device: &wgpu::Device) -> bool {
     matches!(
         device.adapter_info().backend,
         wgpu::Backend::Vulkan | wgpu::Backend::Dx12 | wgpu::Backend::Metal
     )
+}
+
+/// Compile the shaders and build every pipeline, with per-sample shading
+/// where the backend may support it. A device that rejects the per-sample
+/// shader (validation error, which wgpu's default handler turns into a
+/// panic) gets the per-pixel variant instead.
+fn build_pipelines(
+    device: &wgpu::Device,
+    layout: &wgpu::PipelineLayout,
+    color_format: wgpu::TextureFormat,
+) -> Pipelines {
+    let module = |sample_shading: bool| {
+        device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("sprint-viewer shader"),
+            source: wgpu::ShaderSource::Wgsl(shader_source(sample_shading)),
+        })
+    };
+    if sample_shading_supported(device) {
+        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let pipelines = create_pipelines(device, &module(true), layout, color_format);
+        match pollster::block_on(scope.pop()) {
+            None => return pipelines,
+            Some(err) => log::warn!(
+                "sprint-viewer: per-sample shading is not supported ({err}); \
+                 shading per pixel instead"
+            ),
+        }
+    }
+    create_pipelines(device, &module(false), layout, color_format)
 }
 
 /// Bytes per row of a read-back copy of a `width` pixels wide RGBA8 image.
@@ -305,10 +335,6 @@ impl Renderer {
         } else {
             RESOLVE_FORMAT
         };
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("sprint-viewer shader"),
-            source: wgpu::ShaderSource::Wgsl(shader_source(sample_shading_supported(device))),
-        });
         let globals = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("sprint-viewer globals"),
             size: std::mem::size_of::<Globals>() as u64,
@@ -341,7 +367,7 @@ impl Renderer {
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
-        let pipelines = create_pipelines(device, &module, &pipeline_layout, color_format);
+        let pipelines = build_pipelines(device, &pipeline_layout, color_format);
 
         let tube = MeshBuffers::new(
             device,
