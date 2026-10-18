@@ -96,6 +96,9 @@ const JUNK: &[&str] = &[
     "*255",
     "*256",
     "\"\"",
+    "{",
+    "}",
+    "{var.x*2}",
 ];
 const COMMENTS: &[&str] = &[
     ";LAYER_CHANGE",

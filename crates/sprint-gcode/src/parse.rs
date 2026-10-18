@@ -73,7 +73,8 @@ impl fmt::Display for Code {
 ///
 /// A word written without a number (`X` in `G28 X`) has `value: f64::NAN`;
 /// [`ParsedLine::get`] reports it as absent while [`ParsedLine::has`] still
-/// sees it. Quoted string parameters (`P"file.g"`, RepRapFirmware style) are
+/// sees it. Quoted string parameters (`P"file.g"`) and expressions
+/// (`X{move.axes[0].max}`), both RepRapFirmware style, are
 /// also stored with a NaN value.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Word {
@@ -384,8 +385,13 @@ fn parse_words<'a>(line: &'a str, mut i: usize, out: &mut ParsedLine<'a>) {
         if c.is_ascii_alphabetic() {
             let letter = c.to_ascii_uppercase();
             i += 1;
-            if b.get(i) == Some(&b'"') {
-                i = skip_quoted(b, i);
+            let skipped = match b.get(i) {
+                Some(b'"') => Some(skip_quoted(b, i)),
+                Some(b'{') => Some(skip_braced(b, i)),
+                _ => None,
+            };
+            if let Some(end) = skipped {
+                i = end;
                 out.words.push(Word {
                     letter,
                     value: f64::NAN,
@@ -421,6 +427,7 @@ fn parse_words<'a>(line: &'a str, mut i: usize, out: &mut ParsedLine<'a>) {
                     return;
                 }
                 b'"' => i = skip_quoted(b, i),
+                b'{' => i = skip_braced(b, i),
                 _ => i += 1,
             }
         }
@@ -633,6 +640,36 @@ fn skip_quoted(b: &[u8], i: usize) -> usize {
     n
 }
 
+/// Skip a RepRapFirmware `{...}` expression starting at `i` (which holds
+/// the opening brace), including nested braces and quoted strings. Inside
+/// an expression `(`, `*` and letters are operators and object-model names,
+/// not comments, checksums or parameters. An unterminated expression ends
+/// at a `;` comment or the end of the line.
+fn skip_braced(b: &[u8], i: usize) -> usize {
+    let n = b.len();
+    let mut depth = 0usize;
+    let mut j = i;
+    while j < n {
+        match b[j] {
+            b'{' => depth += 1,
+            b'}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return j + 1;
+                }
+            }
+            b'"' => {
+                j = skip_quoted(b, j);
+                continue;
+            }
+            b';' => return j,
+            _ => {}
+        }
+        j += 1;
+    }
+    n
+}
+
 #[inline]
 fn sub(s: &str, from: usize, to: usize) -> Option<&str> {
     s.get(from..to.min(s.len()))
@@ -650,7 +687,8 @@ pub fn has_command(line: &str) -> bool {
 /// still starts a comment, as in Marlin).
 ///
 /// Classic commands are uppercased (`g1 x10` → `G1 X10`) for firmwares that
-/// are case-sensitive; quoted strings, text arguments and extended commands
+/// are case-sensitive; quoted strings, RepRapFirmware `{...}` expressions,
+/// text arguments and extended commands
 /// (Klipper macros, `@` host commands, ...) are kept exactly as written.
 /// When nothing needs to change the result borrows from `line`.
 pub fn clean_line(line: &str) -> Option<Cow<'_, str>> {
@@ -794,8 +832,13 @@ fn clean_classic(line: &str, start: usize) -> Option<Cow<'_, str>> {
                 pending_space = true;
                 j = (close + 1).min(n);
             }
-            b'"' => {
-                let end = skip_quoted(b, j);
+            b'"' | b'{' => {
+                // Quoted strings and expressions are kept verbatim.
+                let end = if b[j] == b'"' {
+                    skip_quoted(b, j)
+                } else {
+                    skip_braced(b, j)
+                };
                 emit_space(&mut out, b, &mut pending_space, j);
                 out.push_src(j, end);
                 j = end;
@@ -805,7 +848,7 @@ fn clean_classic(line: &str, start: usize) -> Option<Cow<'_, str>> {
                 let mut lower = false;
                 while j < n {
                     let c = b[j];
-                    if is_ws(c) || matches!(c, b';' | b'*' | b'(' | b'"') {
+                    if is_ws(c) || matches!(c, b';' | b'*' | b'(' | b'"' | b'{') {
                         break;
                     }
                     lower |= c.is_ascii_lowercase();
@@ -1179,6 +1222,34 @@ mod tests {
         assert_eq!(p.get('S'), Some(1.0));
         let p = parse_line("M550 P\"semi;colon\" ; real comment");
         assert_eq!(p.comment, Some("real comment"));
+    }
+
+    #[test]
+    fn rrf_expressions_are_opaque_values() {
+        // Object-model names are case-sensitive, and `*` / `(` inside an
+        // expression are operators, not a checksum or a comment.
+        let line = "G1 X{move.axes[0].max - 10} Y{2*(var.y + 1)} F{\"a;b\"} ; c";
+        let p = parse_line(line);
+        assert_eq!(p.code, Some(Code::g(1)));
+        assert_eq!(p.words.len(), 3);
+        assert!(p.has('X') && p.has('Y') && p.has('F'));
+        assert_eq!((p.get('X'), p.get('E'), p.get('V')), (None, None, None));
+        assert_eq!(p.checksum, None);
+        assert_eq!(p.comment, Some("c"));
+        let cleaned = clean_line(line);
+        assert_eq!(
+            cleaned.as_deref(),
+            Some("G1 X{move.axes[0].max - 10} Y{2*(var.y + 1)} F{\"a;b\"}")
+        );
+        assert!(matches!(cleaned, Some(Cow::Borrowed(_))));
+        assert_eq!(
+            clean_line("g1 x{var.x} e1").as_deref(),
+            Some("G1 X{var.x} E1")
+        );
+        assert_eq!(parse_line("g1 x{var.x} e1").get('E'), Some(1.0));
+        // Unterminated: up to the comment.
+        assert_eq!(clean_line("G1 X{abc  ; c").as_deref(), Some("G1 X{abc"));
+        assert_eq!(parse_line("G1 X{abc  ; c").comment, Some("c"));
     }
 
     #[test]

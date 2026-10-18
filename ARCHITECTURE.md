@@ -261,11 +261,12 @@ pub fn resume_preamble(file: &GcodeFile, line: usize, options: &ResumeOptions) -
   (allocation-free analysis); `has_command(line)` == `clean_line(line).is_some()`;
   `ParsedLine::{is, clear}`; `Code::{new, t}`; `ExtendedCommand::{parse, is,
   param, param_f64}` for Klipper-style `KEY=value` commands. A word without a
-  number (`G28 X`) or a quoted RRF string is stored with `value: NaN`:
-  `has` sees it, `get` returns `None`. Extended commands (no `code`) carry the
-  command text in `ParsedLine::text`. `clean_line` additionally uppercases
-  classic commands (`g1 x10` -> `G1 X10`; text arguments, quoted strings and
-  extended commands stay verbatim) and is idempotent.
+  number (`G28 X`), a quoted RRF string or an RRF `{...}` expression is
+  stored with `value: NaN`: `has` sees it, `get` returns `None`. Extended
+  commands (no `code`) carry the command text in `ParsedLine::text`.
+  `clean_line` additionally uppercases classic commands (`g1 x10` ->
+  `G1 X10`; text arguments, quoted strings, `{...}` expressions and extended
+  commands stay verbatim) and is idempotent.
 * `file`: `GcodeFile::{from_bytes, line_at_offset}`; `Clone + Default`,
   compact `Debug`; a leading BOM is dropped.
 * `state`: extra public fields `relative_e_mode` (sticky M83; G90 restores
