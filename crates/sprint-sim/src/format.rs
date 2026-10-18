@@ -25,11 +25,6 @@ pub(crate) fn f2(value: f64) -> String {
     fixed(value, 2)
 }
 
-/// One decimal.
-pub(crate) fn f1(value: f64) -> String {
-    fixed(value, 1)
-}
-
 /// Three decimals with an explicit sign, as in Marlin's leveling grids
 /// ("+0.123", "-0.045").
 pub(crate) fn signed3(value: f64) -> String {
@@ -80,7 +75,7 @@ mod tests {
         assert_eq!(f2(-0.0), "0.00");
         assert_eq!(f2(-0.001), "0.00");
         assert_eq!(f2(-1.234), "-1.23");
-        assert_eq!(f1(20.04), "20.0");
+        assert_eq!(fixed(20.04, 1), "20.0");
         assert_eq!(f2(f64::NAN), "0.00");
         assert_eq!(signed3(0.1234), "+0.123");
         assert_eq!(signed3(-0.045), "-0.045");
