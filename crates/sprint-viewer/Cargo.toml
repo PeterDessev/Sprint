@@ -14,8 +14,9 @@ egui-wgpu.workspace = true
 bytemuck.workspace = true
 glam.workspace = true
 log.workspace = true
+# Blocks on wgpu's adapter/device futures for headless rendering.
+pollster.workspace = true
 
 [dev-dependencies]
 eframe.workspace = true
-pollster.workspace = true
 image.workspace = true
