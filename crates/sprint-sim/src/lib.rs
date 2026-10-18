@@ -9,6 +9,7 @@ mod mesh;
 mod parse;
 mod planner;
 mod rng;
+mod sd;
 mod settings;
 mod thermal;
 
