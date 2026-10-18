@@ -5,8 +5,10 @@
 
 pub mod file;
 pub mod parse;
+pub mod state;
 pub mod toolpath;
 
 pub use file::*;
 pub use parse::*;
+pub use state::*;
 pub use toolpath::*;
