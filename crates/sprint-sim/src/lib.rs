@@ -5,6 +5,7 @@
 mod config;
 mod format;
 mod line;
+mod mesh;
 mod parse;
 mod planner;
 mod rng;
