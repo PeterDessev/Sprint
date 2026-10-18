@@ -1,8 +1,12 @@
 //! Interactive test bench for the toolpath viewer (eframe + wgpu).
 //!
 //! ```text
-//! cargo run -p sprint-viewer --release --example view
+//! cargo run -p sprint-viewer --release --example view [-- [--color <mode>] [--stress <segments>]]
 //! ```
+//!
+//! `--color` picks the initial color mode (feature, speed, width, height,
+//! tool, fan, layer, time); `--stress` starts with a synthetic toolpath of
+//! that many segments instead of the demo print.
 //!
 //! Left panel: data set, color mode, style, view mode and presets, layer
 //! range, scrubbing, progress, highlight, overlays, level of detail and the
@@ -45,8 +49,28 @@ impl App {
             .ok_or("this example needs the wgpu renderer")?;
         let mut viewer = GcodeViewer::new(render_state);
         viewer.set_bed(BedSpec::default());
-        let toolpath = Arc::new(demo::demo_toolpath());
+        let args: Vec<String> = std::env::args().collect();
+        let arg = |name: &str| {
+            args.iter()
+                .position(|a| a == name)
+                .and_then(|i| args.get(i + 1))
+                .cloned()
+        };
+        let toolpath = Arc::new(match arg("--stress").and_then(|n| n.parse().ok()) {
+            Some(n) => demo::stress_toolpath(n),
+            None => demo::demo_toolpath(),
+        });
         viewer.set_toolpath(Arc::clone(&toolpath));
+        if let Some(name) = arg("--color") {
+            let wanted = name.to_lowercase();
+            match ColorMode::ALL.into_iter().find(|m| {
+                let n = m.name().to_lowercase();
+                n.starts_with(&wanted) || n.replace(' ', "").contains(&wanted)
+            }) {
+                Some(mode) => viewer.options_mut().color_mode = mode,
+                None => eprintln!("unknown color mode {name:?}"),
+            }
+        }
         Ok(App {
             viewer,
             toolpath,
