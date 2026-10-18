@@ -1,4 +1,4 @@
-//! Toolpath model produced by [`crate::analyze`].
+//! Toolpath model produced by [`crate::analyze()`].
 //!
 //! These types are a shared contract with `sprint-viewer`, `sprint-gui` and
 //! `sprint-tui`. Fields may be added (every struct derives `Default`, and
@@ -26,29 +26,44 @@ pub enum MoveKind {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 #[repr(u8)]
 pub enum Feature {
+    /// No slicer annotation.
     #[default]
     Unknown = 0,
+    /// Outermost wall.
     ExternalPerimeter = 1,
+    /// Inner walls.
     Perimeter = 2,
+    /// Walls printed over air.
     OverhangPerimeter = 3,
+    /// Sparse infill.
     InternalInfill = 4,
+    /// Solid infill (including bottom surfaces).
     SolidInfill = 5,
+    /// Top surfaces.
     TopSolidInfill = 6,
+    /// Infill bridging over air.
     BridgeInfill = 7,
+    /// Thin gaps between walls.
     GapFill = 8,
     /// Skirt and brim.
     Skirt = 9,
+    /// Support material.
     Support = 10,
+    /// Dense support layers in contact with the part.
     SupportInterface = 11,
+    /// Ironing passes over top surfaces.
     Ironing = 12,
+    /// Wipe / prime tower.
     WipeTower = 13,
     /// Start/end G-code and other custom blocks.
     Custom = 14,
 }
 
 impl Feature {
+    /// Number of variants.
     pub const COUNT: usize = 15;
 
+    /// Every variant, in discriminant order.
     pub const ALL: [Feature; Feature::COUNT] = [
         Feature::Unknown,
         Feature::ExternalPerimeter,
@@ -72,6 +87,7 @@ impl Feature {
         self as usize
     }
 
+    /// Inverse of [`Feature::index`].
     pub fn from_index(index: usize) -> Option<Feature> {
         Feature::ALL.get(index).copied()
     }
@@ -145,7 +161,9 @@ pub struct Segment {
     pub line: u32,
     /// Index into `Toolpath::layers`.
     pub layer: u32,
+    /// Travel or extrusion.
     pub kind: MoveKind,
+    /// Feature from the slicer annotations in effect.
     pub feature: Feature,
     /// Active tool (extruder) index.
     pub tool: u8,
@@ -154,6 +172,7 @@ pub struct Segment {
 }
 
 impl Segment {
+    /// Straight-line length in mm.
     pub fn length(&self) -> f32 {
         let d = [
             self.end[0] - self.start[0],
@@ -163,6 +182,7 @@ impl Segment {
         (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
     }
 
+    /// True for extruding segments.
     pub fn is_extrusion(&self) -> bool {
         self.kind == MoveKind::Extrude
     }
@@ -171,11 +191,15 @@ impl Segment {
 /// An E-only move (retract or prime), shown as a marker by viewers.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Retraction {
+    /// Nozzle position (machine coordinates, mm).
     pub pos: [f32; 3],
     /// Filament length in mm; negative = retract, positive = unretract/prime.
     pub amount: f32,
+    /// 0-based source line.
     pub line: u32,
+    /// Index into `Toolpath::layers`.
     pub layer: u32,
+    /// Active tool (extruder) index.
     pub tool: u8,
 }
 
@@ -202,7 +226,9 @@ pub struct Layer {
 /// Axis-aligned bounding box.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub struct Bounds {
+    /// Smallest X Y Z (mm); +infinity when empty.
     pub min: [f32; 3],
+    /// Largest X Y Z (mm); -infinity when empty.
     pub max: [f32; 3],
 }
 
@@ -213,6 +239,7 @@ impl Default for Bounds {
 }
 
 impl Bounds {
+    /// Bounds containing nothing.
     pub fn empty() -> Bounds {
         Bounds {
             min: [f32::INFINITY; 3],
@@ -220,10 +247,12 @@ impl Bounds {
         }
     }
 
+    /// True when no point was included.
     pub fn is_empty(&self) -> bool {
         (0..3).any(|i| self.min[i] > self.max[i])
     }
 
+    /// Grow to contain `p`.
     pub fn include(&mut self, p: [f32; 3]) {
         for ((lo, hi), v) in self.min.iter_mut().zip(self.max.iter_mut()).zip(p) {
             *lo = lo.min(v);
@@ -231,6 +260,7 @@ impl Bounds {
         }
     }
 
+    /// Extent per axis (zero when empty).
     pub fn size(&self) -> [f32; 3] {
         if self.is_empty() {
             return [0.0; 3];
@@ -242,6 +272,7 @@ impl Bounds {
         ]
     }
 
+    /// Centre point (origin when empty).
     pub fn center(&self) -> [f32; 3] {
         if self.is_empty() {
             return [0.0; 3];
@@ -254,9 +285,10 @@ impl Bounds {
     }
 }
 
-/// Per-feature totals.
+/// Per-feature totals over extruding segments.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
 pub struct FeatureStat {
+    /// The feature.
     pub feature: Feature,
     /// Estimated seconds spent on this feature.
     pub time: f32,
@@ -264,6 +296,7 @@ pub struct FeatureStat {
     pub extruded: f32,
     /// Path length, mm.
     pub distance: f32,
+    /// Number of extruding segments.
     pub segments: usize,
 }
 
@@ -280,9 +313,14 @@ pub struct Stats {
     pub filament_volume: f32,
     /// Filament weight in grams (using the configured density).
     pub filament_weight: f32,
+    /// Number of extruding segments.
     pub extrude_moves: usize,
+    /// Number of travel segments.
     pub travel_moves: usize,
+    /// Number of retractions (negative `Toolpath::retractions` entries,
+    /// including firmware retraction).
     pub retractions: usize,
+    /// Number of tool changes (T commands that switch tools).
     pub tool_changes: usize,
     /// Total travel path length, mm.
     pub travel_distance: f32,
@@ -290,22 +328,32 @@ pub struct Stats {
     pub extrude_distance: f32,
     /// Fastest / slowest / time-weighted average extrusion speed, mm/s.
     pub max_print_speed: f32,
+    /// Slowest commanded extrusion speed, mm/s.
     pub min_print_speed: f32,
+    /// Time-weighted average commanded extrusion speed, mm/s.
     pub avg_print_speed: f32,
+    /// Fastest commanded travel speed, mm/s.
     pub max_travel_speed: f32,
+    /// Number of layers.
     pub layer_count: usize,
+    /// Height of the first layer, mm.
     pub first_layer_height: f32,
     /// Most common layer height, mm.
     pub layer_height: f32,
-    /// One entry per feature that occurs in the file.
+    /// One entry per feature that occurs in the file (extruding segments
+    /// only; travel is in `travel_*`).
     pub features: Vec<FeatureStat>,
+    /// Tools that extruded, ascending.
     pub tools_used: Vec<u8>,
     /// Distinct hotend target temperatures set by the file: (tool, celsius).
     pub hotend_temps: Vec<(u8, f32)>,
     /// Distinct bed target temperatures set by the file.
     pub bed_temps: Vec<f32>,
+    /// The file switches the extruder to relative mode (M83).
     pub uses_relative_e: bool,
+    /// The file contains G2/G3 arcs.
     pub uses_arcs: bool,
+    /// The file uses firmware retraction (G10/G11).
     pub uses_firmware_retraction: bool,
     /// Number of blocking heat waits (M109/M190/M191).
     pub heat_waits: usize,
@@ -317,19 +365,26 @@ pub struct Stats {
     pub other_time: f32,
 }
 
+/// Image format of an embedded thumbnail.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub enum ThumbnailFormat {
+    /// `; thumbnail begin` / `; thumbnail_PNG begin`.
     #[default]
     Png,
+    /// `; thumbnail_JPG begin`.
     Jpeg,
+    /// `; thumbnail_QOI begin` (Quite OK Image).
     Qoi,
 }
 
 /// Preview image embedded by the slicer (`; thumbnail begin WxH len`).
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Thumbnail {
+    /// Width in pixels.
     pub width: u32,
+    /// Height in pixels.
     pub height: u32,
+    /// Image format of `data`.
     pub format: ThumbnailFormat,
     /// Decoded (base64-decoded) image file bytes.
     #[serde(skip)]
@@ -343,16 +398,28 @@ pub struct SlicerMetadata {
     pub slicer: Option<String>,
     /// The slicer's own print time estimate, seconds.
     pub estimated_time: Option<f32>,
+    /// Filament length the slicer reported (all extruders), mm.
     pub filament_used_mm: Option<f32>,
+    /// Filament weight the slicer reported, grams.
     pub filament_used_g: Option<f32>,
+    /// Layer height, mm.
     pub layer_height: Option<f32>,
+    /// First layer height, mm.
     pub first_layer_height: Option<f32>,
+    /// Nozzle diameter, mm (first extruder).
     pub nozzle_diameter: Option<f32>,
+    /// Filament diameter, mm (first extruder).
     pub filament_diameter: Option<f32>,
+    /// Filament type such as "PLA" (first extruder).
     pub filament_type: Option<String>,
+    /// Hotend temperature (first commanded, else from the settings), °C.
     pub hotend_temp: Option<f32>,
+    /// Bed temperature (first commanded, else from the settings), °C.
     pub bed_temp: Option<f32>,
+    /// Object labels (`EXCLUDE_OBJECT_DEFINE`, `M486`, `; printing object`,
+    /// Cura `;MESH:`, Simplify3D `applyToModels`), in first-seen order.
     pub object_names: Vec<String>,
+    /// Every embedded thumbnail, in file order.
     pub thumbnails: Vec<Thumbnail>,
     /// `; key = value` settings block (PrusaSlicer/Orca config dump, Cura
     /// `;SETTING_3` is not decoded). Kept in file order.
@@ -370,14 +437,19 @@ pub struct SlicerMetadata {
 /// Result of analysing a G-code file.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Toolpath {
+    /// Every move, in file order.
     pub segments: Vec<Segment>,
+    /// Layers, contiguous ranges of `segments` in file order.
     pub layers: Vec<Layer>,
+    /// E-only moves and firmware retractions, in file order.
     pub retractions: Vec<Retraction>,
     /// Bounds of extruding moves only.
     pub bounds: Bounds,
     /// Bounds of all moves (including travel).
     pub travel_bounds: Bounds,
+    /// Whole-file statistics.
     pub stats: Stats,
+    /// Slicer metadata read from comments.
     pub metadata: SlicerMetadata,
     /// Number of lines in the source file.
     pub line_count: u32,

@@ -24,7 +24,7 @@ pub struct MachineState {
     pub inches: bool,
     /// Last F, converted to mm/min.
     pub feedrate_mm_min: f64,
-    /// Active tool (T<n>).
+    /// Active tool (`T<n>`).
     pub tool: u8,
     /// Hotend targets per tool from M104/M109 (and RepRapFirmware `G10 P S`).
     pub hotend_targets: Vec<f32>,
@@ -139,7 +139,7 @@ impl MachineState {
 
     /// Apply one parsed line, returning the resulting move if it was one.
     ///
-    /// Handles G0/G1/G2/G3/G28/G90/G91/G92/G20/G21, M82/M83, T<n>,
+    /// Handles G0/G1/G2/G3/G28/G90/G91/G92/G20/G21, M82/M83, `T<n>`,
     /// M104/M109/M140/M190/M141/M191, M106/M107, M220/M221 and G10/G11
     /// (firmware retraction, or RepRapFirmware tool temperatures when `G10`
     /// carries `P`). Everything else leaves the state unchanged.

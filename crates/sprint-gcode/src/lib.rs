@@ -3,6 +3,8 @@
 //! See `ARCHITECTURE.md` at the repository root for the public contract.
 //! Every module's public items are re-exported at the crate root.
 
+#![warn(missing_docs)]
+
 pub mod analyze;
 pub mod estimate;
 pub mod file;
