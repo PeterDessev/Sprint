@@ -186,12 +186,12 @@ pub fn parse_into<'a>(line: &'a str, out: &mut ParsedLine<'a>) {
     }
     let i = prefix.start;
     match first_token(b, i) {
-        FirstToken::Extended => parse_extended(line, i, out),
+        FirstToken::Extended => parse_extended(line, i, prefix.numbered, out),
         FirstToken::Words => parse_words(line, i, out),
         FirstToken::Code { code, end } => {
             out.code = Some(code);
             if is_text_command(code) {
-                parse_text_argument(line, end, out);
+                parse_text_argument(line, end, prefix.numbered, out);
             } else {
                 parse_words(line, end, out);
             }
@@ -210,7 +210,7 @@ struct Prefix {
 
 /// Skip leading whitespace, the `N` word and leading `(...)` comments.
 /// Returns `None` when the line holds no command (blank, comment-only,
-/// `%` marker, or only a checksum).
+/// `%` marker, possibly after a line number, or only a checksum).
 fn scan_prefix(b: &[u8]) -> Option<Prefix> {
     let n = b.len();
     let mut i = skip_ws(b, 0);
@@ -219,9 +219,13 @@ fn scan_prefix(b: &[u8]) -> Option<Prefix> {
     }
     let mut line_number = None;
     let mut numbered = false;
-    if let Some((num, end)) = line_number_at(b, i) {
-        line_number = num;
-        numbered = true;
+    // Repeated N words ("N5 N6 G1") are all skipped so that cleaning is
+    // idempotent; the first one is the line number.
+    while let Some((num, end)) = line_number_at(b, i) {
+        if !numbered {
+            line_number = num;
+            numbered = true;
+        }
         i = skip_ws(b, end);
     }
     let mut paren_comment = None;
@@ -230,7 +234,7 @@ fn scan_prefix(b: &[u8]) -> Option<Prefix> {
             return None;
         }
         match b[i] {
-            b';' | b'*' => return None,
+            b';' | b'*' | b'%' => return None,
             b'(' => {
                 let close = find_byte(b, i + 1, n, b')');
                 if paren_comment.is_none() {
@@ -267,7 +271,14 @@ fn record_leading_comments<'a>(line: &'a str, out: &mut ParsedLine<'a>) {
     }
     if let Some((num, end)) = line_number_at(b, i) {
         out.line_number = num;
-        i = end;
+        i = skip_ws(b, end);
+        if b.get(i) == Some(&b'%') {
+            let rest = sub(line, i + 1, n).map(str::trim).unwrap_or("");
+            if !rest.is_empty() {
+                out.comment = Some(rest);
+            }
+            return;
+        }
     }
     while i < n {
         match b[i] {
@@ -417,7 +428,7 @@ fn parse_words<'a>(line: &'a str, mut i: usize, out: &mut ParsedLine<'a>) {
 }
 
 /// Free-text argument of M117 & co., from `start` (just after the code).
-fn parse_text_argument<'a>(line: &'a str, start: usize, out: &mut ParsedLine<'a>) {
+fn parse_text_argument<'a>(line: &'a str, start: usize, numbered: bool, out: &mut ParsedLine<'a>) {
     let b = line.as_bytes();
     let n = b.len();
     let mut end = n;
@@ -425,9 +436,7 @@ fn parse_text_argument<'a>(line: &'a str, start: usize, out: &mut ParsedLine<'a>
         out.comment = sub(line, semi + 1, n).map(str::trim);
         end = semi;
     }
-    if out.line_number.is_some()
-        && let Some((cs, star)) = trailing_checksum(b, start, end)
-    {
+    if numbered && let Some((cs, star)) = trailing_checksum(b, start, end) {
         out.checksum = cs;
         end = star;
     }
@@ -438,7 +447,7 @@ fn parse_text_argument<'a>(line: &'a str, start: usize, out: &mut ParsedLine<'a>
 }
 
 /// Extended command (Klipper/RRF): whole command as text, no words.
-fn parse_extended<'a>(line: &'a str, start: usize, out: &mut ParsedLine<'a>) {
+fn parse_extended<'a>(line: &'a str, start: usize, numbered: bool, out: &mut ParsedLine<'a>) {
     let b = line.as_bytes();
     let n = b.len();
     let mut end = n;
@@ -446,9 +455,7 @@ fn parse_extended<'a>(line: &'a str, start: usize, out: &mut ParsedLine<'a>) {
         out.comment = sub(line, semi + 1, n).map(str::trim);
         end = semi;
     }
-    if out.line_number.is_some()
-        && let Some((cs, star)) = trailing_checksum(b, start, end)
-    {
+    if numbered && let Some((cs, star)) = trailing_checksum(b, start, end) {
         out.checksum = cs;
         end = star;
     }
@@ -754,10 +761,16 @@ impl<'a> CowBuilder<'a> {
         self.materialize().push_str(s);
     }
 
+    /// The result, with trailing whitespace removed (an unterminated quoted
+    /// string runs to the end of the line and may carry some).
     fn finish(self) -> Option<Cow<'a, str>> {
         let cow = match self.owned {
-            Some(s) => Cow::Owned(s),
-            None => Cow::Borrowed(self.src.get(self.start..self.end).unwrap_or("")),
+            Some(mut s) => {
+                let len = s.trim_end().len();
+                s.truncate(len);
+                Cow::Owned(s)
+            }
+            None => Cow::Borrowed(self.src.get(self.start..self.end).unwrap_or("").trim_end()),
         };
         (!cow.is_empty()).then_some(cow)
     }
@@ -1046,6 +1059,53 @@ mod tests {
         let p = parse_line("(only a comment)");
         assert!(p.is_empty());
         assert_eq!(p.comment, Some("only a comment"));
+    }
+
+    #[test]
+    fn overflowing_line_numbers_still_strip_checksums() {
+        // Found by fuzzing: the N word does not fit in u32, but the line is
+        // still numbered, so parse_line and clean_line must agree.
+        let line = "N3735308770904949482 FOO_BAR X=1*25";
+        let p = parse_line(line);
+        assert_eq!(p.line_number, None);
+        assert_eq!(p.text, Some("FOO_BAR X=1"));
+        assert_eq!(p.checksum, Some(25));
+        assert_eq!(clean_line(line).as_deref(), Some("FOO_BAR X=1"));
+        let p = parse_line("N99999999999 M117 hi*7");
+        assert_eq!(p.text, Some("hi"));
+    }
+
+    #[test]
+    fn repeated_line_numbers() {
+        // Found by fuzzing: "N9 N1E30" cleaned to "N1E30", which cleaned
+        // again to "E30".
+        assert_eq!(clean_line("N99999999999 N1e30").as_deref(), Some("E30"));
+        assert_eq!(clean_line("E30").as_deref(), Some("E30"));
+        assert_eq!(clean_line("N5 N6 G1 X1").as_deref(), Some("G1 X1"));
+        let p = parse_line("N5 N6 G1 X1");
+        assert_eq!(p.line_number, Some(5));
+        assert_eq!(p.code, Some(Code::g(1)));
+    }
+
+    #[test]
+    fn percent_after_line_number() {
+        // Found by fuzzing: clean_line must be idempotent.
+        assert_eq!(clean_line("N5 %G1 X1"), None);
+        assert!(!has_command("N5 %G1 X1"));
+        let p = parse_line("N5 % start");
+        assert!(p.is_empty());
+        assert_eq!(p.line_number, Some(5));
+        assert_eq!(p.comment, Some("start"));
+    }
+
+    #[test]
+    fn unterminated_quote_is_trimmed() {
+        // Found by fuzzing: the quoted string runs to the end of the line.
+        assert_eq!(
+            clean_line("M550 P\"name	 ").as_deref(),
+            Some("M550 P\"name")
+        );
+        assert_eq!(clean_line("m550 p\"x  ").as_deref(), Some("M550 P\"x"));
     }
 
     #[test]
