@@ -298,6 +298,17 @@ fn unit_to_u16(v: f32) -> u16 {
     }
 }
 
+/// Number of layers the viewer shows for `toolpath`: `layer_segment_ranges
+/// (toolpath).len()` without building the ranges (cheap enough to call every
+/// frame even with a layer per segment).
+pub fn layer_count(toolpath: &Toolpath) -> usize {
+    if toolpath.layers.is_empty() {
+        usize::from(!toolpath.segments.is_empty())
+    } else {
+        toolpath.layers.len()
+    }
+}
+
 /// Layer segment ranges clamped to the segment array. A toolpath with
 /// segments but no layers gets one synthetic layer covering everything.
 pub fn layer_segment_ranges(toolpath: &Toolpath) -> Vec<Range<usize>> {

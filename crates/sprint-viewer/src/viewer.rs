@@ -167,7 +167,7 @@ impl GcodeViewer {
         self.hover = None;
         self.hover_query = None;
         self.last_frame = None;
-        let layers = instance::layer_segment_ranges(&toolpath).len();
+        let layers = instance::layer_count(&toolpath);
         self.options.layer_range = (0, layers.saturating_sub(1));
         self.toolpath = Some(Arc::clone(&toolpath));
         self.auto_fit = true;
@@ -350,7 +350,7 @@ impl GcodeViewer {
     pub fn layer_count(&self) -> usize {
         match (&self.info, &self.toolpath) {
             (Some(info), _) => info.layers.len(),
-            (None, Some(tp)) => instance::layer_segment_ranges(tp).len(),
+            (None, Some(tp)) => instance::layer_count(tp),
             (None, None) => 0,
         }
     }

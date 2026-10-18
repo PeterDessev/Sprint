@@ -10,7 +10,7 @@ use sprint_viewer::color::{Legend, build_legend};
 use sprint_viewer::demo;
 use sprint_viewer::instance::{
     CLUSTER_SIZE, RetractionInstance, SceneData, SegmentInstance, build_scene,
-    extrusion_speed_range, layer_segment_ranges, total_time,
+    extrusion_speed_range, layer_count, layer_segment_ranges, total_time,
 };
 
 fn scene(tp: &Toolpath) -> SceneData {
@@ -348,6 +348,7 @@ fn malformed_toolpaths_produce_sane_scenes() {
             .iter()
             .all(|r| r.start <= r.end && r.end <= tp.segments.len())
     );
+    assert_eq!(layer_count(&tp), ranges.len());
     let s = scene(&tp);
     assert_eq!(s.layers.len(), 3);
     assert_eq!(s.extrusions.len(), 3, "the NaN segment is dropped");
@@ -377,8 +378,10 @@ fn toolpaths_without_layers_get_one_synthetic_layer() {
     };
     let s = scene(&tp);
     assert_eq!(s.layers.len(), 1);
+    assert_eq!(layer_count(&tp), 1);
     assert_eq!(s.layers[0].extrusions, 0..1);
     assert_eq!(scene(&Toolpath::default()).layers.len(), 0);
+    assert_eq!(layer_count(&Toolpath::default()), 0);
 }
 
 #[test]
