@@ -8,11 +8,13 @@
 pub mod firmware;
 pub mod framing;
 pub mod mesh;
+pub mod reference;
 pub mod reply;
 pub mod settings;
 
 pub use firmware::*;
 pub use framing::*;
 pub use mesh::*;
+pub use reference::*;
 pub use reply::*;
 pub use settings::*;
