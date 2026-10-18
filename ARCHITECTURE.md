@@ -185,7 +185,7 @@ G28 sets the homed axes to 0 (or listed axes only).
 ### analyze / estimate
 
 ```rust
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)] #[serde(default)]
 pub struct AnalyzeOptions {
     pub filament_diameter: f32,    // mm, default 1.75 (overridden by slicer metadata when present)
     pub filament_density: f32,     // g/cm^3, default 1.24 (PLA)
@@ -194,7 +194,8 @@ pub struct AnalyzeOptions {
 }
 impl Default for AnalyzeOptions;
 
-#[derive(Clone, Debug, PartialEq)]
+// Copy + serde so PrinterProfile (sprint-host) can store it.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)] #[serde(default)]
 pub struct KinematicLimits {
     pub max_feedrate: [f32; 4],    // mm/s per axis X Y Z E, default [500, 500, 12, 120]
     pub max_accel: [f32; 4],       // mm/s^2 per axis, default [3000, 3000, 100, 10000]
@@ -237,18 +238,56 @@ pub fn read_metadata(file: &GcodeFile) -> SlicerMetadata;
 ### resume
 
 ```rust
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)] #[serde(default)]
 pub struct ResumeOptions {
     pub home_xy: bool,          // G28 X Y before resuming (default true)
     pub home_z: bool,           // default false: never crash into the part
-    pub z_clearance: f32,       // lift above resume Z before travelling, default 2.0
+    pub z_clearance: f32,       // lift above resume Z before travelling, default 2.0 (min 0.5 enforced)
     pub wait_for_temps: bool,   // M190/M109 with the targets in effect at the line, default true
+    pub restore_z_position: bool,     // G92 Z<resume z> before lifting (board reset in place), default false
+    pub travel_feedrate_mm_min: f32,  // default 3000
+    pub z_feedrate_mm_min: f32,       // default 600
 }
+impl Default for ResumeOptions;
 /// G-code lines to run before streaming from `line` to continue an
 /// interrupted print: temps, fan, units/modes, homing, safe travel to the
 /// position in effect at `line`, `G92 E` restore, feedrate.
 pub fn resume_preamble(file: &GcodeFile, line: usize, options: &ResumeOptions) -> Vec<String>;
 ```
+
+### Implementation notes (additive API and clarified semantics)
+
+* `parse`: `parse_into(line, &mut ParsedLine)` reuses the word buffer
+  (allocation-free analysis); `has_command(line)` == `clean_line(line).is_some()`;
+  `ParsedLine::{is, clear}`; `Code::{new, t}`; `ExtendedCommand::{parse, is,
+  param, param_f64}` for Klipper-style `KEY=value` commands. A word without a
+  number (`G28 X`) or a quoted RRF string is stored with `value: NaN`:
+  `has` sees it, `get` returns `None`. Extended commands (no `code`) carry the
+  command text in `ParsedLine::text`. `clean_line` additionally uppercases
+  classic commands (`g1 x10` -> `G1 X10`; text arguments, quoted strings and
+  extended commands stay verbatim) and is idempotent.
+* `file`: `GcodeFile::{from_bytes, line_at_offset}`; `Clone + Default`,
+  compact `Debug`; a leading BOM is dropped.
+* `state`: extra public fields `relative_e_mode` (sticky M83; G90 restores
+  it, as Klipper/RRF/PrusaSlicer do) and `origin_offset` (G92 shift, machine =
+  `position + origin_offset`, cleared by G28 for homed axes); helpers
+  `machine_position()`, `hotend_target(tool)`. Default feedrate 1500 mm/min.
+  G10 with `P`/`L` is RRF tool temperatures/offsets, not a retraction.
+* `estimate`: `Planner` (`new`, `with_window`, `push(delta, feedrate_mm_s,
+  tag) -> Option<PlannedBlock>`, `flush(sink)`, `limits_mut`),
+  `PlannedBlock`, `trapezoid_time`, `DEFAULT_PLANNER_WINDOW` (16),
+  `KinematicLimits::{apply_gcode, apply_extended}` (M201/M203/M204/M205,
+  Klipper `SET_VELOCITY_LIMIT`).
+* `analyze`: `feature_from_name`. Segments are in machine coordinates (G92
+  shifts applied). `FeatureStat`s cover extruding segments only;
+  `Stats::{travel_time, other_time}` were added so feature times + travel +
+  other (E-only moves, firmware retraction, dwells) = `estimated_time`.
+  `filament_density` from slicer metadata overrides the option like the
+  diameter does. Layer `lines` ranges are contiguous and cover the file; a
+  single command spanning several layers (a long helix) leaves empty ranges.
+  Travel-only files get one layer so every segment has a layer.
+* `meta`: `is_layer_marker`, `parse_duration`; `SlicerMetadata` gained
+  `filament_density`, `layer_count`, `flavor`.
 
 ### Examples / samples
 
