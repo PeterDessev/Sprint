@@ -191,8 +191,45 @@ pub struct SceneData {
     pub layers: Vec<LayerRanges>,
     /// Legend inputs (feature/tool tallies and scalar ranges).
     pub legend: LegendData,
-    /// Bounds of the extrusions as rendered (`None` when there are none).
+    /// Bounds of the extrusions as rendered, ignoring start/end G-code
+    /// (`Feature::Custom`, e.g. purge lines) unless nothing else is printed.
+    /// `None` when there are no extrusions.
     pub bounds: Option<([f32; 3], [f32; 3])>,
+}
+
+/// Accumulates the box around rendered beads.
+#[derive(Clone, Copy)]
+struct BeadBox {
+    min: [f32; 3],
+    max: [f32; 3],
+}
+
+impl Default for BeadBox {
+    fn default() -> Self {
+        BeadBox {
+            min: [f32::INFINITY; 3],
+            max: [f32::NEG_INFINITY; 3],
+        }
+    }
+}
+
+impl BeadBox {
+    fn include(&mut self, inst: &SegmentInstance) {
+        let hw = inst.width * 0.5;
+        for k in 0..3 {
+            let (lo, hi) = (
+                inst.start[k].min(inst.end[k]),
+                inst.start[k].max(inst.end[k]),
+            );
+            let (pad_lo, pad_hi) = if k == 2 { (inst.height, 0.0) } else { (hw, hw) };
+            self.min[k] = self.min[k].min(lo - pad_lo);
+            self.max[k] = self.max[k].max(hi + pad_hi);
+        }
+    }
+
+    fn get(&self) -> Option<([f32; 3], [f32; 3])> {
+        (self.min[0] <= self.max[0]).then_some((self.min, self.max))
+    }
 }
 
 /// Clamp a reported width to something drawable.
@@ -283,8 +320,8 @@ pub fn build_scene(toolpath: &Toolpath, cancel: &AtomicBool) -> Option<SceneData
     let mut ranges = ScalarRanges::default();
     let mut features = [FeatureTally::default(); Feature::COUNT];
     let mut tools = [0usize; 256];
-    let mut bmin = [f32::INFINITY; 3];
-    let mut bmax = [f32::NEG_INFINITY; 3];
+    let mut object_box = BeadBox::default();
+    let mut custom_box = BeadBox::default();
 
     for (i, seg) in segs.iter().enumerate() {
         if i % CHECK_EVERY == 0 && cancel.load(Ordering::Relaxed) {
@@ -310,13 +347,11 @@ pub fn build_scene(toolpath: &Toolpath, cancel: &AtomicBool) -> Option<SceneData
         }
         tally.distance += seg.length();
         tools[seg.tool as usize] += 1;
-        let hw = inst.width * 0.5;
-        for k in 0..3 {
-            let pad = if k == 2 { 0.0 } else { hw };
-            bmin[k] = bmin[k].min(inst.start[k].min(inst.end[k]) - pad);
-            bmax[k] = bmax[k].max(inst.start[k].max(inst.end[k]) + pad);
+        if seg.feature == Feature::Custom {
+            custom_box.include(&inst);
+        } else {
+            object_box.include(&inst);
         }
-        bmin[2] = bmin[2].min(inst.start[2].min(inst.end[2]) - inst.height);
         extrusions.push(inst);
     }
     ext_prefix.push(extrusions.len() as u32);
@@ -373,7 +408,7 @@ pub fn build_scene(toolpath: &Toolpath, cancel: &AtomicBool) -> Option<SceneData
         .map(|(t, n)| (t as u8, *n))
         .collect();
 
-    let bounds = (!extrusions.is_empty()).then_some((bmin, bmax));
+    let bounds = object_box.get().or(custom_box.get());
     Some(SceneData {
         extrusions,
         travels,
