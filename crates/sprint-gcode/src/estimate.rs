@@ -70,7 +70,8 @@ impl KinematicLimits {
     ///
     /// `M204 S` sets the print and travel accelerations; combined with `T`
     /// (the legacy Marlin 1.x / Prusa form `M204 S.. T..`) the `T` value is
-    /// the retract acceleration.
+    /// the retract acceleration. `M205 J` outside 0.01..=0.3 mm is ignored,
+    /// as Marlin rejects it.
     pub fn apply_gcode(&mut self, line: &ParsedLine) -> bool {
         let Some(code) = line.code else {
             return false;
@@ -118,8 +119,10 @@ impl KinematicLimits {
                         self.jerk[i] = v.min(1e6) as f32;
                     }
                 }
-                if let Some(j) = line.get('J').filter(|v| *v >= 0.0 && v.is_finite()) {
-                    self.junction_deviation = Some(j.min(100.0) as f32);
+                // Marlin rejects junction deviations outside 0.01..=0.3 mm
+                // ("?J out of range") and keeps the previous value.
+                if let Some(j) = line.get('J').filter(|v| (0.01..=0.3).contains(v)) {
+                    self.junction_deviation = Some(j as f32);
                 }
                 if let Some(s) = line.get('S').filter(|v| *v >= 0.0 && v.is_finite()) {
                     self.min_feedrate = s.min(1e6) as f32;
@@ -863,6 +866,14 @@ mod tests {
         assert_eq!(l.jerk, [10.0, 9.0, 0.6, 4.5]);
         assert_eq!(l.junction_deviation, Some(0.02));
         assert_eq!(l.min_feedrate, 1.0);
+        // Marlin rejects J outside 0.01..=0.3 and keeps the old value: J0
+        // would otherwise stop the planner at every junction.
+        for j in ["J0", "J0.005", "J0.31", "J-1"] {
+            assert!(l.apply_gcode(&parse_line(&format!("M205 {j}"))));
+            assert_eq!(l.junction_deviation, Some(0.02), "{j}");
+        }
+        assert!(l.apply_gcode(&parse_line("M205 J0.3")));
+        assert_eq!(l.junction_deviation, Some(0.3));
         let before = l;
         assert!(l.apply_gcode(&parse_line("M201 X0 Y-5")));
         assert_eq!(l, before);
