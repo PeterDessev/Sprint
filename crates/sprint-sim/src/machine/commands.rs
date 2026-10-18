@@ -8,7 +8,7 @@ use crate::settings::{EEPROM_VERSION, Settings};
 
 impl Machine {
     /// Execute one command.
-    pub(super) fn dispatch(&mut self, c: &Command, _origin: Origin) -> Outcome {
+    pub(super) fn dispatch(&mut self, c: &Command, origin: Origin) -> Outcome {
         if c.text.is_empty() {
             return Outcome::Done;
         }
@@ -60,6 +60,8 @@ impl Machine {
                     }
                 }
             }
+            // M1001 is queued internally at the end of an SD print.
+            (b'M', 1001) if origin != Origin::Sd => self.unknown(c),
             (b'M', 20..=33 | 524 | 1001) | (b'M', 75..=78) => self.sd_or_job_command(c),
             (b'M', 73 | 300 | 111 | 120 | 121) => Outcome::Done,
             (b'M', 82) => {
