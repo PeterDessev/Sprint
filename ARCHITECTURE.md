@@ -504,15 +504,25 @@ pub struct MotionLimits {
 }
 
 /// Static description of a known setting command (used by the tuning UI).
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SettingDef {
     pub code: &'static str, pub name: &'static str, pub category: SettingCategory,
     pub description: &'static str,
-    pub selector: Option<char>,        // instance-selecting parameter, if any
+    /// Instance-selecting parameters (empty if none). A list, not a single
+    /// char, because M906/M913/M569 select by T (extruder) *or* I (stepper
+    /// index) and M593 by the bare axis letter X *or* Y. Every selector is
+    /// also listed in `params`.
+    pub selectors: &'static [char],
     pub params: &'static [ParamDef],
     pub requires_eeprom_save: bool,    // persists only after M500
 }
+impl SettingDef { pub fn param(&self, letter: char) -> Option<&'static ParamDef>; pub fn is_selector(&self, letter: char) -> bool; }
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ParamDef { pub letter: char, pub label: &'static str, pub unit: &'static str,
-                      pub min: f64, pub max: f64, pub decimals: u8 }
+                      pub min: f64, pub max: f64, pub decimals: u8,
+                      /// Bare letter without a value (`M569 S1 X Y`, `M593 X`, `M149 C`);
+                      /// stored as `f64::NAN` in `SettingCommand::params`.
+                      pub flag: bool }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum SettingCategory { Motion, Thermal, Extrusion, Probing, Leveling, Homing, Drivers, Retraction, Other }
 pub fn setting_defs() -> &'static [SettingDef];
