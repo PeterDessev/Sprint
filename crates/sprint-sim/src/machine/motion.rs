@@ -43,6 +43,8 @@ pub(crate) struct Motion {
     pub steppers: bool,
     pub tool: usize,
     pub feedrate_pct: f64,
+    /// M220 B backup of the feedrate percentage (restored by M220 R).
+    pub feedrate_pct_backup: f64,
     pub flow_pct: Vec<f64>,
     pub babystep: [f64; 3],
     pub soft_endstops: bool,
@@ -63,6 +65,7 @@ impl Motion {
             steppers: false,
             tool: 0,
             feedrate_pct: 100.0,
+            feedrate_pct_backup: 100.0,
             flow_pct: vec![100.0; extruders.max(1)],
             babystep: [0.0; 3],
             soft_endstops: true,
@@ -651,6 +654,15 @@ impl Machine {
         if !c.has_params() {
             self.emit(format!("FR:{}%", self.motion.feedrate_pct.round() as i64));
             return Outcome::Done;
+        }
+        // Marlin 2.1: R restores the backup, B saves the value from before
+        // this command, then S sets a new one.
+        let before = self.motion.feedrate_pct;
+        if c.seen('R') {
+            self.motion.feedrate_pct = self.motion.feedrate_pct_backup;
+        }
+        if c.seen('B') {
+            self.motion.feedrate_pct_backup = before;
         }
         if let Some(s) = c.value('S')
             && s.is_finite()

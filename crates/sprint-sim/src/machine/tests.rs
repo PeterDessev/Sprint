@@ -471,6 +471,11 @@ fn overrides_report() {
     assert_eq!(r.ok("M220"), vec!["FR:100%", "ok"]);
     r.ok("M220 S150");
     assert_eq!(r.ok("M220"), vec!["FR:150%", "ok"]);
+    // B backs the current value up, R restores it (Marlin 2.1).
+    r.ok("M220 B S80");
+    assert_eq!(r.ok("M220"), vec!["FR:80%", "ok"]);
+    r.ok("M220 R");
+    assert_eq!(r.ok("M220"), vec!["FR:150%", "ok"]);
     assert_eq!(r.ok("M221"), vec!["echo:E0 Flow: 100%", "ok"]);
     r.ok("M221 S95");
     assert_eq!(r.ok("M221"), vec!["echo:E0 Flow: 95%", "ok"]);
