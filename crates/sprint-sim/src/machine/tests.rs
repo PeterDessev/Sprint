@@ -741,7 +741,14 @@ fn sd_listing_write_and_print() {
     // Upload a file with line numbers.
     r.ok("M110 N0");
     let out = r.ok(&frame(1, "M28 test.gco"));
-    assert_eq!(out, vec!["Writing to file: test.gco", "ok"]);
+    assert_eq!(
+        out,
+        vec![
+            "echo:Now fresh file: test.gco",
+            "Writing to file: test.gco",
+            "ok"
+        ]
+    );
     let lines = ["G28", "G1 X10 Y10 F3000", "G1 X20 Y10 E1", "M400"];
     for (i, l) in lines.iter().enumerate() {
         assert_eq!(r.ok(&frame(i as i64 + 2, l)), vec!["ok"]);
@@ -756,7 +763,12 @@ fn sd_listing_write_and_print() {
     // Print it.
     assert_eq!(
         r.ok("M23 test.gco"),
-        vec!["File opened: test.gco Size: 40", "File selected", "ok"]
+        vec![
+            "echo:Now fresh file: test.gco",
+            "File opened: test.gco Size: 40",
+            "File selected",
+            "ok"
+        ]
     );
     assert_eq!(r.ok("M27"), vec!["SD printing byte 0/40", "ok"]);
     r.ok("M24");
@@ -783,7 +795,11 @@ fn sd_listing_write_and_print() {
     assert_eq!(r.ok("M30 test.gco"), vec!["File deleted:test.gco", "ok"]);
     assert_eq!(
         r.ok("M23 test.gco"),
-        vec!["open failed, File: test.gco.", "ok"]
+        vec![
+            "echo:Now fresh file: test.gco",
+            "open failed, File: test.gco.",
+            "ok"
+        ]
     );
 }
 

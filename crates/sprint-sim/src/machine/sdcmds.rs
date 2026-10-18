@@ -20,6 +20,12 @@ pub(crate) struct SdJob {
     pub done_reading: bool,
 }
 
+/// The file name of a path ("/dir/CUBE.GCO" -> "CUBE.GCO"), as Marlin's
+/// diveToFile() hands it to the open/failed messages.
+fn file_part(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
 impl Machine {
     /// M20-M33, M524, M1001 and M75-M78.
     pub(super) fn sd_or_job_command(&mut self, c: &Command) -> Outcome {
@@ -78,8 +84,11 @@ impl Machine {
                 }
             }
             28 => {
-                let name = c.args.trim();
-                match self.sd.create(name) {
+                let path = c.args.trim();
+                // Marlin's openFileWrite() announces the path first.
+                self.emit(format!("echo:Now fresh file: {path}"));
+                let name = file_part(path);
+                match self.sd.create(path) {
                     Some(index) => {
                         self.saving = Some(index);
                         self.emit(format!("Writing to file: {name}"));
@@ -137,9 +146,13 @@ impl Machine {
     }
 
     /// M23: open a file for printing. Returns whether it was found.
-    fn sd_select(&mut self, name: &str) -> bool {
-        let name = name.trim();
-        match self.sd.find_lenient(name) {
+    fn sd_select(&mut self, path: &str) -> bool {
+        let path = path.trim();
+        // Marlin's openFileRead() announces the path, then reports the
+        // file name without directories.
+        self.emit(format!("echo:Now fresh file: {path}"));
+        let name = file_part(path);
+        match self.sd.find_lenient(path) {
             Some(index) => {
                 let size = self.sd.file(index).map_or(0, |f| f.size);
                 self.sd_job = Some(SdJob {

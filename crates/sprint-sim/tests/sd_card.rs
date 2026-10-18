@@ -56,7 +56,11 @@ fn upload_list_print_delete() {
     h.control().clear_received();
     assert_eq!(
         h.numbered("M28 upload.gco"),
-        vec!["Writing to file: upload.gco", "ok"]
+        vec![
+            "echo:Now fresh file: upload.gco",
+            "Writing to file: upload.gco",
+            "ok"
+        ]
     );
     let body: Vec<String> = ["M302 P1", "G92 X0 Y0 Z0 E0"]
         .iter()
@@ -78,8 +82,9 @@ fn upload_list_print_delete() {
 
     h.control().clear_received();
     assert_eq!(
-        h.command("M23 UPLOAD.GCO"),
+        h.command("M23 /UPLOAD.GCO"),
         vec![
+            "echo:Now fresh file: /UPLOAD.GCO".to_string(),
             format!("File opened: UPLOAD.GCO Size: {size}"),
             "File selected".to_string(),
             "ok".to_string()
