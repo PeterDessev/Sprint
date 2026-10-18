@@ -286,7 +286,10 @@ pub fn resume_preamble(file: &GcodeFile, line: usize, options: &ResumeOptions) -
   `filament_density` from slicer metadata overrides the option like the
   diameter does. Layer `lines` ranges are contiguous and cover the file; a
   single command spanning several layers (a long helix) leaves empty ranges.
-  Travel-only files get one layer so every segment has a layer.
+  Travel-only files get one layer so every segment has a layer. Arc
+  tessellation is bounded per file (2M segments plus 32 per command line;
+  past that an arc gets at most 16 segments), so crafted multi-turn arcs
+  cannot exhaust memory.
 * `meta`: `is_layer_marker`, `parse_duration`; `SlicerMetadata` gained
   `filament_density`, `layer_count`, `flavor`.
 

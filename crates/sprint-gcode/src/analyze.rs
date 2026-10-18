@@ -130,6 +130,15 @@ const MIN_E: f64 = 1e-9;
 const LAYER_EPS: f64 = 1e-4;
 /// Upper bound on the segments one arc command produces.
 const MAX_ARC_SEGMENTS: usize = 4096;
+/// Arc tessellation budget for a whole file: a fixed allowance plus this
+/// many segments per command line. Once it is spent, arcs get at most
+/// `ARC_SEGMENTS_OVER_BUDGET` segments, so a small file of huge multi-turn
+/// arcs cannot exhaust memory.
+const ARC_BUDGET_ALLOWANCE: usize = 2_000_000;
+/// See [`ARC_BUDGET_ALLOWANCE`].
+const ARC_BUDGET_PER_COMMAND: usize = 32;
+/// See [`ARC_BUDGET_ALLOWANCE`].
+const ARC_SEGMENTS_OVER_BUDGET: usize = 16;
 /// Upper bound on `P` full turns of one arc.
 const MAX_ARC_TURNS: f64 = 1000.0;
 /// Arcs with a larger radius (mm) are treated as straight moves.
@@ -208,6 +217,8 @@ struct Analyzer {
     filament_area: f64,
     filament_density: f64,
     arc_tolerance: f64,
+    /// Arc segments still allowed at full tolerance.
+    arc_budget: usize,
     fw_retract_length: f64,
     fw_retract_feed: f64,
     fw_recover_extra: f64,
@@ -276,6 +287,9 @@ impl Analyzer {
             filament_area: PI * diameter * diameter / 4.0,
             filament_density: density,
             arc_tolerance,
+            arc_budget: command_count
+                .saturating_mul(ARC_BUDGET_PER_COMMAND)
+                .saturating_add(ARC_BUDGET_ALLOWANCE),
             // Marlin FWRETRACT defaults.
             fw_retract_length: 3.0,
             fw_retract_feed: 45.0,
@@ -610,7 +624,9 @@ impl Analyzer {
             TAU / 16.0
         };
         let max_step = if max_step > 1e-9 { max_step } else { 1e-9 };
-        let n = ((sweep / max_step).ceil() as usize).clamp(1, MAX_ARC_SEGMENTS);
+        let cap = MAX_ARC_SEGMENTS.min(self.arc_budget.max(ARC_SEGMENTS_OVER_BUDGET));
+        let n = ((sweep / max_step).ceil() as usize).clamp(1, cap);
+        self.arc_budget = self.arc_budget.saturating_sub(n);
         let start_angle = ry.atan2(rx);
         let dz = to[2] - from[2];
         let de_step = de / n as f64;
@@ -1549,6 +1565,33 @@ mod tests {
         // Rising extrusions without markers are bucketed, not one layer per
         // segment.
         assert!(tp.layers.len() < 20, "{}", tp.layers.len());
+    }
+
+    #[test]
+    fn arc_tessellation_is_bounded_per_file() {
+        // Each "G2 I100 P1000" line asks for the 4096-segment maximum: a
+        // 15-byte line becoming 245 KB of segments. Past the file's budget
+        // arcs get a few segments each.
+        let text = "M83\nG1 Z0.2\n".to_string() + &"G2 I100 P1000 E1\n".repeat(10);
+        let file = GcodeFile::from_text("arcs", text);
+        let options = AnalyzeOptions::default();
+        let metadata = read_metadata(&file);
+        let mut analyzer = Analyzer::new(&options, &metadata, file.command_count());
+        assert!(analyzer.arc_budget >= ARC_BUDGET_ALLOWANCE);
+        analyzer.arc_budget = 10_000;
+        let mut parsed = ParsedLine::default();
+        for i in 0..file.len() {
+            parse_into(file.line(i), &mut parsed);
+            analyzer.line(saturating_u32(i), &parsed);
+        }
+        let tp = analyzer.finish(metadata, saturating_u32(file.len()));
+        let arc_segments = tp.segments.iter().filter(|s| s.line > 1).count();
+        assert_eq!(
+            arc_segments,
+            4096 + 4096 + 1808 + 7 * ARC_SEGMENTS_OVER_BUDGET
+        );
+        // Every arc still extrudes its whole E.
+        assert!((tp.stats.filament_length - 10.0).abs() < 1e-3);
     }
 
     #[test]
