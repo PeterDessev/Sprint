@@ -55,7 +55,12 @@ impl Machine {
             23 => {
                 self.sd_select(c.args);
             }
-            24 => self.sd_start(c),
+            24 => {
+                self.sd_start(c);
+                // Marlin's M24 always ends with these host actions.
+                self.emit("//action:resume");
+                self.open_prompt(Prompt::Info, "Resuming SD", &["Dismiss"]);
+            }
             25 => self.sd_pause(),
             26 => {
                 if let (Some(job), Some(pos)) = (self.sd_job.as_mut(), c.value('S')) {
@@ -184,22 +189,18 @@ impl Machine {
             job.printing = true;
             job.started = true;
             self.timer.start(self.now, &mut self.stats);
-            if self.prompt == Prompt::PauseResume {
-                self.prompt = Prompt::None;
-                self.emit("//action:prompt_end");
-            }
         }
     }
 
-    /// M25: pause reading (queued moves still finish).
+    /// M25: pause reading (queued moves still finish), then tell the host
+    /// like Marlin does even when nothing is printing.
     fn sd_pause(&mut self) {
-        if let Some(job) = self.sd_job.as_mut()
-            && job.printing
-        {
+        if let Some(job) = self.sd_job.as_mut() {
             job.printing = false;
-            self.timer.pause(self.now);
-            self.open_prompt(Prompt::PauseResume, "Pause SD", &["Resume"]);
         }
+        self.timer.pause(self.now);
+        self.open_prompt(Prompt::PauseResume, "Pause SD", &["Resume"]);
+        self.emit("//action:pause");
     }
 
     /// M30.

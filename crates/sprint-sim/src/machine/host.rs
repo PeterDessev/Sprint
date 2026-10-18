@@ -22,6 +22,8 @@ pub(crate) enum Prompt {
     UserContinue,
     /// SD print paused by M25 ("Pause SD" / "Resume").
     PauseResume,
+    /// Information only ("Resuming SD" / "Dismiss"); answers do nothing.
+    Info,
 }
 
 /// Phase of an M600 filament change.
@@ -95,7 +97,7 @@ impl Machine {
         match self.prompt {
             Prompt::UserContinue => self.wait_for_user = false,
             Prompt::PauseResume => self.injected.push_back("M24".to_string()),
-            Prompt::None => {}
+            Prompt::Info | Prompt::None => {}
         }
         self.prompt = Prompt::None;
     }

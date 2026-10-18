@@ -863,12 +863,23 @@ fn sd_pause_resume_prompt_and_abort() {
     r.ok("M24");
     r.run(2.0);
     assert!(r.m.snapshot().sd_printing);
-    let out = r.ok("M25");
-    assert!(
-        out.contains(&"//action:prompt_begin Pause SD".to_string()),
-        "{out:?}"
+    let no_busy = |out: Vec<String>| -> Vec<String> {
+        out.into_iter()
+            .filter(|l| !l.starts_with("echo:busy"))
+            .collect()
+    };
+    let out = no_busy(r.ok("M25"));
+    assert_eq!(
+        out,
+        vec![
+            "//action:prompt_end",
+            "//action:prompt_begin Pause SD",
+            "//action:prompt_button Resume",
+            "//action:prompt_show",
+            "//action:pause",
+            "ok"
+        ]
     );
-    assert!(out.contains(&"//action:prompt_button Resume".to_string()));
     assert!(!r.m.snapshot().sd_printing);
     // Commands already in the buffer still run (and wait for the planner),
     // but no new lines are read while paused.
@@ -886,8 +897,21 @@ fn sd_pause_resume_prompt_and_abort() {
     // Pausing again and resuming from the host closes the prompt.
     let out = r.ok("M25");
     assert!(out.contains(&"//action:prompt_show".to_string()), "{out:?}");
-    let out = r.ok("M24");
-    assert!(out.contains(&"//action:prompt_end".to_string()), "{out:?}");
+    let out = no_busy(r.ok("M24"));
+    assert_eq!(
+        out,
+        vec![
+            "//action:resume",
+            "//action:prompt_end",
+            "//action:prompt_begin Resuming SD",
+            "//action:prompt_button Dismiss",
+            "//action:prompt_show",
+            "ok"
+        ]
+    );
+    assert!(r.m.snapshot().sd_printing);
+    // An informational prompt: answering it does not resume or pause.
+    r.send("M876 S0");
     assert!(r.m.snapshot().sd_printing);
     r.ok("M106 S255");
     r.ok("M524");
