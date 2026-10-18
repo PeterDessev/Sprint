@@ -478,7 +478,12 @@ impl GcodeViewer {
     /// min/max values).
     pub fn legend_ui(&mut self, ui: &mut egui::Ui) {
         let mode = self.options.color_mode;
-        ui.label(egui::RichText::new(mode.name()).strong());
+        let title = if mode.is_gradient() && !mode.unit().is_empty() {
+            format!("{} ({})", mode.name(), mode.unit())
+        } else {
+            mode.name().to_owned()
+        };
+        ui.label(egui::RichText::new(title).strong());
         match self.legend() {
             Legend::Features(rows) => {
                 let id = ui.id().with("sprint-viewer-feature-legend");
@@ -1342,37 +1347,51 @@ fn gradient_bar(ui: &mut egui::Ui, g: &color::GradientLegend) {
     let (labels, _) = ui.allocate_exact_size(egui::vec2(width, 16.0), egui::Sense::hover());
     let font = egui::FontId::proportional(11.0);
     let color = ui.visuals().text_color();
-    let last = g.ticks.len().saturating_sub(1);
-    for (i, (t, text)) in g.ticks.iter().enumerate() {
+    let painter = ui.painter();
+    // Place min and max first, then the inner ticks that fit between them
+    // without overlapping their neighbours.
+    let placed_rect = |i: usize, text: &str| {
+        let galley = painter.layout_no_wrap(text.to_owned(), font.clone(), color);
+        let t = g.ticks.get(i).map_or(0.0, |t| t.0);
         let x = labels.left() + t * labels.width();
-        let align = if g.ticks.len() == 1 {
-            egui::Align2::CENTER_TOP
+        let w = galley.size().x;
+        let left = if g.ticks.len() == 1 {
+            x - w * 0.5
         } else if i == 0 {
-            egui::Align2::LEFT_TOP
-        } else if i == last {
-            egui::Align2::RIGHT_TOP
+            x
+        } else if i + 1 == g.ticks.len() {
+            x - w
         } else {
-            egui::Align2::CENTER_TOP
+            x - w * 0.5
         };
-        // Skip crowded middle labels on narrow bars.
-        if g.ticks.len() > 3 && i != 0 && i != last && i % 2 == 1 && width < 200.0 {
+        let left = left.clamp(labels.left(), (labels.right() - w).max(labels.left()));
+        (
+            egui::Rect::from_min_size(egui::pos2(left, labels.top()), galley.size()),
+            galley,
+        )
+    };
+    let mut order: Vec<usize> = Vec::with_capacity(g.ticks.len());
+    if let Some(last) = g.ticks.len().checked_sub(1) {
+        order.push(0);
+        if last > 0 {
+            order.push(last);
+        }
+        order.extend(1..last);
+    }
+    let mut taken: Vec<egui::Rect> = Vec::new();
+    for i in order {
+        let Some((_, text)) = g.ticks.get(i) else {
+            continue;
+        };
+        let (rect, galley) = placed_rect(i, text);
+        if taken
+            .iter()
+            .any(|r| r.expand2(egui::vec2(6.0, 0.0)).intersects(rect))
+        {
             continue;
         }
-        ui.painter().text(
-            egui::pos2(x, labels.top()),
-            align,
-            text,
-            font.clone(),
-            color,
-        );
-    }
-    let unit = g.mode.unit();
-    if !unit.is_empty() && g.mode != ColorMode::Fan {
-        ui.label(
-            egui::RichText::new(format!("Range in {unit}"))
-                .weak()
-                .small(),
-        );
+        taken.push(rect);
+        painter.galley(rect.min, galley, color);
     }
 }
 

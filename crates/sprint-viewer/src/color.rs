@@ -433,11 +433,32 @@ pub fn build_legend(data: &LegendData, mode: ColorMode) -> Legend {
     }
 }
 
+/// A gradient tick value without its unit (the legend shows the unit once
+/// in its title): `42.5`, `0.450`, `1h 02m`, `17`.
+pub fn format_tick(mode: ColorMode, value: f32) -> String {
+    if !value.is_finite() {
+        return "-".to_owned();
+    }
+    match mode {
+        ColorMode::Time => format_duration(value),
+        ColorMode::Layer | ColorMode::Fan => format!("{}", value.round() as i64),
+        ColorMode::Speed => {
+            if value >= 100.0 {
+                format!("{value:.0}")
+            } else {
+                format!("{value:.1}")
+            }
+        }
+        ColorMode::Width | ColorMode::LayerHeight => format!("{value:.3}"),
+        ColorMode::Feature | ColorMode::Tool => format!("{value}"),
+    }
+}
+
 /// Tick labels for a gradient: min, max and up to three evenly spaced
 /// values in between (just one when the range is degenerate).
 fn gradient_ticks(mode: ColorMode, r: ScalarRange) -> Vec<(f32, String)> {
     if r.span() <= 1e-6 {
-        return vec![(0.5, format_value(mode, r.min))];
+        return vec![(0.5, format_tick(mode, r.min))];
     }
     let steps = if mode == ColorMode::Layer && r.span() < 4.0 {
         r.span().round().max(1.0) as usize
@@ -447,7 +468,7 @@ fn gradient_ticks(mode: ColorMode, r: ScalarRange) -> Vec<(f32, String)> {
     (0..=steps)
         .map(|i| {
             let t = i as f32 / steps as f32;
-            (t, format_value(mode, r.min + r.span() * t))
+            (t, format_tick(mode, r.min + r.span() * t))
         })
         .collect()
 }
@@ -548,8 +569,9 @@ mod tests {
             panic!("expected gradient");
         };
         assert_eq!((g.min, g.max), (20.0, 120.0));
-        assert_eq!(g.ticks.first().map(|t| t.1.as_str()), Some("20.0 mm/s"));
-        assert_eq!(g.ticks.last().map(|t| t.1.as_str()), Some("120 mm/s"));
+        assert_eq!(g.ticks.first().map(|t| t.1.as_str()), Some("20.0"));
+        assert_eq!(g.ticks.last().map(|t| t.1.as_str()), Some("120"));
+        assert_eq!(format_value(ColorMode::Speed, 120.0), "120 mm/s");
         let Legend::Gradient(g) = build_legend(&data, ColorMode::Fan) else {
             panic!("expected gradient");
         };
@@ -579,6 +601,6 @@ mod tests {
             panic!("expected gradient");
         };
         assert_eq!(g.ticks.len(), 1);
-        assert_eq!(g.ticks[0].1, "0.450 mm");
+        assert_eq!(g.ticks[0].1, "0.450");
     }
 }
