@@ -14,7 +14,7 @@ use crate::color::{
     srgb_to_linear, srgb_to_linear_rgb,
 };
 use crate::gpu::{self, DrawParams, Globals, Renderer, Slot, flags};
-use crate::instance::{self, Cluster, LayerRanges, MAX_COORD, SceneData};
+use crate::instance::{self, CLUSTER_SIZE, Cluster, LayerRanges, MAX_COORD, SceneData};
 use crate::options::{BedSpec, ColorMode, RenderStyle, ViewMode, ViewPreset, ViewerOptions};
 use crate::pick::{PickFilter, PickHit, PickIndex};
 
@@ -1245,13 +1245,25 @@ impl Drop for GcodeViewer {
     }
 }
 
-/// Append `r` to `ranges`, merging with the last range when contiguous.
+/// Largest batch formed by merging a range that comes just *before* the
+/// previous one (layers visited top-down). Bigger batches would be drawn
+/// bottom-up and lose the front-to-back order that early depth testing
+/// relies on; smaller ones would cost one draw call per tiny layer (spiral
+/// vase files have one layer per segment).
+const BACKWARD_MERGE_MAX: u32 = 4 * CLUSTER_SIZE as u32;
+
+/// Append `r` to `ranges`, merging it with the last range when they touch.
 fn push_range(ranges: &mut Vec<std::ops::Range<u32>>, r: std::ops::Range<u32>) {
     if r.is_empty() {
         return;
     }
     match ranges.last_mut() {
         Some(last) if last.end == r.start => last.end = r.end,
+        Some(last)
+            if r.end == last.start && last.end.saturating_sub(r.start) <= BACKWARD_MERGE_MAX =>
+        {
+            last.start = r.start;
+        }
         _ => ranges.push(r),
     }
 }
@@ -1404,4 +1416,119 @@ fn gradient_bar(ui: &mut egui::Ui, g: &color::GradientLegend) {
 /// tried. Returns `None` when no adapter at all can be created.
 pub fn headless_device() -> Option<(wgpu::Device, wgpu::Queue)> {
     gpu::headless_device()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicBool;
+
+    use sprint_gcode::{Layer, MoveKind, Segment};
+
+    use super::*;
+    use crate::instance::build_scene;
+
+    /// A spiral vase in which every segment is its own layer, which is how
+    /// a Z-change based layer detector sees vase mode.
+    fn vase(n: usize) -> Toolpath {
+        let mut tp = Toolpath::default();
+        let mut prev = [130.0f32, 110.0, 0.2];
+        for i in 1..=n {
+            let a = i as f32 / 200.0 * std::f32::consts::TAU;
+            let z = 0.2 + i as f32 * 0.001;
+            let p = [110.0 + 20.0 * a.cos(), 110.0 + 20.0 * a.sin(), z];
+            tp.segments.push(Segment {
+                start: prev,
+                end: p,
+                feedrate: 30.0,
+                width: 0.45,
+                height: 0.2,
+                line: i as u32,
+                layer: (i - 1) as u32,
+                kind: MoveKind::Extrude,
+                ..Default::default()
+            });
+            tp.layers.push(Layer {
+                z,
+                height: 0.2,
+                segments: i - 1..i,
+                lines: i as u32..i as u32 + 1,
+                ..Default::default()
+            });
+            prev = p;
+        }
+        tp
+    }
+
+    fn info(tp: &Toolpath) -> SceneInfo {
+        let s = build_scene(tp, &AtomicBool::new(false)).expect("not cancelled");
+        SceneInfo {
+            layers: s.layers,
+            clusters: s.clusters,
+            legend: s.legend,
+            bounds: s.bounds,
+            pick: None,
+        }
+    }
+
+    fn draw_lists(info: &SceneInfo, preset: ViewPreset, lod: f32) -> DrawLists {
+        let mut cam = Camera::default();
+        cam.set_preset(preset);
+        if let Some((min, max)) = info.bounds {
+            cam.fit_bounds(Vec3::from(min), Vec3::from(max), 1.6);
+        }
+        let frustum = Frustum::from_matrix(cam.view_proj(1.6));
+        let pixel = 2.0 * (cam.fov_y * 0.5).tan() / 800.0;
+        select_clusters(info, (0, info.layers.len() - 1), &frustum, &cam, pixel, lod)
+    }
+
+    type DrawLists = (Vec<std::ops::Range<u32>>, Vec<std::ops::Range<u32>>);
+
+    fn instances(lists: &DrawLists) -> u32 {
+        lists
+            .0
+            .iter()
+            .chain(&lists.1)
+            .map(|r| r.end - r.start)
+            .sum()
+    }
+
+    #[test]
+    fn many_tiny_layers_are_batched_into_few_draws() {
+        let tp = vase(20_000);
+        let info = info(&tp);
+        for preset in [ViewPreset::Iso, ViewPreset::Top, ViewPreset::Bottom] {
+            for lod in [0.0, DEFAULT_LOD_PIXELS, f32::MAX] {
+                let lists = draw_lists(&info, preset, lod);
+                assert_eq!(
+                    instances(&lists),
+                    20_000,
+                    "{preset:?}: everything is visible"
+                );
+                let draws = lists.0.len() + lists.1.len();
+                assert!(
+                    draws <= 40,
+                    "{preset:?} lod {lod}: {draws} draw calls for 20k one-segment layers"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn push_range_merges_in_both_directions_but_keeps_big_batches_ordered() {
+        let mut v = Vec::new();
+        push_range(&mut v, 10..20);
+        push_range(&mut v, 20..30);
+        assert_eq!(v, vec![10..30]);
+        // Visiting layers top-down: a range just before the last one.
+        push_range(&mut v, 0..10);
+        assert_eq!(v, vec![0..30]);
+        push_range(&mut v, 5..5);
+        assert_eq!(v, vec![0..30]);
+        // Big layers drawn top-down stay separate (front to back).
+        let big = CLUSTER_SIZE as u32 * 8;
+        let mut v = Vec::new();
+        push_range(&mut v, big..2 * big);
+        push_range(&mut v, 0..big);
+        assert_eq!(v, vec![big..2 * big, 0..big]);
+    }
 }
