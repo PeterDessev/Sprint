@@ -1,6 +1,7 @@
 //! Reply parsing: turns lines received from the firmware into [`Reply`]
 //! values. See [`ReplyParser`].
 
+mod mesh_block;
 mod position;
 mod sd;
 mod status;
@@ -13,7 +14,8 @@ pub use temps::parse_temperatures;
 pub use text::parse_duration;
 pub use types::*;
 
-use crate::{SettingCommand, parse_firmware_line, setting_def};
+use crate::{BedMesh, SettingCommand, parse_firmware_line, setting_def};
+use mesh_block::{MeshBlock, Step};
 use text::{
     is_fatal_error, parse_host_action, parse_u32, strip_prefix_ci, tokens_with_offsets, unquote,
 };
@@ -26,6 +28,11 @@ use text::{
 pub struct ReplyParser {
     /// Inside "Begin file list" ... "End file list".
     sd_listing: bool,
+    /// An open leveling report.
+    mesh: Option<MeshBlock>,
+    /// A Prusa-style MBL header ("Z search height:") was seen, so the
+    /// following "Measured points:" rows are printed back row first.
+    prusa_mbl: bool,
 }
 
 impl ReplyParser {
@@ -38,8 +45,51 @@ impl ReplyParser {
     pub fn feed(&mut self, line: &str) -> Vec<Reply> {
         let mut out = Vec::new();
         let line = line.trim_matches(|c: char| c.is_whitespace() || c.is_control());
+        if let Some(block) = self.mesh.as_mut() {
+            match block.feed(line) {
+                Step::Consumed => return out,
+                Step::PassThrough => {}
+                Step::Finished(mesh) => {
+                    self.mesh = None;
+                    out.extend(mesh.map(Reply::Mesh));
+                    return out;
+                }
+                Step::FinishedPassThrough(mesh) => {
+                    self.mesh = None;
+                    out.extend(mesh.map(Reply::Mesh));
+                }
+            }
+        }
         self.dispatch(line, &mut out);
         out
+    }
+
+    /// End of input (e.g. disconnect): emit whatever a pending multi-line
+    /// block has collected.
+    pub fn flush(&mut self) -> Vec<Reply> {
+        self.mesh
+            .take()
+            .and_then(|mut block| block.finish())
+            .map(Reply::Mesh)
+            .into_iter()
+            .collect()
+    }
+
+    /// Forget all pending state (e.g. after reconnecting).
+    pub fn reset(&mut self) {
+        *self = ReplyParser::default();
+    }
+
+    /// Start a mesh block if `line` is a mesh report header.
+    fn start_mesh(&mut self, line: &str) -> bool {
+        match MeshBlock::start(line, self.prusa_mbl) {
+            Some(block) => {
+                self.mesh = Some(block);
+                self.prusa_mbl = false;
+                true
+            }
+            None => false,
+        }
     }
 
     /// Classify one trimmed line.
@@ -78,7 +128,7 @@ impl ReplyParser {
         }
         if let Some(body) = strip_prefix_ci(line, "echo:") {
             let body = body.trim();
-            if self.classify_message(body, out) {
+            if self.classify_message(body, out) || self.start_mesh(body) {
                 return;
             }
             // M503 lines: "echo:  M92 X80.00 ..." (any G/M code inside echo).
@@ -97,7 +147,9 @@ impl ReplyParser {
                 out.push(Reply::HostAction(parse_host_action(action)));
             } else if let Some(cmd) = strip_prefix_ci(body, "Unknown command:") {
                 out.push(Reply::UnknownCommand(unquote(cmd).to_string()));
-            } else {
+            } else if let Some(mesh) = inline_klipper_matrix(body) {
+                out.push(Reply::Mesh(mesh));
+            } else if !self.start_mesh(line) {
                 out.push(Reply::Info(body.to_string()));
             }
             return;
@@ -126,8 +178,13 @@ impl ReplyParser {
             out.push(Reply::Position(report));
             return;
         }
-        if self.classify_message(line, out) {
+        if self.classify_message(line, out) || self.start_mesh(line) {
             return;
+        }
+        if strip_prefix_ci(line, "Num X,Y:").is_some() {
+            self.prusa_mbl = false;
+        } else if strip_prefix_ci(line, "Z search height:").is_some() {
+            self.prusa_mbl = true;
         }
         if let Some(endstops) = status::parse_endstops(line) {
             out.extend(
@@ -224,6 +281,21 @@ impl ReplyParser {
             out.push(Reply::Firmware(info));
         }
     }
+}
+
+/// Klipper `probed_matrix: [[...], [...]]` / `mesh_matrix: [[...]]` on one line.
+fn inline_klipper_matrix(body: &str) -> Option<BedMesh> {
+    let lower = body.to_ascii_lowercase();
+    let kind = if lower.starts_with("probed_matrix") {
+        "klipper_probed"
+    } else if lower.starts_with("mesh_matrix") {
+        "klipper_mesh"
+    } else {
+        return None;
+    };
+    let start = body.find('[')?;
+    let rows = mesh_block::parse_inline_matrix(&body[start..])?;
+    Some(BedMesh::from_rows(rows, kind))
 }
 
 /// Whether a line inside a file listing can be a file entry (and not an

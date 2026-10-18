@@ -607,3 +607,260 @@ fn stats_and_print_time() {
     );
     assert_eq!(one("echo:1 min, 23 sec"), Reply::PrintTime(83));
 }
+
+fn meshes(replies: &[Reply]) -> Vec<&BedMesh> {
+    replies
+        .iter()
+        .filter_map(|r| match r {
+            Reply::Mesh(m) => Some(m),
+            _ => None,
+        })
+        .collect()
+}
+
+fn assert_row(mesh: &BedMesh, row: usize, expected: &[f32]) {
+    let actual = &mesh.points[row];
+    assert_eq!(actual.len(), expected.len(), "row {row}: {actual:?}");
+    for (a, e) in actual.iter().zip(expected) {
+        if e.is_nan() {
+            assert!(a.is_nan(), "row {row}: {actual:?}");
+        } else {
+            assert!(
+                (a - e).abs() < 1e-6,
+                "row {row}: {actual:?} != {expected:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn marlin_bilinear_grid() {
+    let mut p = ReplyParser::new();
+    let replies = feed_all(
+        &mut p,
+        &[
+            "Bilinear Leveling Grid:",
+            "      0      1      2      3",
+            " 0 +0.100 +0.050 -0.020 +0.000",
+            " 1 +0.080 +0.030 -0.010 =====",
+            " 2 +0.060 +0.010 -0.030 -0.050",
+            "",
+            "echo:Bed Leveling ON",
+            "echo:Fade Height 10.00",
+            "ok",
+        ],
+    );
+    let m = meshes(&replies);
+    assert_eq!(m.len(), 1);
+    let mesh = m[0];
+    assert_eq!(mesh.kind, "bilinear");
+    assert_eq!((mesh.rows(), mesh.cols()), (3, 4));
+    assert_row(mesh, 0, &[0.1, 0.05, -0.02, 0.0]);
+    assert_row(mesh, 1, &[0.08, 0.03, -0.01, f32::NAN]);
+    assert_row(mesh, 2, &[0.06, 0.01, -0.03, -0.05]);
+    assert!(matches!(replies[0], Reply::Mesh(_)));
+    assert_eq!(replies[1], Reply::Echo("Bed Leveling ON".into()));
+    assert_eq!(replies[3], ok(None, None, None));
+    assert_eq!(replies.len(), 4);
+}
+
+#[test]
+fn bilinear_block_ends_at_non_row_or_ok() {
+    let mut p = ReplyParser::new();
+    let replies = feed_all(
+        &mut p,
+        &[
+            "Bilinear Leveling Grid:",
+            "      0      1",
+            " 0 +0.100 +0.050",
+            " T:210.00 /210.00 B:60.00 /60.00 @:64 B@:0",
+            " 1 +0.080 +0.030",
+            "echo:Bed Leveling ON",
+        ],
+    );
+    assert!(matches!(replies[0], Reply::Temperatures(_)));
+    let Reply::Mesh(mesh) = &replies[1] else {
+        panic!("{replies:?}")
+    };
+    assert_eq!(mesh.rows(), 2);
+    assert_eq!(replies[2], Reply::Echo("Bed Leveling ON".into()));
+
+    let replies = feed_all(&mut p, &["Bilinear Leveling Grid:", " 0 +0.1 +0.2", "ok"]);
+    assert_eq!(meshes(&replies).len(), 1);
+    assert_eq!(replies[1], ok(None, None, None));
+
+    // Header without rows: no mesh.
+    let replies = feed_all(&mut p, &["Bilinear Leveling Grid:", "ok"]);
+    assert_eq!(replies, vec![ok(None, None, None)]);
+}
+
+#[test]
+fn marlin_mesh_bed_leveling() {
+    let mut p = ReplyParser::new();
+    let replies = feed_all(
+        &mut p,
+        &[
+            "3x3 mesh. Z offset: 0.00000",
+            "Measured points:",
+            "        0        1        2",
+            " 0 +0.07500 +0.02500 -0.01250",
+            " 1 +0.05000 +0.00000 -0.02500",
+            " 2 +0.02500 -0.01250 -0.05000",
+            "ok",
+        ],
+    );
+    assert_eq!(
+        replies[0],
+        Reply::Other("3x3 mesh. Z offset: 0.00000".into())
+    );
+    let Reply::Mesh(mesh) = &replies[1] else {
+        panic!("{replies:?}")
+    };
+    assert_eq!(mesh.kind, "mbl");
+    assert_row(mesh, 0, &[0.075, 0.025, -0.0125]);
+    assert_row(mesh, 2, &[0.025, -0.0125, -0.05]);
+    assert_eq!(replies[2], ok(None, None, None));
+}
+
+#[test]
+fn prusa_g81_rows_are_back_first() {
+    let mut p = ReplyParser::new();
+    let replies = feed_all(
+        &mut p,
+        &[
+            "Num X,Y: 3,3",
+            "Z search height: 5.00",
+            "Measured points:",
+            "  0.30000  0.31000  0.32000",
+            "  0.20000  0.21000  0.22000",
+            "  0.10000  0.11000  0.12000",
+            "ok",
+        ],
+    );
+    let m = meshes(&replies);
+    assert_eq!(m.len(), 1);
+    assert_row(m[0], 0, &[0.1, 0.11, 0.12]);
+    assert_row(m[0], 2, &[0.3, 0.31, 0.32]);
+    // Without the Prusa header, unlabelled MBL rows are front first.
+    let replies = feed_all(&mut p, &["Measured points:", " 0.1 0.2", " 0.3 0.4", ""]);
+    assert_row(meshes(&replies)[0], 0, &[0.1, 0.2]);
+}
+
+#[test]
+fn ubl_topography_report() {
+    let mut p = ReplyParser::new();
+    let replies = feed_all(
+        &mut p,
+        &[
+            "",
+            "Bed Topography Report:",
+            "",
+            "    (  0,220)                                     (220,220)",
+            "        0       1       2",
+            " 2 | +0.030  +0.020 [+0.010]",
+            "   |",
+            " 1 | +0.020   0.000  -0.010",
+            "   |",
+            " 0 | +0.010  -0.010    .   ",
+            "        0       1       2",
+            "    (  0,  0)                                     (220,  0)",
+            "",
+            "ok",
+        ],
+    );
+    let m = meshes(&replies);
+    assert_eq!(m.len(), 1, "{replies:?}");
+    let mesh = m[0];
+    assert_eq!(mesh.kind, "ubl");
+    assert_row(mesh, 0, &[0.01, -0.01, f32::NAN]);
+    assert_row(mesh, 1, &[0.02, 0.0, -0.01]);
+    assert_row(mesh, 2, &[0.03, 0.02, 0.01]);
+    assert_eq!(mesh.x_positions, Some(vec![0.0, 110.0, 220.0]));
+    assert_eq!(mesh.y_positions, Some(vec![0.0, 110.0, 220.0]));
+    assert_eq!(replies.last(), Some(&ok(None, None, None)));
+    assert_eq!(replies.len(), 2);
+}
+
+#[test]
+fn ubl_csv_report_is_back_first() {
+    let mut p = ReplyParser::new();
+    let replies = feed_all(
+        &mut p,
+        &[
+            "Bed Topography Report for CSV:",
+            "",
+            "0.030\t0.020\t0.010",
+            "0.020\t0.000\t-0.010",
+            "0.010\t-0.010\tNAN",
+            "",
+        ],
+    );
+    let m = meshes(&replies);
+    assert_row(m[0], 0, &[0.01, -0.01, f32::NAN]);
+    assert_row(m[0], 2, &[0.03, 0.02, 0.01]);
+}
+
+#[test]
+fn klipper_bed_mesh_output() {
+    let mut p = ReplyParser::new();
+    let replies = feed_all(
+        &mut p,
+        &[
+            "// Mesh Leveling Probed Z positions:",
+            "//  0.012500 0.025000 0.037500",
+            "//  0.050000 0.062500 0.075000",
+            "// Mesh X,Y: 3,2",
+            "// Search Height: 5",
+            "// Mesh Offsets: X=0.0000, Y=0.0000",
+            "// Mesh Average: 0.04",
+            "// Mesh Range: min=0.0125 max=0.0750",
+            "// Interpolation Algorithm: lagrange",
+            "// Measured points:",
+            "//   0.050000  0.062500  0.075000",
+            "//   0.012500  0.025000  0.037500",
+            "ok",
+        ],
+    );
+    let m = meshes(&replies);
+    assert_eq!(m.len(), 2, "{replies:?}");
+    assert_eq!(m[0].kind, "klipper_probed");
+    assert_row(m[0], 0, &[0.0125, 0.025, 0.0375]);
+    assert_row(m[0], 1, &[0.05, 0.0625, 0.075]);
+    assert_eq!(m[1].kind, "klipper_mesh");
+    assert_row(m[1], 0, &[0.0125, 0.025, 0.0375]);
+    assert_eq!(replies[1], Reply::Info("Mesh X,Y: 3,2".into()));
+    assert_eq!(replies.last(), Some(&ok(None, None, None)));
+    assert_eq!(replies.len(), 2 + 6 + 1);
+}
+
+#[test]
+fn klipper_matrix_forms() {
+    let mut p = ReplyParser::new();
+    let replies = feed_all(&mut p, &["// probed_matrix: [[0.1, 0.2], [0.3, 0.4]]"]);
+    let m = meshes(&replies);
+    assert_eq!(m[0].kind, "klipper_probed");
+    assert_row(m[0], 1, &[0.3, 0.4]);
+
+    let replies = feed_all(
+        &mut p,
+        &["// mesh_matrix", "// 0.1 0.2", "// 0.3 0.4", "ok"],
+    );
+    let m = meshes(&replies);
+    assert_eq!(m[0].kind, "klipper_mesh");
+    assert_row(m[0], 0, &[0.1, 0.2]);
+}
+
+#[test]
+fn flush_emits_pending_mesh() {
+    let mut p = ReplyParser::new();
+    assert!(feed_all(&mut p, &["Bilinear Leveling Grid:", " 0 +0.1 +0.2"]).is_empty());
+    let flushed = p.flush();
+    assert_eq!(meshes(&flushed).len(), 1);
+    assert!(p.flush().is_empty());
+    let _ = p.feed("Bilinear Leveling Grid:");
+    p.reset();
+    assert_eq!(
+        p.feed(" 0 +0.1 +0.2"),
+        vec![Reply::Other("0 +0.1 +0.2".into())]
+    );
+}
