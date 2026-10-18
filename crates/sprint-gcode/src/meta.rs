@@ -280,6 +280,11 @@ impl Reader {
     }
 
     fn comment(&mut self, c: &str, region: Region) {
+        // Cura's serialized profile is split at arbitrary points; its pieces
+        // can look like `key = value` lines.
+        if c.starts_with("SETTING_") {
+            return;
+        }
         // Thumbnail start.
         if let Some(state) = thumbnail_begin(c) {
             self.thumb = Some(state);
@@ -911,7 +916,7 @@ mod tests {
 
     #[test]
     fn cura() {
-        let text = ";FLAVOR:Marlin\n;TIME:6666\n;Filament used: 1.23456m, 0.5m\n;Layer height: 0.2\n;MINX:1\n;Generated with Cura_SteamEngine 5.6.0\nM140 S60\nM105\nM190 S60\nM104 S200\nM109 S200\nG28\n;LAYER_COUNT:300\n;LAYER:0\n;MESH:vase.stl\nG1 X1 E1\n;MESH:NONMESH\n;LAYER:1\n;MESH:other.stl\n;End of Gcode\n;SETTING_3 {\"global_quality\": \"[general]\\\\nversion = 4\"}\n";
+        let text = ";FLAVOR:Marlin\n;TIME:6666\n;Filament used: 1.23456m, 0.5m\n;Layer height: 0.2\n;MINX:1\n;Generated with Cura_SteamEngine 5.6.0\nM140 S60\nM105\nM190 S60\nM104 S200\nM109 S200\nG28\n;LAYER_COUNT:300\n;LAYER:0\n;MESH:vase.stl\nG1 X1 E1\n;MESH:NONMESH\n;LAYER:1\n;MESH:other.stl\n;End of Gcode\n;SETTING_3 {\"global_quality\": \"[general]\\\\nversion = 4\\\\nna\n;SETTING_3 me = Vase #1\\\\ndefinition = custom\"}\n";
         let m = meta(text);
         assert_eq!(m.slicer.as_deref(), Some("Cura_SteamEngine 5.6.0"));
         assert_eq!(m.estimated_time, Some(6666.0));
