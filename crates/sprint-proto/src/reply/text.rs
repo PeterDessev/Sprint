@@ -51,7 +51,7 @@ pub(crate) fn unquote(s: &str) -> &str {
 /// Whether an error message means the firmware has stopped (needs M999,
 /// a firmware restart or a power cycle).
 pub(crate) fn is_fatal_error(message: &str) -> bool {
-    const FATAL: [&str; 15] = [
+    const FATAL: [&str; 16] = [
         "halted",
         "kill() called",
         "killed",
@@ -67,6 +67,8 @@ pub(crate) fn is_fatal_error(message: &str) -> bool {
         "lost communication",
         "emergency stop",
         "watchdog",
+        // Klipper verify_heater shutdown reason.
+        "not heating at expected rate",
     ];
     let m = message.to_ascii_lowercase();
     FATAL.iter().any(|k| m.contains(k))

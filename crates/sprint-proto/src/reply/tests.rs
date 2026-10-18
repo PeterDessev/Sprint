@@ -166,6 +166,18 @@ fn errors_and_fatality() {
             "G0/G1: insufficient axes homed",
             false,
         ),
+        // Klipper's verify_heater shuts the printer down with this reason
+        // (no "shutdown" in the text).
+        (
+            "!! Heater extruder not heating at expected rate",
+            "Heater extruder not heating at expected rate",
+            true,
+        ),
+        (
+            "!! Heater heater_bed not heating at expected rate",
+            "Heater heater_bed not heating at expected rate",
+            true,
+        ),
         ("Error:Probing Failed", "Probing Failed", false),
         (
             "Error:STOP called because of BLTouch error - restart with M999",
