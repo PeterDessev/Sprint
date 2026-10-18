@@ -233,6 +233,8 @@ struct Analyzer {
     heat_waits: usize,
     /// Simplify3D file: bare feature comments are annotations.
     simplify3d: bool,
+    /// RepRapFirmware flavor: M203 feedrates are in mm/min.
+    reprapfirmware: bool,
 }
 
 impl Analyzer {
@@ -306,6 +308,7 @@ impl Analyzer {
                 .slicer
                 .as_deref()
                 .is_some_and(|s| s.starts_with("Simplify3D")),
+            reprapfirmware: meta.flavor.as_deref().is_some_and(is_reprapfirmware),
         }
     }
 
@@ -383,6 +386,15 @@ impl Analyzer {
                 self.sync();
                 self.heat_waits += 1;
                 self.state.apply(p);
+            }
+            (b'M', 203, None) if self.reprapfirmware => {
+                // RepRapFirmware's M203 is in mm/min.
+                let limits = self.planner.limits_mut();
+                for (slot, axis) in limits.max_feedrate.iter_mut().zip(['X', 'Y', 'Z', 'E']) {
+                    if let Some(v) = p.get(axis).filter(|v| v.is_finite() && *v > 0.0) {
+                        *slot = (v / 60.0).min(1e9) as f32;
+                    }
+                }
             }
             (b'M', 201 | 203 | 204 | 205, None) => {
                 self.planner.limits_mut().apply_gcode(p);
@@ -1118,6 +1130,13 @@ impl Analyzer {
     }
 }
 
+/// G-code flavor names of RepRapFirmware: PrusaSlicer/OrcaSlicer
+/// `gcode_flavor = reprapfirmware`, Cura `;FLAVOR:RepRap`.
+fn is_reprapfirmware(flavor: &str) -> bool {
+    let f = flavor.trim();
+    f.eq_ignore_ascii_case("reprapfirmware") || f.eq_ignore_ascii_case("RepRap")
+}
+
 fn sane_size(v: Option<f32>) -> Option<f64> {
     v.filter(|v| v.is_finite() && *v > 0.0 && *v < 10.0)
         .map(f64::from)
@@ -1688,6 +1707,26 @@ mod tests {
         // M220 speed factor.
         let half = run("M220 S50\nM204 T10000\nM203 X1000\nG1 X100 F6000\n");
         assert!(half.stats.estimated_time > fast.stats.estimated_time * 1.8);
+    }
+
+    #[test]
+    fn reprapfirmware_feedrate_limits_are_per_minute() {
+        // PrusaSlicer writes RepRapFirmware's M203 in mm/min.
+        let moves = "M204 P10000 T10000\nG1 X300 F30000\n";
+        let rrf = run(&format!(
+            "M203 X12000 Y12000 Z720 E3600 ; sets maximum feedrates, mm / min\n{moves}; gcode_flavor = reprapfirmware\n"
+        ));
+        let marlin = run(&format!(
+            "M203 X200 Y200 Z12 E60 ; sets maximum feedrates, mm / sec\n{moves}; gcode_flavor = marlin2\n"
+        ));
+        assert_eq!(rrf.metadata.flavor.as_deref(), Some("reprapfirmware"));
+        assert!(
+            rrf.stats.estimated_time > 1.4,
+            "{}",
+            rrf.stats.estimated_time
+        );
+        assert!((rrf.stats.estimated_time - marlin.stats.estimated_time).abs() < 1e-6);
+        assert!(is_reprapfirmware("RepRap") && !is_reprapfirmware("marlin2"));
     }
 
     #[test]

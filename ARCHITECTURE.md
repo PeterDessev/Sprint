@@ -289,7 +289,9 @@ pub fn resume_preamble(file: &GcodeFile, line: usize, options: &ResumeOptions) -
   Travel-only files get one layer so every segment has a layer. Arc
   tessellation is bounded per file (2M segments plus 32 per command line;
   past that an arc gets at most 16 segments), so crafted multi-turn arcs
-  cannot exhaust memory.
+  cannot exhaust memory. In files whose metadata flavor is RepRapFirmware
+  (`gcode_flavor = reprapfirmware`, Cura `;FLAVOR:RepRap`) M203 is read in
+  mm/min, as RepRapFirmware defines it.
 * `meta`: `is_layer_marker`, `parse_duration`; `SlicerMetadata` gained
   `filament_density`, `layer_count`, `flavor`.
 
