@@ -1135,6 +1135,12 @@ fn autotune_failures() {
         ("PID Autotune failed! Bad heater id", "Bad heater id"),
         ("echo:PID Autotune failed! timeout", "timeout"),
         ("PID Autotune failed", "PID Autotune failed"),
+        // Marlin 1.0 / early Prusa wording.
+        (
+            "PID Autotune failed. Bad extruder number.",
+            "Bad extruder number",
+        ),
+        ("PID Autotune failed! timeout.", "timeout"),
     ] {
         assert_eq!(one(line), Reply::AutotuneFailed(reason.into()), "{line:?}");
     }

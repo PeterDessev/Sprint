@@ -118,7 +118,13 @@ impl PidTracker {
             return Some(other());
         }
         if let Some(rest) = strip_prefix_ci(body, "PID Autotune failed") {
-            let reason = rest.trim_start_matches('!').trim();
+            // "failed! timeout" (Marlin 1.1+) or "failed. Bad extruder
+            // number." (Marlin 1.0): drop the punctuation around the reason.
+            let reason = rest
+                .trim_start_matches(['!', '.'])
+                .trim()
+                .trim_end_matches('.')
+                .trim_end();
             let reason = if reason.is_empty() { body } else { reason };
             self.reset();
             return Some(vec![Reply::AutotuneFailed(reason.to_string())]);
