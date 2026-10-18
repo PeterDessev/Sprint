@@ -864,3 +864,158 @@ fn flush_emits_pending_mesh() {
         vec![Reply::Other("0 +0.1 +0.2".into())]
     );
 }
+
+fn autotune_results(replies: &[Reply]) -> Vec<(f32, f32, f32)> {
+    replies
+        .iter()
+        .filter_map(|r| match r {
+            Reply::AutotuneResult { kp, ki, kd } => Some((*kp, *ki, *kd)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn marlin_autotune_session_yields_one_result() {
+    let mut p = ReplyParser::new();
+    let replies = feed_all(
+        &mut p,
+        &[
+            "PID Autotune start",
+            " T:199.99 /200.00 @:127",
+            " bias: 92 d: 92 min: 196.56 max: 203.75",
+            " bias: 92 d: 92 min: 196.56 max: 203.75 Ku: 34.27 Tu: 26.44",
+            " Classic PID ",
+            " Kp: 20.56 Ki: 1.55 Kd: 67.92",
+            " bias: 95 d: 95 min: 197.01 max: 202.99 Ku: 40.43 Tu: 25.10",
+            " Classic PID ",
+            " Kp: 22.10 Ki: 1.07 Kd: 113.00",
+            "PID Autotune finished! Put the last Kp, Ki and Kd constants from below into Configuration.h",
+            "#define DEFAULT_Kp 22.20",
+            "#define DEFAULT_Ki 1.08",
+            "#define DEFAULT_Kd 114.00",
+            "ok",
+        ],
+    );
+    assert_eq!(autotune_results(&replies), vec![(22.2, 1.08, 114.0)]);
+    assert!(matches!(replies[1], Reply::Temperatures(_)));
+    assert_eq!(replies.last(), Some(&ok(None, None, None)));
+
+    let replies = feed_all(
+        &mut p,
+        &[
+            "PID Autotune start",
+            " Kp: 120.00 Ki: 20.00 Kd: 900.00",
+            "PID Autotune finished! Put the last Kp, Ki and Kd constants from below into Configuration.h",
+            "#define DEFAULT_bedKp 131.06",
+            "#define DEFAULT_bedKi 25.73",
+            "#define DEFAULT_bedKd 445.03",
+        ],
+    );
+    assert_eq!(autotune_results(&replies), vec![(131.06, 25.73, 445.03)]);
+}
+
+#[test]
+fn prusa_autotune_session_uses_last_estimate() {
+    let mut p = ReplyParser::new();
+    let replies = feed_all(
+        &mut p,
+        &[
+            "PID Autotune start",
+            " bias: 92 d: 92 min: 196.56 max: 203.75",
+            " Ku: 34.27 Tu: 26.44",
+            " Classic PID ",
+            " Kp: 20.56",
+            " Ki: 1.55",
+            " Kd: 67.92",
+            " Ku: 37.00 Tu: 27.00",
+            " Classic PID ",
+            " Kp: 22.20",
+            " Ki: 1.08",
+            " Kd: 114.00",
+            "PID Autotune finished! Put the last Kp, Ki and Kd constants from above into Configuration.h",
+            "ok",
+        ],
+    );
+    assert_eq!(autotune_results(&replies), vec![(22.2, 1.08, 114.0)]);
+}
+
+#[test]
+fn standalone_autotune_lines() {
+    let mut p = ReplyParser::new();
+    assert_eq!(
+        p.feed(" Kp: 22.20 Ki: 1.08 Kd: 114.00"),
+        vec![Reply::AutotuneResult {
+            kp: 22.2,
+            ki: 1.08,
+            kd: 114.0
+        }]
+    );
+    let replies = feed_all(
+        &mut p,
+        &[
+            "#define DEFAULT_Kp 22.20",
+            "#define DEFAULT_Ki 1.08",
+            "#define DEFAULT_Kd 114.00",
+        ],
+    );
+    assert_eq!(autotune_results(&replies), vec![(22.2, 1.08, 114.0)]);
+    assert_eq!(replies.len(), 1);
+    assert_eq!(
+        p.feed("// PID parameters: pid_Kp=22.865 pid_Ki=1.292 pid_Kd=101.178"),
+        vec![Reply::AutotuneResult {
+            kp: 22.865,
+            ki: 1.292,
+            kd: 101.178
+        }]
+    );
+}
+
+#[test]
+fn autotune_failures() {
+    for (line, reason) in [
+        ("PID Autotune failed! timeout", "timeout"),
+        (
+            "PID Autotune failed! Temperature too high",
+            "Temperature too high",
+        ),
+        (
+            "PID Autotune failed! Bad extruder number",
+            "Bad extruder number",
+        ),
+        ("PID Autotune failed! Bad heater id", "Bad heater id"),
+        ("echo:PID Autotune failed! timeout", "timeout"),
+        ("PID Autotune failed", "PID Autotune failed"),
+    ] {
+        assert_eq!(one(line), Reply::AutotuneFailed(reason.into()), "{line:?}");
+    }
+    // A failure ends the session: later estimates are reported directly.
+    let mut p = ReplyParser::new();
+    let replies = feed_all(
+        &mut p,
+        &[
+            "PID Autotune start",
+            "PID Autotune failed! timeout",
+            " Kp: 1.0 Ki: 2.0 Kd: 3.0",
+        ],
+    );
+    assert_eq!(autotune_results(&replies), vec![(1.0, 2.0, 3.0)]);
+}
+
+#[test]
+fn autotune_without_defines_reports_at_ok() {
+    let mut p = ReplyParser::new();
+    let replies = feed_all(
+        &mut p,
+        &[
+            "PID Autotune start",
+            " Kp: 22.20 Ki: 1.08 Kd: 114.00",
+            "PID Autotune finished! Put the last Kp, Ki and Kd constants from below into Configuration.h",
+            "ok",
+        ],
+    );
+    assert_eq!(autotune_results(&replies), vec![(22.2, 1.08, 114.0)]);
+    let n = replies.len();
+    assert!(matches!(replies[n - 2], Reply::AutotuneResult { .. }));
+    assert_eq!(replies[n - 1], ok(None, None, None));
+}

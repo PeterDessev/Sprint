@@ -1,6 +1,7 @@
 //! Reply parsing: turns lines received from the firmware into [`Reply`]
 //! values. See [`ReplyParser`].
 
+mod autotune;
 mod mesh_block;
 mod position;
 mod sd;
@@ -33,6 +34,8 @@ pub struct ReplyParser {
     /// A Prusa-style MBL header ("Z search height:") was seen, so the
     /// following "Measured points:" rows are printed back row first.
     prusa_mbl: bool,
+    /// PID autotune session state.
+    pid: autotune::PidTracker,
 }
 
 impl ReplyParser {
@@ -128,6 +131,10 @@ impl ReplyParser {
         }
         if let Some(body) = strip_prefix_ci(line, "echo:") {
             let body = body.trim();
+            if let Some(replies) = self.pid.feed(body, line) {
+                out.extend(replies);
+                return;
+            }
             if self.classify_message(body, out) || self.start_mesh(body) {
                 return;
             }
@@ -149,6 +156,8 @@ impl ReplyParser {
                 out.push(Reply::UnknownCommand(unquote(cmd).to_string()));
             } else if let Some(mesh) = inline_klipper_matrix(body) {
                 out.push(Reply::Mesh(mesh));
+            } else if let Some(result) = autotune::parse_klipper_pid(body) {
+                out.push(result);
             } else if !self.start_mesh(line) {
                 out.push(Reply::Info(body.to_string()));
             }
@@ -176,6 +185,10 @@ impl ReplyParser {
         }
         if let Some(report) = parse_position(line) {
             out.push(Reply::Position(report));
+            return;
+        }
+        if let Some(replies) = self.pid.feed(line, line) {
+            out.extend(replies);
             return;
         }
         if self.classify_message(line, out) || self.start_mesh(line) {
@@ -265,6 +278,7 @@ impl ReplyParser {
                 }
             }
         }
+        out.extend(self.pid.on_ok());
         out.push(Reply::Ok {
             line,
             planner_free,
