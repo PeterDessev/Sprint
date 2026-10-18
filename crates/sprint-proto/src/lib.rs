@@ -5,6 +5,8 @@
 
 #![warn(missing_docs)]
 
+pub mod firmware;
 pub mod framing;
 
+pub use firmware::*;
 pub use framing::*;
