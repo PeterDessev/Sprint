@@ -439,6 +439,9 @@ Parsing conventions (implemented in sprint-proto):
   whose `current` is NaN.
 * File-list entries are only recognised between `Begin file list` and
   `End file list`; an `ok` closes a listing whose end line was lost.
+  An entry whose second word is not a size keeps its spaces (Klipper
+  `my part.gcode 1234`, size last; RRF bare names). Prusa's `DIR_ENTER:` /
+  `DIR_EXIT` markers and resend requests inside a listing are not files.
   `echo:Now fresh file:` / `Now doing file:` give `SdReply::Opened` with
   size 0; `open failed, File: x.` is a non-fatal `Reply::Error`.
 * Mesh blocks end at a blank line, `ok` or any non-row line; interleaved
@@ -608,8 +611,10 @@ pub fn search_gcode(prefix: &str) -> Vec<&'static GcodeDoc>;
 `search_gcode` returns the exact code first, then codes starting with the
 query in numeric order (a zero-padded query such as "G01" is treated as a
 complete code); word queries ("temp", "bed level") match names first, then
-descriptions. Empty queries return nothing. Dangerous entries: M30, M42,
-M81, M112, M502, M994, M997, M999.
+descriptions. Empty queries return nothing. `gcode_doc` reads only the
+leading code, so parameters or a comment glued to it (`"G1X10"`,
+`"M502;reset"`) are ignored. Dangerous entries: M30, M42, M81, M112, M502,
+M994, M997, M999.
 
 ---
 
