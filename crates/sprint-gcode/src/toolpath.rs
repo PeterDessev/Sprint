@@ -225,9 +225,9 @@ impl Bounds {
     }
 
     pub fn include(&mut self, p: [f32; 3]) {
-        for i in 0..3 {
-            self.min[i] = self.min[i].min(p[i]);
-            self.max[i] = self.max[i].max(p[i]);
+        for ((lo, hi), v) in self.min.iter_mut().zip(self.max.iter_mut()).zip(p) {
+            *lo = lo.min(v);
+            *hi = hi.max(v);
         }
     }
 
