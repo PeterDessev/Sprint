@@ -774,19 +774,19 @@ fn sd_listing_write_and_print() {
     assert_eq!(out[0], "Error:No Checksum with line number, Last Line: 5");
     assert_eq!(r.ok(&frame(6, "M29")), vec!["Done saving file.", "ok"]);
     let out = r.ok("M20 L");
-    assert!(out.contains(&"TEST.GCO 40 test.gco".to_string()), "{out:?}");
+    assert!(out.contains(&"TEST.GCO 44 test.gco".to_string()), "{out:?}");
 
     // Print it.
     assert_eq!(
         r.ok("M23 test.gco"),
         vec![
             "echo:Now fresh file: test.gco",
-            "File opened: test.gco Size: 40",
+            "File opened: test.gco Size: 44",
             "File selected",
             "ok"
         ]
     );
-    assert_eq!(r.ok("M27"), vec!["SD printing byte 0/40", "ok"]);
+    assert_eq!(r.ok("M27"), vec!["SD printing byte 0/44", "ok"]);
     r.ok("M24");
     assert!(r.m.snapshot().sd_printing);
     let mut waited = 0.0;
@@ -832,7 +832,7 @@ fn emergency_parser_is_off_while_writing_to_sd() {
     assert!(!r.m.snapshot().halted);
     assert_eq!(r.ok(&frame(6, "M29")), vec!["Done saving file.", "ok"]);
     let index = r.m.sd.find("estop.gco").expect("file saved");
-    assert_eq!(r.m.sd.data(index), b"M112\nM108\nM410\nM876 S0\n");
+    assert_eq!(r.m.sd.data(index), b"M112\r\nM108\r\nM410\r\nM876 S0\r\n");
     // Enabled again after M29.
     r.send("M112");
     assert!(r.m.snapshot().halted);

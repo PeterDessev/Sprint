@@ -73,7 +73,8 @@ fn upload_list_print_delete() {
     let received = h.control().received_commands();
     assert_eq!(received.first().map(String::as_str), Some("M28 upload.gco"));
     assert_eq!(&received[1..received.len() - 1], &body[..]);
-    let size: usize = body.iter().map(|l| l.len() + 1).sum();
+    // Marlin stores each line with CR LF.
+    let size: usize = body.iter().map(|l| l.len() + 2).sum();
     let listing = h.command("M20 L");
     assert!(
         listing.contains(&format!("UPLOAD.GCO {size} upload.gco")),
@@ -133,7 +134,7 @@ fn upload_survives_injected_checksum_errors() {
     lines.push("M29".to_string());
     let (resends, _) = h.stream(&lines, std::time::Duration::from_secs(2));
     assert!(resends > 5);
-    let expected: usize = lines[1..81].iter().map(|l| l.len() + 1).sum();
+    let expected: usize = lines[1..81].iter().map(|l| l.len() + 2).sum();
     let listing = h.command("M20 L");
     assert!(
         listing.contains(&format!("NOISY.GCO {expected} noisy.gco")),

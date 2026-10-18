@@ -197,10 +197,10 @@ impl SdCard {
             .sum()
     }
 
-    /// Append one line (plus "\n") to a file being written. Returns false
-    /// when the card is full.
+    /// Append one line (plus "\r\n", as Marlin's `write_command()` stores
+    /// it) to a file being written. Returns false when the card is full.
     pub(crate) fn append_line(&mut self, index: usize, line: &str) -> bool {
-        if self.used_bytes() + line.len() + 1 > CARD_CAPACITY {
+        if self.used_bytes() + line.len() + 2 > CARD_CAPACITY {
             return false;
         }
         let seed = self.seed;
@@ -211,7 +211,7 @@ impl SdCard {
             .data
             .get_or_insert_with(|| synthesize(&f.long_name, f.size, seed));
         data.extend_from_slice(line.as_bytes());
-        data.push(b'\n');
+        data.extend_from_slice(b"\r\n");
         f.size = data.len() as u64;
         true
     }
@@ -446,10 +446,11 @@ mod tests {
         let i = card.create("test.gco").unwrap();
         assert!(card.append_line(i, "G28"));
         assert!(card.append_line(i, "G1 X10"));
-        assert_eq!(card.file(i).unwrap().size, 11);
-        assert_eq!(card.data(i), b"G28\nG1 X10\n");
-        assert_eq!(card.listing(false), vec!["TEST.GCO 11".to_string()]);
-        assert_eq!(card.listing(true), vec!["TEST.GCO 11 test.gco".to_string()]);
+        // Marlin's write_command() ends every stored line with CR LF.
+        assert_eq!(card.file(i).unwrap().size, 13);
+        assert_eq!(card.data(i), b"G28\r\nG1 X10\r\n");
+        assert_eq!(card.listing(false), vec!["TEST.GCO 13".to_string()]);
+        assert_eq!(card.listing(true), vec!["TEST.GCO 13 test.gco".to_string()]);
         // Re-creating truncates.
         let j = card.create("TEST.GCO").unwrap();
         assert_eq!(i, j);
