@@ -94,7 +94,8 @@ pub struct ParsedLine<'a> {
     /// Parameters after the code, in source order.
     pub words: Vec<Word>,
     /// Free-text argument of commands that take one (M23/M28/M30/M32/M33
-    /// file names, M117/M118 messages, M928), trimmed. For extended commands
+    /// file names, M117/M118 messages, M928, M16, M810-M819), trimmed. For
+    /// extended commands
     /// (Klipper `SET_FAN_SPEED SPEED=1`, RepRapFirmware meta commands, ...)
     /// that have no `code`, this holds the whole command without comment.
     pub text: Option<&'a str>,
@@ -153,11 +154,18 @@ fn ascii_upper(c: char) -> Option<u8> {
     }
 }
 
-/// Commands whose argument is free text (file name or message).
+/// Commands whose argument is free text: file names (M23/M28/M30/M32/M33,
+/// M928), messages (M117/M118), Marlin's expected-printer check (M16, which
+/// compares the text with the machine name and halts the printer on a
+/// mismatch) and G-code macro definitions (M810-M819). Marlin takes these
+/// verbatim.
 fn is_text_command(code: Code) -> bool {
     code.letter == b'M'
         && code.sub.is_none()
-        && matches!(code.number, 23 | 28 | 30 | 32 | 33 | 117 | 118 | 928)
+        && matches!(
+            code.number,
+            16 | 23 | 28 | 30 | 32 | 33 | 117 | 118 | 810..=819 | 928
+        )
 }
 
 /// Parse one line. Accepts `G1X10Y20`, lowercase, extra spaces and tabs,
@@ -1207,6 +1215,26 @@ mod tests {
             let line = format!("{cmd} name.gco");
             assert_eq!(parse_line(&line).text, Some("name.gco"), "{cmd}");
         }
+    }
+
+    #[test]
+    fn marlin_string_argument_commands_stay_verbatim() {
+        // M16 compares its text with the machine name and halts Marlin on a
+        // mismatch, so uppercasing "Ender-3 V2" would stop the print.
+        let p = parse_line("M16 Ender-3 V2");
+        assert_eq!(p.text, Some("Ender-3 V2"));
+        assert!(p.words.is_empty());
+        assert_eq!(
+            clean_line("M16 Ender-3 V2 ; check").as_deref(),
+            Some("M16 Ender-3 V2")
+        );
+        // G-code macro definitions keep their body.
+        assert_eq!(
+            clean_line("M810 G28|G1 X10  Y10").as_deref(),
+            Some("M810 G28|G1 X10  Y10")
+        );
+        assert_eq!(parse_line("M819 G4 P1").text, Some("G4 P1"));
+        assert_eq!(parse_line("M820 S1").text, None);
     }
 
     #[test]

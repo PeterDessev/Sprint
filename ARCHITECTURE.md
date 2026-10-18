@@ -266,7 +266,9 @@ pub fn resume_preamble(file: &GcodeFile, line: usize, options: &ResumeOptions) -
   commands (no `code`) carry the command text in `ParsedLine::text`.
   `clean_line` additionally uppercases classic commands (`g1 x10` ->
   `G1 X10`; text arguments, quoted strings, `{...}` expressions and extended
-  commands stay verbatim) and is idempotent.
+  commands stay verbatim) and is idempotent. Besides the listed text
+  commands, M16 (expected-printer check) and M810-M819 (macro definitions)
+  carry their argument in `text` verbatim, as Marlin reads them.
 * `file`: `GcodeFile::{from_bytes, line_at_offset}`; `Clone + Default`,
   compact `Debug`; a leading BOM is dropped.
 * `state`: extra public fields `relative_e_mode` (sticky M83; G90 restores
