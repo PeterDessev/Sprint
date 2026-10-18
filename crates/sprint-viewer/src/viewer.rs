@@ -15,7 +15,7 @@ use crate::color::{
 };
 use crate::gpu::{self, DrawParams, Globals, Renderer, Slot, flags};
 use crate::instance::{self, Cluster, LayerRanges, MAX_COORD, SceneData};
-use crate::options::{BedSpec, ColorMode, ViewMode, ViewPreset, ViewerOptions};
+use crate::options::{BedSpec, ColorMode, RenderStyle, ViewMode, ViewPreset, ViewerOptions};
 use crate::pick::{PickFilter, PickHit, PickIndex};
 
 /// Bytes of instance data uploaded per frame while a toolpath streams in
@@ -33,6 +33,7 @@ pub const DEFAULT_LOD_PIXELS: f32 = 3.0;
 const PICK_TOLERANCE_PX: f32 = 2.5;
 
 /// What [`GcodeViewer::ui`] reports back.
+#[derive(Clone, Debug)]
 pub struct ViewerResponse {
     /// The egui response of the viewer area.
     pub response: egui::Response,
@@ -120,8 +121,10 @@ impl GcodeViewer {
         viewer
     }
 
-    /// Create a viewer without egui integration: [`GcodeViewer::render_to_image`]
-    /// works, [`GcodeViewer::ui`] only reserves space.
+    /// Create a viewer from a raw wgpu device and queue, without egui
+    /// integration (tests, thumbnails, servers): [`GcodeViewer::render_to_image`]
+    /// works; [`GcodeViewer::ui`] reserves space and handles input but shows
+    /// no image.
     pub fn new_headless(device: &wgpu::Device, queue: &wgpu::Queue) -> GcodeViewer {
         let renderer = Renderer::new(device, queue);
         let mut camera_top = Camera {
@@ -458,7 +461,7 @@ impl GcodeViewer {
             && !response.dragged()
             && let Some(pos) = response.hover_pos()
         {
-            self.show_tooltip(ui.ctx(), hover, pos, rect);
+            self.show_tooltip(ui.ctx(), response.id.with("hover"), hover, pos, rect);
         }
         if loading || self.anim.is_some() {
             ui.ctx().request_repaint();
@@ -1062,16 +1065,9 @@ impl GcodeViewer {
             range: [scalar.0, scalar.1, MARKER_PX, 0.0],
         };
 
-        let layer_slice = |pick: fn(&LayerRanges) -> std::ops::Range<u32>, a: usize, b: usize| {
-            self.info.as_ref().and_then(|info| {
-                let first = info.layers.get(a).map(pick)?;
-                let last = info.layers.get(b).map(pick)?;
-                Some(first.start..last.end.max(first.start))
-            })
-        };
         let (prisms, ribbons) = match (range, &self.info) {
             (Some((a, b)), Some(info)) => {
-                let lod = if o.style == crate::options::RenderStyle::Lines {
+                let lod = if o.style == RenderStyle::Lines {
                     0.0
                 } else {
                     self.lod_pixels
@@ -1087,13 +1083,19 @@ impl GcodeViewer {
             }
             _ => (Vec::new(), Vec::new()),
         };
-        let travels = if o.show_travel {
-            range.and_then(|(a, b)| {
+        // Travels of the visible layers (only the top one in the layer view).
+        let travels = match (o.show_travel, range, &self.info) {
+            (true, Some((a, b)), Some(info)) => {
                 let a = if top_mode { b } else { a };
-                layer_slice(|l| l.travels.clone(), a, b)
-            })
-        } else {
-            None
+                match (info.layers.get(a), info.layers.get(b)) {
+                    (Some(first), Some(last)) => {
+                        let start = first.travels.start;
+                        Some(start..last.travels.end.max(start))
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
         };
         let clear = if self.renderer.encodes_gamma() {
             let [r, g, b] = o.background;
@@ -1141,7 +1143,14 @@ impl GcodeViewer {
         painter.galley(pos + egui::vec2(8.0, 4.0), galley, egui::Color32::WHITE);
     }
 
-    fn show_tooltip(&self, ctx: &egui::Context, hover: Hover, pos: egui::Pos2, rect: egui::Rect) {
+    fn show_tooltip(
+        &self,
+        ctx: &egui::Context,
+        id: egui::Id,
+        hover: Hover,
+        pos: egui::Pos2,
+        rect: egui::Rect,
+    ) {
         let Some(tp) = &self.toolpath else {
             return;
         };
@@ -1157,7 +1166,7 @@ impl GcodeViewer {
         if at.y + 120.0 > rect.bottom() {
             at.y = (pos.y - 136.0).max(rect.top());
         }
-        egui::Area::new(egui::Id::new("sprint-viewer-hover"))
+        egui::Area::new(id)
             .order(egui::Order::Tooltip)
             .fixed_pos(at)
             .interactable(false)
@@ -1167,7 +1176,7 @@ impl GcodeViewer {
                         swatch(ui, color::feature_color(seg.feature));
                         ui.label(egui::RichText::new(seg.feature.name()).strong());
                     });
-                    egui::Grid::new("sprint-viewer-hover-grid")
+                    egui::Grid::new(id.with("grid"))
                         .num_columns(2)
                         .spacing([12.0, 2.0])
                         .show(ui, |ui| {
@@ -1202,6 +1211,23 @@ impl GcodeViewer {
                         });
                 });
             });
+    }
+}
+
+impl std::fmt::Debug for GcodeViewer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GcodeViewer")
+            .field("options", &self.options)
+            .field("bed", &self.bed)
+            .field("camera", self.active_camera())
+            .field(
+                "segments",
+                &self.toolpath.as_ref().map(|tp| tp.segments.len()),
+            )
+            .field("layers", &self.layer_count())
+            .field("loading", &self.is_loading())
+            .field("lod_pixels", &self.lod_pixels)
+            .finish_non_exhaustive()
     }
 }
 
