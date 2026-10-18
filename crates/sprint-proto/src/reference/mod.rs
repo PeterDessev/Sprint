@@ -140,11 +140,28 @@ pub fn gcode_docs() -> &'static [GcodeDoc] {
 }
 
 /// Look up a command, case-insensitively and ignoring leading zeros
-/// (`"g1"`, `"G1"` and `"G01"` all find G1). Parameters after the code are
-/// ignored, so `"M104 S200"` finds M104.
+/// (`"g1"`, `"G1"` and `"G01"` all find G1). Whatever follows the code is
+/// ignored, with or without a space: `"M104 S200"`, `"G1X10"` and
+/// `"M502;reset"` find M104, G1 and M502.
 pub fn gcode_doc(code: &str) -> Option<&'static GcodeDoc> {
-    let first = code.split_whitespace().next()?;
-    let normalized = normalize_code(first)?;
+    let text = code.trim_start();
+    let bytes = text.as_bytes();
+    if !bytes.first()?.is_ascii_alphabetic() {
+        return None;
+    }
+    // Letter, digits and an optional ".digits" sub-code; all ASCII, so
+    // `end` is a char boundary.
+    let digits = |from: usize| {
+        bytes[from..]
+            .iter()
+            .take_while(|b| b.is_ascii_digit())
+            .count()
+    };
+    let mut end = 1 + digits(1);
+    if bytes.get(end) == Some(&b'.') && bytes.get(end + 1).is_some_and(u8::is_ascii_digit) {
+        end += 1 + digits(end + 1);
+    }
+    let normalized = normalize_code(&text[..end])?;
     gcode_docs().iter().find(|d| d.code == normalized)
 }
 
@@ -385,6 +402,18 @@ mod tests {
         assert!(gcode_doc("").is_none());
         assert!(gcode_doc("M9999").is_none());
         assert!(gcode_doc("hello").is_none());
+        // Regression: parameters or a comment glued to the code (valid
+        // G-code) made the lookup fail, so "M502;reset" was not flagged
+        // as dangerous.
+        assert!(gcode_doc("M502;reset").is_some_and(|d| d.dangerous));
+        assert_eq!(gcode_doc("G1X10Y10").unwrap().code, "G1");
+        assert_eq!(gcode_doc("m104s200").unwrap().code, "M104");
+        assert_eq!(gcode_doc("G38.2Z-10").unwrap().code, "G38.2");
+        assert_eq!(gcode_doc("M112*3").unwrap().code, "M112");
+        assert_eq!(gcode_doc("G29.").unwrap().code, "G29");
+        assert!(gcode_doc("M").is_none());
+        assert!(gcode_doc("XM104").is_none());
+        assert!(gcode_doc("é").is_none());
     }
 
     #[test]
