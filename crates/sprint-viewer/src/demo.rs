@@ -402,6 +402,11 @@ pub fn demo_toolpath() -> Toolpath {
 
         if first {
             b.set_tool(0);
+            // Purge line along the front edge (start G-code).
+            b.set_feature(Feature::Custom);
+            b.travel_to([25.0, 8.0, z]);
+            b.extrude_to([85.0, 8.0, z], 0.6, height, 20.0);
+            b.extrude_to([125.0, 8.0, z], 0.9, height, 15.0);
             b.set_feature(Feature::Skirt);
             let skirt: Vec<[f32; 3]> = (0..96)
                 .map(|i| {
@@ -448,7 +453,7 @@ pub fn demo_toolpath() -> Toolpath {
                 zigzag(
                     &mut b,
                     tower,
-                    twist + PI / 4.0 + dir,
+                    twist + dir,
                     ih,
                     w * 0.95,
                     &extent,
@@ -462,7 +467,7 @@ pub fn demo_toolpath() -> Toolpath {
                 zigzag(
                     &mut b,
                     tower,
-                    twist + PI / 4.0 + dir,
+                    twist + dir,
                     ih,
                     2.2,
                     &extent,
