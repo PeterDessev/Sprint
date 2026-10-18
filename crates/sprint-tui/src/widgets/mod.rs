@@ -6,9 +6,11 @@
 
 pub mod console;
 pub mod heater;
+pub mod job;
 #[cfg(test)]
 pub(crate) mod testutil;
 pub(crate) mod util;
 
 pub use console::{ConsoleKind, ConsoleLine};
 pub use heater::{HeaterGauge, HeaterKind, HeaterState};
+pub use job::{JobProgress, JobTone};

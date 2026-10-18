@@ -369,6 +369,11 @@ impl Theme {
         }
     }
 
+    /// Normal text, without a background (for spans inside panels).
+    pub fn text(&self) -> Style {
+        self.fg(self.text)
+    }
+
     /// Raised panels (popups, overlays).
     pub fn surface(&self) -> Style {
         if self.has_color() {

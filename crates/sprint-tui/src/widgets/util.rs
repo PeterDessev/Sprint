@@ -60,6 +60,30 @@ pub(crate) fn truncate(text: &str, max: usize) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
+/// The last part of `text` that fits in `max` columns, with `…` in front
+/// when something had to be cut (for file paths).
+pub(crate) fn truncate_start(text: &str, max: usize) -> Cow<'_, str> {
+    if width(text) <= max {
+        return Cow::Borrowed(text);
+    }
+    if max == 0 {
+        return Cow::Borrowed("");
+    }
+    let mut kept: Vec<char> = Vec::new();
+    let mut used = 0;
+    for c in text.chars().rev() {
+        let w = char_width(c);
+        if used + w > max - 1 {
+            break;
+        }
+        kept.push(c);
+        used += w;
+    }
+    let mut out = String::from("…");
+    out.extend(kept.iter().rev());
+    Cow::Owned(out)
+}
+
 /// Partial-block characters for a smooth bar, by eighths (index 1..=7).
 const EIGHTHS: [char; 8] = [' ', '▏', '▎', '▍', '▌', '▋', '▊', '▉'];
 
@@ -106,6 +130,8 @@ mod tests {
         assert_eq!(truncate("hello world", 6), "hello…");
         assert_eq!(truncate("hello", 0), "");
         assert_eq!(truncate("hello", 1), "…");
+        assert_eq!(truncate_start("C:/prints/cube.gcode", 10), "…ube.gcode");
+        assert_eq!(truncate_start("cube", 10), "cube");
         // Wide characters never overflow.
         let t = truncate("日本語テキスト", 5);
         assert!(width(&t) <= 5, "{t}");
