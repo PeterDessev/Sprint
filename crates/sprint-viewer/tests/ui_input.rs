@@ -17,6 +17,7 @@ struct Harness {
     viewer: GcodeViewer,
     time: f64,
     rect: egui::Rect,
+    screen: egui::Vec2,
 }
 
 #[derive(Default, Debug)]
@@ -39,6 +40,7 @@ impl Harness {
             viewer,
             time: 0.0,
             rect: egui::Rect::NOTHING,
+            screen: SCREEN,
         };
         h.frame(vec![]);
         Some(h)
@@ -47,7 +49,7 @@ impl Harness {
     fn frame(&mut self, events: Vec<Event>) -> Frame {
         self.time += 1.0 / 60.0;
         let input = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, SCREEN)),
+            screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, self.screen)),
             time: Some(self.time),
             events,
             focused: true,
@@ -317,4 +319,34 @@ fn layer_view_pans_with_the_left_button() {
     assert_eq!(h.viewer.camera().yaw, yaw);
     let hover = h.frame(vec![Event::PointerMoved(c)]);
     let _ = hover;
+}
+
+#[test]
+fn resizing_during_a_preset_animation_still_fits_the_new_size() {
+    // Regression: a resize while a preset animation ran was taken as the
+    // fitted aspect without refitting, so the print stayed framed for the
+    // old window shape (cut off after making the window narrower).
+    let Some(mut h) = Harness::new() else {
+        return;
+    };
+    let Some(mut reference) = Harness::new() else {
+        return;
+    };
+    let narrow = vec2(300.0, 600.0);
+    reference.screen = narrow;
+    reference.idle(2);
+    reference.viewer.set_view(ViewPreset::Front);
+    reference.idle(60);
+    let want = *reference.viewer.camera();
+
+    h.viewer.set_view(ViewPreset::Front);
+    h.idle(3);
+    h.screen = narrow;
+    h.idle(60);
+    let got = *h.viewer.camera();
+    assert!(
+        (got.distance / want.distance - 1.0).abs() < 0.02
+            && (got.target - want.target).length() < 0.5,
+        "camera {got:?}, expected {want:?}"
+    );
 }

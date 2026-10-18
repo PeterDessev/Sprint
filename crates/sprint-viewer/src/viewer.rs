@@ -754,10 +754,12 @@ impl GcodeViewer {
             self.camera_top.fit_bounds(min, max, aspect);
             self.top_fitted = true;
         }
-        if self.auto_fit && self.anim.is_none() && (aspect / self.fit_aspect - 1.0).abs() > 0.01 {
-            self.fit_now(aspect);
-        }
+        let resized = (aspect / self.fit_aspect - 1.0).abs() > 0.01;
         self.fit_aspect = aspect;
+        if resized {
+            // Retargets a running animation rather than skipping the refit.
+            self.refit_if_auto();
+        }
     }
 
     fn active_camera(&self) -> &Camera {
