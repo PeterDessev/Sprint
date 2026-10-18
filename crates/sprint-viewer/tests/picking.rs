@@ -203,6 +203,45 @@ fn line_limit_only_applies_to_the_top_layers() {
 }
 
 #[test]
+fn pick_tolerance_above_a_bead_is_inside_the_index() {
+    // A wide pixel tolerance makes the bead's pick volume round: its
+    // vertical radius grows to the (wider) horizontal one. The index boxes
+    // must contain that volume, or a side-on ray grazing the top of the
+    // print hits for brute force but not for the index.
+    let mut segments = vec![extrude(
+        [0.0, 0.0, 0.2],
+        [10.0, 0.0, 0.2],
+        0,
+        0,
+        Feature::Perimeter,
+    )];
+    // A second, dense layer exercises the grid path too.
+    for i in 0..400u32 {
+        let y = 5.0 + i as f32 * 0.45;
+        segments.push(extrude(
+            [0.0, y, 0.4],
+            [10.0, y, 0.4],
+            i + 1,
+            1,
+            Feature::SolidInfill,
+        ));
+    }
+    let tp = layered(segments);
+    let index = build(&tp);
+    for (z, y) in [(0.1 + 0.9, 0.0), (0.3 + 0.9, 50.0)] {
+        // Axis of the bead is at nozzle Z - height / 2.
+        let ray = Ray {
+            origin: Vec3::new(5.0, y - 30.0, z),
+            dir: Vec3::Y,
+        };
+        let filter = PickFilter::default();
+        let slow = pick_brute_force(&tp, &ray, &filter, 2.0);
+        assert!(slow.is_some(), "z {z}: within the tolerance");
+        assert_same(&tp, &index, &ray, &filter, 2.0);
+    }
+}
+
+#[test]
 fn hit_point_lies_on_the_bead_surface() {
     let tp = layered(vec![extrude(
         [0.0, 0.0, 0.2],

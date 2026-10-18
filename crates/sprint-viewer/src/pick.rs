@@ -332,7 +332,10 @@ impl PickIndex {
                 if !a.is_finite() || !b.is_finite() {
                     continue;
                 }
-                let e = Vec3::new(hw + PICK_SLACK, hw + PICK_SLACK, hh + PICK_SLACK);
+                // With a pixel tolerance the vertical radius can grow up to
+                // the horizontal one (see `ray_segment`).
+                let r = hw + PICK_SLACK;
+                let e = Vec3::new(r, r, hh.max(hw) + PICK_SLACK);
                 aabb.include(a.min(b) - e);
                 aabb.include(a.max(b) + e);
                 count += 1;
