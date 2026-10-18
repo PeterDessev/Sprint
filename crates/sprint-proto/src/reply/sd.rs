@@ -114,7 +114,10 @@ pub(crate) fn parse_sd_message(body: &str) -> Option<Reply> {
 
 /// Parse one entry of an M20 listing: `NAME [SIZE] [0xTIMESTAMP] [LONG NAME]`,
 /// e.g. "CUBE~1.GCO 12345 cube_long_name.gcode" or "/SUBDIR/FILE.GCO 123".
+/// When the second word is not a size, the name itself contains spaces:
+/// Klipper's `my part.gcode 1234` (size last) or RRF's bare `my part.gcode`.
 pub(crate) fn parse_sd_file(line: &str) -> Option<SdFile> {
+    let line = line.trim();
     let toks = tokens_with_offsets(line);
     let &(_, name) = toks.first()?;
     if name.contains(':') {
@@ -122,6 +125,23 @@ pub(crate) fn parse_sd_file(line: &str) -> Option<SdFile> {
     }
     let mut next = 1;
     let size = toks.get(1).and_then(|&(_, t)| u64_digits(t));
+    if size.is_none() && toks.len() > 1 {
+        // FAT names never contain ':', and status lines usually do.
+        if line.contains(':') {
+            return None;
+        }
+        let (name, size) = match toks.last() {
+            Some(&(offset, last)) if u64_digits(last).is_some() => {
+                (line[..offset].trim(), u64_digits(last))
+            }
+            _ => (line, None),
+        };
+        return Some(SdFile {
+            name: name.to_string(),
+            long_name: None,
+            size,
+        });
+    }
     if size.is_some() {
         next = 2;
         // EXTENDED_M20 timestamp ("M20 T"): 0x5A3B1C2D.
@@ -259,5 +279,16 @@ mod tests {
         assert_eq!(parse_sd_file("OLD.GCO"), Some(f("OLD.GCO", None, None)));
         assert_eq!(parse_sd_file(""), None);
         assert_eq!(parse_sd_file("T:20.0 /0.0"), None);
+        // Names with spaces: Klipper (size last) and RRF (no size).
+        assert_eq!(
+            parse_sd_file("my part.gcode 1234"),
+            Some(f("my part.gcode", Some(1234), None))
+        );
+        assert_eq!(
+            parse_sd_file("my  part.gcode"),
+            Some(f("my  part.gcode", None, None))
+        );
+        assert_eq!(parse_sd_file("Mesh X,Y: 3,2"), None);
+        assert_eq!(parse_sd_file("x:open y:open z:TRIGGERED"), None);
     }
 }

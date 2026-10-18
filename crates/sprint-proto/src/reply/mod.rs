@@ -313,12 +313,23 @@ fn inline_klipper_matrix(body: &str) -> Option<BedMesh> {
 }
 
 /// Whether a line inside a file listing can be a file entry (and not an
-/// interleaved status line).
+/// interleaved status line, a resend request or one of Prusa's `DIR_ENTER:`
+/// / `DIR_EXIT` directory markers).
 fn is_file_candidate(line: &str) -> bool {
-    const PREFIXES: [&str; 6] = ["echo:", "//", "!!", "error:", "busy:", "resend:"];
+    const PREFIXES: [&str; 7] = [
+        "echo:",
+        "//",
+        "!!",
+        "error:",
+        "busy:",
+        "resend:",
+        "dir_enter:",
+    ];
     !PREFIXES.iter().any(|p| strip_prefix_ci(line, p).is_some())
         && !line.eq_ignore_ascii_case("wait")
         && !line.eq_ignore_ascii_case("start")
+        && !line.eq_ignore_ascii_case("dir_exit")
+        && parse_resend(line).is_none()
 }
 
 /// The text after a leading `ok` token, if the line starts with one.

@@ -471,6 +471,91 @@ fn sd_listing_closed_by_ok_when_end_is_lost() {
 }
 
 #[test]
+fn prusa_directory_markers_are_not_files() {
+    // Regression: Prusa's "M20 L" wraps sub-directories in DIR_ENTER /
+    // DIR_EXIT lines; DIR_EXIT used to be reported as a file of that name.
+    let mut p = ReplyParser::new();
+    let replies = feed_all(
+        &mut p,
+        &[
+            "Begin file list",
+            "DIR_ENTER: /PARTS/ \"Parts\"",
+            "/PARTS/BENCHY~1.GCO 98765 0x5A3B1C2D \"3DBenchy.gcode\"",
+            "DIR_EXIT",
+            "CUBE~1.GCO 12345 0x5A3B1C2E \"cube.gcode\"",
+            "End file list",
+        ],
+    );
+    assert_eq!(
+        replies,
+        vec![
+            Reply::SdCard(SdReply::ListBegin),
+            Reply::Other("DIR_ENTER: /PARTS/ \"Parts\"".into()),
+            file("/PARTS/BENCHY~1.GCO", Some(98765), Some("3DBenchy.gcode")),
+            Reply::Other("DIR_EXIT".into()),
+            file("CUBE~1.GCO", Some(12345), Some("cube.gcode")),
+            Reply::SdCard(SdReply::ListEnd),
+        ]
+    );
+}
+
+#[test]
+fn resend_inside_a_listing_is_a_resend() {
+    // Regression: Repetier/Smoothie-style "rs 3" inside a listing was taken
+    // for a file named "rs" of 3 bytes.
+    let mut p = ReplyParser::new();
+    let replies = feed_all(
+        &mut p,
+        &[
+            "Begin file list",
+            "rs 3",
+            "rs N4",
+            "A.GCO 1",
+            "End file list",
+        ],
+    );
+    assert_eq!(
+        replies,
+        vec![
+            Reply::SdCard(SdReply::ListBegin),
+            Reply::Resend(3),
+            Reply::Resend(4),
+            file("A.GCO", Some(1), None),
+            Reply::SdCard(SdReply::ListEnd),
+        ]
+    );
+}
+
+#[test]
+fn long_names_with_spaces_in_listings() {
+    // Regression: Klipper lists "<name> <size>" where the name may contain
+    // spaces, and RRF lists bare names; both were split at the first space.
+    let mut p = ReplyParser::new();
+    let replies = feed_all(
+        &mut p,
+        &[
+            "Begin file list",
+            "my part v2.gcode 1234",
+            "subdir/other part.gcode 99",
+            "benchy.gcode 5678",
+            "plain name.gcode",
+            "End file list",
+        ],
+    );
+    assert_eq!(
+        replies,
+        vec![
+            Reply::SdCard(SdReply::ListBegin),
+            file("my part v2.gcode", Some(1234), None),
+            file("subdir/other part.gcode", Some(99), None),
+            file("benchy.gcode", Some(5678), None),
+            file("plain name.gcode", None, None),
+            Reply::SdCard(SdReply::ListEnd),
+        ]
+    );
+}
+
+#[test]
 fn sd_status_messages() {
     let cases = [
         ("echo:SD card ok", SdReply::CardOk),
