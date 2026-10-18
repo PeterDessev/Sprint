@@ -399,7 +399,8 @@ impl Analyzer {
                     self.bed_temps.push(t);
                 }
             }
-            (b'M', 191, None) => {
+            // M116: RepRapFirmware's wait for all heaters.
+            (b'M', 191 | 116, None) => {
                 self.sync();
                 self.heat_waits += 1;
                 self.state.apply(p);

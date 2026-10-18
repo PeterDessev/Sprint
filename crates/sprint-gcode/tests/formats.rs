@@ -429,6 +429,7 @@ fn reprapfirmware() {
     // G10 P S is a tool temperature, not a retraction.
     assert_eq!(tp.stats.hotend_temps, [(0, 215.0)]);
     assert!(tp.stats.uses_firmware_retraction);
+    assert_eq!(tp.stats.heat_waits, 1, "M116");
     let amounts: Vec<f32> = tp.retractions.iter().map(|r| r.amount).collect();
     assert_eq!(amounts, [-0.6, 0.6]);
     assert_eq!(tp.stats.extrude_moves, 2);

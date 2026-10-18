@@ -355,7 +355,7 @@ pub struct Stats {
     pub uses_arcs: bool,
     /// The file uses firmware retraction (G10/G11).
     pub uses_firmware_retraction: bool,
-    /// Number of blocking heat waits (M109/M190/M191).
+    /// Number of blocking heat waits (M109/M190/M191, RepRapFirmware M116).
     pub heat_waits: usize,
     /// Estimated seconds spent on travel segments.
     pub travel_time: f32,
