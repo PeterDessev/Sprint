@@ -26,6 +26,7 @@ impl Machine {
             return Outcome::Done;
         }
         match (c.letter, c.code) {
+            (b'M', 0 | 1) => self.cmd_user_wait(c),
             (b'G', 0 | 1) => self.cmd_linear_move(c),
             (b'G', 2 | 3) => self.cmd_arc(c),
             (b'G', 4) => self.cmd_dwell(c),

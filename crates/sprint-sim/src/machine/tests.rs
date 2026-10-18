@@ -910,6 +910,52 @@ fn m600_prompt_flow() {
 }
 
 #[test]
+fn m0_waits_for_the_user_with_a_host_prompt() {
+    // HAS_RESUME_CONTINUE (EMERGENCY_PARSER) + HOST_PROMPT_SUPPORT.
+    let mut r = Rig::booted();
+    r.ok("G28");
+    r.ok("G1 X50 F600");
+    r.send("M0 Insert the magnets");
+    r.run(0.5);
+    // The planner drains first (5 s move), then the prompt opens.
+    assert!(!r.take().iter().any(|l| l.contains("prompt")));
+    r.run(10.0);
+    let out = r.take();
+    let begin = out
+        .iter()
+        .position(|l| l == "//action:prompt_begin M0 Stop")
+        .unwrap_or_else(|| panic!("{out:?}"));
+    assert_eq!(out[begin - 2], "echo:Insert the magnets");
+    assert_eq!(out[begin - 1], "//action:prompt_end");
+    assert_eq!(out[begin + 1], "//action:prompt_button Continue");
+    assert_eq!(out[begin + 2], "//action:prompt_show");
+    assert!(
+        out.contains(&"echo:busy: paused for user".to_string()),
+        "{out:?}"
+    );
+    assert!(!out.contains(&"ok".to_string()));
+    r.send("M876 S0");
+    r.run(0.1);
+    assert_eq!(
+        r.take().iter().filter(|l| *l == "ok").count(),
+        2,
+        "M0 and M876"
+    );
+    // M1 with a timeout ends by itself; M108 also continues.
+    let out = r.cmd("M1 S3 Change colour", 10.0);
+    assert!(out.contains(&"echo:Change colour".to_string()), "{out:?}");
+    assert!(out.contains(&"//action:prompt_begin M1 Stop".to_string()));
+    assert_eq!(out.last().map(String::as_str), Some("ok"));
+    let start = r.m.now;
+    r.send("M0");
+    r.run(1.0);
+    r.send("M108");
+    r.run(0.1);
+    assert!(r.m.now - start < 1.5);
+    assert_eq!(r.take().iter().filter(|l| *l == "ok").count(), 2);
+}
+
+#[test]
 fn m876_without_a_response_keeps_the_prompt_open() {
     // OctoPrint sends "M876 P1" to announce prompt support; Marlin's
     // emergency parser only answers prompts for "M876 S<digit>".

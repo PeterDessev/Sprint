@@ -1,7 +1,8 @@
-//! Host interaction: //action: prompts, M876 responses, M600 filament
-//! change and the filament runout sensor.
+//! Host interaction: //action: prompts, M876 responses, M0/M1 user
+//! pauses, M600 filament change and the filament runout sensor.
 
 use super::{Machine, Outcome, TaskKind};
+use crate::parse::Command;
 
 /// NOZZLE_PARK_POINT offsets and feedrates.
 const PARK_XY_FEED: f64 = 100.0;
@@ -47,6 +48,36 @@ impl FilamentChange {
     }
 }
 
+/// M0 / M1 waiting for the user (or for its timeout).
+#[derive(Clone, Debug)]
+pub(crate) struct UserWait {
+    /// 0 for M0, 1 for M1 (the prompt says "M0 Stop" / "M1 Stop").
+    code: u16,
+    /// Free-text message to echo.
+    message: Option<String>,
+    /// P/S timeout in seconds; 0 waits forever.
+    timeout: f64,
+    /// When the timeout expires.
+    until: f64,
+}
+
+/// Marlin's string_arg for M0/M1: the text after any leading parameters
+/// with a value ("M0 S10 Insert magnets" -> "Insert magnets").
+fn user_message(args: &str) -> Option<String> {
+    let mut rest = args.trim();
+    loop {
+        let b = rest.as_bytes();
+        let is_param = b.first().is_some_and(u8::is_ascii_alphabetic)
+            && b.get(1)
+                .is_some_and(|c| c.is_ascii_digit() || matches!(c, b'.' | b'-' | b'+'));
+        if !is_param {
+            break;
+        }
+        rest = rest.find(' ').map_or("", |i| rest[i..].trim_start());
+    }
+    (!rest.is_empty()).then(|| rest.to_string())
+}
+
 impl Machine {
     /// Open a prompt: prompt_end, prompt_begin, buttons, prompt_show.
     pub(super) fn open_prompt(&mut self, kind: Prompt, message: &str, buttons: &[&str]) {
@@ -67,6 +98,52 @@ impl Machine {
             Prompt::None => {}
         }
         self.prompt = Prompt::None;
+    }
+
+    /// M0 / M1 [P<ms>] [S<s>] [message]: wait for the user
+    /// (HAS_RESUME_CONTINUE via EMERGENCY_PARSER) after the planner drains.
+    pub(super) fn cmd_user_wait(&mut self, c: &Command) -> Outcome {
+        let mut secs = c.value('P').map_or(0.0, |ms| ms / 1000.0);
+        if let Some(s) = c.value('S') {
+            secs = s;
+        }
+        let timeout = if secs.is_finite() {
+            secs.clamp(0.0, 86_400.0)
+        } else {
+            0.0
+        };
+        Outcome::Task {
+            kind: TaskKind::UserWait(UserWait {
+                code: c.code,
+                message: user_message(c.args),
+                timeout,
+                until: 0.0,
+            }),
+            sync: true,
+        }
+    }
+
+    pub(super) fn begin_user_wait(&mut self, w: &mut UserWait) {
+        if let Some(m) = &w.message {
+            self.emit(format!("echo:{m}"));
+        }
+        let title = if w.code == 1 { "M1 Stop" } else { "M0 Stop" };
+        self.open_prompt(Prompt::UserContinue, title, &["Continue"]);
+        self.wait_for_user = true;
+        w.until = if w.timeout > 0.0 {
+            self.now + w.timeout
+        } else {
+            f64::INFINITY
+        };
+    }
+
+    /// Done once M108 / M876 cleared `wait_for_user` or the timeout passed.
+    pub(super) fn progress_user_wait(&mut self, w: &mut UserWait) -> bool {
+        if self.wait_for_user && self.now < w.until {
+            return false;
+        }
+        self.wait_for_user = false;
+        true
     }
 
     /// The runout sensor fired: tell the host and run M600.

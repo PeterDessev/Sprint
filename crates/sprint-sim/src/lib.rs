@@ -28,7 +28,8 @@
 //! * EEPROM settings (M500/M501/M502/M503), M115 capabilities, M119;
 //! * an in-memory SD card with uploads (M28/M29), printing, auto-reports
 //!   and statistics;
-//! * M600 filament change with `//action:` prompts, filament runout;
+//! * M600 filament change and M0/M1 user pauses with `//action:` prompts,
+//!   filament runout;
 //! * fault injection (corrupted lines, lost `ok`s) from a deterministic RNG.
 //!
 //! Simulated time runs `time_scale` times faster than real time and applies

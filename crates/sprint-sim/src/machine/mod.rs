@@ -107,6 +107,8 @@ pub(crate) enum TaskKind {
     Autotune(temps::Tune),
     /// M600.
     FilamentChange(host::FilamentChange),
+    /// M0 / M1.
+    UserWait(host::UserWait),
     /// End of an SD print (Marlin's M1001).
     SdFinish,
     /// M18/M84 after the planner drained.
@@ -532,8 +534,11 @@ impl Machine {
             && self.now >= task.busy_next
         {
             task.busy_next = self.now + KEEPALIVE;
-            let waiting_user =
-                matches!(&task.kind, TaskKind::FilamentChange(fc) if fc.waiting_for_user());
+            let waiting_user = match &task.kind {
+                TaskKind::FilamentChange(fc) => fc.waiting_for_user(),
+                TaskKind::UserWait(_) => !task.sync,
+                _ => false,
+            };
             self.out.push(
                 if waiting_user {
                     "echo:busy: paused for user"
@@ -817,6 +822,7 @@ impl Machine {
             TaskKind::Home(h) => self.begin_homing(h),
             TaskKind::Probe(p) => self.begin_probing(p),
             TaskKind::FilamentChange(fc) => self.begin_filament_change(fc),
+            TaskKind::UserWait(w) => self.begin_user_wait(w),
             TaskKind::SdFinish => self.sd_finish(),
             TaskKind::DisableSteppers => self.motion.steppers = false,
             TaskKind::Moves(_) | TaskKind::Sync | TaskKind::HeatWait(_) | TaskKind::Autotune(_) => {
@@ -852,6 +858,7 @@ impl Machine {
             TaskKind::HeatWait(w) => self.progress_heat_wait(w),
             TaskKind::Autotune(t) => self.progress_autotune(t),
             TaskKind::FilamentChange(fc) => self.progress_filament_change(fc),
+            TaskKind::UserWait(w) => self.progress_user_wait(w),
         };
         if done {
             self.send_ok(task.origin);
