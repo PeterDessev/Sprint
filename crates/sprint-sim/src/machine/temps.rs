@@ -92,16 +92,19 @@ impl Machine {
         s
     }
 
-    /// Tool from a T parameter, or the active tool. `None` (after printing
-    /// Marlin's error) when out of range.
-    fn target_tool(&mut self, c: &Command) -> Option<usize> {
-        match c.int('T') {
-            None => Some(self.motion.tool),
-            Some(t) if t >= 0 && (t as usize) < self.hotends.len() => Some(t as usize),
-            Some(t) => {
-                self.emit(format!("echo:T{t} Invalid extruder"));
-                None
-            }
+    /// Marlin's `get_target_extruder_from_command()`: the T parameter (read
+    /// as a byte, so T-1 is T0) or the active tool. `None`, after printing
+    /// "echo:M<code> Invalid extruder <e>", when out of range.
+    pub(super) fn target_tool(&mut self, c: &Command) -> Option<usize> {
+        let Some(t) = c.int('T') else {
+            return Some(self.motion.tool);
+        };
+        let e = t.clamp(0, 255) as usize;
+        if e < self.hotends.len() {
+            Some(e)
+        } else {
+            self.emit(format!("echo:M{} Invalid extruder {e}", c.code));
+            None
         }
     }
 

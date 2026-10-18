@@ -662,13 +662,8 @@ impl Machine {
 
     /// M221 [T<tool>] [S<percent>].
     pub(super) fn cmd_flow_pct(&mut self, c: &Command) -> Outcome {
-        let tool = match c.int('T') {
-            None => self.motion.tool,
-            Some(t) if t >= 0 && (t as usize) < self.hotends.len() => t as usize,
-            Some(t) => {
-                self.emit(format!("echo:T{t} Invalid extruder"));
-                return Outcome::Done;
-            }
+        let Some(tool) = self.target_tool(c) else {
+            return Outcome::Done;
         };
         match c.value('S') {
             Some(s) if s.is_finite() => {

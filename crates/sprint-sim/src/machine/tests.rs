@@ -1220,7 +1220,16 @@ fn multi_extruder_targets_and_flow() {
     r.take();
     r.ok("M104 T1 S180");
     assert_eq!(r.m.snapshot().hotend_targets, vec![0.0, 180.0]);
-    assert_eq!(r.ok("M104 T2 S180"), vec!["echo:T2 Invalid extruder", "ok"]);
+    // get_target_extruder_from_command(): "M<code> Invalid extruder <e>",
+    // and T is read as a byte (T-1 is T0).
+    assert_eq!(
+        r.ok("M104 T2 S180"),
+        vec!["echo:M104 Invalid extruder 2", "ok"]
+    );
+    assert_eq!(r.ok("M105 T7")[0], "echo:M105 Invalid extruder 7");
+    assert_eq!(r.ok("M221 T9"), vec!["echo:M221 Invalid extruder 9", "ok"]);
+    r.ok("M104 T-1 S170");
+    assert_eq!(r.m.snapshot().hotend_targets, vec![170.0, 180.0]);
     r.ok("M221 T1 S80");
     assert_eq!(r.ok("M221 T1"), vec!["echo:E1 Flow: 80%", "ok"]);
     let out = r.ok("M115");
