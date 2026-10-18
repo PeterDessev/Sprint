@@ -336,8 +336,8 @@ pub(crate) enum TuneEvent {
     Continue(f64),
     /// One relay cycle completed; print the line(s).
     Cycle(Vec<String>, f64),
-    /// Finished successfully.
-    Finished(Gains),
+    /// Finished successfully (after printing the last cycle's lines).
+    Finished(Vec<String>, Gains),
     /// Failed with Marlin's message suffix (" failed! Temperature too high").
     Failed(&'static str),
 }
@@ -416,7 +416,7 @@ impl Autotune {
             && self.cycles > 2
             && let Some(g) = self.result
         {
-            return TuneEvent::Finished(g);
+            return TuneEvent::Finished(lines, g);
         }
         let output = self.output();
         if lines.is_empty() {
@@ -596,7 +596,10 @@ mod tests {
                         lines.extend(l);
                         h.forced_output = Some(o);
                     }
-                    TuneEvent::Finished(g) => return (g, lines),
+                    TuneEvent::Finished(l, g) => {
+                        lines.extend(l);
+                        return (g, lines);
+                    }
                     TuneEvent::Failed(m) => panic!("autotune failed: {m}"),
                 }
             }

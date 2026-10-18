@@ -369,7 +369,8 @@ impl Machine {
                 self.out.extend(lines);
                 o
             }
-            TuneEvent::Finished(g) => {
+            TuneEvent::Finished(lines, g) => {
+                self.out.extend(lines);
                 self.finish_autotune(t, g);
                 return true;
             }
