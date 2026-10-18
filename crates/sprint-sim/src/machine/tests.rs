@@ -613,6 +613,36 @@ fn arcs_take_arc_length_time() {
 }
 
 #[test]
+fn full_circle_arcs_despite_rounding() {
+    // Recomputing the end point from the centre is off by an ulp for these
+    // starts, so the angle is +-1e-17 rather than 0. Marlin compares the end
+    // points (NEAR) and still draws the full circle.
+    for (code, i, j) in [("G2", 0.2, 1.7), ("G3", 0.3, -5.1)] {
+        let mut r = Rig::booted();
+        r.ok("G28");
+        r.ok("G1 X0.1 Y0.1 F6000");
+        r.ok("M400");
+        let start = r.m.now;
+        r.ok(&format!("{code} X0.1 Y0.1 I{i} J{j} F3000"));
+        r.ok("M400");
+        let t = r.m.now - start;
+        let circumference = std::f64::consts::TAU * f64::hypot(i, j);
+        assert!(
+            t > circumference / 50.0,
+            "{code} I{i} J{j}: {circumference:.1} mm circle took {t}s"
+        );
+        assert!(r.ok("M114")[0].starts_with("X:0.10 Y:0.10"));
+    }
+    // A target on the start ray at another radius is no arc at all:
+    // Marlin skips it and stays put.
+    let mut r = Rig::booted();
+    r.ok("G28");
+    r.ok("G1 X10 Y10 F6000");
+    r.ok("G2 X5 Y10 I10 J0");
+    assert!(r.ok("M114")[0].starts_with("X:10.00 Y:10.00"));
+}
+
+#[test]
 fn cold_extrusion_prevented() {
     let mut r = Rig::booted();
     r.ok("G28");

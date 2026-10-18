@@ -326,23 +326,29 @@ impl Machine {
         let (cx, cy) = (start[0] + ox, start[1] + oy);
         let (rx, ry) = (-ox, -oy);
         let (tx, ty) = (target[0] - cx, target[1] - cy);
-        let mut travel = (rx * ty - ry * tx).atan2(rx * tx + ry * ty);
-        if travel < 0.0 {
-            travel += std::f64::consts::TAU;
-        }
-        if clockwise {
-            travel -= std::f64::consts::TAU;
-        }
-        if travel == 0.0
-            && (start[0] - target[0]).abs() < 1e-9
-            && (start[1] - target[1]).abs() < 1e-9
-        {
-            travel = if clockwise {
+        // Marlin decides "full circle" by comparing the end points (NEAR),
+        // not the angle: recomputing the end from the centre can be off by
+        // an ulp, which would otherwise turn a circle into a no-op.
+        let near = |a: f64, b: f64| (a - b).abs() < 1e-6;
+        let mut travel = if near(start[0], target[0]) && near(start[1], target[1]) {
+            if clockwise {
                 -std::f64::consts::TAU
             } else {
                 std::f64::consts::TAU
-            };
-        }
+            }
+        } else {
+            let mut t = (rx * ty - ry * tx).atan2(rx * tx + ry * ty);
+            if t == 0.0 {
+                // Angular travel too small to detect: Marlin skips the arc.
+                return Outcome::Done;
+            }
+            if t < 0.0 && !clockwise {
+                t += std::f64::consts::TAU;
+            } else if t > 0.0 && clockwise {
+                t -= std::f64::consts::TAU;
+            }
+            t
+        };
         let turns = c.int('P').unwrap_or(0).clamp(0, 100) as f64;
         travel += travel.signum() * turns * std::f64::consts::TAU;
         let dz = target[2] - start[2];
