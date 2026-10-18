@@ -19,6 +19,8 @@
 //! # }
 //! ```
 
+#![warn(missing_docs)]
+
 pub mod camera;
 pub mod color;
 pub mod demo;

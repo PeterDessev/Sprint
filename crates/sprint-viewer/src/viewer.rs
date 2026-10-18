@@ -1376,7 +1376,13 @@ fn gradient_bar(ui: &mut egui::Ui, g: &color::GradientLegend) {
     }
 }
 
-/// Create a headless wgpu device and queue (see [`gpu::headless_device`]).
+/// Create a wgpu device and queue without a window, for
+/// [`GcodeViewer::new_headless`] (tests, thumbnails, examples).
+///
+/// Prefers a discrete GPU and falls back to a software adapter (WARP /
+/// llvmpipe) when no hardware adapter is available. The `WGPU_BACKEND`
+/// environment variable (e.g. `dx12`, `vulkan`, `gl`) restricts the backends
+/// tried. Returns `None` when no adapter at all can be created.
 pub fn headless_device() -> Option<(wgpu::Device, wgpu::Queue)> {
     gpu::headless_device()
 }
