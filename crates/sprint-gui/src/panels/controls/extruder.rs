@@ -1,6 +1,8 @@
 //! Extruder: tool selector, extrude / retract, a cold-extrusion guard with
 //! a "heat to preset" shortcut, and filament load / unload.
 
+use std::time::{Duration, Instant};
+
 use crossbeam_channel::Receiver;
 use egui::Ui;
 use sprint_host::sprint_proto::FirmwareFlavor;
@@ -35,6 +37,10 @@ const UNLOAD_MM_MIN: f32 = 1800.0;
 /// How long a native load/unload is watched for a rejection (s): M109 may
 /// heat for a while before the firmware even reads M701.
 const NATIVE_WATCH_SECS: f64 = 600.0;
+/// A filament change counts as finished once the host has had nothing
+/// queued or in flight, at the earliest this long after its commands were
+/// sent (wall-clock time: the engine picks them up a moment later).
+const FILAMENT_SETTLE: Duration = Duration::from_millis(500);
 
 /// UI state of the extruder section.
 #[derive(Debug)]
@@ -52,6 +58,9 @@ pub(super) struct Extruder {
     native_rejected: bool,
     /// A native load/unload in flight, watched for a rejection.
     watch: Option<NativeWatch>,
+    /// A filament change being sent (and when): Load/Unload wait for it,
+    /// so a second click during the long heat-up does not queue another.
+    filament_busy: Option<(FilamentOp, Instant)>,
     was_connected: bool,
 }
 
@@ -64,6 +73,7 @@ impl Default for Extruder {
             tool: None,
             native_rejected: false,
             watch: None,
+            filament_busy: None,
             was_connected: false,
         }
     }
@@ -257,6 +267,14 @@ impl Extruder {
         }
         self.was_connected = connected;
         let now = ui.input(|i| i.time);
+        if let Some((_, since)) = self.filament_busy {
+            let idle = state.link.queue_len == 0 && state.link.in_flight == 0;
+            if !connected || (idle && since.elapsed() >= FILAMENT_SETTLE) {
+                self.filament_busy = None;
+            } else {
+                ui.ctx().request_repaint_after(Duration::from_millis(250));
+            }
+        }
         if let Some(watch) = &self.watch {
             let rejected = watch
                 .events
@@ -276,6 +294,7 @@ impl Extruder {
                     // Heating already happened: just the scripted moves.
                     let plan = filament_plan(op, tool, false, false, f32::NAN);
                     run_plan(printer, tool, plan.get(1..).unwrap_or_default());
+                    self.filament_busy = Some((op, Instant::now()));
                     ctx.toasts
                         .info(title)
                         .message("Used Sprint's scripted sequence instead.");
@@ -287,6 +306,7 @@ impl Extruder {
         let presets = &profile.temp_presets;
         let native = !self.native_rejected && native_load_unload(state);
         let mut started = None;
+        let mut busy_since = None;
         section(
             ui,
             icons::FILAMENT,
@@ -336,23 +356,35 @@ impl Extruder {
                         )
                     };
                     let mut run = None;
+                    let busy = self.filament_busy.map(|(op, _)| op);
+                    const WAIT: &str = "Waiting for the filament change to finish";
                     ui.columns(2, |cols| {
-                        let load = cols[0].add(
-                            ActionButton::new("Load")
-                                .icon(icons::DOWNLOAD)
-                                .fill_width(true)
-                                .tooltip(format!("Load filament into T{tool}. {how}")),
+                        let load = cols[0].add_enabled(
+                            busy.is_none(),
+                            ActionButton::new(if busy == Some(FilamentOp::Load) {
+                                "Loading\u{2026}"
+                            } else {
+                                "Load"
+                            })
+                            .icon(icons::DOWNLOAD)
+                            .fill_width(true)
+                            .tooltip(format!("Load filament into T{tool}. {how}")),
                         );
-                        if load.clicked() {
+                        if load.on_disabled_hover_text(WAIT).clicked() {
                             run = Some(FilamentOp::Load);
                         }
-                        let unload = cols[1].add(
-                            ActionButton::new("Unload")
-                                .icon(icons::UPLOAD)
-                                .fill_width(true)
-                                .tooltip(format!("Unload filament from T{tool}. {how}")),
+                        let unload = cols[1].add_enabled(
+                            busy.is_none(),
+                            ActionButton::new(if busy == Some(FilamentOp::Unload) {
+                                "Unloading\u{2026}"
+                            } else {
+                                "Unload"
+                            })
+                            .icon(icons::UPLOAD)
+                            .fill_width(true)
+                            .tooltip(format!("Unload filament from T{tool}. {how}")),
                         );
-                        if unload.clicked() {
+                        if unload.on_disabled_hover_text(WAIT).clicked() {
                             run = Some(FilamentOp::Unload);
                         }
                     });
@@ -368,6 +400,7 @@ impl Extruder {
                         }
                         let plan = filament_plan(op, tool, hotends > 1, native, heat);
                         run_plan(printer, tool, &plan);
+                        busy_since = Some((op, Instant::now()));
                     }
                     caption(ui, &how);
                 });
@@ -375,6 +408,9 @@ impl Extruder {
         );
         if started.is_some() {
             self.watch = started;
+        }
+        if busy_since.is_some() {
+            self.filament_busy = busy_since;
         }
     }
 }

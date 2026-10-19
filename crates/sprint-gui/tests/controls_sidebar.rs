@@ -58,6 +58,19 @@ fn assert_nothing_sent(h: &mut Harness<'_, Rig>, what: &str) {
     assert!(got.is_empty(), "{what}: expected no commands, got {got:?}");
 }
 
+/// Run frames until the widget labelled `label` is enabled.
+fn wait_enabled(h: &mut Harness<'_, Rig>, label: &str) {
+    let deadline = Instant::now() + controls_common::PATIENCE;
+    while h
+        .query_by_label(label)
+        .is_none_or(|n| n.accesskit_node().is_disabled())
+    {
+        assert!(Instant::now() < deadline, "{label} never became enabled");
+        h.step();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 /// Click the center of a jog pad region.
 fn click_jog(h: &mut Harness<'_, Rig>, region: JogRegion) {
     let rect = h.get_by_label("XY jog").rect();
@@ -513,6 +526,16 @@ fn cold_hotend_blocks_extrusion_until_heated() {
     // The simulator reports M603 (ADVANCED_PAUSE_FEATURE) but has no M701:
     // the sidebar notices the rejection and runs its scripted load.
     click(&mut h, "Load");
+    // While the change runs (heating takes a while) a second click on the
+    // busy button queues nothing.
+    h.step();
+    assert!(
+        h.get_by_label("Loading\u{2026}")
+            .accesskit_node()
+            .is_disabled()
+    );
+    assert!(h.get_by_label("Unload").accesskit_node().is_disabled());
+    click(&mut h, "Loading\u{2026}");
     wait_for_commands(&p, &["M109 S205", "M701"]);
     let deadline = Instant::now() + controls_common::PATIENCE;
     while !contains_run(&received(&p), &["G1 E30 F150"]) {
@@ -526,6 +549,8 @@ fn cold_hotend_blocks_extrusion_until_heated() {
     }
     let got = received(&p);
     assert!(contains_run(&got, &["M83", "G1 E60 F480"]), "{got:?}");
+    let heats = got.iter().filter(|c| c.starts_with("M109")).count();
+    assert_eq!(heats, 1, "one filament change: {got:?}");
     assert!(
         h.state()
             .toasts
@@ -533,8 +558,10 @@ fn cold_hotend_blocks_extrusion_until_heated() {
             .any(|t| t.title() == "The printer has no M701"),
         "no toast about the fallback"
     );
-    // From now on the scripted sequence runs directly.
+    // From now on the scripted sequence runs directly, once the load is
+    // done.
     clear(&h);
+    wait_enabled(&mut h, "Unload");
     click(&mut h, "Unload");
     let got = wait_for_commands(&p, &["G1 E-80 F1800"]);
     assert!(!got.iter().any(|c| c.starts_with("M702")), "{got:?}");
