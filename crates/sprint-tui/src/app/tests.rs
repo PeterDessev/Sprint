@@ -1577,3 +1577,29 @@ fn quitting_says_what_happens_to_the_job() {
     let upload = quit_question(JobKind::SdUpload).join(" ");
     assert!(upload.contains("upload"), "{upload}");
 }
+
+#[test]
+fn typed_moves_during_a_print_ask_first() {
+    let mut app = printing_app();
+    // Homing in the middle of the print would ruin it.
+    app.send_gcode("G28");
+    let Some(Modal::Confirm(confirm)) = &app.modal else {
+        panic!("G28 during a print asks first: {:?}", app.toast);
+    };
+    assert!(confirm.danger && !confirm.on_yes);
+    assert_eq!(confirm.title, "Send G28 during the job?");
+    assert_eq!(confirm.action, dialogs::Action::Send("G28".into()));
+    crate::snapshot::save(&render(&mut app, 120, 40), "tui-confirm-move-120x40");
+    press(&mut app, KeyCode::Esc);
+    // What a print is tuned with goes straight out.
+    app.send_gcode("M220 S110");
+    assert!(app.modal.is_none());
+    // While paused a move is fine, homing Z is not.
+    if let Some(job) = app.view.job.as_mut() {
+        job.status = JobStatus::Paused;
+    }
+    app.send_gcode("G1 Z5 F600");
+    assert!(app.modal.is_none());
+    app.send_gcode("G28");
+    assert!(matches!(&app.modal, Some(Modal::Confirm(c)) if c.danger));
+}

@@ -650,3 +650,37 @@ fn disconnecting_says_what_happens_to_the_job() {
         disconnect_question(&state(JobKind::SdUpload, JobStatus::Printing)).unwrap_or_default();
     assert!(upload.contains("incomplete"), "{upload}");
 }
+
+#[test]
+fn typed_homing_during_a_job_asks_first() {
+    let scratch = Scratch::new("typed-home");
+    let (mut shell, buffer) = connected_timed();
+    shell.load(&scratch.slow_file());
+    let mut input = Script::new(["print", "pause"], false);
+    shell.run_lines_until_eof_without_leaving(&mut input);
+    wait_for(&shell, "the pause", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Paused)
+    });
+    received(&shell);
+    // Typed G28 homes Z onto the part like the refused `home`: asked on a
+    // terminal (here: no), not sent by a script, sent with `!`.
+    let mut input = Script::new(["G28", "n", "G28 X Y", "M84"], true);
+    shell.run_lines_until_eof_without_leaving(&mut input);
+    let mut input = Script::new(["G28"], false);
+    shell.run_lines_until_eof_without_leaving(&mut input);
+    crate::session::wait_idle(&shell.printer, PATIENCE, &Interrupt::new()).expect("idle");
+    let got = received(&shell);
+    assert!(!got.iter().any(|c| c == "G28"), "{got:?}");
+    assert!(!got.iter().any(|c| c == "M84"), "{got:?}");
+    assert!(got.iter().any(|c| c == "G28 X Y"), "{got:?}");
+    let text = buffer.text();
+    assert_eq!(text.matches("Not sent").count(), 3, "{text}");
+    let mut input = Script::new(["!M84"], false);
+    shell.run_lines_until_eof_without_leaving(&mut input);
+    crate::session::wait_idle(&shell.printer, PATIENCE, &Interrupt::new()).expect("idle");
+    assert!(received(&shell).iter().any(|c| c == "M84"));
+    shell.printer.cancel();
+    wait_for(&shell, "the cancel", |s| !s.job_active());
+}

@@ -1540,7 +1540,8 @@ impl App {
 
     // ----- commands -----
 
-    /// Send G-code typed into the input line (dangerous codes ask first).
+    /// Send G-code typed into the input line. Dangerous codes ask first,
+    /// and so does what would ruin a running job (homing, moves).
     pub(crate) fn send_gcode(&mut self, line: &str) {
         if !self.connected_or_warn() {
             return;
@@ -1553,6 +1554,24 @@ impl App {
                     doc.description.to_string(),
                 ],
                 "Send",
+                "Don't send",
+                true,
+                Action::Send(line.to_string()),
+            )));
+            return;
+        }
+        let conflict = self.view.job.as_ref().and_then(|job| {
+            let paused = job.status == JobStatus::Paused;
+            let (doc, why) =
+                actions::job_conflict(line, paused).filter(|_| job.status.is_active())?;
+            let state = if paused { "paused" } else { "printing" };
+            Some((doc.code, format!("{} is {state}: {why}.", job.name)))
+        });
+        if let Some((code, why)) = conflict {
+            self.modal = Some(Modal::Confirm(Confirm::new(
+                format!("Send {code} during the job?"),
+                vec![why, "The print will most likely fail.".to_string()],
+                "Send anyway",
                 "Don't send",
                 true,
                 Action::Send(line.to_string()),

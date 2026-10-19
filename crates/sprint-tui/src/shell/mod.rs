@@ -469,8 +469,9 @@ impl Shell {
         }
     }
 
-    /// Send G-code as typed (dangerous codes ask first on a terminal,
-    /// unless the line started with `!`).
+    /// Send G-code as typed. Unless the line started with `!`, dangerous
+    /// codes ask first on a terminal, and so does what would ruin a running
+    /// job (scripts do not send that).
     pub(crate) fn send_gcode(&mut self, gcode: &str, raw: bool, input: &mut dyn LineSource) {
         if !self.connected_or_warn() {
             return;
@@ -481,6 +482,26 @@ impl Shell {
                 self.out.dim("Not sent");
                 return;
             }
+        }
+        // What would ruin a running job (homing Z onto the part, moves
+        // between its lines) is asked about, and not sent by a script.
+        let conflict = self.printer.with_state(|s| {
+            let job = s.job.as_ref().filter(|j| j.status.is_active())?;
+            let paused = job.status == sprint_host::JobStatus::Paused;
+            let (doc, why) = actions::job_conflict(gcode, paused)?;
+            let state = if paused { "paused" } else { "printing" };
+            Some(format!(
+                "{} is {state}: {why}. Send {} anyway?",
+                job.name, doc.code
+            ))
+        });
+        if !raw
+            && let Some(question) = conflict
+            && !self.confirm(input, &question, false)
+        {
+            self.out
+                .dim("Not sent (a line starting with ! is sent as typed)");
+            return;
         }
         self.printer.send(gcode);
     }

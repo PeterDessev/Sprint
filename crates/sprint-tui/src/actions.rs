@@ -219,6 +219,54 @@ pub fn dangerous_gcode(line: &str) -> Option<&'static GcodeDoc> {
     (doc.dangerous && !emergency).then_some(doc)
 }
 
+/// Codes that home Z or probe: the nozzle goes down onto the part.
+const PROBING: &[&str] = &[
+    "G29", "G30", "G32", "G33", "G34", "G35", "G38.2", "G38.3", "G38.4", "G38.5", "G76", "M48",
+];
+/// Codes that switch the motors off: the printer loses its position.
+const MOTORS_OFF: &[&str] = &["M18", "M84"];
+/// Codes that move the nozzle or change how moves are read.
+const MOVES: &[&str] = &[
+    "G0", "G1", "G2", "G3", "G5", "G6", "G27", "G28", "G42", "G60", "G61", "G80", "G90", "G91",
+    "G92", "M82", "M83",
+];
+
+/// Why typed `line` would ruin the running job, if it would, with its
+/// reference entry: homing Z, probing and switching the motors off (even
+/// while the job is `paused`), and while it prints, moves and changes to
+/// positioning or extrusion modes, which run between the print's lines.
+/// What a print is tuned with (temperatures, fan, speed, flow, babysteps,
+/// a filament change) never conflicts.
+pub fn job_conflict(line: &str, paused: bool) -> Option<(&'static GcodeDoc, &'static str)> {
+    let doc = gcode_doc(line.trim())?;
+    let code = doc.code;
+    let why = if PROBING.contains(&code) || (code == "G28" && homes_z(line)) {
+        "homing Z and probing lower the nozzle onto the part"
+    } else if MOTORS_OFF.contains(&code) {
+        "with the motors off the printer loses the position the print goes on from"
+    } else if MOVES.contains(&code) && !paused {
+        "it runs between the print's lines, moving the nozzle or changing how they move"
+    } else {
+        return None;
+    };
+    Some((doc, why))
+}
+
+/// Whether a G28 line homes Z: when it names Z, or no axis at all.
+fn homes_z(line: &str) -> bool {
+    let command = line.split(';').next().unwrap_or_default().trim();
+    // The parameters follow the code ("G28 X Y", "G28X").
+    let params = command.get(1..).map_or("", |rest| {
+        rest.trim_start_matches(|c: char| c.is_ascii_digit())
+    });
+    let axes: Vec<char> = params
+        .chars()
+        .map(|c| c.to_ascii_uppercase())
+        .filter(|c| matches!(c, 'X' | 'Y' | 'Z'))
+        .collect();
+    axes.is_empty() || axes.contains(&'Z')
+}
+
 /// Why a print cannot start, if it cannot.
 pub fn print_blocker(state: &PrinterState, loaded: Option<&LoadedFile>) -> Option<String> {
     if !state.is_connected() {
@@ -406,6 +454,54 @@ mod tests {
         assert!(dangerous_gcode("M112").is_none());
         assert!(dangerous_gcode("G28").is_none());
         assert!(dangerous_gcode("BED_MESH_CALIBRATE").is_none());
+    }
+
+    #[test]
+    fn typed_gcode_that_conflicts_with_a_job() {
+        // (line, paused) -> conflicts
+        let cases: &[(&str, bool, bool)] = &[
+            // Homing Z and probing put the nozzle on the part, paused or not.
+            ("G28", false, true),
+            ("G28", true, true),
+            ("g28 z", true, true),
+            ("G28 O", true, true),
+            ("G28 X Y", true, false),
+            ("G28 X Y", false, true),
+            ("G29", true, true),
+            ("G38.2 Z-10", true, true),
+            ("M48", true, true),
+            // Motors off loses the position the print continues from.
+            ("M84", true, true),
+            ("M18 X", false, true),
+            // Moves and mode changes go between the print's lines.
+            ("G1 X10", false, true),
+            ("G01X10", false, true),
+            ("G91", false, true),
+            ("G92 E0", false, true),
+            ("M83", false, true),
+            ("G1 Z5", true, false),
+            ("G91", true, false),
+            // What a print is tuned with.
+            ("M220 S120", false, false),
+            ("M221 S95", false, false),
+            ("M290 Z0.05", false, false),
+            ("M104 S215", false, false),
+            ("M106 S255", false, false),
+            ("M600", false, false),
+            ("M105", false, false),
+            ("BED_MESH_CALIBRATE", false, false),
+            ("", false, false),
+        ];
+        for &(line, paused, conflicts) in cases {
+            assert_eq!(
+                job_conflict(line, paused).is_some(),
+                conflicts,
+                "{line:?} paused={paused}"
+            );
+        }
+        let (doc, why) = job_conflict("G28", true).expect("G28");
+        assert_eq!(doc.code, "G28");
+        assert!(why.contains("nozzle"), "{why}");
     }
 
     #[test]
