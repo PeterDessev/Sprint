@@ -9,6 +9,7 @@ pub mod fonts;
 pub mod format;
 pub mod icons;
 pub mod loader;
+pub mod notify;
 pub mod panels;
 pub mod theme;
 pub mod widgets;
