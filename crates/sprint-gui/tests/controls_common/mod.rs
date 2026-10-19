@@ -9,8 +9,9 @@
 
 use std::time::{Duration, Instant};
 
+use egui::accesskit::Role;
 use egui::{Rect, Vec2};
-use egui_kittest::Harness;
+use egui_kittest::{Harness, kittest::By};
 use sprint_gui::{
     context::{AppAction, AppCtx},
     panels::{ControlsSidebar, TemperatureGraphTab},
@@ -189,6 +190,29 @@ pub fn run_until(h: &mut Harness<'_, Rig>, what: &str, cond: impl Fn(&Rig) -> bo
         h.step();
         std::thread::sleep(Duration::from_millis(10));
     }
+}
+
+/// A query for the node named `label` that never asks a text field for its
+/// name. Narrow heater cards label their target field by a node that is
+/// not in the AccessKit tree (a design-system widget detail), and
+/// `accesskit_consumer` panics computing that field's name, which plain
+/// label queries do for every node.
+pub fn by_label(label: &str) -> By<'_> {
+    By::new().predicate(move |n| {
+        let name = match n.role() {
+            Role::TextInput | Role::MultilineTextInput => return false,
+            Role::Label => n.value(),
+            _ => n.label(),
+        };
+        name.as_deref() == Some(label)
+    })
+}
+
+/// Take the pointer off the window (no hover highlight or cursor in a
+/// snapshot) and let the UI settle.
+pub fn pointer_away(h: &mut Harness<'_, Rig>) {
+    h.event(egui::Event::PointerGone);
+    settle(h);
 }
 
 /// A fast simulator: short boot, instant moves, accelerated heating.
