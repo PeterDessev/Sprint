@@ -1015,9 +1015,11 @@ impl ReportView {
         match key.code {
             KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => return Outcome::Close,
             KeyCode::Up | KeyCode::Char('k') => self.scroll = self.scroll.saturating_sub(1),
-            KeyCode::Down | KeyCode::Char('j') => self.scroll += 1,
+            // End leaves the offset at the maximum until the next frame
+            // clamps it: keys before that saturate.
+            KeyCode::Down | KeyCode::Char('j') => self.scroll = self.scroll.saturating_add(1),
             KeyCode::PageUp => self.scroll = self.scroll.saturating_sub(10),
-            KeyCode::PageDown => self.scroll += 10,
+            KeyCode::PageDown => self.scroll = self.scroll.saturating_add(10),
             KeyCode::Home => self.scroll = 0,
             KeyCode::End => self.scroll = usize::MAX,
             _ => {}
@@ -1407,6 +1409,20 @@ mod tests {
                 port: 2323
             }))
         );
+    }
+
+    #[test]
+    fn report_scrolling_survives_keys_between_frames() {
+        // End jumps to the bottom (clamped when drawn); keys pressed before
+        // the next frame must not overflow the offset.
+        let mut report = ReportView::new("Report", vec![ReportLine::new(); 50]);
+        for code in [KeyCode::End, KeyCode::Down, KeyCode::PageDown, KeyCode::End] {
+            assert_eq!(report.handle_key(key(code)), Outcome::Keep);
+        }
+        assert_eq!(report.scroll, usize::MAX);
+        report.handle_key(key(KeyCode::Up));
+        report.handle_key(key(KeyCode::PageUp));
+        assert_eq!(report.scroll, usize::MAX - 11);
     }
 
     #[test]
