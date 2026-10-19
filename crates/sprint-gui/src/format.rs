@@ -8,6 +8,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use sprint_gcode::GcodeFile;
 use sprint_host::{JobInfo, JobKind, JobStatus};
 
 /// Shown for values that are unknown or not finite.
@@ -181,15 +182,28 @@ pub fn relative_difference(ours: f64, theirs: f64) -> Option<String> {
     })
 }
 
-/// Whether `job` is a host print or upload of a file called `file_name`.
-pub fn job_matches_file(job: &JobInfo, file_name: &str) -> bool {
-    job.kind != JobKind::SdPrint && job.name == file_name
+/// Whether `job` is a host print or upload of `file`: the same file on
+/// disk (see [`same_source`]).
+pub fn job_matches_file(job: &JobInfo, file: &GcodeFile) -> bool {
+    job.kind != JobKind::SdPrint && same_source(job, file)
 }
 
-/// Whether `job` prints a file called `file_name` from the host (an upload
-/// to the SD card streams the file too, but nothing is printed).
-pub fn job_prints_file(job: &JobInfo, file_name: &str) -> bool {
-    job.kind == JobKind::HostPrint && job.name == file_name
+/// Whether `job` prints `file` from the host (an upload to the SD card
+/// streams the file too, but nothing is printed).
+pub fn job_prints_file(job: &JobInfo, file: &GcodeFile) -> bool {
+    job.kind == JobKind::HostPrint && same_source(job, file)
+}
+
+/// Whether `job` streams (or streamed) `file`: the same path on disk
+/// ([`JobInfo::path`]; two files of the same name in different folders
+/// are different files), or, for text that never came from disk, the same
+/// name.
+pub fn same_source(job: &JobInfo, file: &GcodeFile) -> bool {
+    match (job.path.as_deref(), file.path()) {
+        (Some(job_path), Some(path)) => crate::loader::same_path(job_path, path),
+        (None, None) => job.name == file.name(),
+        _ => false,
+    }
 }
 
 /// The window title: `"Sprint"`, `"Sprint — cube.gcode"`, and while a job
@@ -363,24 +377,61 @@ mod tests {
         assert_eq!(progress_percent(-1.0), 0);
     }
 
+    /// A file "loaded" from `path` (the text does not matter here).
+    fn file_at(path: &str) -> GcodeFile {
+        let dir = std::env::temp_dir().join(format!(
+            "sprint-gui-format-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let full = dir.join(path);
+        if let Some(parent) = full.parent() {
+            std::fs::create_dir_all(parent).expect("dir");
+        }
+        std::fs::write(&full, "G28\n").expect("write");
+        let file = GcodeFile::load(&full).expect("load");
+        let _ = std::fs::remove_dir_all(&dir);
+        file
+    }
+
     #[test]
     fn job_file_matching() {
-        let host = job(JobStatus::Printing, 0.0, None);
-        assert!(job_matches_file(&host, "cube.gcode"));
-        assert!(!job_matches_file(&host, "other.gcode"));
-        assert!(job_prints_file(&host, "cube.gcode"));
-        assert!(!job_prints_file(&host, "other.gcode"));
+        // Jobs are matched by path: same name in another folder is another
+        // file.
+        let cube = file_at("a/cube.gcode");
+        let other_cube = file_at("b/cube.gcode");
+        let host = JobInfo {
+            path: cube.path().map(|p| p.to_path_buf()),
+            ..job(JobStatus::Printing, 0.0, None)
+        };
+        assert!(job_matches_file(&host, &cube));
+        assert!(!job_matches_file(&host, &other_cube));
+        assert!(job_prints_file(&host, &cube));
+        assert!(!job_prints_file(&host, &other_cube));
+        // Files that never came from disk match by name.
+        let text = GcodeFile::from_text("cube.gcode", "G28\n");
+        assert!(!job_matches_file(&host, &text));
+        let unsaved = JobInfo {
+            path: None,
+            ..host.clone()
+        };
+        assert!(job_matches_file(&unsaved, &text));
+        assert!(!job_matches_file(&unsaved, &cube));
+        assert!(!job_matches_file(
+            &unsaved,
+            &GcodeFile::from_text("other.gcode", "G28\n")
+        ));
         let upload = JobInfo {
             kind: JobKind::SdUpload,
             ..host.clone()
         };
-        assert!(job_matches_file(&upload, "cube.gcode"));
-        assert!(!job_prints_file(&upload, "cube.gcode"));
+        assert!(job_matches_file(&upload, &cube));
+        assert!(!job_prints_file(&upload, &cube));
         let sd = JobInfo {
             kind: JobKind::SdPrint,
             ..host
         };
-        assert!(!job_matches_file(&sd, "cube.gcode"));
-        assert!(!job_prints_file(&sd, "cube.gcode"));
+        assert!(!job_matches_file(&sd, &cube));
+        assert!(!job_prints_file(&sd, &cube));
     }
 }

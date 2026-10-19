@@ -453,6 +453,7 @@ fn a_reload_that_lands_during_its_print_waits() {
     let mut state = printing_state(JobStatus::Printing);
     if let Some(job) = &mut state.job {
         job.name = "part.gcode".into();
+        job.path = Some(path.clone());
         job.total_lines = 3;
         job.current_line = 1;
     }
@@ -1429,6 +1430,7 @@ fn the_3d_toolbar_buttons_never_overlap_while_printing() {
         let mut state = printing_state(JobStatus::Printing);
         if let Some(job) = &mut state.job {
             job.name = "calibration-cube.gcode".into();
+            job.path = Some(sample("calibration-cube.gcode"));
         }
         h.state_mut().set_state_override(Some(state));
         settle(&mut h);
@@ -1475,6 +1477,7 @@ fn moving_the_layers_pauses_following_for_this_print_only() {
         let mut state = printing_state(JobStatus::Printing);
         if let Some(job) = &mut state.job {
             job.name = "calibration-cube.gcode".into();
+            job.path = Some(sample("calibration-cube.gcode"));
             job.current_line = line;
         }
         state
@@ -2059,6 +2062,7 @@ fn the_gcode_footer_says_what_the_job_bar_says() {
         let mut state = printing_state(status);
         if let Some(job) = &mut state.job {
             job.name = "calibration-cube.gcode".into();
+            job.path = Some(sample("calibration-cube.gcode"));
         }
         h.state_mut().set_state_override(Some(state));
         settle(&mut h);
@@ -2078,6 +2082,7 @@ fn an_upload_of_the_file_is_not_shown_as_a_print() {
         if let Some(job) = &mut state.job {
             job.kind = kind;
             job.name = "calibration-cube.gcode".into();
+            job.path = Some(sample("calibration-cube.gcode"));
         }
         state
     };
@@ -2436,6 +2441,7 @@ fn the_gcode_toolbar_fits_a_narrow_tab() {
     let mut state = printing_state(JobStatus::Printing);
     if let Some(job) = &mut state.job {
         job.name = "calibration-cube.gcode".into();
+        job.path = Some(sample("calibration-cube.gcode"));
     }
     h.state_mut().set_state_override(Some(state));
     h.state_mut().push_action(AppAction::FindInGcode);

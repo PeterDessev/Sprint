@@ -323,7 +323,7 @@ impl ViewerTab {
             .state
             .job
             .as_ref()
-            .filter(|j| j.status.is_active() && format::job_prints_file(j, file.file.name()))
+            .filter(|j| j.status.is_active() && format::job_prints_file(j, &file.file))
             .map(|j| j.current_line);
         viewer.options_mut().progress_line =
             progress.map(|done| (done.saturating_sub(1)).min(u32::MAX as usize) as u32);
@@ -517,10 +517,11 @@ impl ViewerTab {
     }
 
     fn toolbar(&mut self, ui: &mut Ui, ctx: &mut AppCtx<'_>, file: &LoadedFile, p: &Palette) {
-        let printing =
-            ctx.state.job.as_ref().is_some_and(|j| {
-                j.status.is_active() && format::job_prints_file(j, file.file.name())
-            });
+        let printing = ctx
+            .state
+            .job
+            .as_ref()
+            .is_some_and(|j| j.status.is_active() && format::job_prints_file(j, &file.file));
         // Narrow views move the style and visibility toggles into the View
         // menu and shorten the rest; while the file prints, the follow
         // control needs room too.

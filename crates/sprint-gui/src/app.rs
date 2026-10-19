@@ -246,7 +246,7 @@ impl Core {
     fn printing_loaded_file(&self) -> bool {
         match (&self.state.job, &self.file) {
             (Some(job), Some(file)) => {
-                job.status.is_active() && format::job_matches_file(job, file.file.name())
+                job.status.is_active() && format::job_matches_file(job, &file.file)
             }
             _ => false,
         }

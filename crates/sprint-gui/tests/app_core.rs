@@ -15,8 +15,9 @@ use app_support::{WINDOW, app, expect, fast_sim, settle, sim_options};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use sprint_gui::app::{AppOptions, SprintApp};
-use sprint_host::ConnectTarget;
+use sprint_gui::context::AppAction;
 use sprint_host::sprint_sim::SimConfig;
+use sprint_host::{ConnectTarget, JobStatus};
 
 fn connect(h: &mut Harness<'_, SprintApp>) {
     h.get_by_label("Connect").click();
@@ -119,8 +120,7 @@ fn a_partly_broken_configuration_loads_and_says_what_it_left_out() {
         .unwrap_or_default();
     assert!(message.contains("config.toml.bak"), "{message}");
     // The preferences list the problem and the backup.
-    h.state_mut()
-        .push_action(sprint_gui::context::AppAction::OpenPreferences);
+    h.state_mut().push_action(AppAction::OpenPreferences);
     settle(&mut h);
     assert!(h.query_by_label_contains("checksum").is_some());
     // The toast and the settings say where the original is.
@@ -205,4 +205,103 @@ fn an_emergency_stop_in_a_pasted_block_goes_out_alone_at_once() {
     assert!(!got.iter().any(|c| c.starts_with("G28")), "{got:?}");
     assert!(!got.iter().any(|c| c.starts_with("G1 ")), "{got:?}");
     assert!(toast_titles(h.state()).contains(&"Emergency stop sent".to_owned()));
+}
+
+/// Options for prints that last: real move times, one command in flight.
+fn slow_print_options(time_scale: f32) -> AppOptions {
+    let mut options = sim_options();
+    options.config.profiles[0].connection = ConnectTarget::Simulator(SimConfig {
+        instant_moves: false,
+        time_scale,
+        ..fast_sim()
+    });
+    options.config.profiles[0].options.max_in_flight = 1;
+    options
+}
+
+/// A file of slow back-and-forth moves (a print that takes a while).
+fn long_file(lines: usize) -> String {
+    let mut text = String::from("G28\nG1 Z5 F600\n");
+    for i in 0..lines {
+        let x = if i % 2 == 0 { 150 } else { 50 };
+        text.push_str(&format!("G1 X{x} Y100 F1200\n"));
+    }
+    text
+}
+
+fn start_print(h: &mut Harness<'_, SprintApp>) {
+    h.state_mut()
+        .push_action(AppAction::StartPrintDialog { start_line: 0 });
+    settle(h);
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Start print")
+        .click();
+    expect(h, "the print to run", |app| {
+        app.state()
+            .job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Printing)
+    });
+}
+
+/// The progress line the 3D view shows (`None` without a GPU viewer).
+fn progress_line(app: &SprintApp) -> Option<Option<u32>> {
+    app.viewer_tab().viewer().map(|v| v.options().progress_line)
+}
+
+#[test]
+fn a_print_is_matched_to_the_loaded_file_by_path() {
+    let dir = temp_dir("paths");
+    for sub in ["a", "b"] {
+        std::fs::create_dir_all(dir.join(sub)).expect("dir");
+    }
+    let printed = dir.join("a").join("part.gcode");
+    let namesake = dir.join("b").join("part.gcode");
+    std::fs::write(&printed, long_file(400)).expect("write");
+    std::fs::write(&namesake, long_file(20)).expect("write");
+    let mut options = slow_print_options(2.0);
+    options.file = Some(printed.clone());
+    let mut h = app(options, WINDOW);
+    expect(&mut h, "the file to be analyzed", analyzed);
+    connect(&mut h);
+    start_print(&mut h);
+    expect(&mut h, "the 3D view to follow the print", |app| {
+        progress_line(app).is_none_or(|line| line.is_some())
+    });
+    // The printed file itself is not reloaded under the print.
+    h.state_mut()
+        .push_action(AppAction::LoadFile(printed.clone()));
+    settle(&mut h);
+    assert!(toast_titles(h.state()).contains(&"The file is printing".to_owned()));
+    // A file of the same name in another folder is another file: it loads,
+    // and the print's progress is not drawn on it.
+    h.state_mut()
+        .push_action(AppAction::LoadFile(namesake.clone()));
+    expect(&mut h, "the other file", |app| {
+        analyzed(app)
+            && app
+                .file()
+                .and_then(|f| f.path.as_deref())
+                .is_some_and(|p| sprint_gui::loader::same_path(p, &namesake))
+    });
+    settle(&mut h);
+    assert!(h.state().state().job_active(), "the print goes on");
+    if let Some(line) = progress_line(h.state()) {
+        assert_eq!(line, None, "progress drawn on another file");
+    }
+    // Back to the printed file: its progress shows again.
+    h.state_mut()
+        .push_action(AppAction::LoadFile(printed.clone()));
+    expect(&mut h, "the printed file", |app| {
+        analyzed(app)
+            && app
+                .file()
+                .and_then(|f| f.path.as_deref())
+                .is_some_and(|p| sprint_gui::loader::same_path(p, &printed))
+    });
+    settle(&mut h);
+    if let Some(line) = progress_line(h.state()) {
+        assert!(line.is_some(), "no progress on the printed file");
+    }
+    drop(h);
+    let _ = std::fs::remove_dir_all(dir);
 }

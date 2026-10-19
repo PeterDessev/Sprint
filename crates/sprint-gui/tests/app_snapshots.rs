@@ -98,6 +98,7 @@ fn printing_state(app: &SprintApp) -> PrinterState {
         (l.lines.start + (l.lines.end - l.lines.start) / 2) as usize
     });
     let mut job = JobInfo::new(JobKind::HostPrint, file.file.name(), file.file.len(), 0);
+    job.path = file.file.path().map(|p| p.to_path_buf());
     job.status = JobStatus::Printing;
     job.current_line = current;
     job.progress = 0.42;
