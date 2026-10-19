@@ -403,9 +403,10 @@ impl ViewerTab {
         }
         self.prefs.update_from(viewer.options());
 
-        // Overlays (drawn after the view, so they take the clicks). When
-        // the legend and the file card do not fit side by side, only the
-        // one switched on last is shown.
+        // Overlays, each on a layer of its own above the view (see
+        // overlay_layer): the pointer over a card never reaches the
+        // toolpath. When the legend and the file card do not fit side by
+        // side, only the one switched on last is shown.
         let loading = viewer.is_loading();
         let room = view.width() >= LEGEND_W + INFO_W + SLIDER_W + 3.0 * EDGE;
         let (show_legend, show_info) = match (self.prefs.show_legend, self.prefs.show_file_info) {
@@ -423,16 +424,17 @@ impl ViewerTab {
                     scrub_rect.top() - EDGE,
                 ),
             );
-            let mut legend_ui = ui.new_child(UiBuilder::new().max_rect(legend_rect));
-            overlay_frame(&p).show(&mut legend_ui, |ui| {
-                ui.set_max_width(280.0);
-                ui.style_mut().override_font_id = Some(egui::FontId::proportional(13.0));
-                // Scrolls in short views instead of running under the
-                // scrub bar.
-                egui::ScrollArea::vertical()
-                    .id_salt("sprint-legend-scroll")
-                    .max_height(ui.available_height().max(40.0))
-                    .show(ui, |ui| viewer.legend_ui(ui));
+            overlay_layer(ui, "sprint-viewer-legend", legend_rect, |ui| {
+                overlay_frame(&p).show(ui, |ui| {
+                    ui.set_max_width(280.0);
+                    ui.style_mut().override_font_id = Some(egui::FontId::proportional(13.0));
+                    // Scrolls in short views instead of running under the
+                    // scrub bar.
+                    egui::ScrollArea::vertical()
+                        .id_salt("sprint-legend-scroll")
+                        .max_height(ui.available_height().max(40.0))
+                        .show(ui, |ui| viewer.legend_ui(ui));
+                });
             });
         }
         if show_info {
@@ -443,12 +445,9 @@ impl ViewerTab {
                 Pos2::new((right - INFO_W).max(view.left() + EDGE), view.top() + EDGE),
                 Pos2::new(right, scrub_rect.top() - EDGE),
             );
-            let mut info_ui = ui.new_child(
-                UiBuilder::new()
-                    .max_rect(info_rect)
-                    .layout(Layout::top_down(Align::Min)),
-            );
-            file_info_card(&mut info_ui, file, &toolpath, extras.thumbnail, &p);
+            overlay_layer(ui, "sprint-viewer-file-info", info_rect, |ui| {
+                file_info_card(ui, file, &toolpath, extras.thumbnail, &p);
+            });
         }
         if loading {
             loading_pill(ui, view, &p);
@@ -478,8 +477,10 @@ impl ViewerTab {
                 self.ov.scrub = None;
                 self.ov.playing = false;
             }
-            let mut scrub_ui = ui.new_child(UiBuilder::new().max_rect(scrub_rect));
-            let limit = self.ov.scrub_bar(&mut scrub_ui, file, &toolpath, top, &p);
+            let mut limit = None;
+            overlay_layer(ui, "sprint-viewer-scrub", scrub_rect, |ui| {
+                limit = self.ov.scrub_bar(ui, file, &toolpath, top, &p);
+            });
             viewer.options_mut().line_limit = limit;
         }
     }
@@ -1071,6 +1072,24 @@ fn set_handle(range: &mut (usize, usize), handle: Handle, index: usize) {
             range.1 = range.1.max(index);
         }
     }
+}
+
+/// Show `add` in `rect` on a layer of its own above the 3D view (and
+/// below menus, dialogs and toasts) that takes every pointer input over
+/// it: clicks and drags on a card's empty parts, the wheel and hovering
+/// reach neither the toolpath (no pick, orbit or zoom) nor the view's
+/// layer keys. The card's own widgets work as usual.
+fn overlay_layer(ui: &Ui, id: &str, rect: Rect, add: impl FnOnce(&mut Ui)) {
+    egui::Area::new(Id::new(id))
+        .order(egui::Order::Middle)
+        .fixed_pos(rect.min)
+        .movable(false)
+        .constrain(false)
+        .sense(Sense::click_and_drag())
+        .show(ui.ctx(), |ui| {
+            ui.set_max_size(rect.size());
+            ui.with_layout(Layout::top_down(Align::Min), add);
+        });
 }
 
 /// The translucent card frame of the overlays.

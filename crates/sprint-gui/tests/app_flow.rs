@@ -1109,6 +1109,52 @@ fn a_click_below_a_single_layer_lowers_the_bottom_handle() {
 }
 
 #[test]
+fn the_cards_over_the_3d_view_keep_the_pointer_from_the_toolpath() {
+    let options = with_file(AppOptions::headless(), sample("calibration-cube.gcode"));
+    let mut h = app(options, WINDOW);
+    expect(&mut h, "the cube to be analyzed", analyzed);
+    if h.state().viewer_tab().viewer().is_none() {
+        eprintln!("no GPU viewer on this machine: not tested");
+        return;
+    }
+    h.state_mut().set_side_panels(false, false);
+    settle(&mut h);
+    let camera =
+        |h: &Harness<'_, SprintApp>| *h.state().viewer_tab().viewer().expect("viewer").camera();
+    let before = camera(&h);
+    // A click on the file card's text (the toolpath's top layer lies
+    // beneath it) selects nothing.
+    let estimate = h.get_by_label("Estimate").rect().center();
+    h.hover_at(estimate);
+    h.step();
+    h.drag_at(estimate);
+    h.step();
+    h.drop_at(estimate);
+    settle(&mut h);
+    assert_eq!(h.state().selected_line(), None);
+    // A drag on the card does not orbit, the wheel over the legend does not
+    // zoom.
+    let to = estimate + egui::vec2(-60.0, 40.0);
+    h.drag_at(estimate);
+    h.step();
+    h.hover_at(to);
+    h.step();
+    h.drop_at(to);
+    settle(&mut h);
+    let legend = h.get_by_label("Travel").rect().center() + egui::vec2(60.0, 0.0);
+    h.hover_at(legend);
+    h.step();
+    h.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Line,
+        delta: egui::vec2(0.0, -3.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: Modifiers::NONE,
+    });
+    settle(&mut h);
+    assert_eq!(camera(&h), before);
+}
+
+#[test]
 fn connecting_keeps_the_3d_view_of_the_reanalyzed_file() {
     let options = with_file(sim_options(), sample("calibration-cube.gcode"));
     let mut h = app(options, WINDOW);
