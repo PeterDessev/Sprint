@@ -305,11 +305,14 @@ fn heat_wait_with_busy_messages_does_not_time_out_or_poll() {
     );
     let s = printer.snapshot();
     assert_eq!(s.link.timeouts, 0, "{:?}", tail(&printer, 30));
-    // No M105 while M109 was running (polls resume afterwards).
-    let got = control.received_commands();
-    let m109 = got.iter().position(|c| c == "M109 S200").unwrap();
-    assert!(!got[..m109].iter().any(|c| c == "M105"));
+    assert!(control.received_commands().iter().any(|c| c == "M109 S200"));
+    // No M105 while M109 was running (polls resume afterwards; one due
+    // just before the M109 may go out ahead of it).
     let entries = console(&printer);
+    let m109_at = entries
+        .iter()
+        .position(|e| e.kind == ConsoleKind::Sent && e.text == "M109 S200")
+        .expect("M109 logged");
     let busy_at = entries
         .iter()
         .position(|e| e.text.contains("busy: processing"))
@@ -318,8 +321,8 @@ fn heat_wait_with_busy_messages_does_not_time_out_or_poll() {
         .iter()
         .rposition(|e| e.kind == ConsoleKind::Received && e.text == "ok")
         .unwrap();
-    assert!(busy_at < ok_at);
-    let polls_during = entries[busy_at..ok_at]
+    assert!(m109_at < busy_at && busy_at < ok_at);
+    let polls_during = entries[m109_at..ok_at]
         .iter()
         .filter(|e| e.kind == ConsoleKind::Sent && e.text == "M105")
         .count();
