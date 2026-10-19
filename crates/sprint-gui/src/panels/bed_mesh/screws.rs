@@ -21,6 +21,19 @@ use crate::widgets::{
     ActionButton, Card, IconButton, NumericField, SegmentedControl, diverging_color, signed_value,
 };
 
+/// Tooltip of the turning convention.
+const DIRECTION_TIP: &str = concat!(
+    "What turning a screw clockwise (seen from where you turn it) does to the bed on ",
+    "this printer",
+);
+
+/// How to read and use the screw helper.
+const SCREW_HELP: &str = concat!(
+    "Click a screw to make it the reference. Heights between probe points are ",
+    "interpolated; screws outside the probed area use its nearest edge. Adjust, then ",
+    "probe again to check.",
+);
+
 /// Most screws the editor allows.
 pub const MAX_SCREWS: usize = 9;
 /// Fewest screws (a bed needs three points).
@@ -195,14 +208,9 @@ impl ScrewHelper {
                 |ui| {
                     self.controls(ui);
                     ui.add_space(10.0);
-                    if let Some(index) = bed_plan(
-                        ui,
-                        mesh,
-                        geom,
-                        bed_size,
-                        &self.screws,
-                        &adjustments,
-                    ) {
+                    if let Some(index) =
+                        bed_plan(ui, mesh, geom, bed_size, &self.screws, &adjustments)
+                    {
                         self.set_reference(index);
                     }
                     ui.add_space(10.0);
@@ -216,10 +224,7 @@ impl ScrewHelper {
                         self.set_reference(i);
                     }
                     ui.add_space(6.0);
-                    kit::caption(
-                        ui,
-                        "Click a screw to make it the reference. Heights between probe points are interpolated; screws outside the probed area use its nearest edge. Adjust, then probe again to check.",
-                    );
+                    kit::caption(ui, SCREW_HELP);
                     ui.add_space(6.0);
                     self.editor(ui, bed_size);
                 },
@@ -232,7 +237,12 @@ impl ScrewHelper {
             let threads: Vec<(usize, String)> = THREADS
                 .iter()
                 .enumerate()
-                .map(|(i, t)| (i, format!("{} · {}", t.name, format::trimmed(f64::from(t.pitch), 1))))
+                .map(|(i, t)| {
+                    (
+                        i,
+                        format!("{} · {}", t.name, format::trimmed(f64::from(t.pitch), 1)),
+                    )
+                })
                 .collect();
             ui.add(SegmentedControl::new(&mut self.thread, &threads).id_salt("screw-thread"));
             let directions = [
@@ -243,9 +253,7 @@ impl ScrewHelper {
                 SegmentedControl::new(&mut self.clockwise_lowers, &directions)
                     .id_salt("screw-direction"),
             )
-            .on_hover_text(
-                "What turning a screw clockwise (seen from where you turn it) does to the bed on this printer",
-            );
+            .on_hover_text(DIRECTION_TIP);
         });
     }
 

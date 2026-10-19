@@ -15,6 +15,30 @@ use crate::insight::{format, ui as kit};
 use crate::theme::{self, TextRole, Tone, with_alpha};
 use crate::widgets::{ActionButton, Card, LinearProgress, NumericField, StatusPill};
 
+/// Step 1 guidance.
+const HEAT_HELP: &str = concat!(
+    "Heat the hotend to the temperature you print this filament at. The firmware ",
+    "refuses to extrude cold filament.",
+);
+
+/// Step 2 guidance.
+const MARK_HELP: &str = concat!(
+    "Measure up from where the filament enters the extruder and mark the filament ",
+    "with a fine pen. Measure carefully: the result is only as good as this mark.",
+);
+
+/// Step 4 guidance.
+const MEASURE_HELP: &str = concat!(
+    "Measure from the extruder inlet up to the mark. If the extruder were perfect, ",
+    "it would be the mark distance minus 100 mm.",
+);
+
+/// Shown for corrections over 10%.
+const LARGE_CHANGE_HELP: &str = concat!(
+    "More than 10% off: measure again, and check the extruder's tension and gears ",
+    "before applying.",
+);
+
 const STEPS: [&str; 4] = ["Heat", "Mark", "Extrude", "Measure"];
 
 /// The E-steps wizard.
@@ -107,10 +131,7 @@ impl EstepsWizard {
         let heater = Heater::Hotend(self.tool);
         let (current, target) = reading(ctx.state, heater);
         let ready = calibrate::within_target(current, target, ESTEPS_TEMP_TOLERANCE);
-        kit::dim(
-            ui,
-            "Heat the hotend to the temperature you print this filament at. The firmware refuses to extrude cold filament.",
-        );
+        kit::dim(ui, HEAT_HELP);
         ui.add_space(8.0);
         ui.add(
             NumericField::new(&mut self.temperature)
@@ -176,10 +197,7 @@ impl EstepsWizard {
     }
 
     fn mark(&mut self, ui: &mut Ui) {
-        kit::dim(
-            ui,
-            "Measure up from where the filament enters the extruder and mark the filament with a fine pen. Measure carefully: the result is only as good as this mark.",
-        );
+        kit::dim(ui, MARK_HELP);
         ui.add_space(8.0);
         let max_mark = 300.0;
         ui.add(
@@ -206,7 +224,10 @@ impl EstepsWizard {
         kit::dim(
             ui,
             &format!(
-                "The printer extrudes {:.0} mm at {:.0} mm/min, which takes about {}. Slow extrusion keeps the hotend from limiting the flow.",
+                concat!(
+                    "The printer extrudes {:.0} mm at {:.0} mm/min, which takes about {}. ",
+                    "Slow extrusion keeps the hotend from limiting the flow."
+                ),
                 ESTEPS_EXTRUDE_MM,
                 ESTEPS_FEEDRATE_MM_MIN,
                 format::duration(secs)
@@ -266,10 +287,7 @@ impl EstepsWizard {
 
     fn measure(&mut self, ui: &mut Ui, ctx: &mut AppCtx<'_>) {
         let current = current_esteps(&ctx.state.settings, self.tool);
-        kit::dim(
-            ui,
-            "Measure from the extruder inlet up to the mark. If the extruder were perfect, it would be the mark distance minus 100 mm.",
-        );
+        kit::dim(ui, MEASURE_HELP);
         ui.add_space(8.0);
         ui.add(
             NumericField::new(&mut self.remaining)
@@ -332,9 +350,7 @@ impl EstepsWizard {
                         Tone::Warning,
                         icons::WARNING,
                         "Large correction",
-                        Some(
-                            "More than 10% off: measure again, and check the extruder's tension and gears before applying.",
-                        ),
+                        Some(LARGE_CHANGE_HELP),
                         None,
                     );
                 }

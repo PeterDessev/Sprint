@@ -454,13 +454,16 @@ impl Finding {
     pub fn advice(&self) -> &'static str {
         match self {
             Finding::Oscillating { .. } => {
-                "The temperature swings more than ±1 °C around the target. Run a PID autotune to find better gains."
+                "The temperature swings more than ±1 °C around the target. Run a PID autotune to \
+                 find better gains."
             }
             Finding::PowerLimited { .. } => {
-                "Holding the target takes more than 90% of the heater's power. Check the heater, the supply voltage, insulation (silicone sock, bed underside) and draughts."
+                "Holding the target takes more than 90% of the heater's power. Check the heater, \
+                 the supply voltage, insulation (silicone sock, bed underside) and draughts."
             }
             Finding::SteadyOffset { .. } => {
-                "The heater settles away from its target. A PID autotune usually fixes a weak integral term."
+                "The heater settles away from its target. A PID autotune usually fixes a weak \
+                 integral term."
             }
             Finding::Overshoot { .. } => {
                 "The last heat-up overshot the target noticeably. A PID autotune reduces overshoot."

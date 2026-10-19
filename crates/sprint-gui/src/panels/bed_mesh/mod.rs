@@ -25,6 +25,25 @@ use crate::widgets::{
     NumericField, StatusPill, Toggle, diverging_color, signed_value,
 };
 
+/// Shown when the printer reported no mesh.
+const NO_MESH_HELP: &str = concat!(
+    "The printer has not reported a mesh. Probe the bed (G29) to measure one; it ",
+    "homes first if needed.",
+);
+
+/// Tooltip of the fade height field.
+const FADE_HINT: &str = concat!(
+    "The correction fades out linearly up to this height; 0 keeps it on for the ",
+    "whole print",
+);
+
+/// Tooltip of the save button.
+const SAVE_TIP: &str =
+    "M500: keep the mesh and these settings after a restart (saves every setting)";
+
+/// Toast after saving.
+const SAVED_MESSAGE: &str = "The mesh and the leveling settings survive a restart now.";
+
 /// Below this width the cards stack in one column.
 const TWO_COLUMNS: f32 = 900.0;
 /// Give up waiting for a probe's mesh after this long (seconds).
@@ -273,7 +292,7 @@ impl BedMeshTab {
         let message = if self.probing.is_some() {
             "Probing… the mesh appears here when the printer reports it."
         } else {
-            "The printer has not reported a mesh. Probe the bed (G29) to measure one; it homes first if needed."
+            NO_MESH_HELP
         };
         let r = EmptyState::new(icons::MESH, "No bed mesh")
             .message(message)
@@ -363,48 +382,24 @@ impl BedMeshTab {
                             .id_salt("bed-mesh-heatmap")
                             .show(ui);
                         ui.add_space(8.0);
-                        let bar_w = (geom.xs.len() as f32 * 72.0).min(ui.available_width()).max(160.0);
+                        let bar_w = (geom.xs.len() as f32 * 72.0)
+                            .min(ui.available_width())
+                            .max(160.0);
                         color_bar(ui, scale, bar_w);
                     });
                     ui.add_space(10.0);
-                    let p = theme::ui_palette(ui);
-                    let v = |x: Option<f32>| x.map_or_else(|| format::MISSING.to_owned(), |x| format!("{} mm", signed_value(x, 3)));
-                    let range_text = range.map_or_else(|| format::MISSING.to_owned(), |r| format!("{} mm", format::fixed(f64::from(r), 3)));
-                    let range_color = match severity {
-                        0 => None,
-                        1 => Some(p.warning),
-                        _ => Some(p.danger),
-                    };
-                    let columns = if ui.available_width() >= 420.0 { 5 } else { 3 };
-                    kit::metric_grid(
-                        ui,
-                        columns,
-                        &[
-                            ("Lowest", v(mesh.min()), None),
-                            ("Highest", v(mesh.max()), None),
-                            ("Range", range_text, range_color),
-                            ("Mean", v(mesh.mean()), None),
-                            ("Std dev", mesh.std_dev().map_or_else(|| format::MISSING.to_owned(), |s| format!("{} mm", format::fixed(f64::from(s), 3))), None),
-                        ],
-                    );
+                    mesh_stats(ui, mesh, severity);
                     let total = mesh.rows() * mesh.cols();
                     let missing = total.saturating_sub(mesh.count());
                     if missing > 0 {
-                        kit::caption(ui, &format!("{missing} of {total} points were not probed (hatched)."));
+                        let note =
+                            format!("{missing} of {total} points were not probed (hatched).");
+                        kit::caption(ui, &note);
                     }
                     if !geom.reported
-                        && let Some([x0, y0, x1, y1]) = geom.bounds()
+                        && let Some(bounds) = geom.bounds()
                     {
-                            kit::caption(
-                                ui,
-                                &format!(
-                                    "The firmware does not report probe positions; assuming Marlin's default area X{}–{} Y{}–{} mm.",
-                                    format::trimmed(f64::from(x0), 1),
-                                    format::trimmed(f64::from(x1), 1),
-                                    format::trimmed(f64::from(y0), 1),
-                                    format::trimmed(f64::from(y1), 1),
-                                ),
-                            );
+                        kit::caption(ui, &assumed_area_note(bounds));
                     }
                 },
             );
@@ -450,7 +445,8 @@ impl BedMeshTab {
                     if let Some(z) = reported_fade {
                         params.push(('Z', f64::from(z)));
                     }
-                    ctx.printer.apply_setting(&SettingCommand::new("M420", &params));
+                    ctx.printer
+                        .apply_setting(&SettingCommand::new("M420", &params));
                 }
                 ui.add_space(2.0);
                 kit::caption(
@@ -476,7 +472,7 @@ impl BedMeshTab {
                                 .range(0.0..=100.0)
                                 .label_width(96.0)
                                 .field_width(96.0)
-                                .hint("The correction fades out linearly up to this height; 0 keeps it on for the whole print"),
+                                .hint(FADE_HINT),
                         )
                         .changed()
                     {
@@ -485,7 +481,9 @@ impl BedMeshTab {
                     if ui
                         .add_enabled(
                             connected && self.fade.is_some() && changed_from_reported,
-                            ActionButton::new("Set").small().tooltip(format!("M420 Z{}", format::trimmed(f64::from(fade), 1))),
+                            ActionButton::new("Set")
+                                .small()
+                                .tooltip(format!("M420 Z{}", format::trimmed(f64::from(fade), 1))),
                         )
                         .clicked()
                     {
@@ -494,7 +492,8 @@ impl BedMeshTab {
                             params.push(('S', if on { 1.0 } else { 0.0 }));
                         }
                         params.push(('Z', f64::from(fade)));
-                        ctx.printer.apply_setting(&SettingCommand::new("M420", &params));
+                        ctx.printer
+                            .apply_setting(&SettingCommand::new("M420", &params));
                         self.fade = None;
                     }
                 });
@@ -506,12 +505,12 @@ impl BedMeshTab {
                             ActionButton::new("Save to EEPROM")
                                 .icon(icons::SAVE)
                                 .small()
-                                .tooltip("M500: keep the mesh and these settings after a restart (saves every setting)"),
+                                .tooltip(SAVE_TIP),
                         )
                         .clicked()
                     {
                         ctx.printer.save_settings();
-                        ctx.toasts.success("Saved to EEPROM").message("The mesh and the leveling settings survive a restart now.");
+                        ctx.toasts.success("Saved to EEPROM").message(SAVED_MESSAGE);
                     }
                 });
             });
@@ -528,7 +527,12 @@ impl BedMeshTab {
             .map(|m| m.rows() * m.cols())
             .filter(|n| *n > 0);
         let message = format!(
-            "The printer homes all axes if needed, then probes {} with G29 and reports the new mesh. Heat the bed to printing temperature first for a representative mesh, and make sure the nozzle is clean and the bed is clear.",
+            concat!(
+                "The printer homes all axes if needed, then probes {} with G29 and ",
+                "reports the new mesh. Heat the bed to printing temperature first for a ",
+                "representative mesh, and make sure the nozzle is clean and the bed is ",
+                "clear."
+            ),
             points.map_or_else(|| "the grid".to_owned(), |n| format!("{n} points"))
         );
         let answer = ConfirmDialog::new("bed-mesh-probe", "Probe the bed?")
@@ -552,6 +556,58 @@ impl BedMeshTab {
             None => {}
         }
     }
+}
+
+/// "+0.012 mm", or a dash.
+fn signed_mm(value: Option<f32>) -> String {
+    value.map_or_else(
+        || format::MISSING.to_owned(),
+        |v| format!("{} mm", signed_value(v, 3)),
+    )
+}
+
+/// "0.012 mm", or a dash.
+fn plain_mm(value: Option<f32>) -> String {
+    value.map_or_else(
+        || format::MISSING.to_owned(),
+        |v| format!("{} mm", format::fixed(f64::from(v), 3)),
+    )
+}
+
+/// The mesh statistics as metric tiles; the range is colored by
+/// `severity` (0 fine, 1 fair, 2 poor).
+fn mesh_stats(ui: &mut Ui, mesh: &BedMesh, severity: u8) {
+    let p = theme::ui_palette(ui);
+    let range_color = match severity {
+        0 => None,
+        1 => Some(p.warning),
+        _ => Some(p.danger),
+    };
+    let columns = if ui.available_width() >= 420.0 { 5 } else { 3 };
+    kit::metric_grid(
+        ui,
+        columns,
+        &[
+            ("Lowest", signed_mm(mesh.min()), None),
+            ("Highest", signed_mm(mesh.max()), None),
+            ("Range", plain_mm(mesh.range()), range_color),
+            ("Mean", signed_mm(mesh.mean()), None),
+            ("Std dev", plain_mm(mesh.std_dev()), None),
+        ],
+    );
+}
+
+/// Says that the probe positions are assumed, and where.
+fn assumed_area_note([x0, y0, x1, y1]: [f32; 4]) -> String {
+    let t = |v: f32| format::trimmed(f64::from(v), 1);
+    format!(
+        "The firmware does not report probe positions; assuming Marlin's default area \
+         X{}–{} Y{}–{} mm.",
+        t(x0),
+        t(x1),
+        t(y0),
+        t(y1)
+    )
 }
 
 /// The colormap half-range: the largest deviation from zero.

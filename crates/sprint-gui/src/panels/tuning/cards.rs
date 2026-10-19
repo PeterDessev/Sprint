@@ -407,11 +407,10 @@ pub(super) fn raw_card(ui: &mut Ui, draft: &mut Draft, indices: &[usize]) {
         .show_with_header(
             ui,
             |ui| {
-                ui.add(
-                    IconButton::new(icons::INFO).ghost().small().tooltip(
-                        "Commands the firmware reported that Sprint has no description for. Edit them as G-code; they are sent as written.",
-                    ),
-                );
+                ui.add(IconButton::new(icons::INFO).ghost().small().tooltip(
+                    "Commands the firmware reported that Sprint has no description for. Edit \
+                         them as G-code; they are sent as written.",
+                ));
             },
             |ui| {
                 for &i in indices {
@@ -444,8 +443,10 @@ pub(super) fn raw_card(ui: &mut Ui, draft: &mut Draft, indices: &[usize]) {
                                 } else {
                                     p.border
                                 };
-                                ui.visuals_mut().widgets.inactive.bg_stroke = Stroke::new(1.0, stroke);
-                                ui.visuals_mut().widgets.hovered.bg_stroke = Stroke::new(1.0, stroke);
+                                ui.visuals_mut().widgets.inactive.bg_stroke =
+                                    Stroke::new(1.0, stroke);
+                                ui.visuals_mut().widgets.hovered.bg_stroke =
+                                    Stroke::new(1.0, stroke);
                                 ui.add(
                                     egui::TextEdit::singleline(text)
                                         .font(egui::TextStyle::Monospace)
@@ -456,12 +457,9 @@ pub(super) fn raw_card(ui: &mut Ui, draft: &mut Draft, indices: &[usize]) {
                             });
                             if modified
                                 && ui
-                                    .add(
-                                        IconButton::new(icons::RESET)
-                                            .ghost()
-                                            .small()
-                                            .tooltip(format!("Reset to {}", original.as_deref().unwrap_or(""))),
-                                    )
+                                    .add(IconButton::new(icons::RESET).ghost().small().tooltip(
+                                        format!("Reset to {}", original.as_deref().unwrap_or("")),
+                                    ))
                                     .clicked()
                             {
                                 reset = true;
@@ -469,9 +467,11 @@ pub(super) fn raw_card(ui: &mut Ui, draft: &mut Draft, indices: &[usize]) {
                         });
                         if invalid {
                             ui.label(
-                                RichText::new("Not a valid setting command: it will not be applied.")
-                                    .size(12.0)
-                                    .color(p.danger),
+                                RichText::new(
+                                    "Not a valid setting command: it will not be applied.",
+                                )
+                                .size(12.0)
+                                .color(p.danger),
                             );
                         }
                     });

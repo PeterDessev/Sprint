@@ -17,6 +17,9 @@ use crate::widgets::{EmptyState, IconButton, StatusPill};
 
 /// Round-trip samples kept for the link sparkline (one per second).
 pub const RTT_HISTORY_LEN: usize = 120;
+/// Shown while disconnected.
+const NOT_CONNECTED_HELP: &str = "Connect to a printer to see its firmware, capabilities, \
+     statistics, link quality and thermal health.";
 /// Narrowest card column (points).
 const MIN_COLUMN: f32 = 340.0;
 /// How often live endstop polling sends M119 (seconds).
@@ -77,7 +80,7 @@ impl PrinterInfoTab {
                 | sprint_host::ConnectionStatus::Handshaking => {
                     "Waiting for the firmware to answer…".to_owned()
                 }
-                _ => "Connect to a printer to see its firmware, capabilities, statistics, link quality and thermal health.".to_owned(),
+                _ => NOT_CONNECTED_HELP.to_owned(),
             };
             let _ = EmptyState::new(icons::PRINTER, "Not connected")
                 .message(&message)

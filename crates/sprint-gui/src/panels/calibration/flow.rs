@@ -5,7 +5,7 @@ use egui::Ui;
 
 use crate::context::AppCtx;
 use crate::icons;
-use crate::insight::calibrate::flow_from_walls;
+use crate::insight::calibrate::{FlowError, flow_from_walls};
 use crate::insight::{format, ui as kit};
 use crate::theme::{self, Tone};
 use crate::widgets::{ActionButton, Card, NumericField};
@@ -37,6 +37,29 @@ impl Default for FlowWizard {
     }
 }
 
+/// Tooltip of the flow field.
+const FLOW_HINT: &str = "The flow (extrusion multiplier) the test cube was printed with";
+/// Tooltip of the expected wall field.
+const EXPECTED_HINT: &str = "The extrusion width set in the slicer for the perimeter";
+
+/// How to print and measure the test cube.
+fn instructions(wall: f32) -> String {
+    format!(
+        "Print a 20 mm cube in vase mode (one perimeter, no top layers) with an extrusion \
+         width of {} mm. Measure each wall with calipers, away from the corners and the seam.",
+        format::trimmed(f64::from(wall), 2)
+    )
+}
+
+/// Where to make a new flow permanent.
+fn permanent_fix(flow: f32) -> String {
+    format!(
+        "For a permanent fix set the slicer's extrusion multiplier to {}. M221 below changes \
+         the flow on the printer until the next restart.",
+        format::fixed(f64::from(flow) / 100.0, 3)
+    )
+}
+
 /// The usual single-wall extrusion width for a nozzle (112.5%).
 pub fn default_wall_width(nozzle: f32) -> f32 {
     let nozzle = if nozzle.is_finite() && nozzle > 0.05 {
@@ -65,13 +88,7 @@ impl FlowWizard {
             .icon(icons::FLOW)
             .subtitle("wall-thickness method")
             .show(ui, |ui| {
-                kit::dim(
-                    ui,
-                    &format!(
-                        "Print a 20 mm cube in vase mode (one perimeter, no top layers) with an extrusion width of {} mm. Measure each wall with calipers, away from the corners and the seam.",
-                        format::trimmed(f64::from(expected), 2)
-                    ),
-                );
+                kit::dim(ui, &instructions(expected));
                 ui.add_space(8.0);
                 let label_w = 150.0;
                 if ui
@@ -83,7 +100,7 @@ impl FlowWizard {
                             .range(10.0..=300.0)
                             .label_width(label_w)
                             .field_width(110.0)
-                            .hint("The flow (extrusion multiplier) the test cube was printed with"),
+                            .hint(FLOW_HINT),
                     )
                     .changed()
                 {
@@ -98,7 +115,7 @@ impl FlowWizard {
                             .range(0.1..=3.0)
                             .label_width(label_w)
                             .field_width(110.0)
-                            .hint("The extrusion width set in the slicer for the perimeter"),
+                            .hint(EXPECTED_HINT),
                     )
                     .changed()
                 {
@@ -140,31 +157,44 @@ impl FlowWizard {
                             ui,
                             3,
                             &[
-                                ("Average wall", format!("{} mm", format::fixed(f64::from(r.measured), 3)), None),
-                                ("New flow", format!("{} %", format::fixed(f64::from(r.new_flow), 1)), Some(p.accent)),
-                                ("Change", format!("{}%", format::signed(f64::from(r.change) * 100.0, 1)), None),
+                                (
+                                    "Average wall",
+                                    format!("{} mm", format::fixed(f64::from(r.measured), 3)),
+                                    None,
+                                ),
+                                (
+                                    "New flow",
+                                    format!("{} %", format::fixed(f64::from(r.new_flow), 1)),
+                                    Some(p.accent),
+                                ),
+                                (
+                                    "Change",
+                                    format!("{}%", format::signed(f64::from(r.change) * 100.0, 1)),
+                                    None,
+                                ),
                             ],
                         );
                         ui.add_space(4.0);
-                        kit::caption(
-                            ui,
-                            &format!(
-                                "For a permanent fix set the slicer's extrusion multiplier to {}. M221 below changes the flow on the printer until the next restart.",
-                                format::fixed(f64::from(r.new_flow) / 100.0, 3)
-                            ),
-                        );
+                        kit::caption(ui, &permanent_fix(r.new_flow));
                         ui.add_space(6.0);
-                        let label = format!("Set flow to {} % (M221)", format::fixed(f64::from(r.new_flow), 0));
+                        let label = format!(
+                            "Set flow to {} % (M221)",
+                            format::fixed(f64::from(r.new_flow), 0)
+                        );
                         if ui
-                            .add_enabled(ctx.connected(), ActionButton::new(&label).icon(icons::FLOW))
+                            .add_enabled(
+                                ctx.connected(),
+                                ActionButton::new(&label).icon(icons::FLOW),
+                            )
                             .clicked()
                         {
                             ctx.printer.set_flow(tool, r.new_flow);
-                            ctx.toasts.success(format!("Flow set to {:.0}%", r.new_flow));
+                            ctx.toasts
+                                .success(format!("Flow set to {:.0}%", r.new_flow));
                         }
                     }
                     Err(err) => {
-                        let tone = if matches!(err, crate::insight::calibrate::FlowError::NoMeasurement) {
+                        let tone = if matches!(err, FlowError::NoMeasurement) {
                             Tone::Info
                         } else {
                             Tone::Warning

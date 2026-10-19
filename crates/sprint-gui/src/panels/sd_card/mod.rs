@@ -19,6 +19,34 @@ use crate::widgets::{
     StatusPill, Toggle,
 };
 
+/// Shown after releasing the card.
+const RELEASED_HELP: &str = concat!(
+    "The firmware let go of the card (M22): it is safe to remove it. Insert a card ",
+    "and initialize it to use it again.",
+);
+
+/// Shown for an empty card when a file is loaded.
+const EMPTY_WITH_FILE: &str =
+    "The card is empty. Upload the loaded file to print it from the card.";
+
+/// Body of the print confirmation.
+const PRINT_MESSAGE: &str = concat!(
+    "The printer reads the file from its card while Sprint shows the progress. Make ",
+    "sure the bed is clear and ready.",
+);
+
+/// Body of the cancel confirmation.
+const CANCEL_PRINT_MESSAGE: &str = concat!(
+    "The printer stops reading the file and runs the cancel script. The print cannot ",
+    "be resumed.",
+);
+
+/// Note in the upload prompt.
+const UPLOAD_NOTE: &str = concat!(
+    "Every line goes out with a checksum, so uploading over USB takes a while; the ",
+    "printer does nothing else meanwhile.",
+);
+
 /// A question waiting for the user.
 #[derive(Clone, Debug, PartialEq)]
 enum Confirm {
@@ -99,7 +127,7 @@ impl SdCardTab {
                         Tone::Info,
                         icons::INFO,
                         "Card released",
-                        Some("The firmware let go of the card (M22): it is safe to remove it. Insert a card and initialize it to use it again."),
+                        Some(RELEASED_HELP),
                         Some("Initialize card"),
                     ) {
                         self.init_card(ctx);
@@ -423,7 +451,11 @@ impl SdCardTab {
         let filter = std::cell::RefCell::new(std::mem::take(&mut self.filter));
         Card::new("Files")
             .icon(icons::FILE)
-            .subtitle(if sd.listing { "reading…" } else { "on the card" })
+            .subtitle(if sd.listing {
+                "reading…"
+            } else {
+                "on the card"
+            })
             .show_with_header(
                 ui,
                 |ui| {
@@ -452,11 +484,15 @@ impl SdCardTab {
                         let has_file = ctx.file.is_some();
                         let r = EmptyState::new(icons::FILE, "No files")
                             .message(if has_file {
-                                "The card is empty. Upload the loaded file to print it from the card."
+                                EMPTY_WITH_FILE
                             } else {
                                 "The card is empty, or the list has not been read yet."
                             })
-                            .action(if has_file { "Upload loaded file" } else { "Read the card" })
+                            .action(if has_file {
+                                "Upload loaded file"
+                            } else {
+                                "Read the card"
+                            })
                             .show(ui);
                         if r.action_clicked() {
                             if has_file {
@@ -471,14 +507,20 @@ impl SdCardTab {
                         let rows = sorted_indices(&sd.files, self.sort, &filter);
                         if rows.is_empty() {
                             ui.add_space(8.0);
-                            kit::caption(ui, &format!("No file matches \u{201c}{}\u{201d}.", filter.trim()));
+                            kit::caption(
+                                ui,
+                                &format!("No file matches \u{201c}{}\u{201d}.", filter.trim()),
+                            );
                         }
                         let selected = sd.selected.as_deref();
                         for (n, &i) in rows.iter().enumerate() {
                             let file = &sd.files[i];
                             let is_selected = selected.is_some_and(|s| {
                                 s.eq_ignore_ascii_case(&file.name)
-                                    || file.long_name.as_deref().is_some_and(|l| l.eq_ignore_ascii_case(s))
+                                    || file
+                                        .long_name
+                                        .as_deref()
+                                        .is_some_and(|l| l.eq_ignore_ascii_case(s))
                             });
                             let action = ui
                                 .push_id(("sd-file", &file.name), |ui| {
@@ -560,7 +602,7 @@ impl SdCardTab {
         let answer = match &confirm {
             Confirm::Print(name, label) => {
                 let title = format!("Print {label}?");
-                let message = "The printer reads the file from its card while Sprint shows the progress. Make sure the bed is clear and ready.";
+                let message = PRINT_MESSAGE;
                 ConfirmDialog::new("sd-print", &title)
                     .message(message)
                     .details(&format!("M23 {name}\nM24"))
@@ -585,10 +627,7 @@ impl SdCardTab {
                         "The partly written file is deleted from the card.",
                     )
                 } else {
-                    (
-                        "Cancel the SD print?",
-                        "The printer stops reading the file and runs the cancel script. The print cannot be resumed.",
-                    )
+                    ("Cancel the SD print?", CANCEL_PRINT_MESSAGE)
                 };
                 ConfirmDialog::new("sd-cancel", title)
                     .message(message)
@@ -673,29 +712,11 @@ impl SdCardTab {
                 if edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     submit = true;
                 }
-                match &validated {
-                    Err(err) => {
-                        ui.label(RichText::new(err.message()).color(p.danger).size(12.5));
-                    }
-                    Ok(name) if exists => {
-                        ui.label(
-                            RichText::new(format!("{name} is already on the card and will be replaced."))
-                                .color(p.warning)
-                                .size(12.5),
-                        );
-                    }
-                    Ok(name) => {
-                        kit::caption(
-                            ui,
-                            &format!("Stored as {name}: up to 8 characters, a dot and 3 more (8.3), which every firmware can open."),
-                        );
-                    }
-                }
-                ui.add(Toggle::new(&mut prompt.print_after).label("Print it when the upload finishes"));
-                kit::caption(
-                    ui,
-                    "Every line goes out with a checksum, so uploading over USB takes a while; the printer does nothing else meanwhile.",
+                name_feedback(ui, &validated, exists);
+                ui.add(
+                    Toggle::new(&mut prompt.print_after).label("Print it when the upload finishes"),
                 );
+                kit::caption(ui, UPLOAD_NOTE);
                 ui.add_space(4.0);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 8.0;
@@ -706,13 +727,19 @@ impl SdCardTab {
                     if ui
                         .add_enabled(
                             can_upload,
-                            ActionButton::new(&label).icon(icons::UPLOAD).primary().min_width(96.0),
+                            ActionButton::new(&label)
+                                .icon(icons::UPLOAD)
+                                .primary()
+                                .min_width(96.0),
                         )
                         .clicked()
                     {
                         submit = true;
                     }
-                    if ui.add(ActionButton::new("Cancel").min_width(96.0)).clicked() {
+                    if ui
+                        .add(ActionButton::new("Cancel").min_width(96.0))
+                        .clicked()
+                    {
                         cancel = true;
                     }
                 });
@@ -749,6 +776,28 @@ impl SdCardTab {
                     .error(format!("Could not upload {name}"))
                     .message(err.to_string());
             }
+        }
+    }
+}
+
+/// What the upload prompt says about the typed name: why it is invalid,
+/// that it replaces a file, or how it is stored.
+fn name_feedback(ui: &mut Ui, validated: &Result<String, sdname::NameError>, exists: bool) {
+    let p = theme::ui_palette(ui);
+    match validated {
+        Err(err) => {
+            ui.label(RichText::new(err.message()).color(p.danger).size(12.5));
+        }
+        Ok(name) if exists => {
+            let text = format!("{name} is already on the card and will be replaced.");
+            ui.label(RichText::new(text).color(p.warning).size(12.5));
+        }
+        Ok(name) => {
+            let text = format!(
+                "Stored as {name}: up to 8 characters, a dot and 3 more (8.3), which every \
+                 firmware can open."
+            );
+            kit::caption(ui, &text);
         }
     }
 }

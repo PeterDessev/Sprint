@@ -18,6 +18,12 @@ use crate::insight::ui as kit;
 use crate::theme::{self, TextRole, Tone, with_alpha};
 use crate::widgets::{Badge, Chip, SegmentedControl};
 
+/// What a running job disables.
+const JOB_NOTE: &str = concat!(
+    "Moves, extrusion and autotune are disabled until it ends. Babystepping stays ",
+    "available.",
+);
+
 pub use esteps::EstepsWizard;
 pub use flow::FlowWizard;
 pub use pid::PidWizard;
@@ -113,9 +119,7 @@ impl CalibrationTab {
                 Tone::Warning,
                 icons::WARNING,
                 "A job is running",
-                Some(
-                    "Moves, extrusion and autotune are disabled until it ends. Babystepping stays available.",
-                ),
+                Some(JOB_NOTE),
                 None,
             );
             ui.add_space(theme::GAP);

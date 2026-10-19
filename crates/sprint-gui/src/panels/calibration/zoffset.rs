@@ -14,6 +14,37 @@ use crate::theme::{self, TextRole, Tone};
 use crate::widgets::{ActionButton, Card, IconButton, SegmentedControl};
 use sprint_host::Axes;
 
+/// How to use the wizard.
+const GUIDANCE: &str = concat!(
+    "Heat up, home and start a first-layer test print (or park the nozzle at Z0 over ",
+    "a sheet of paper). Babystep until the lines are slightly squished and touch ",
+    "each other, then store the adjustment.",
+);
+
+/// What the probe offset does.
+const PROBE_NOTE: &str = "The probe's Z offset sets where the nozzle is when the probe triggers.";
+
+/// Why the home offset is used.
+const HOME_OFFSET_NOTE: &str = "No probe offset is reported, so the home offset shifts Z instead.";
+
+/// Shown when neither offset is reported.
+const NO_OFFSET_HELP: &str = concat!(
+    "The firmware reported neither a probe offset (M851) nor a home offset (M206). ",
+    "Babystepping still works; load the settings to store the result.",
+);
+
+/// Toast after applying the offset.
+const APPLIED_MESSAGE: &str = "It takes effect at the next homing. Save to EEPROM to keep it.";
+
+/// When a stored offset applies.
+const TAKES_EFFECT: &str = concat!(
+    "The stored offset takes effect at the next homing; the babystepping stays ",
+    "active until then.",
+);
+
+/// Tooltip of the counter reset.
+const RESET_TIP: &str = "Forget the babystepping counted so far (does not move the nozzle)";
+
 /// Babystep sizes offered (mm).
 pub const BABYSTEP_SIZES: [f32; 4] = [0.01, 0.025, 0.05, 0.1];
 
@@ -64,19 +95,21 @@ impl ZOffsetWizard {
             .icon(icons::BABYSTEP)
             .subtitle("M290 babystepping")
             .show(ui, |ui| {
-                kit::dim(
-                    ui,
-                    "Heat up, home and start a first-layer test print (or park the nozzle at Z0 over a sheet of paper). Babystep until the lines are slightly squished and touch each other, then store the adjustment.",
-                );
+                kit::dim(ui, GUIDANCE);
                 ui.add_space(8.0);
                 match source {
                     Some((src, z)) => {
                         let what = match src {
-                            ZOffsetSource::Probe => "The probe's Z offset sets where the nozzle is when the probe triggers.",
-                            ZOffsetSource::HomeOffset => "No probe offset is reported, so the home offset shifts Z instead.",
+                            ZOffsetSource::Probe => PROBE_NOTE,
+                            ZOffsetSource::HomeOffset => HOME_OFFSET_NOTE,
                         };
                         ui.horizontal(|ui| {
-                            kit::metric(ui, src.name(), &format!("{} mm", format::fixed(f64::from(z), 3)), None);
+                            kit::metric(
+                                ui,
+                                src.name(),
+                                &format!("{} mm", format::fixed(f64::from(z), 3)),
+                                None,
+                            );
                             ui.add_space(16.0);
                             ui.vertical(|ui| {
                                 ui.add_space(6.0);
@@ -90,7 +123,7 @@ impl ZOffsetWizard {
                             Tone::Info,
                             icons::INFO,
                             "No Z offset reported",
-                            Some("The firmware reported neither a probe offset (M851) nor a home offset (M206). Babystepping still works; load the settings to store the result."),
+                            Some(NO_OFFSET_HELP),
                             None,
                         );
                     }
@@ -135,7 +168,11 @@ impl ZOffsetWizard {
                             ActionButton::new(label)
                                 .icon(icons::CHECK)
                                 .primary()
-                                .tooltip(format!("{} Z{}", src.code(), format::trimmed(f64::from(new_z), 3))),
+                                .tooltip(format!(
+                                    "{} Z{}",
+                                    src.code(),
+                                    format::trimmed(f64::from(new_z), 3)
+                                )),
                         )
                         .clicked()
                     {
@@ -146,7 +183,7 @@ impl ZOffsetWizard {
                         self.total = 0.0;
                         ctx.toasts
                             .success("Z offset applied")
-                            .message("It takes effect at the next homing. Save to EEPROM to keep it.");
+                            .message(APPLIED_MESSAGE);
                     }
                     if ui
                         .add_enabled(
@@ -162,7 +199,7 @@ impl ZOffsetWizard {
                     }
                 });
                 ui.add_space(4.0);
-                kit::caption(ui, "The stored offset takes effect at the next homing; the babystepping stays active until then.");
+                kit::caption(ui, TAKES_EFFECT);
             });
     }
 
@@ -182,9 +219,16 @@ impl ZOffsetWizard {
                         ui.spacing_mut().item_spacing.y = 2.0;
                         kit::caption(ui, "BABYSTEPPED");
                         ui.label(
-                            RichText::new(format!("{} mm", format::signed(f64::from(self.total), 3)))
-                                .font(theme::font(ui, TextRole::Display))
-                                .color(if self.total.abs() > 1e-4 { p.accent } else { p.text }),
+                            RichText::new(format!(
+                                "{} mm",
+                                format::signed(f64::from(self.total), 3)
+                            ))
+                            .font(theme::font(ui, TextRole::Display))
+                            .color(if self.total.abs() > 1e-4 {
+                                p.accent
+                            } else {
+                                p.text
+                            }),
                         );
                         let hint = if self.total < -1e-4 {
                             "nozzle closer to the bed"
@@ -229,7 +273,9 @@ impl ZOffsetWizard {
                         .iter()
                         .map(|s| (*s, format!("{} mm", format::trimmed(f64::from(*s), 3))))
                         .collect();
-                    ui.add(SegmentedControl::new(&mut self.step, &options).id_salt("babystep-size"));
+                    ui.add(
+                        SegmentedControl::new(&mut self.step, &options).id_salt("babystep-size"),
+                    );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui
                             .add_enabled(
@@ -237,7 +283,7 @@ impl ZOffsetWizard {
                                 ActionButton::new("Reset counter")
                                     .ghost()
                                     .small()
-                                    .tooltip("Forget the babystepping counted so far (does not move the nozzle)"),
+                                    .tooltip(RESET_TIP),
                             )
                             .clicked()
                         {
@@ -247,7 +293,10 @@ impl ZOffsetWizard {
                         if ui
                             .add_enabled(
                                 connected && !ctx.job_active(),
-                                ActionButton::new("Home").icon(icons::HOME).small().tooltip("G28"),
+                                ActionButton::new("Home")
+                                    .icon(icons::HOME)
+                                    .small()
+                                    .tooltip("G28"),
                             )
                             .clicked()
                         {

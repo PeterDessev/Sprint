@@ -25,6 +25,9 @@ use crate::widgets::{
     ActionButton, Badge, ConfirmDialog, DialogResult, EmptyState, IconButton, card_frame,
 };
 
+/// Shown for firmware without M503 (Klipper).
+const NO_M503_HELP: &str = "This firmware keeps its configuration in a file (Klipper: \
+     printer.cfg) and does not report settings with M503.";
 /// Width of the category list.
 const LIST_WIDTH: f32 = 196.0;
 /// Below this width the category list is hidden.
@@ -92,7 +95,7 @@ impl TuningTab {
         if no_m503 && self.draft.entries().is_empty() {
             ui.add_space(48.0);
             let _ = EmptyState::new(icons::TUNING, "No EEPROM settings")
-                .message("This firmware keeps its configuration in a file (Klipper: printer.cfg) and does not report settings with M503.")
+                .message(NO_M503_HELP)
                 .show(ui);
             return;
         }
@@ -660,7 +663,8 @@ impl TuningTab {
             let answer = match confirm {
                 Confirm::Save => {
                     let message = format!(
-                        "M500 writes the printer's active settings to its EEPROM, so they survive a restart or power cycle.{pending_note}"
+                        "M500 writes the printer's active settings to its EEPROM, so they survive \
+                         a restart or power cycle.{pending_note}"
                     );
                     ConfirmDialog::new("tuning-save", "Save settings to EEPROM?")
                         .message(&message)
@@ -671,7 +675,8 @@ impl TuningTab {
                 }
                 Confirm::Load => {
                     let message = format!(
-                        "M501 replaces the active settings with the ones last saved to EEPROM. Settings applied since the last save are lost.{pending_note}"
+                        "M501 replaces the active settings with the ones last saved to EEPROM. \
+                         Settings applied since the last save are lost.{pending_note}"
                     );
                     ConfirmDialog::new("tuning-load", "Load settings from EEPROM?")
                         .message(&message)
@@ -680,14 +685,19 @@ impl TuningTab {
                         .confirm_label("Load from EEPROM")
                         .show(ui.ctx())
                 }
-                Confirm::FactoryReset => ConfirmDialog::new("tuning-reset", "Reset to factory defaults?")
-                    .message(
-                        "M502 replaces the active settings with the firmware's compiled-in defaults: steps/mm, PID gains, offsets and everything else you tuned. Nothing is permanent until you save to EEPROM (M500); until then, Load from EEPROM or a restart brings your saved settings back.",
-                    )
-                    .details("M502\nM503")
-                    .confirm_label("Reset to defaults")
-                    .danger(true)
-                    .show(ui.ctx()),
+                Confirm::FactoryReset => {
+                    ConfirmDialog::new("tuning-reset", "Reset to factory defaults?")
+                        .message(
+                            "M502 replaces the active settings with the firmware's compiled-in \
+                         defaults: steps/mm, PID gains, offsets and everything else you tuned. \
+                         Nothing is permanent until you save to EEPROM (M500); until then, Load \
+                         from EEPROM or a restart brings your saved settings back.",
+                        )
+                        .details("M502\nM503")
+                        .confirm_label("Reset to defaults")
+                        .danger(true)
+                        .show(ui.ctx())
+                }
             };
             match answer {
                 Some(DialogResult::Confirmed) => {

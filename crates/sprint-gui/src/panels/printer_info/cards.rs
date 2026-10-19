@@ -305,11 +305,16 @@ pub(super) fn statistics(ui: &mut Ui, ctx: &mut AppCtx<'_>) {
                 let Some(stats) = stats else {
                     kit::dim(
                         ui,
-                        "No statistics loaded. Firmware built with PRINTCOUNTER reports prints, print time and filament used.",
+                        "No statistics loaded. Firmware built with PRINTCOUNTER reports prints, \
+                         print time and filament used.",
                     );
                     ui.add_space(4.0);
                     if ui
-                        .add(ActionButton::new("Load statistics").icon(icons::STATS).small())
+                        .add(
+                            ActionButton::new("Load statistics")
+                                .icon(icons::STATS)
+                                .small(),
+                        )
                         .clicked()
                     {
                         printer.request_stats();
@@ -343,7 +348,10 @@ pub(super) fn statistics(ui: &mut Ui, ctx: &mut AppCtx<'_>) {
                     ui.add(ring);
                     ui.vertical(|ui| {
                         let count = |v: Option<u32>| {
-                            v.map_or_else(|| format::MISSING.to_owned(), |n| format::count(u64::from(n)))
+                            v.map_or_else(
+                                || format::MISSING.to_owned(),
+                                |n| format::count(u64::from(n)),
+                            )
                         };
                         let p = theme::ui_palette(ui);
                         kit::metric_grid(
@@ -363,7 +371,10 @@ pub(super) fn statistics(ui: &mut Ui, ctx: &mut AppCtx<'_>) {
                 });
                 ui.add_space(6.0);
                 let secs = |v: Option<u64>| {
-                    v.map_or_else(|| format::MISSING.to_owned(), |s| format::duration(s as f64))
+                    v.map_or_else(
+                        || format::MISSING.to_owned(),
+                        |s| format::duration(s as f64),
+                    )
                 };
                 let average = match (stats.total_time, ended) {
                     (Some(t), n) if n > 0 => format::duration(t as f64 / f64::from(n)),

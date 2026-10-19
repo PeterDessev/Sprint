@@ -18,6 +18,39 @@ use crate::widgets::{
     SegmentedControl, StatusPill,
 };
 
+/// What an autotune does.
+const INTRO: &str = concat!(
+    "The firmware heats and cools the heater around the target several times and ",
+    "derives PID gains from the swings. It takes 5 to 10 minutes.",
+);
+
+/// Advice for hotend autotunes.
+const FAN_NOTE: &str = concat!(
+    "Set the part-cooling fan to the speed you usually print with: it changes how ",
+    "much power the hotend needs.",
+);
+
+/// Tooltip of the abort button.
+const ABORT_TIP: &str = "Interrupt the autotune (M108) and switch the heater off";
+
+/// Shown when the new gains are in use.
+const ACTIVE_NOTE: &str = concat!(
+    "The firmware is using these gains now (M303 U1). Save them to EEPROM to keep ",
+    "them after a restart.",
+);
+
+/// Advice after a runaway.
+const TOO_HIGH_TIP: &str = concat!(
+    "The temperature ran away above the target. Lower the target, check the ",
+    "thermistor's mounting and try again.",
+);
+
+/// Advice after a timeout.
+const TIMEOUT_TIP: &str = concat!(
+    "The heater did not reach or cross the target in time. Check the heater ",
+    "cartridge, its wiring and the supply voltage.",
+);
+
 /// Default autotune cycles (Marlin's recommendation).
 pub const DEFAULT_CYCLES: u32 = 8;
 
@@ -83,10 +116,7 @@ impl PidWizard {
             .icon(icons::HEATING)
             .subtitle("M303")
             .show(ui, |ui| {
-                kit::dim(
-                    ui,
-                    "The firmware heats and cools the heater around the target several times and derives PID gains from the swings. It takes 5 to 10 minutes.",
-                );
+                kit::dim(ui, INTRO);
                 ui.add_space(8.0);
                 ui.add_enabled_ui(!running, |ui| {
                     let labels: Vec<(Heater, String)> = options
@@ -146,18 +176,13 @@ impl PidWizard {
                 });
                 if matches!(self.heater, Heater::Hotend(_)) {
                     ui.add_space(4.0);
-                    kit::caption(
-                        ui,
-                        "Set the part-cooling fan to the speed you usually print with: it changes how much power the hotend needs.",
-                    );
+                    kit::caption(ui, FAN_NOTE);
                 }
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     let can_start = ctx.connected() && !ctx.job_active() && !running;
                     let target = *self.target_mut();
-                    let label = format!(
-                        "Start autotune at {target:.0} °C"
-                    );
+                    let label = format!("Start autotune at {target:.0} °C");
                     if ui
                         .add_enabled(
                             can_start,
@@ -176,7 +201,7 @@ impl PidWizard {
                                 ActionButton::new("Abort")
                                     .icon(icons::STOP)
                                     .danger()
-                                    .tooltip("Interrupt the autotune (M108) and switch the heater off"),
+                                    .tooltip(ABORT_TIP),
                             )
                             .clicked()
                     {
@@ -308,31 +333,45 @@ impl PidWizard {
                     }
                 },
                 |ui| {
-                    KeyValueGrid::new("pid-result").key_width(40.0).show(ui, |kv| {
-                        let rows = [("Kp", gains.kp, baseline.map(|b| b.kp)), ("Ki", gains.ki, baseline.map(|b| b.ki)), ("Kd", gains.kd, baseline.map(|b| b.kd))];
-                        for (label, new, old) in rows {
-                            kv.row_ui(label, |ui| {
-                                ui.label(
-                                    RichText::new(format::fixed(f64::from(new), 2))
-                                        .font(egui::FontId::new(15.0, theme::font(ui, theme::TextRole::Title).family))
-                                        .color(p.text),
-                                );
-                                if let Some(old) = old {
+                    KeyValueGrid::new("pid-result")
+                        .key_width(40.0)
+                        .show(ui, |kv| {
+                            let rows = [
+                                ("Kp", gains.kp, baseline.map(|b| b.kp)),
+                                ("Ki", gains.ki, baseline.map(|b| b.ki)),
+                                ("Kd", gains.kd, baseline.map(|b| b.kd)),
+                            ];
+                            for (label, new, old) in rows {
+                                kv.row_ui(label, |ui| {
                                     ui.label(
-                                        RichText::new(format!("was {}", format::fixed(f64::from(old), 2)))
+                                        RichText::new(format::fixed(f64::from(new), 2))
+                                            .font(egui::FontId::new(
+                                                15.0,
+                                                theme::font(ui, theme::TextRole::Title).family,
+                                            ))
+                                            .color(p.text),
+                                    );
+                                    if let Some(old) = old {
+                                        ui.label(
+                                            RichText::new(format!(
+                                                "was {}",
+                                                format::fixed(f64::from(old), 2)
+                                            ))
                                             .size(12.0)
                                             .color(p.text_dim),
-                                    );
-                                    if let Some(change) = format::change(f64::from(old), f64::from(new)) {
-                                        ui.add(Badge::new(&change).tone(Tone::Neutral));
+                                        );
+                                        if let Some(change) =
+                                            format::change(f64::from(old), f64::from(new))
+                                        {
+                                            ui.add(Badge::new(&change).tone(Tone::Neutral));
+                                        }
                                     }
-                                }
-                            });
-                        }
-                    });
+                                });
+                            }
+                        });
                     ui.add_space(6.0);
                     let note = if applied {
-                        "The firmware is using these gains now (M303 U1). Save them to EEPROM to keep them after a restart."
+                        ACTIVE_NOTE
                     } else {
                         "Apply the gains, then save them to EEPROM to keep them after a restart."
                     };
@@ -361,7 +400,11 @@ impl PidWizard {
                         let save_button = ActionButton::new("Save to EEPROM")
                             .icon(icons::SAVE)
                             .tooltip("M500: keep the gains after a restart");
-                        let save_button = if applied { save_button.primary() } else { save_button };
+                        let save_button = if applied {
+                            save_button.primary()
+                        } else {
+                            save_button
+                        };
                         if ui.add_enabled(connected && applied, save_button).clicked() {
                             save = true;
                         }
@@ -391,9 +434,9 @@ fn close(a: PidGains, b: PidGains) -> bool {
 fn failure(ui: &mut Ui, error: &str) {
     let lower = error.to_lowercase();
     let tip = if lower.contains("temperature too high") || lower.contains("too high") {
-        "The temperature ran away above the target. Lower the target, check the thermistor's mounting and try again."
+        TOO_HIGH_TIP
     } else if lower.contains("timeout") {
-        "The heater did not reach or cross the target in time. Check the heater cartridge, its wiring and the supply voltage."
+        TIMEOUT_TIP
     } else if lower.contains("bad extruder") || lower.contains("unknown") {
         "The firmware does not have this heater, or PID control is not enabled for it."
     } else {

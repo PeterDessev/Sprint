@@ -57,7 +57,8 @@ impl EstepsError {
                 "The mark went into the extruder. Mark the filament higher and run the test again."
             }
             EstepsError::Implausible => {
-                "That is less than half or more than twice the requested length. Measure again: the extruder may be skipping."
+                "That is less than half or more than twice the requested length. Measure again: \
+                 the extruder may be skipping."
             }
         }
     }
@@ -323,7 +324,8 @@ impl FlowError {
             FlowError::NoMeasurement => "Enter at least one measured wall thickness.",
             FlowError::InvalidMeasurement => "Wall thicknesses must be between 0.05 and 5 mm.",
             FlowError::Implausible => {
-                "The walls differ from the expected width by more than 50%. Check the test print's settings (one perimeter, no infill)."
+                "The walls differ from the expected width by more than 50%. Check the test \
+                 print's settings (one perimeter, no infill)."
             }
         }
     }
