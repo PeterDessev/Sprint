@@ -12,7 +12,7 @@ use sprint_gcode::{GcodeFile, ResumeOptions, Toolpath, resume_preamble};
 use sprint_host::{HostPrompt, PrintOptions};
 
 use crate::context::{AppAction, AppCtx, LoadedFile};
-use crate::panels::job_bar::print_blocker;
+use crate::panels::job_bar::{RecoverPoint, print_blocker};
 use crate::theme::{self, Palette, TextRole, Tone};
 use crate::widgets::{ActionButton, Badge, NumericField, SegmentedControl, Toggle};
 use crate::{format, icons};
@@ -105,6 +105,8 @@ pub struct StartPrintDialog {
     emit_m73: bool,
     /// Pause (with the pause script) before this layer.
     pause_layer: Option<usize>,
+    /// Going on with a print that stopped part way.
+    recover: Option<RecoverPoint>,
     error: Option<String>,
 }
 
@@ -136,8 +138,24 @@ impl StartPrintDialog {
             edited: false,
             emit_m73: false,
             pause_layer: None,
+            recover: None,
             error: None,
         }
+    }
+
+    /// A dialog going on with a print of `file` that stopped part way, at
+    /// `point`'s line: the resume preamble heats, homes X/Y and moves back
+    /// over the part before the first line.
+    pub fn recovering(point: RecoverPoint, file: &LoadedFile) -> StartPrintDialog {
+        let mut dialog = StartPrintDialog::new(point.line, file);
+        dialog.mode = StartMode::Line;
+        dialog.recover = Some(point);
+        dialog
+    }
+
+    /// Whether the dialog recovers a print that stopped part way.
+    pub fn is_recovering(&self) -> bool {
+        self.recover.is_some()
     }
 
     /// Send M73 progress or not to start with: the profile's
@@ -373,7 +391,11 @@ impl StartPrintDialog {
             .show(egui_ctx, |ui| {
                 ui.set_width(520.0);
                 ui.spacing_mut().item_spacing.y = 8.0;
-                dialog_title(ui, icons::PLAY, "Start print", p.accent);
+                if self.recover.is_some() {
+                    dialog_title(ui, icons::RESTART, "Recover print", p.accent);
+                } else {
+                    dialog_title(ui, icons::PLAY, "Start print", p.accent);
+                }
                 egui::ScrollArea::vertical()
                     .id_salt("sprint-start-print-body")
                     .max_height(body_max)
@@ -416,6 +438,26 @@ impl StartPrintDialog {
     /// What scrolls between the title and the buttons.
     fn body(&mut self, ui: &mut Ui, file: &LoadedFile, toolpath: Option<&Toolpath>, p: &Palette) {
         ui.label(RichText::new(format::sanitize(file.file.name(), 70)).color(p.text_dim));
+        if let Some(point) = &self.recover {
+            let mut text = format!(
+                "The last print stopped at line {} ({}). It goes on from there after the \
+                 preamble below.",
+                format::count(point.line as u64 + 1),
+                point.how
+            );
+            if self.mode != StartMode::Line || self.line != point.line {
+                text.push_str(" (Another start point is picked now.)");
+            }
+            ui.add(egui::Label::new(RichText::new(text).color(p.text)).wrap());
+            ui.label(
+                RichText::new(
+                    "If the board restarted since (a reset or a power loss) and the nozzle did \
+                     not move, turn on “Board was reset”: Z is then set to where the print stopped.",
+                )
+                .size(12.0)
+                .color(p.text_faint),
+            );
+        }
         if let Some(tp) = toolpath {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 16.0;

@@ -158,6 +158,10 @@ pub enum AppAction {
     /// Reset the printer's board (the way out of an emergency stop:
     /// `Printer::reset_board`), off the UI thread.
     ResetBoard,
+    /// Open the start-print dialog to go on with the last failed or
+    /// cancelled print of the loaded file from the line it stopped at
+    /// (see `job_bar::recover_point`).
+    RecoverPrint,
 }
 
 /// Everything a panel may use during one frame.

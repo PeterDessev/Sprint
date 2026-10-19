@@ -40,6 +40,33 @@ pub fn print_blocker(state: &PrinterState, file: Option<&GcodeFile>) -> Option<&
     }
 }
 
+/// Where a failed or cancelled host print of the loaded file can go on
+/// from: the first line the printer had not acknowledged
+/// ([`JobInfo::stopped_at`]), with a few words on how the print ended.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecoverPoint {
+    /// The 0-based file line to start from.
+    pub line: usize,
+    /// "it failed: printer reset", "it was cancelled".
+    pub how: String,
+}
+
+/// The [`RecoverPoint`] of the last job, when it was a host print of
+/// `file` (the same file on disk) that failed or was cancelled part way.
+pub fn recover_point(state: &PrinterState, file: &GcodeFile) -> Option<RecoverPoint> {
+    let job = state.job.as_ref()?;
+    if job.kind != JobKind::HostPrint || !format::same_source(job, file) {
+        return None;
+    }
+    let how = match &job.status {
+        JobStatus::Failed(reason) => format!("it failed: {}", format::sanitize(reason, 80)),
+        JobStatus::Cancelled => "it was cancelled".to_owned(),
+        _ => return None,
+    };
+    let line = job.stopped_at.filter(|&l| l > 0 && l < file.len())?;
+    Some(RecoverPoint { line, how })
+}
+
 /// The printer waits for the user (M0 / M1, a filament change) and no host
 /// prompt offers a way on: its busy reports say "paused for user" (or
 /// "for input"). Firmware without host prompt support then waits until
@@ -290,10 +317,31 @@ impl JobBar {
                         .truncate(),
                     );
                 });
+                let recover = recover_point(ctx.state, &file.file);
                 ui.horizontal(|ui| match job.filter(|j| j.status.is_finished()) {
                     Some(last) => {
                         let (text, tone) = job_badge(last);
                         ui.add(Badge::new(&text).tone(tone));
+                        if let Some(point) = &recover {
+                            let blocker = print_blocker(ctx.state, Some(&file.file));
+                            let tip = format!(
+                                "Go on from line {}, where the print stopped, after a preamble \
+                                 that heats, homes X/Y and moves back over the part",
+                                format::count(point.line as u64 + 1)
+                            );
+                            let button = ui
+                                .add_enabled(
+                                    blocker.is_none(),
+                                    crate::widgets::ActionButton::new("Recover…")
+                                        .icon(icons::RESTART)
+                                        .small()
+                                        .tooltip(tip),
+                                )
+                                .on_disabled_hover_text(blocker.unwrap_or_default());
+                            if button.clicked() {
+                                ctx.actions.push(AppAction::RecoverPrint);
+                            }
+                        }
                         let detail = match &last.status {
                             JobStatus::Failed(reason) => format::sanitize(reason, 80),
                             _ => format!(
@@ -587,6 +635,56 @@ mod tests {
             Some("The file is empty.")
         );
         assert_eq!(content_blocker(&gcode), None);
+    }
+
+    #[test]
+    fn a_failed_or_cancelled_print_of_the_file_can_be_recovered() {
+        let file = GcodeFile::from_text("cube.gcode", "G28\nG1 Z0.2\nG1 X10 E1\nG1 Y10 E2\n");
+        let mut job = JobInfo::new(JobKind::HostPrint, "cube.gcode", 4, 40);
+        job.status = JobStatus::Failed("printer reset".into());
+        job.stopped_at = Some(2);
+        let mut state = PrinterState {
+            job: Some(job.clone()),
+            ..PrinterState::default()
+        };
+        assert_eq!(
+            recover_point(&state, &file),
+            Some(RecoverPoint {
+                line: 2,
+                how: "it failed: printer reset".into()
+            })
+        );
+        job.status = JobStatus::Cancelled;
+        state.job = Some(job.clone());
+        assert_eq!(
+            recover_point(&state, &file).map(|p| p.how),
+            Some("it was cancelled".into())
+        );
+        // Not a print that completed or still runs, nor of another file, nor
+        // from its first line or beyond its end.
+        for status in [JobStatus::Completed, JobStatus::Printing, JobStatus::Paused] {
+            state.job = Some(JobInfo {
+                status,
+                ..job.clone()
+            });
+            assert_eq!(recover_point(&state, &file), None);
+        }
+        let other = GcodeFile::from_text("other.gcode", "G28\nG1 Z0.2\nG1 X10 E1\n");
+        state.job = Some(job.clone());
+        assert_eq!(recover_point(&state, &other), None);
+        for stopped in [None, Some(0), Some(4), Some(99)] {
+            state.job = Some(JobInfo {
+                stopped_at: stopped,
+                ..job.clone()
+            });
+            assert_eq!(recover_point(&state, &file), None, "{stopped:?}");
+        }
+        // An SD print is the card's business.
+        state.job = Some(JobInfo {
+            kind: JobKind::SdPrint,
+            ..job
+        });
+        assert_eq!(recover_point(&state, &file), None);
     }
 
     #[test]

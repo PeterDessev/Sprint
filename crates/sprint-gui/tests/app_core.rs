@@ -14,7 +14,7 @@ use std::time::Duration;
 use app_support::{WINDOW, app, expect, fast_sim, settle, sim_options};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
-use sprint_gui::app::{AppOptions, SprintApp};
+use sprint_gui::app::{AppOptions, DialogKind, SprintApp};
 use sprint_gui::context::AppAction;
 use sprint_host::sprint_sim::SimConfig;
 use sprint_host::{ConnectTarget, JobStatus};
@@ -256,9 +256,9 @@ fn a_print_is_matched_to_the_loaded_file_by_path() {
     }
     let printed = dir.join("a").join("part.gcode");
     let namesake = dir.join("b").join("part.gcode");
-    std::fs::write(&printed, long_file(400)).expect("write");
+    std::fs::write(&printed, long_file(3000)).expect("write");
     std::fs::write(&namesake, long_file(20)).expect("write");
-    let mut options = slow_print_options(2.0);
+    let mut options = slow_print_options(40.0);
     options.file = Some(printed.clone());
     let mut h = app(options, WINDOW);
     expect(&mut h, "the file to be analyzed", analyzed);
@@ -413,4 +413,75 @@ fn a_print_pauses_before_the_layer_picked_in_the_start_dialog() {
         received(h.state()).iter().any(|c| c.starts_with("M73 P")),
         "no M73 progress"
     );
+}
+
+#[test]
+fn a_cancelled_print_is_recovered_from_the_line_it_stopped_at() {
+    let dir = temp_dir("recover");
+    let path = dir.join("part.gcode");
+    std::fs::write(&path, long_file(3000)).expect("write");
+    let mut options = slow_print_options(40.0);
+    options.file = Some(path);
+    let mut h = app(options, WINDOW);
+    expect(&mut h, "the file to be analyzed", analyzed);
+    connect(&mut h);
+    // No print yet: nothing to recover.
+    assert!(h.query_by_label("Recover…").is_none());
+    start_print(&mut h);
+    expect(&mut h, "some progress", |app| {
+        app.state()
+            .job
+            .as_ref()
+            .is_some_and(|j| j.current_line > 30)
+    });
+    h.state().printer().cancel();
+    expect(&mut h, "the cancel", |app| {
+        app.state()
+            .job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Cancelled)
+    });
+    settle(&mut h);
+    let stopped = h
+        .state()
+        .state()
+        .job
+        .as_ref()
+        .and_then(|j| j.stopped_at)
+        .expect("stopped_at");
+    // The job bar offers to go on from there.
+    h.get_by_label("Recover…").click();
+    settle(&mut h);
+    assert_eq!(h.state().dialog(), Some(DialogKind::StartPrint));
+    assert!(h.query_by_label("Recover print").is_some());
+    assert!(h.query_by_label_contains("(it was cancelled)").is_some());
+    let toolpath = h
+        .state()
+        .file()
+        .and_then(|f| f.toolpath.clone())
+        .expect("toolpath");
+    let dialog = h.state_mut().start_print_dialog_mut().expect("dialog");
+    assert!(dialog.is_recovering());
+    assert_eq!(dialog.start_line(Some(&toolpath)), stopped);
+    // The preamble is shown and can be edited before it goes out.
+    assert!(
+        dialog.preamble().contains("G28 X Y"),
+        "{}",
+        dialog.preamble()
+    );
+    let control = h.state().printer().sim_control().expect("simulator");
+    control.clear_received();
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Start print")
+        .click();
+    expect(&mut h, "the recovered print", |app| {
+        app.state()
+            .job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Printing && j.current_line > stopped)
+    });
+    // The preamble went out before the file's lines.
+    let got = control.received_commands();
+    assert!(got.iter().any(|c| c == "G28 X Y"), "{got:?}");
+    drop(h);
+    let _ = std::fs::remove_dir_all(dir);
 }

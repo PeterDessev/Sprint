@@ -1055,7 +1055,33 @@ impl SprintApp {
             AppAction::Reanalyze => self.reanalyze(),
             AppAction::EditFile => self.edit_file(),
             AppAction::ResetBoard => self.reset_board(),
+            AppAction::RecoverPrint => self.open_recover(),
         }
+    }
+
+    /// Open the start-print dialog at the line the last failed or
+    /// cancelled print of the loaded file stopped at.
+    fn open_recover(&mut self) {
+        let Some(file) = &self.core.file else {
+            return;
+        };
+        let Some(point) = job_bar::recover_point(&self.core.state, &file.file) else {
+            self.core
+                .toasts
+                .info("Nothing to recover")
+                .message("The last print of this file did not stop part way.");
+            return;
+        };
+        if let Some(reason) = print_blocker(&self.core.state, Some(&file.file)) {
+            self.core
+                .toasts
+                .warning("Cannot print right now")
+                .message(reason);
+            return;
+        }
+        let dialog = StartPrintDialog::recovering(point, file)
+            .with_emit_progress(self.core.config.active().emit_progress);
+        self.open_modal(Modal::StartPrint(Box::new(dialog)));
     }
 
     /// Reset the printer's board on a worker thread (see

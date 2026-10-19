@@ -316,3 +316,30 @@ fn console_with_a_long_paste() {
     settle(&mut h);
     snapshot(&mut h, "app_console_paste");
 }
+
+#[test]
+fn recovering_a_failed_print() {
+    // The print of the cube failed part way: the job bar offers to go on
+    // from where it stopped, and the dialog says how.
+    let mut h = with_cube(AppOptions::headless());
+    let mut state = connected_state();
+    let file = h.state().file().expect("file");
+    let mut job = JobInfo::new(JobKind::HostPrint, file.file.name(), file.file.len(), 0);
+    job.path = file.file.path().map(|p| p.to_path_buf());
+    job.status = JobStatus::Failed("printer reset".into());
+    job.stopped_at = Some(4_719);
+    job.progress = 0.42;
+    job.elapsed = Duration::from_secs(18 * 60 + 41);
+    state.job = Some(job);
+    h.state_mut().set_state_override(Some(state));
+    settle(&mut h);
+    h.remove_cursor();
+    settle(&mut h);
+    snapshot(&mut h, "app_failed");
+    h.get_by_label("Recover…").click();
+    settle(&mut h);
+    assert_eq!(h.state().dialog(), Some(DialogKind::StartPrint));
+    h.remove_cursor();
+    settle(&mut h);
+    snapshot(&mut h, "app_recover");
+}
