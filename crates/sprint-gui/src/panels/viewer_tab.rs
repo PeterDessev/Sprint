@@ -119,6 +119,8 @@ struct Overlay {
     shown_file: Option<Weak<GcodeFile>>,
     /// The user moved the camera (orbit, pan, zoom) since the last fit.
     camera_moved: bool,
+    /// Open (or collapse) the file card once, for a file just shown.
+    info_open: Option<bool>,
     bed: Option<BedSpec>,
     focused: bool,
     drag: Option<Handle>,
@@ -298,6 +300,10 @@ impl ViewerTab {
                     self.ov.scrub_layer = None;
                     self.ov.followed = None;
                     self.ov.camera_moved = false;
+                    // Open the first time ever, collapsed from then on: the
+                    // card covers much of the part.
+                    self.ov.info_open = Some(!self.prefs.file_info_seen);
+                    self.prefs.file_info_seen = true;
                 }
             }
         }
@@ -469,8 +475,9 @@ impl ViewerTab {
                 Pos2::new((right - INFO_W).max(view.left() + EDGE), view.top() + EDGE),
                 Pos2::new(right, scrub_rect.top() - EDGE),
             );
+            let open = self.ov.info_open.take();
             overlay_layer(ui, "sprint-viewer-file-info", info_rect, |ui| {
-                file_info_card(ui, file, &toolpath, extras.thumbnail, &p);
+                file_info_card(ui, file, &toolpath, extras.thumbnail, open, &p);
             });
         }
         if loading {
@@ -1217,12 +1224,14 @@ fn loading_card(ui: &mut Ui, rect: Rect, load: &LoadStatus, ctx: &mut AppCtx<'_>
     });
 }
 
-/// The floating file information card.
+/// The floating file information card; `open` opens or collapses it
+/// (else it stays as the user left it).
 fn file_info_card(
     ui: &mut Ui,
     file: &LoadedFile,
     toolpath: &Toolpath,
     thumbnail: Option<&egui::TextureHandle>,
+    open: Option<bool>,
     p: &Palette,
 ) {
     let name = format::sanitize(file.file.name(), 40);
@@ -1231,6 +1240,9 @@ fn file_info_card(
         let id = ui.make_persistent_id("sprint-file-info-open");
         let mut state =
             egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, true);
+        if let Some(open) = open {
+            state.set_open(open);
+        }
         let header = ui.horizontal(|ui| {
             ui.label(RichText::new(icons::FILE).color(p.accent));
             ui.add(

@@ -1424,6 +1424,37 @@ fn moving_the_layers_pauses_following_for_this_print_only() {
 }
 
 #[test]
+fn the_file_card_opens_collapsed_once_it_was_seen() {
+    let options = with_file(AppOptions::headless(), sample("calibration-cube.gcode"));
+    let mut h = app(options, egui::vec2(1440.0, 900.0));
+    expect(&mut h, "the cube to be analyzed", analyzed);
+    if h.state().viewer_tab().viewer().is_none() {
+        eprintln!("no GPU viewer on this machine: not tested");
+        return;
+    }
+    settle(&mut h);
+    // The first time it is open...
+    assert!(h.query_by_label("Estimate").is_some());
+    assert!(h.state().ui_prefs().viewer.file_info_seen);
+    // ...for the next file a header line, leaving the part in view.
+    h.state_mut()
+        .push_action(AppAction::LoadFile(sample("arcs-test.gcode")));
+    expect(&mut h, "the next file", |app| {
+        analyzed(app)
+            && app
+                .file()
+                .is_some_and(|f| f.file.name() == "arcs-test.gcode")
+    });
+    settle(&mut h);
+    assert!(h.query_by_label("arcs-test.gcode").is_some());
+    assert!(h.query_by_label("Estimate").is_none());
+    // Opened on request.
+    h.get_by_label("Collapse / expand").click();
+    settle(&mut h);
+    assert!(h.query_by_label("Estimate").is_some());
+}
+
+#[test]
 fn the_cards_over_the_3d_view_keep_the_pointer_from_the_toolpath() {
     let options = with_file(AppOptions::headless(), sample("calibration-cube.gcode"));
     let mut h = app(options, WINDOW);

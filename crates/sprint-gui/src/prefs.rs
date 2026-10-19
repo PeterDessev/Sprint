@@ -112,6 +112,10 @@ pub struct ViewerPrefs {
     pub show_file_info: bool,
     /// The top layer follows the print.
     pub follow_print: bool,
+    /// The file information card was shown open once: from then on it
+    /// opens collapsed for each file (a header line), so it does not cover
+    /// the part.
+    pub file_info_seen: bool,
 }
 
 impl Default for ViewerPrefs {
@@ -130,6 +134,7 @@ impl Default for ViewerPrefs {
             show_legend: true,
             show_file_info: true,
             follow_print: true,
+            file_info_seen: false,
         }
     }
 }
