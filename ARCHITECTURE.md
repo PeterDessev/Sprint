@@ -1288,8 +1288,9 @@ any area size, including zero, is safe.
 * `ConsoleView::new(&[ConsoleLine])`, a `StatefulWidget` over
   `ConsoleState` (follows the tail; `scroll_up/down`, `page_up/down`,
   `scroll_to_top`, `follow`, `handle_key`, `handle_mouse`; scrolled back,
-  the view stays on the same lines as new ones arrive, anchored by line
-  count, so a log trimmed at capacity drifts); `show_auto`, `search`,
+  the view stays on the same lines as new ones arrive and when the
+  auto-traffic filter changes, and `lines_removed(n)` keeps it there when
+  the app drops the oldest lines of a full log); `show_auto`, `search`,
   `show_tags`. `ConsoleLine { kind: ConsoleKind, text, auto }` mirrors the
   host's `ConsoleEntry`.
 * `CommandInput` (state; `handle_key(KeyEvent) -> InputEvent::{Ignored,

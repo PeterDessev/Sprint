@@ -106,15 +106,25 @@ const WHEEL_LINES: usize = 3;
 /// Scroll position of a [`ConsoleView`].
 ///
 /// The view either *follows* the newest line (the default) or stays where
-/// the user scrolled to, also while new lines arrive. Scrolling back down
-/// to the newest line resumes following.
+/// the user scrolled to: on the same lines while new ones arrive and when
+/// the automatic-traffic filter changes. When the application drops old
+/// lines from the front of its log, it calls
+/// [`lines_removed`](ConsoleState::lines_removed) so the view stays put
+/// then too. Scrolling back down to the newest line resumes following.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConsoleState {
-    /// Lines between the newest visible line and the newest line.
+    /// Shown lines between the newest visible line and the newest line.
     offset: usize,
     follow: bool,
-    /// Number of shown lines at the last render (new lines since then
-    /// push `offset` up, so the view stays still while not following).
+    /// Log index of the newest visible line at the last render, while
+    /// scrolled back: the next render keeps that line at the bottom.
+    anchor: Option<usize>,
+    /// `offset` as of the last render; scrolling since then moves the view
+    /// by the difference.
+    rendered_offset: usize,
+    /// Lines removed from the front of the log since the last render.
+    removed: usize,
+    /// Number of shown lines at the last render.
     last_count: Option<usize>,
     /// Text rows at the last render (page size).
     last_height: usize,
@@ -132,6 +142,9 @@ impl ConsoleState {
         ConsoleState {
             offset: 0,
             follow: true,
+            anchor: None,
+            rendered_offset: 0,
+            removed: 0,
             last_count: None,
             last_height: 0,
         }
@@ -180,6 +193,14 @@ impl ConsoleState {
     /// Scroll one page towards newer output.
     pub fn page_down(&mut self) {
         self.scroll_down(self.page());
+    }
+
+    /// Tell the state that `count` lines were removed from the front of
+    /// the log since the last render (a log trimmed at capacity), so a
+    /// scrolled-back view stays on the same lines. Count every removed
+    /// line, shown or filtered out.
+    pub fn lines_removed(&mut self, count: usize) {
+        self.removed = self.removed.saturating_add(count);
     }
 
     /// Jump to the oldest line.
@@ -232,15 +253,28 @@ impl ConsoleState {
         }
     }
 
-    /// Update for a render of `count` lines on `height` rows; returns the
-    /// offset to draw with.
-    fn update(&mut self, count: usize, height: usize) -> usize {
+    /// Update for a render of the shown lines (their log indices, in
+    /// order) on `height` rows; returns the offset to draw with.
+    fn update(&mut self, shown: &[usize], height: usize) -> usize {
+        let count = shown.len();
         if self.follow {
             self.offset = 0;
-        } else if let Some(last) = self.last_count {
-            // Keep the same lines in view while new ones arrive.
-            self.offset = self.offset.saturating_add(count.saturating_sub(last));
+        } else if let Some(anchor) = self.anchor {
+            // Shown lines after the anchored line, wherever it is now: new
+            // lines, a changed filter and trimming leave the view in place.
+            let below = match anchor.checked_sub(self.removed) {
+                Some(index) => count - shown.partition_point(|&i| i <= index),
+                // The anchored line itself was removed: the oldest lines.
+                None => count,
+            };
+            // Scrolling since the last render moves on from there.
+            self.offset = if self.offset >= self.rendered_offset {
+                below.saturating_add(self.offset - self.rendered_offset)
+            } else {
+                below.saturating_sub(self.rendered_offset - self.offset)
+            };
         }
+        self.removed = 0;
         self.last_count = Some(count);
         self.last_height = height;
         self.offset = self.offset.min(self.max_offset());
@@ -248,6 +282,15 @@ impl ConsoleState {
             // Back at the newest line (or everything fits): follow again.
             self.follow = true;
         }
+        self.anchor = if self.follow {
+            None
+        } else {
+            count
+                .checked_sub(self.offset + 1)
+                .and_then(|i| shown.get(i))
+                .copied()
+        };
+        self.rendered_offset = self.offset;
         self.offset
     }
 }
@@ -432,9 +475,16 @@ impl StatefulWidget for ConsoleView<'_> {
         if inner.is_empty() {
             return;
         }
-        let shown: Vec<&ConsoleLine> = self.lines.iter().filter(|l| self.shows(l)).collect();
+        // Log indices of the lines that pass the filter.
+        let shown: Vec<usize> = self
+            .lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| self.shows(l))
+            .map(|(i, _)| i)
+            .collect();
         let height = usize::from(inner.height);
-        let offset = state.update(shown.len(), height);
+        let offset = state.update(&shown, height);
         if shown.is_empty() {
             let message = if self.lines.is_empty() {
                 "No console output yet"
@@ -447,7 +497,12 @@ impl StatefulWidget for ConsoleView<'_> {
         let end = shown.len().saturating_sub(offset);
         let start = end.saturating_sub(height);
         let width = usize::from(inner.width);
-        for (row, line) in shown.get(start..end).unwrap_or(&[]).iter().enumerate() {
+        let visible = shown.get(start..end).unwrap_or(&[]);
+        for (row, line) in visible
+            .iter()
+            .filter_map(|&i| self.lines.get(i))
+            .enumerate()
+        {
             let Ok(dy) = u16::try_from(row) else { break };
             let y = inner.y + dy;
             let (spans, cols) = self.line_spans(line);
@@ -617,6 +672,75 @@ mod tests {
         assert!(state.is_following());
         let buf = render_stateful(ConsoleView::new(&log), 20, 3, &mut state);
         assert_eq!(lines(&buf)[2].trim_end(), "new 3");
+    }
+
+    /// 60 lines, every other one automatic traffic.
+    fn half_auto() -> Vec<ConsoleLine> {
+        (0..60)
+            .map(|i| {
+                if i % 2 == 0 {
+                    ConsoleLine::received(format!("line {i}"))
+                } else {
+                    ConsoleLine::received(format!("auto {i}")).with_auto(true)
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn toggling_the_auto_filter_keeps_the_view_in_place() {
+        let log = half_auto();
+        let mut state = ConsoleState::new();
+        let _ = render_stateful(ConsoleView::new(&log), 20, 4, &mut state);
+        state.scroll_up(5);
+        let buf = render_stateful(ConsoleView::new(&log), 20, 4, &mut state);
+        assert!(lines(&buf)[3].starts_with("line 48 "), "{:?}", lines(&buf));
+        // Showing automatic traffic keeps the same line at the bottom.
+        let buf = render_stateful(ConsoleView::new(&log).show_auto(true), 20, 4, &mut state);
+        assert!(lines(&buf)[3].starts_with("line 48 "), "{:?}", lines(&buf));
+        assert_eq!(state.offset(), 11);
+        // Scrolling now counts automatic lines too.
+        state.scroll_up(1);
+        let buf = render_stateful(ConsoleView::new(&log).show_auto(true), 20, 4, &mut state);
+        assert!(lines(&buf)[3].starts_with("auto 47 "), "{:?}", lines(&buf));
+        // Hiding it again: the nearest shown line above stays at the bottom.
+        let buf = render_stateful(ConsoleView::new(&log), 20, 4, &mut state);
+        assert!(lines(&buf)[3].starts_with("line 46 "), "{:?}", lines(&buf));
+        assert_eq!(state.offset(), 6);
+    }
+
+    #[test]
+    fn trimmed_logs_keep_the_view_in_place() {
+        let mut log = numbered(20);
+        let mut state = ConsoleState::new();
+        let _ = render_stateful(ConsoleView::new(&log), 20, 3, &mut state);
+        state.scroll_up(4);
+        let buf = render_stateful(ConsoleView::new(&log), 20, 3, &mut state);
+        assert_eq!(lines(&buf)[0].trim_end(), "line 14");
+        // A full log: three new lines push the three oldest out.
+        log.drain(..3);
+        log.extend((1..=3).map(|i| ConsoleLine::info(format!("new {i}"))));
+        state.lines_removed(3);
+        let buf = render_stateful(ConsoleView::new(&log), 20, 3, &mut state);
+        assert_eq!(lines(&buf)[0].trim_end(), "line 14");
+        assert_eq!(state.offset(), 7);
+        // Scrolling between renders moves on from there.
+        log.push(ConsoleLine::info("new 4"));
+        state.scroll_down(2);
+        let buf = render_stateful(ConsoleView::new(&log), 20, 3, &mut state);
+        assert_eq!(lines(&buf)[0].trim_end(), "line 16");
+        assert_eq!(state.offset(), 6);
+        // The lines in view are trimmed away: the view shows the oldest.
+        log.drain(..16);
+        state.lines_removed(16);
+        let buf = render_stateful(ConsoleView::new(&log), 20, 3, &mut state);
+        assert_eq!(lines(&buf)[0].trim_end(), "line 20");
+        assert!(!state.is_following());
+        // Removals while following change nothing.
+        state.follow();
+        state.lines_removed(1000);
+        let buf = render_stateful(ConsoleView::new(&log), 20, 3, &mut state);
+        assert_eq!(lines(&buf)[2].trim_end(), "new 4");
     }
 
     #[test]

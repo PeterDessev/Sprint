@@ -258,6 +258,8 @@ impl Demo {
         let excess = self.console.len().saturating_sub(CONSOLE_MAX);
         if excess > 0 {
             self.console.drain(..excess);
+            // A scrolled-back console stays on its lines.
+            self.console_state.lines_removed(excess);
         }
     }
 
