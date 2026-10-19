@@ -40,12 +40,13 @@ pub const WINDOW_SIZE: [f32; 2] = [1440.0, 900.0];
 /// Smallest window size in points.
 pub const MIN_WINDOW_SIZE: [f32; 2] = [1024.0, 640.0];
 
-/// The native window options: title, size, icon, drag and drop.
-pub fn native_options() -> eframe::NativeOptions {
+/// The native window options: title, size, icon, drag and drop. `app_id`
+/// also names the folder where eframe keeps the window and UI state.
+pub fn native_options(app_id: &str) -> eframe::NativeOptions {
     eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Sprint")
-            .with_app_id("sprint")
+            .with_app_id(app_id)
             .with_inner_size(WINDOW_SIZE)
             .with_min_inner_size(MIN_WINDOW_SIZE)
             .with_icon(Arc::new(app_icon::icon_data()))
@@ -62,11 +63,23 @@ pub fn native_options() -> eframe::NativeOptions {
 /// the active profile enables `auto_connect`; `options.simulator` connects
 /// to the built-in virtual printer instead.
 pub fn run(options: GuiOptions) -> anyhow::Result<()> {
-    let app_options = app::AppOptions::desktop(options);
+    run_app(app::AppOptions::desktop(options))
+}
+
+/// Open the window with explicit [`app::AppOptions`] (another
+/// configuration, an in-memory one for demos, ...) and block until it
+/// closes. Options that do not restore the UI preferences also keep the
+/// window state apart from the desktop app's ("sprint-demo").
+pub fn run_app(options: app::AppOptions) -> anyhow::Result<()> {
+    let app_id = if options.restore_prefs {
+        "sprint"
+    } else {
+        "sprint-demo"
+    };
     eframe::run_native(
         "Sprint",
-        native_options(),
-        Box::new(move |cc| Ok(Box::new(app::SprintApp::new(cc, app_options)))),
+        native_options(app_id),
+        Box::new(move |cc| Ok(Box::new(app::SprintApp::new(cc, options)))),
     )
     .map_err(|e| anyhow::anyhow!("could not open the Sprint window: {e}"))
 }
