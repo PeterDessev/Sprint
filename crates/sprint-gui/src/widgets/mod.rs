@@ -110,7 +110,8 @@
 //!   `ui.add(NumericField::new(&mut steps).label("X steps").unit("steps/mm").original(80.0)).changed()`
 //!
 //! **Feedback**
-//! * [`Toasts`] — stacked auto-dismissing notifications, top-right by default:
+//! * [`Toasts`] — stacked auto-dismissing notifications, top-right below the
+//!   toolbars by default ([`TOAST_OFFSET`]):
 //!   `toasts.success("Print finished"); toasts.show(ctx);`
 //! * [`ConfirmDialog`] — modal question with optional danger styling:
 //!   `ConfirmDialog::new("reset", "Reset settings?").danger(true).show(ctx)` → `Option<DialogResult>`
@@ -159,7 +160,7 @@ pub use temperature::{
     HOT_THRESHOLD, HeaterState, TemperatureAction, TemperatureCard, format_temperature,
     parse_temperature,
 };
-pub use toast::{Toast, ToastId, ToastKind, Toasts};
+pub use toast::{TOAST_OFFSET, Toast, ToastId, ToastKind, Toasts};
 pub use toggle::{SegmentedControl, Toggle};
 
 use egui::{CornerRadius, FontId, Rect, Response, Stroke, StrokeKind, Ui};

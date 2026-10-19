@@ -160,23 +160,29 @@ impl Default for Toasts {
     }
 }
 
+/// Default distance from the top-right corner: below a menu bar plus a
+/// toolbar, so toasts never cover top-bar controls such as the E-STOP.
+pub const TOAST_OFFSET: Vec2 = vec2(-16.0, 84.0);
+
 /// At most this many toasts are kept (the oldest are dropped).
 const MAX_TOASTS: usize = 32;
 
 impl Toasts {
-    /// Top-right, 340 pt wide, at most 5 visible.
+    /// Top-right below the toolbars ([`TOAST_OFFSET`]), 340 pt wide, at
+    /// most 5 visible.
     pub fn new() -> Self {
         Toasts {
             items: Vec::new(),
             next_id: 1,
             anchor: Align2::RIGHT_TOP,
-            offset: vec2(-16.0, 16.0),
+            offset: TOAST_OFFSET,
             width: 340.0,
             max_visible: 5,
         }
     }
 
-    /// Screen corner and offset from it (e.g. below a toolbar).
+    /// Screen corner and offset from it. Keep toasts clear of controls
+    /// that must stay clickable (a toast takes the clicks under it).
     pub fn anchor(mut self, anchor: Align2, offset: Vec2) -> Self {
         self.anchor = anchor;
         if offset.x.is_finite() && offset.y.is_finite() {
@@ -552,7 +558,7 @@ mod tests {
             .anchor(Align2::LEFT_BOTTOM, vec2(f32::NAN, 0.0));
         assert_eq!(t.width, 340.0);
         assert_eq!(t.max_visible, 1);
-        assert_eq!(t.offset, vec2(-16.0, 16.0));
+        assert_eq!(t.offset, TOAST_OFFSET);
         let toast = t.info("x").duration(f32::INFINITY).message("  ");
         assert_eq!(toast.remaining(), Some(4.0));
         assert_eq!(toast.message_text(), None);
