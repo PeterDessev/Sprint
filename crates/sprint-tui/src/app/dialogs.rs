@@ -606,6 +606,45 @@ fn display_dir(input: &str, base: &Path) -> String {
     shorten(&dir.display().to_string(), 60)
 }
 
+/// `text` broken into lines of at most `width` columns, at spaces where
+/// possible (a longer word is split). A zero width leaves it whole.
+pub(crate) fn wrap_text(text: &str, width: usize) -> Vec<String> {
+    use unicode_width::UnicodeWidthStr;
+    if width == 0 {
+        return vec![text.to_string()];
+    }
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        let w = word.width();
+        let used = line.width();
+        if !line.is_empty() && used + 1 + w <= width {
+            line.push(' ');
+            line.push_str(word);
+            continue;
+        }
+        if !line.is_empty() {
+            lines.push(std::mem::take(&mut line));
+        }
+        if w <= width {
+            line.push_str(word);
+            continue;
+        }
+        // A word wider than a line: in pieces.
+        for c in word.chars() {
+            let cw = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+            if !line.is_empty() && line.width() + cw > width {
+                lines.push(std::mem::take(&mut line));
+            }
+            line.push(c);
+        }
+    }
+    if !line.is_empty() || lines.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
 /// `text` cut to `max` characters, keeping its end behind a `…`.
 fn shorten(text: &str, max: usize) -> String {
     let count = text.chars().count();
@@ -904,25 +943,26 @@ impl Confirm {
             .unwrap_or(0)
             .max(self.title.chars().count() + 4)
             .clamp(36, 70);
-        let height = u16::try_from(self.message.len())
-            .unwrap_or(10)
+        // Long lines (file names, reasons) wrap inside the dialog.
+        let dialog_w = u16::try_from(width + 4)
+            .unwrap_or(74)
+            .min(frame.area().width);
+        let wrapped: Vec<String> = self
+            .message
+            .iter()
+            .flat_map(|m| wrap_text(m, usize::from(dialog_w).saturating_sub(4)))
+            .collect();
+        let height = u16::try_from(wrapped.len())
+            .unwrap_or(u16::MAX)
             .saturating_add(5);
-        let inner = frame_dialog(
-            frame,
-            theme,
-            &self.title,
-            u16::try_from(width + 4).unwrap_or(74),
-            height,
-            self.danger,
-        );
+        let inner = frame_dialog(frame, theme, &self.title, dialog_w, height, self.danger);
         let [text, _, buttons] = Layout::vertical([
             Constraint::Fill(1),
             Constraint::Length(1),
             Constraint::Length(1),
         ])
         .areas(inner);
-        let lines: Vec<Line> = self
-            .message
+        let lines: Vec<Line> = wrapped
             .iter()
             .map(|m| Line::from(Span::styled(format!(" {m}"), theme.text())))
             .collect();
@@ -1146,23 +1186,35 @@ impl PromptDialog {
     }
 
     pub(crate) fn draw(&self, frame: &mut Frame, theme: &Theme) {
-        let message = format!(" {}", self.prompt.message);
-        let width = message.chars().count().clamp(40, 70);
-        let inner = frame_dialog(
+        let width = (self.prompt.message.chars().count() + 1).clamp(40, 70);
+        let dialog_w = u16::try_from(width + 4)
+            .unwrap_or(74)
+            .min(frame.area().width);
+        let lines: Vec<Line> = wrap_text(
+            &self.prompt.message,
+            usize::from(dialog_w).saturating_sub(4),
+        )
+        .into_iter()
+        .map(|l| Line::from(Span::styled(format!(" {l}"), theme.text())))
+        .collect();
+        let height = u16::try_from(lines.len())
+            .unwrap_or(u16::MAX)
+            .saturating_add(7);
+        let inner = frame_dialog(frame, theme, "The printer asks", dialog_w, height, false);
+        let body = hints_row(
             frame,
             theme,
-            "The printer asks",
-            u16::try_from(width + 4).unwrap_or(74),
-            7,
-            false,
+            inner,
+            &[("Enter", "Answer"), ("←→", "Choose"), ("Esc", "Hide")],
         );
-        let [text, _, buttons] = Layout::vertical([
+        let [text, _, buttons, _] = Layout::vertical([
             Constraint::Fill(1),
             Constraint::Length(1),
             Constraint::Length(1),
+            Constraint::Length(1),
         ])
-        .areas(inner);
-        frame.render_widget(Paragraph::new(Span::styled(message, theme.text())), text);
+        .areas(body);
+        frame.render_widget(Paragraph::new(lines), text);
         let mut spans = Vec::new();
         let labels: Vec<&str> = if self.prompt.buttons.is_empty() {
             vec!["Continue"]
@@ -1423,6 +1475,76 @@ mod tests {
         report.handle_key(key(KeyCode::Up));
         report.handle_key(key(KeyCode::PageUp));
         assert_eq!(report.scroll, usize::MAX - 11);
+    }
+
+    /// The text of a dialog drawn on a `width` x `height` screen.
+    fn drawn(width: u16, height: u16, draw: impl FnOnce(&mut Frame)) -> String {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
+                .expect("terminal");
+        terminal.draw(draw).expect("draw");
+        let buffer = terminal.backend().buffer();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join(
+                "
+",
+            )
+    }
+
+    #[test]
+    fn long_messages_wrap_instead_of_being_cut() {
+        let theme = Theme::dark();
+        let confirm = Confirm::new(
+            "Send G28 during the job?",
+            vec![
+                "a-rather-long-file-name_0.2mm_PLA_MK3S_1h23m.gcode is printing: homing Z                  and probing lower the nozzle onto the part."
+                    .to_string(),
+                "The print will most likely fail.".to_string(),
+            ],
+            "Send anyway",
+            "Don't send",
+            true,
+            Action::Send("G28".into()),
+        );
+        let text = drawn(120, 40, |f| confirm.draw(f, &theme));
+        for words in [
+            "onto the part.",
+            "1h23m.gcode",
+            "most likely fail.",
+            "Don't send",
+        ] {
+            assert!(
+                text.contains(words),
+                "{words:?} missing in
+{text}"
+            );
+        }
+        let prompt = PromptDialog::new(HostPrompt {
+            message: "Filament runout on T0: load new filament, purge until the color is                       clean, then press Continue to resume"
+                .into(),
+            buttons: vec!["Continue".into()],
+        });
+        let text = drawn(120, 40, |f| prompt.draw(f, &theme));
+        for words in ["purge until", "Continue to resume", "1 Continue"] {
+            assert!(
+                text.contains(words),
+                "{words:?} missing in
+{text}"
+            );
+        }
+        // Tiny screens stay safe.
+        let _ = drawn(20, 6, |f| confirm.draw(f, &theme));
+        let _ = drawn(20, 6, |f| prompt.draw(f, &theme));
+        assert_eq!(wrap_text("one two three", 7), ["one two", "three"]);
+        assert_eq!(wrap_text("abcdefghij", 4), ["abcd", "efgh", "ij"]);
+        assert_eq!(wrap_text("", 10), [""]);
+        assert_eq!(wrap_text("x y", 0), ["x y"]);
     }
 
     #[test]
