@@ -1129,7 +1129,10 @@ impl SprintApp {
     }
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
-        if self.modal.is_some() || self.prompt_is_open() {
+        // Also while a panel asks something (the console's "send a
+        // dangerous command?"): its keys belong to that question.
+        let panel_question = ctx.memory(|m| m.top_modal_layer().is_some());
+        if self.modal.is_some() || self.prompt_is_open() || panel_question {
             return;
         }
         let typing = ctx.egui_wants_keyboard_input();

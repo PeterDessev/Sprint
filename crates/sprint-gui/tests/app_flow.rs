@@ -946,6 +946,30 @@ fn an_upload_of_the_file_is_not_shown_as_a_print() {
 }
 
 #[test]
+fn shortcuts_wait_while_the_console_asks() {
+    let mut h = app(AppOptions::headless(), WINDOW);
+    h.state_mut()
+        .set_state_override(Some(printing_state(JobStatus::Printing)));
+    settle(&mut h);
+    // A move typed during the print: the console asks first.
+    type_command(&mut h, "G1 X10 F3000");
+    assert!(h.state().console().is_confirming());
+    // The window's shortcuts do not reach behind the question.
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Comma);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::O);
+    settle(&mut h);
+    assert_eq!(h.state().dialog(), None);
+    assert_eq!(h.state().file_dialog_requests(), 0);
+    assert!(h.state().console().is_confirming());
+    h.get_by_label("Cancel").click();
+    settle(&mut h);
+    // Answered: they work again.
+    h.key_press_modifiers(Modifiers::COMMAND, Key::O);
+    settle(&mut h);
+    assert_eq!(h.state().file_dialog_requests(), 1);
+}
+
+#[test]
 fn switching_profiles_analyzes_the_file_again() {
     let mut options = with_file(sim_options(), sample("calibration-cube.gcode"));
     let other = sprint_host::PrinterProfile {
