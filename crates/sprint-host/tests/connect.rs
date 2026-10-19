@@ -41,6 +41,36 @@ fn handshake_populates_firmware_capabilities_and_settings() {
 }
 
 #[test]
+fn settings_report_headers_are_not_firmware_messages() {
+    let printer = connect(fast_sim(20.0), options());
+    let events = printer.subscribe();
+    printer.load_settings(); // M501 and M503 both print the report
+    printer.save_settings(); // "echo:Settings Stored ..." is a message
+    wait_for(&printer, "M500's message", |s| {
+        s.firmware_messages
+            .iter()
+            .any(|m| m.contains("Settings Stored"))
+    });
+    wait_idle(&printer);
+    let messages = printer.with_state(|s| s.firmware_messages.clone());
+    assert!(
+        messages.iter().all(|m| !m.starts_with(';')),
+        "report headers kept as messages: {messages:?}"
+    );
+    let headers = events
+        .try_iter()
+        .filter(|e| matches!(e, Event::FirmwareMessage(m) if m.starts_with(';')))
+        .count();
+    assert_eq!(headers, 0);
+    // The headers are still in the console.
+    assert!(
+        console(&printer)
+            .iter()
+            .any(|e| e.kind == ConsoleKind::Received && e.text == "echo:; Steps per unit:")
+    );
+}
+
+#[test]
 fn second_connect_is_refused() {
     let printer = connect(fast_sim(20.0), options());
     let again = printer.connect(
