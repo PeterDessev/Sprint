@@ -979,6 +979,39 @@ fn long_texts_are_cut_before_the_buttons() {
 }
 
 #[test]
+fn the_gcode_toolbar_fits_a_narrow_tab() {
+    // The smallest window with both side panels open leaves the tabs about
+    // 350 points.
+    let size = egui::Vec2::from(sprint_gui::MIN_WINDOW_SIZE);
+    let options = with_file(AppOptions::headless(), sample("calibration-cube.gcode"));
+    let mut h = app(options, size);
+    expect(&mut h, "the cube to be analyzed", analyzed);
+    let mut state = printing_state(JobStatus::Printing);
+    if let Some(job) = &mut state.job {
+        job.name = "calibration-cube.gcode".into();
+    }
+    h.state_mut().set_state_override(Some(state));
+    h.state_mut().push_action(AppAction::FindInGcode);
+    settle(&mut h);
+    h.event(egui::Event::Text("G1 X1".into()));
+    h.state_mut().push_action(AppAction::GotoLine);
+    settle(&mut h);
+    // Everything stays left of the console (its first quick command).
+    let console = h.get_by_label("M105").rect().left() - 10.0;
+    let mut controls: Vec<egui::Rect> = h
+        .query_all_by_label("Close (Esc)")
+        .map(|n| n.rect())
+        .collect();
+    assert_eq!(controls.len(), 2, "find and go-to close buttons");
+    for label in ["Previous (Shift+Enter)", "Next (Enter)", "Follow print"] {
+        controls.push(h.get_by_label(label).rect());
+    }
+    for rect in controls {
+        assert!(rect.right() <= console, "{rect:?} is cut off at {console}");
+    }
+}
+
+#[test]
 fn a_stray_click_beside_the_settings_keeps_the_edits() {
     let mut h = app(AppOptions::headless(), WINDOW);
     h.state_mut().push_action(AppAction::OpenSettings);

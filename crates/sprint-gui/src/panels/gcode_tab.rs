@@ -30,6 +30,8 @@ const SYNC_SEARCH_BYTES: usize = 1 << 20;
 pub const MAX_MATCHES: usize = 1_000_000;
 /// Longest line shown in full (longer lines are cut for drawing).
 const MAX_DRAWN_CHARS: usize = 400;
+/// Below this width the toolbar wraps and the status line is shorter.
+const COMPACT_TOOLBAR_W: f32 = 600.0;
 
 /// What a piece of a G-code line is, for coloring.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -689,96 +691,121 @@ impl GcodeTab {
         printing: bool,
         p: &Palette,
     ) {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-            if self.find.open {
-                self.find_bar(ui, ctx, file, p);
-            } else if ui
-                .add(
-                    IconButton::new(icons::SEARCH)
-                        .ghost()
-                        .tooltip("Find (Ctrl+F)"),
-                )
-                .clicked()
-            {
-                self.open_find();
-            }
-            ui.separator();
-            match &mut self.goto {
-                Some(goto) => {
-                    ui.label(RichText::new("Go to line").color(p.text_dim));
-                    let id = egui::Id::new("sprint-gcode-goto");
-                    let edit = ui.add(
-                        egui::TextEdit::singleline(&mut goto.text)
-                            .id(id)
-                            .desired_width(90.0)
-                            .hint_text(format!("1–{}", format::count(file.len() as u64)))
-                            .text_color_opt(goto.error.then_some(p.danger)),
-                    );
-                    if goto.focus {
-                        edit.request_focus();
-                        goto.focus = false;
-                    }
-                    if edit.changed() {
-                        goto.error = false;
-                    }
-                    let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
-                    let escape = ui.input(|i| i.key_pressed(Key::Escape))
-                        && (edit.has_focus() || edit.lost_focus());
-                    let mut close = escape;
-                    if enter {
-                        match parse_goto(&goto.text, file.len()) {
-                            Some(line) => {
-                                ctx.actions.push(AppAction::SelectLine(line));
-                                self.scroll_to = Some(line);
-                                close = true;
-                            }
-                            None => {
-                                goto.error = true;
-                                goto.focus = true;
-                            }
-                        }
-                    }
-                    if ui
-                        .add(
-                            IconButton::new(icons::CLOSE)
-                                .ghost()
-                                .small()
-                                .tooltip("Close (Esc)"),
-                        )
-                        .clicked()
-                    {
-                        close = true;
-                    }
-                    if close {
-                        self.goto = None;
-                    }
-                }
-                None => {
-                    if ui
-                        .add(
-                            IconButton::new(icons::ARROW_RIGHT)
-                                .ghost()
-                                .tooltip("Go to line (Ctrl+G)"),
-                        )
-                        .clicked()
-                    {
-                        self.open_goto();
-                    }
-                }
-            }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if printing {
-                    ui.add(
-                        crate::widgets::Toggle::new(&mut self.follow_print).label("Follow print"),
-                    )
-                    .on_hover_text("Keep the line being printed in view");
-                }
-            });
-        });
+        // Narrow tabs wrap the find bar, the go-to field and the follow
+        // toggle onto more rows instead of cutting them off.
+        let compact = ui.available_width() < COMPACT_TOOLBAR_W;
+        if compact {
+            ui.horizontal_wrapped(|ui| self.toolbar_items(ui, ctx, file, printing, compact, p));
+        } else {
+            ui.horizontal(|ui| self.toolbar_items(ui, ctx, file, printing, compact, p));
+        }
     }
 
-    fn find_bar(&mut self, ui: &mut Ui, ctx: &mut AppCtx<'_>, file: &Arc<GcodeFile>, p: &Palette) {
+    fn toolbar_items(
+        &mut self,
+        ui: &mut Ui,
+        ctx: &mut AppCtx<'_>,
+        file: &Arc<GcodeFile>,
+        printing: bool,
+        compact: bool,
+        p: &Palette,
+    ) {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        if self.find.open {
+            self.find_bar(ui, ctx, file, compact, p);
+        } else if ui
+            .add(
+                IconButton::new(icons::SEARCH)
+                    .ghost()
+                    .tooltip("Find (Ctrl+F)"),
+            )
+            .clicked()
+        {
+            self.open_find();
+        }
+        ui.separator();
+        match &mut self.goto {
+            Some(goto) => {
+                ui.label(RichText::new("Go to line").color(p.text_dim));
+                let id = egui::Id::new("sprint-gcode-goto");
+                let edit = ui.add(
+                    egui::TextEdit::singleline(&mut goto.text)
+                        .id(id)
+                        .desired_width(90.0)
+                        .hint_text(format!("1–{}", format::count(file.len() as u64)))
+                        .text_color_opt(goto.error.then_some(p.danger)),
+                );
+                if goto.focus {
+                    edit.request_focus();
+                    goto.focus = false;
+                }
+                if edit.changed() {
+                    goto.error = false;
+                }
+                let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+                let escape = ui.input(|i| i.key_pressed(Key::Escape))
+                    && (edit.has_focus() || edit.lost_focus());
+                let mut close = escape;
+                if enter {
+                    match parse_goto(&goto.text, file.len()) {
+                        Some(line) => {
+                            ctx.actions.push(AppAction::SelectLine(line));
+                            self.scroll_to = Some(line);
+                            close = true;
+                        }
+                        None => {
+                            goto.error = true;
+                            goto.focus = true;
+                        }
+                    }
+                }
+                if ui
+                    .add(
+                        IconButton::new(icons::CLOSE)
+                            .ghost()
+                            .small()
+                            .tooltip("Close (Esc)"),
+                    )
+                    .clicked()
+                {
+                    close = true;
+                }
+                if close {
+                    self.goto = None;
+                }
+            }
+            None => {
+                if ui
+                    .add(
+                        IconButton::new(icons::ARROW_RIGHT)
+                            .ghost()
+                            .tooltip("Go to line (Ctrl+G)"),
+                    )
+                    .clicked()
+                {
+                    self.open_goto();
+                }
+            }
+        }
+        if printing && compact {
+            ui.add(crate::widgets::Toggle::new(&mut self.follow_print).label("Follow print"))
+                .on_hover_text("Keep the line being printed in view");
+        } else if printing {
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.add(crate::widgets::Toggle::new(&mut self.follow_print).label("Follow print"))
+                    .on_hover_text("Keep the line being printed in view");
+            });
+        }
+    }
+
+    fn find_bar(
+        &mut self,
+        ui: &mut Ui,
+        ctx: &mut AppCtx<'_>,
+        file: &Arc<GcodeFile>,
+        compact: bool,
+        p: &Palette,
+    ) {
         let id = egui::Id::new("sprint-gcode-find");
         // Enter / Shift+Enter in the field step through matches.
         let field_focused = ui.ctx().memory(|m| m.has_focus(id));
@@ -796,7 +823,7 @@ impl GcodeTab {
         let edit = ui.add(
             egui::TextEdit::singleline(&mut self.find.query)
                 .id(id)
-                .desired_width(200.0)
+                .desired_width(if compact { 140.0 } else { 200.0 })
                 .hint_text("Find in file"),
         );
         if self.find.focus {
@@ -1113,30 +1140,36 @@ impl GcodeTab {
         ui.scope_builder(
             egui::UiBuilder::new().max_rect(rect.shrink2(vec2(10.0, 0.0))),
             |ui| {
+                // Narrow tabs keep the essentials (the rest is on hover).
+                let compact = ui.available_width() < COMPACT_TOOLBAR_W;
                 ui.horizontal_centered(|ui| {
                     ui.spacing_mut().item_spacing.x = 14.0;
                     let small = |t: String| RichText::new(t).size(12.0).color(p.text_dim);
-                    if let Some(line) = ctx.selected_line {
-                        ui.label(small(format!(
-                            "Line {} of {}",
-                            format::count(u64::from(line) + 1),
-                            format::count(file.len() as u64)
-                        )));
+                    let lines = format::count(file.len() as u64);
+                    let commands =
+                        format!("{} commands", format::count(file.command_count() as u64));
+                    let size = format::bytes(file.byte_len() as u64);
+                    let first = match ctx.selected_line {
+                        Some(line) => {
+                            format!("Line {} of {lines}", format::count(u64::from(line) + 1))
+                        }
+                        None => format!("{lines} lines"),
+                    };
+                    let first = ui.label(small(first));
+                    if compact {
+                        first.on_hover_text(format!("{commands} · {size}"));
                     } else {
-                        ui.label(small(format!("{} lines", format::count(file.len() as u64))));
+                        ui.label(small(commands));
+                        ui.label(small(size));
                     }
-                    ui.label(small(format!(
-                        "{} commands",
-                        format::count(file.command_count() as u64)
-                    )));
-                    ui.label(small(format::bytes(file.byte_len() as u64)));
                     if let Some(done) = progress {
                         ui.add(Badge::new("PRINTING").tone(theme::Tone::Accent));
-                        ui.label(small(format!(
-                            "{} of {} lines done",
-                            format::count(done as u64),
-                            format::count(file.len() as u64)
-                        )));
+                        let done = format::count(done as u64);
+                        ui.label(small(if compact {
+                            format!("{done} done")
+                        } else {
+                            format!("{done} of {lines} lines done")
+                        }));
                     }
                 });
             },
