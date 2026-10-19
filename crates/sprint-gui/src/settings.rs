@@ -324,7 +324,13 @@ impl SettingsDialog {
                 Some(DialogResult::Cancelled) => self.confirm_delete = None,
                 None => {}
             }
-        } else if outcome.is_none() && modal.should_close() {
+        } else if outcome.is_none()
+            // Escape cancels; a stray click beside the dialog does not throw
+            // the edits away (unlike `should_close`).
+            && modal.is_top_modal
+            && !modal.any_popup_open
+            && egui_ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
             outcome = Some(SettingsOutcome::Cancelled);
         }
         outcome

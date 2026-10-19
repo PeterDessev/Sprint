@@ -883,3 +883,32 @@ fn long_texts_are_cut_before_the_buttons() {
     );
     assert!(answer.right() <= size.x);
 }
+
+#[test]
+fn a_stray_click_beside_the_settings_keeps_the_edits() {
+    let mut h = app(AppOptions::headless(), WINDOW);
+    h.state_mut().push_action(AppAction::OpenSettings);
+    settle(&mut h);
+    h.state_mut()
+        .settings_dialog_mut()
+        .expect("settings")
+        .draft
+        .profiles[0]
+        .max_z = 321.0;
+    // A click on the dimmed window around the dialog.
+    let beside = egui::pos2(40.0, WINDOW.y / 2.0);
+    h.hover_at(beside);
+    h.step();
+    h.drag_at(beside);
+    h.step();
+    h.drop_at(beside);
+    settle(&mut h);
+    assert_eq!(h.state().dialog(), Some(DialogKind::Settings));
+    let dialog = h.state_mut().settings_dialog_mut().expect("still open");
+    assert_eq!(dialog.draft.profiles[0].max_z, 321.0);
+    // Escape still cancels.
+    h.key_press(Key::Escape);
+    settle(&mut h);
+    assert_eq!(h.state().dialog(), None);
+    assert_ne!(h.state().config().active().max_z, 321.0);
+}
