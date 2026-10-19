@@ -32,7 +32,8 @@ use egui::{
 use sprint_gcode::{AnalyzeOptions, GcodeFile, KinematicLimits};
 use sprint_host::sprint_sim::SimConfig;
 use sprint_host::{
-    AppConfig, ConnectTarget, Event, HostPrompt, JobKind, JobStatus, Printer, PrinterState,
+    AppConfig, ConfigReport, ConnectTarget, Event, HostPrompt, JobKind, JobStatus, Printer,
+    PrinterState,
 };
 use sprint_viewer::ViewPreset;
 
@@ -88,6 +89,10 @@ pub struct AppOptions {
     pub connect: Option<ConnectTarget>,
     /// The configuration to start with.
     pub config: AppConfig,
+    /// What the lenient load of `config` had to leave out
+    /// ([`AppConfig::load_checked`]): a warning toast says so at startup and
+    /// the settings list it (`None`: nothing to report).
+    pub config_report: Option<ConfigReport>,
     /// Where the configuration is saved; `None` keeps it in memory.
     pub config_path: Option<PathBuf>,
     /// Enumerate serial ports in the background (names only, ports are
@@ -101,15 +106,20 @@ pub struct AppOptions {
 }
 
 impl AppOptions {
-    /// The desktop app: the configuration from [`AppConfig::path`] (saved
-    /// back there), port scanning and native dialogs.
+    /// The desktop app: the configuration from [`AppConfig::path`] (the
+    /// file `SPRINT_CONFIG` names, when set; saved back there), read
+    /// leniently so a broken line or value costs only itself, port scanning
+    /// and native dialogs.
     pub fn desktop(gui: GuiOptions) -> AppOptions {
+        let path = AppConfig::path();
+        let (config, report) = AppConfig::load_checked(&path);
         AppOptions {
             file: gui.file,
             simulator: gui.simulator.then(SimConfig::default),
             connect: gui.connect,
-            config: AppConfig::load(),
-            config_path: Some(AppConfig::path()),
+            config,
+            config_report: (!report.is_clean()).then_some(report),
+            config_path: Some(path),
             scan_ports: true,
             native_dialogs: true,
             restore_prefs: true,
@@ -125,6 +135,7 @@ impl AppOptions {
             simulator: None,
             connect: None,
             config: AppConfig::default(),
+            config_report: None,
             config_path: None,
             scan_ports: false,
             native_dialogs: false,
@@ -308,6 +319,8 @@ pub struct SprintApp {
     /// A PID autotune was running when the firmware halted (see
     /// [`end_halted_autotune`]).
     autotune_halted: bool,
+    /// What loading the configuration had to leave out.
+    config_report: Option<ConfigReport>,
     egui_ctx: egui::Context,
 }
 
@@ -405,8 +418,17 @@ impl SprintApp {
             center_rect: None,
             pressed_in_sidebar: false,
             autotune_halted: false,
+            config_report: options.config_report,
             egui_ctx: ctx,
         };
+        if let Some(report) = &app.config_report {
+            let toast = app
+                .core
+                .toasts
+                .warning("Some settings could not be read")
+                .message(config_report_summary(report));
+            toast.sticky();
+        }
         if let Some(path) = options.file {
             app.core.actions.push(AppAction::LoadFile(path));
         }
@@ -562,6 +584,11 @@ impl SprintApp {
     /// Where the configuration is saved (`None`: kept in memory).
     pub fn config_path(&self) -> Option<&std::path::Path> {
         self.saver.path()
+    }
+
+    /// What loading the configuration had to leave out.
+    pub fn config_report(&self) -> Option<&ConfigReport> {
+        self.config_report.as_ref()
     }
 
     /// Queue an action; it runs at the end of the next frame.
@@ -1232,7 +1259,8 @@ impl SprintApp {
             .map(|p| p.name.clone())
             .collect();
         let mut dialog = SettingsDialog::new(&self.core.config, self.prefs.theme, ports)
-            .with_config_path(self.saver.path().map(std::path::Path::to_path_buf));
+            .with_config_path(self.saver.path().map(std::path::Path::to_path_buf))
+            .with_config_report(self.config_report.clone());
         if let Some(page) = page {
             dialog.set_page(page);
         }
@@ -1989,6 +2017,26 @@ impl Drop for SprintApp {
     }
 }
 
+/// The toast text for a configuration that loaded with problems: how many
+/// lines or values were left out, where the file as it was is kept, and
+/// where the details are.
+pub fn config_report_summary(report: &ConfigReport) -> String {
+    let n = report.warnings.len();
+    let mut text = format!(
+        "{n} line{} or value{} left out, the rest loaded.",
+        if n == 1 { "" } else { "s" },
+        if n == 1 { "" } else { "s" }
+    );
+    if let Some(backup) = &report.backup {
+        text.push_str(&format!(
+            " The file as it was is kept in {}.",
+            format::sanitize(&backup.display().to_string(), 160)
+        ));
+    }
+    text.push_str(" Details: Settings › Preferences.");
+    text
+}
+
 /// Show a PID autotune that a halt of the firmware cut short as failed.
 /// The halted firmware never reports the end of the run and the restart
 /// (M999) does not either, so the host goes on reporting it running: the
@@ -2148,6 +2196,25 @@ fn notice_strip(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn config_reports_are_summed_up() {
+        let one = ConfigReport {
+            warnings: vec!["profiles[0].options.checksum: ignored".into()],
+            backup: Some(PathBuf::from("config.toml.bak")),
+        };
+        let text = config_report_summary(&one);
+        assert!(text.starts_with("1 line or value left out"), "{text}");
+        assert!(text.contains("kept in config.toml.bak"), "{text}");
+        assert!(text.ends_with("Settings › Preferences."), "{text}");
+        let two = ConfigReport {
+            warnings: vec!["a".into(), "b".into()],
+            backup: None,
+        };
+        let text = config_report_summary(&two);
+        assert!(text.starts_with("2 lines or values left out"), "{text}");
+        assert!(!text.contains("kept in"), "{text}");
+    }
 
     #[test]
     fn an_autotune_the_halt_cut_short_reads_failed_until_another_starts() {

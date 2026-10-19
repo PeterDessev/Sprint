@@ -7,9 +7,9 @@ use egui::{Align, Id, Layout, Margin, Modal, RichText, Stroke, Ui, vec2};
 use sprint_gcode::KinematicLimits;
 use sprint_host::sprint_sim::SimConfig;
 use sprint_host::{
-    AppConfig, BAUD_RATES, BedOrigin, ChecksumMode, ConnectTarget, DEFAULT_BAUD,
-    DEFAULT_CANCEL_SCRIPT, DEFAULT_PAUSE_SCRIPT, DEFAULT_RESUME_SCRIPT, MAX_IN_FLIGHT_LIMIT,
-    PrinterProfile, TempPreset,
+    AppConfig, BAUD_RATES, BedOrigin, CONFIG_ENV, ChecksumMode, ConfigReport, ConnectTarget,
+    DEFAULT_BAUD, DEFAULT_CANCEL_SCRIPT, DEFAULT_PAUSE_SCRIPT, DEFAULT_RESUME_SCRIPT,
+    MAX_IN_FLIGHT_LIMIT, PrinterProfile, TempPreset,
 };
 
 use crate::dialogs::{backdrop, dialog_title, modal_frame};
@@ -20,6 +20,9 @@ use crate::widgets::{
     Toggle,
 };
 use crate::{format, icons};
+
+/// Most problems of the configuration load listed on the preferences page.
+const MAX_REPORT_LINES: usize = 12;
 
 /// Placeholders the pause / resume / cancel scripts understand.
 pub const SCRIPT_PLACEHOLDERS: &str = "{x} {y} {z} {e} {f} — position and feedrate when paused\n{tool} {hotend} {bed} {fan} — tool, targets and fan\n{max_x} {max_y} {max_z} {park_x} {park_y} — from the bed size";
@@ -120,6 +123,8 @@ pub struct SettingsDialog {
     tcp_page: Option<usize>,
     ports: Vec<String>,
     config_path: Option<std::path::PathBuf>,
+    /// What loading the configuration left out.
+    config_report: Option<ConfigReport>,
 }
 
 impl SettingsDialog {
@@ -139,6 +144,7 @@ impl SettingsDialog {
             tcp_page: None,
             ports,
             config_path: Some(AppConfig::path()),
+            config_report: None,
         }
     }
 
@@ -149,10 +155,29 @@ impl SettingsDialog {
         self
     }
 
+    /// What loading the configuration left out, listed on the preferences
+    /// page.
+    #[must_use]
+    pub fn with_config_report(mut self, report: Option<ConfigReport>) -> SettingsDialog {
+        self.config_report = report.filter(|r| !r.is_clean());
+        self
+    }
+
     fn location_text(&self) -> String {
         match &self.config_path {
             Some(path) => format!("Saved to {}", path.display()),
             None => "Kept in memory for this session (not saved to disk)".to_owned(),
+        }
+    }
+
+    /// Whether the configuration file is the one `SPRINT_CONFIG` names.
+    fn named_by_environment(&self) -> bool {
+        let named = std::env::var_os(CONFIG_ENV).filter(|v| !v.to_string_lossy().trim().is_empty());
+        match (&self.config_path, named) {
+            (Some(path), Some(named)) => {
+                crate::loader::same_path(path, std::path::Path::new(&named))
+            }
+            _ => false,
         }
     }
 
@@ -423,17 +448,71 @@ impl SettingsDialog {
         );
         section(ui, "Configuration file", p);
         let path = self.location_text();
-        ui.label(
-            RichText::new(&path)
-                .monospace()
-                .size(12.0)
-                .color(p.text_dim),
+        ui.add(
+            egui::Label::new(
+                RichText::new(&path)
+                    .monospace()
+                    .size(12.0)
+                    .color(p.text_dim),
+            )
+            .wrap(),
         );
+        if self.named_by_environment() {
+            note(
+                ui,
+                &format!("Chosen with the {CONFIG_ENV} environment variable."),
+                p,
+            );
+        } else if self.config_path.is_some() {
+            note(
+                ui,
+                &format!("Set {CONFIG_ENV} to use another configuration file."),
+                p,
+            );
+        }
         ui.label(
             RichText::new("Window layout, the console history and view options are remembered separately by the app.")
                 .size(12.0)
                 .color(p.text_faint),
         );
+        if let Some(report) = &self.config_report {
+            ui.add_space(8.0);
+            warn(
+                ui,
+                "Some lines or values of the file could not be read and were left out (their defaults apply); everything else loaded. Saving writes the file again without them.",
+                p,
+            );
+            ui.add_space(4.0);
+            for line in report.warnings.iter().take(MAX_REPORT_LINES) {
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(format!("• {}", format::sanitize(line, 300)))
+                            .monospace()
+                            .size(11.5)
+                            .color(p.text_dim),
+                    )
+                    .wrap(),
+                );
+            }
+            let more = report.warnings.len().saturating_sub(MAX_REPORT_LINES);
+            if more > 0 {
+                note(ui, &format!("… and {more} more."), p);
+            }
+            if let Some(backup) = &report.backup {
+                ui.add_space(4.0);
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(format!(
+                            "The file as it was is kept in {}",
+                            backup.display()
+                        ))
+                        .size(12.0)
+                        .color(p.text),
+                    )
+                    .wrap(),
+                );
+            }
+        }
     }
 
     fn profile_page(&mut self, ui: &mut Ui, i: usize, connected: bool, p: &Palette) {

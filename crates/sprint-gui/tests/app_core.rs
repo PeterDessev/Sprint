@@ -82,3 +82,58 @@ fn a_target_given_at_startup_is_connected() {
     assert!(!idle.state().connection_busy());
     connect(&mut idle);
 }
+
+#[test]
+fn a_partly_broken_configuration_loads_and_says_what_it_left_out() {
+    let dir = temp_dir("config");
+    let path = dir.join("config.toml");
+    let mut config = sim_options().config;
+    config.profiles.push(sprint_host::PrinterProfile {
+        name: "Second printer".into(),
+        ..sprint_host::PrinterProfile::default()
+    });
+    config.save_to(&path).expect("file");
+    let text = std::fs::read_to_string(&path).expect("text");
+    let broken = text.replacen("checksum = \"Always\"", "checksum = \"always\"", 1);
+    assert_ne!(broken, text);
+    std::fs::write(&path, &broken).expect("write");
+    // What AppOptions::desktop does with the file AppConfig::path() names.
+    let (config, report) = sprint_host::AppConfig::load_checked(&path);
+    assert!(!report.is_clean());
+    let options = AppOptions {
+        config,
+        config_report: Some(report),
+        config_path: Some(path.clone()),
+        ..sim_options()
+    };
+    let mut h = app(options, WINDOW);
+    settle(&mut h);
+    // Both profiles loaded; a toast says what happened.
+    assert_eq!(h.state().config().profiles.len(), 2);
+    assert!(toast_titles(h.state()).contains(&"Some settings could not be read".to_owned()));
+    let message = h
+        .state()
+        .toasts()
+        .iter()
+        .find_map(|t| t.message_text().map(str::to_owned))
+        .unwrap_or_default();
+    assert!(message.contains("config.toml.bak"), "{message}");
+    // The preferences list the problem and the backup.
+    h.state_mut()
+        .push_action(sprint_gui::context::AppAction::OpenPreferences);
+    settle(&mut h);
+    assert!(h.query_by_label_contains("checksum").is_some());
+    // The toast and the settings say where the original is.
+    assert!(
+        h.query_all_by_label_contains("The file as it was is kept in")
+            .count()
+            >= 2
+    );
+    assert!(
+        h.query_all_by_label_contains(&format!("Saved to {}", path.display()))
+            .next()
+            .is_some()
+    );
+    drop(h);
+    let _ = std::fs::remove_dir_all(dir);
+}

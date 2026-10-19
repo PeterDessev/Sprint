@@ -141,24 +141,33 @@ impl ConfigSaver {
 
 /// Write `ours` to `path`, merged (see [`merge`]) with the file as it is
 /// now, `base` being the configuration `ours` started from. A missing file
-/// gets `ours`; a file that does not parse (a hand edit in progress) is
-/// kept as `<name>.bak` first.
+/// gets `ours`. A file that does not fully parse (a hand edit in progress,
+/// a value from a newer version) is read leniently with
+/// [`AppConfig::load_checked`], which keeps every valid profile, macro and
+/// value and copies the file as it was to a new numbered backup
+/// (`<name>.bak`, `<name>.1.bak`, …, never overwriting one) before this
+/// save replaces it.
 fn save_merged(base: &AppConfig, ours: &AppConfig, path: &Path) -> Result<(), String> {
     let merged = match AppConfig::load_from(path) {
         Ok(disk) => merge(base, ours, &disk),
         Err(HostError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => ours.clone(),
         Err(HostError::Config(msg)) => {
-            let mut name = path.file_name().unwrap_or_default().to_os_string();
-            name.push(".bak");
-            let backup = path.with_file_name(name);
-            if let Err(e) = std::fs::copy(path, &backup) {
-                return Err(format!("{msg} (and it could not be backed up: {e})"));
+            let (disk, report) = AppConfig::load_checked(path);
+            match &report.backup {
+                Some(backup) => log::warn!(
+                    "the configuration file does not fully parse ({msg}); merged what could be \
+                     read, the file as it was is kept in {}",
+                    backup.display()
+                ),
+                // Without a backup the file is not replaced.
+                None => {
+                    return Err(format!(
+                        "{msg} (and it could not be backed up: {})",
+                        report.warnings.join("; ")
+                    ));
+                }
             }
-            log::warn!(
-                "the configuration file is invalid ({msg}); kept it as {} and saved Sprint's",
-                backup.display()
-            );
-            ours.clone()
+            merge(base, ours, &disk)
         }
         // Unreadable: writing would replace what cannot be merged.
         Err(e) => return Err(format!("could not read {}: {e}", path.display())),
@@ -448,6 +457,49 @@ mod tests {
         );
         assert!(AppConfig::load_from(&path).is_ok());
         let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+    }
+
+    #[test]
+    fn a_partly_broken_file_keeps_what_is_valid_and_every_original() {
+        let path = temp_path("lenient");
+        let dir = path.parent().expect("dir").to_path_buf();
+        std::fs::create_dir_all(&dir).expect("dir");
+        // Two profiles, one with a value this version does not know.
+        let mut theirs = AppConfig::default();
+        theirs.profiles.push(profile("Second", 300.0));
+        theirs.save_to(&path).expect("file");
+        let text = std::fs::read_to_string(&path).expect("text");
+        let broken = text.replacen("checksum = \"Always\"", "checksum = \"always\"", 1);
+        assert_ne!(broken, text, "the test edits a checksum line");
+        std::fs::write(&path, &broken).expect("write");
+        // The GUI changed the console size meanwhile.
+        let base = AppConfig::default();
+        let ours = AppConfig {
+            console_max_lines: 4321,
+            ..base.clone()
+        };
+        let mut saver = ConfigSaver::new(Some(path.clone()), &base);
+        saver.touch(Instant::now());
+        assert_eq!(saver.flush(&ours), Ok(()));
+        let saved = AppConfig::load_from(&path).expect("saved");
+        let names: Vec<_> = saved.profiles.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["Virtual printer", "Second"], "no profile is lost");
+        assert_eq!(saved.console_max_lines, 4321);
+        let backup = dir.join("config.toml.bak");
+        assert_eq!(std::fs::read_to_string(&backup).expect("backup"), broken);
+        // Broken again: another backup, the first one stays.
+        let again = broken.replace("console_max_lines = 4321", "console_max_lines = \"x\"");
+        let again = format!("{again}\nnot toml at all\n");
+        std::fs::write(&path, &again).expect("write");
+        saver.touch(Instant::now());
+        assert_eq!(saver.flush(&ours), Ok(()));
+        assert_eq!(std::fs::read_to_string(&backup).expect("backup"), broken);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("config.toml.1.bak")).expect("second backup"),
+            again
+        );
+        assert!(AppConfig::load_from(&path).is_ok());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     fn profile(name: &str, bed: f32) -> PrinterProfile {
