@@ -361,8 +361,63 @@ fn motion_and_extrusion_are_locked_during_a_job() {
     assert!(!h.get_by_label("Raise").accesskit_node().is_disabled());
     click(&mut h, "Raise");
     wait_for_commands(&p, &["M290 Z0.05"]);
+    // A preset changes the print's temperatures: it asks first.
     click(&mut h, "Preset PETG");
+    h.run_ok();
+    assert!(h.query_by_label("Set the PETG temperatures?").is_some());
+    h.get_by_label("Set").click();
+    h.run_ok();
     wait_for_commands(&p, &["M104 T0 S240", "M140 S80"]);
+}
+
+/// Turning heaters off during a job makes the print fail: "Cool down" and
+/// a card's off button ask first; outside a job they act at once.
+#[test]
+fn heaters_off_during_a_job_asks_first() {
+    let mut rig = Rig::simulator();
+    rig.tweak = Some(printing);
+    let mut h = sidebar_fixed(Theme::Dark, (420.0, 2600.0), rig);
+    controls_common::settle(&mut h);
+    let p = printer(&h);
+    p.set_temperature(sprint_host::Heater::Hotend(0), 200.0);
+    p.set_temperature(sprint_host::Heater::Bed, 60.0);
+    wait_for(&p, "the targets", |s| {
+        s.temps.bed.as_ref().and_then(|b| b.target) == Some(60.0)
+            && s.temps.hotends.first().and_then(|t| t.target) == Some(200.0)
+    });
+    run_for(&mut h, Duration::from_millis(50));
+    clear(&h);
+    // "Cool down" is the button, not the macro of the same name (drawn
+    // later).
+    click(&mut h, "Cool down");
+    h.run_ok();
+    assert!(h.query_by_label("Turn every heater off?").is_some());
+    h.get_by_label("Cancel").click();
+    h.run_ok();
+    assert!(h.query_by_label("Turn every heater off?").is_none());
+    assert_nothing_sent(&mut h, "a cancelled cool down");
+    // Enter picks the safe answer: the focused Cancel.
+    click(&mut h, "Cool down");
+    h.run_ok();
+    h.key_press(egui::Key::Enter);
+    h.run_ok();
+    assert!(h.query_by_label("Turn every heater off?").is_none());
+    assert_nothing_sent(&mut h, "Enter in the cool down question");
+    click(&mut h, "Cool down");
+    h.run_ok();
+    h.get_by_label("Turn off").click();
+    h.run_ok();
+    wait_for_commands(&p, &["M104 T0 S0", "M140 S0"]);
+    wait_for(&p, "the heaters off", |s| {
+        s.temps.bed.as_ref().and_then(|b| b.target) == Some(0.0)
+    });
+    run_for(&mut h, Duration::from_millis(50));
+    clear(&h);
+    // With every heater off there is nothing to ask.
+    click(&mut h, "Cool down");
+    h.run_ok();
+    assert!(h.query_by_label("Turn every heater off?").is_none());
+    wait_for_commands(&p, &["M104 T0 S0", "M140 S0"]);
 }
 
 #[test]

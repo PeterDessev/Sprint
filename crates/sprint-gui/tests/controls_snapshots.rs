@@ -167,6 +167,22 @@ fn macros_empty_offers_defaults() {
     snapshot(&mut h, &name("sidebar_no_macros", Theme::Dark));
 }
 
+/// "Cool down" during a print asks first.
+#[test]
+fn cool_down_confirmation_dialog() {
+    let mut state = heating_state();
+    printing(&mut state);
+    let mut h = sidebar_fixed(Theme::Dark, (720.0, 2400.0), rig(state));
+    settle(&mut h);
+    h.get(by_label("Cool down")).click();
+    settle(&mut h);
+    h.set_size(egui::vec2(720.0, 560.0));
+    settle(&mut h);
+    assert!(h.query(by_label("Turn every heater off?")).is_some());
+    pointer_away(&mut h);
+    snapshot(&mut h, &name("cool_down_confirm", Theme::Dark));
+}
+
 #[test]
 fn macro_editor_dialog() {
     for theme in Theme::ALL {

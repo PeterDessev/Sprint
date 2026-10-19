@@ -12,7 +12,8 @@
 //! * Anything that moves the machine or extrudes (jog, home, move-to,
 //!   motors off, extrude, filament load) is disabled while a job is active:
 //!   the host would interleave those commands with the print stream.
-//!   Temperatures, overrides, fans and babystepping stay available.
+//!   Temperatures, overrides, fans and babystepping stay available; turning
+//!   a heater off or applying a preset then asks first.
 //! * Macros that ask for confirmation, and any macro started while a job
 //!   runs, go through a [`ConfirmDialog`](crate::widgets::ConfirmDialog).
 //!
@@ -40,6 +41,7 @@ use crate::widgets::Card;
 /// frame's [`AppCtx`].
 #[derive(Default)]
 pub struct ControlsSidebar {
+    temperatures: temperatures::Temperatures,
     motion: motion::Motion,
     extruder: extruder::Extruder,
     tuning: tuning::Tuning,
@@ -57,13 +59,14 @@ impl ControlsSidebar {
                 if !ctx.connected() {
                     offline_hint(ui, ctx);
                 }
-                temperatures::show(ui, ctx);
+                self.temperatures.show(ui, ctx);
                 self.motion.show(ui, ctx);
                 self.extruder.show(ui, ctx);
                 self.tuning.show(ui, ctx);
                 self.macros.show(ui, ctx);
             });
         // Dialogs are modal windows of their own, outside the scroll area.
+        self.temperatures.dialogs(ui, ctx);
         self.macros.dialogs(ui, ctx);
     }
 }

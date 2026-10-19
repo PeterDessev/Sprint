@@ -14,7 +14,10 @@ use super::section;
 use crate::context::AppCtx;
 use crate::icons;
 use crate::theme::{self, HeaterKind, TextRole, mix};
-use crate::widgets::{ActionButton, TemperatureAction, TemperatureCard, format_temperature};
+use crate::widgets::{
+    ActionButton, ConfirmDialog, DialogResult, TemperatureAction, TemperatureCard,
+    format_temperature,
+};
 
 /// The most hotends shown (guards against absurd EXTRUDER_COUNT reports).
 pub(super) const MAX_HOTENDS: usize = 8;
@@ -240,9 +243,155 @@ fn apply(printer: &Printer, targets: &[(Heater, f32)]) {
     }
 }
 
-/// Draw the section.
-pub(super) fn show(ui: &mut Ui, ctx: &mut AppCtx<'_>) {
-    let printer = ctx.printer;
+/// Where a temperature change came from.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum Change {
+    /// A heater card (a typed target, its preset menu or its off button).
+    Card,
+    /// A preset button (named).
+    Preset(String),
+    /// "Cool down".
+    CoolDown,
+}
+
+/// Whether a change must be confirmed while a job runs: turning off a
+/// heater that is heating makes the print fail, and a preset button
+/// changes several heaters with one click. Typed targets and targets that
+/// stay the same go through.
+pub(super) fn needs_confirmation(
+    change: &Change,
+    targets: &[(Heater, f32)],
+    state: &PrinterState,
+) -> bool {
+    let current = |heater: Heater| target_temp(state, heater);
+    match change {
+        Change::Preset(_) => targets
+            .iter()
+            .any(|(heater, t)| (t - current(*heater)).abs() >= 0.5),
+        Change::Card | Change::CoolDown => targets
+            .iter()
+            .any(|(heater, t)| *t <= 0.0 && current(*heater) > 0.0),
+    }
+}
+
+/// A target for a confirmation: "215 °C" or "off".
+fn target_label(celsius: f32) -> String {
+    if celsius > 0.0 && celsius.is_finite() {
+        format!("{} °C", format_temperature(celsius).trim_end_matches(".0"))
+    } else {
+        "off".to_owned()
+    }
+}
+
+/// A temperature change waiting for confirmation because a job runs.
+#[derive(Clone, Debug, PartialEq)]
+struct Pending {
+    title: String,
+    /// One line per heater: "Hotend: 215 °C → off".
+    details: String,
+    /// Turns a heater off (red dialog, Enter does not confirm).
+    danger: bool,
+    targets: Vec<(Heater, f32)>,
+}
+
+impl Pending {
+    fn new(
+        change: &Change,
+        targets: Vec<(Heater, f32)>,
+        state: &PrinterState,
+        hotends: usize,
+    ) -> Self {
+        let details = targets
+            .iter()
+            .map(|(heater, t)| {
+                format!(
+                    "{}: {} \u{2192} {}",
+                    heater_name(*heater, hotends),
+                    target_label(target_temp(state, *heater)),
+                    target_label(*t)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let danger = targets.iter().any(|(_, t)| *t <= 0.0);
+        let title = match change {
+            Change::CoolDown => "Turn every heater off?".to_owned(),
+            Change::Preset(name) => format!("Set the {name} temperatures?"),
+            Change::Card => match targets.as_slice() {
+                [(heater, _)] if danger => {
+                    format!("Turn the {} off?", heater_name(*heater, hotends))
+                }
+                _ => "Change the temperatures?".to_owned(),
+            },
+        };
+        Pending {
+            title,
+            details,
+            danger,
+            targets,
+        }
+    }
+}
+
+/// UI state of the temperatures section.
+#[derive(Debug, Default)]
+pub(super) struct Temperatures {
+    /// A change waiting for "Are you sure?" while a job runs.
+    pending: Option<Pending>,
+}
+
+impl Temperatures {
+    /// Draw the section.
+    pub(super) fn show(&mut self, ui: &mut Ui, ctx: &mut AppCtx<'_>) {
+        let state = ctx.state;
+        let hotends = hotend_count(state, ctx.config.active());
+        if let Some((change, targets)) = show(ui, ctx) {
+            if ctx.job_active() && needs_confirmation(&change, &targets, state) {
+                self.pending = Some(Pending::new(&change, targets, state, hotends));
+            } else {
+                apply(ctx.printer, &targets);
+            }
+        }
+    }
+
+    /// The confirmation of a change during a job, while one is open.
+    pub(super) fn dialogs(&mut self, ui: &Ui, ctx: &mut AppCtx<'_>) {
+        let Some(pending) = &self.pending else {
+            return;
+        };
+        let (message, confirm) = if pending.danger {
+            (
+                "A job is running: without heat the print fails.",
+                "Turn off",
+            )
+        } else {
+            (
+                "A job is running: the new targets apply to the print right away.",
+                "Set",
+            )
+        };
+        let answer = ConfirmDialog::new("sprint-controls-temperatures", &pending.title)
+            .message(message)
+            .details(&pending.details)
+            .confirm_label(confirm)
+            .icon(icons::THERMOMETER)
+            .danger(pending.danger)
+            .show(ui.ctx());
+        match answer {
+            Some(DialogResult::Confirmed) => {
+                if ctx.connected() {
+                    apply(ctx.printer, &pending.targets);
+                }
+                self.pending = None;
+            }
+            Some(DialogResult::Cancelled) => self.pending = None,
+            None => {}
+        }
+    }
+}
+
+/// Draw the section; returns the change a click asked for.
+fn show(ui: &mut Ui, ctx: &mut AppCtx<'_>) -> Option<(Change, Vec<(Heater, f32)>)> {
     let state = ctx.state;
     let connected = ctx.connected();
     let profile = ctx.config.active();
@@ -254,6 +403,7 @@ pub(super) fn show(ui: &mut Ui, ctx: &mut AppCtx<'_>) {
         .active_tool
         .min(u8::try_from(hotends - 1).unwrap_or(0));
     let presets = &profile.temp_presets;
+    let mut change = None;
     section(
         ui,
         icons::THERMOMETER,
@@ -288,9 +438,11 @@ pub(super) fn show(ui: &mut Ui, ctx: &mut AppCtx<'_>) {
                         .show(ui);
                     match card.action {
                         Some(TemperatureAction::SetTarget(t)) => {
-                            printer.set_temperature(view.heater, t);
+                            change = Some((Change::Card, vec![(view.heater, t)]));
                         }
-                        Some(TemperatureAction::Off) => printer.set_temperature(view.heater, 0.0),
+                        Some(TemperatureAction::Off) => {
+                            change = Some((Change::Card, vec![(view.heater, 0.0)]));
+                        }
                         None => {}
                     }
                 }
@@ -329,7 +481,8 @@ pub(super) fn show(ui: &mut Ui, ctx: &mut AppCtx<'_>) {
                             let r = preset_button(ui, &preset.name, &detail, cell)
                                 .on_hover_text(format!("Preheat {}: {tip}", preset.name));
                             if r.clicked() {
-                                apply(printer, targets);
+                                change =
+                                    Some((Change::Preset(preset.name.clone()), targets.clone()));
                             }
                         }
                     });
@@ -341,11 +494,12 @@ pub(super) fn show(ui: &mut Ui, ctx: &mut AppCtx<'_>) {
                         .tooltip("Turn every heater off"),
                 );
                 if cool.clicked() {
-                    apply(printer, &cool_down_targets(hotends, bed, chamber));
+                    change = Some((Change::CoolDown, cool_down_targets(hotends, bed, chamber)));
                 }
             });
         },
     );
+    change
 }
 
 /// A button showing a preset's name and its temperatures ("PLA 205/60"),
@@ -572,6 +726,70 @@ mod tests {
             ..TempSample::default()
         });
         assert_eq!(heater_history(&state, Heater::Hotend(0), 120.0).len(), 120);
+    }
+
+    #[test]
+    fn changes_during_a_job_that_need_confirmation() {
+        let mut state = PrinterState::default();
+        state.temps.hotends = vec![HeaterReading {
+            current: 210.0,
+            target: Some(215.0),
+            power: None,
+        }];
+        state.temps.bed = Some(HeaterReading {
+            current: 22.0,
+            target: Some(0.0),
+            power: None,
+        });
+        let hot_off = [(Heater::Hotend(0), 0.0)];
+        let bed_off = [(Heater::Bed, 0.0)];
+        // Turning off a heater that heats: yes; one that is off: no.
+        assert!(needs_confirmation(&Change::Card, &hot_off, &state));
+        assert!(!needs_confirmation(&Change::Card, &bed_off, &state));
+        assert!(needs_confirmation(
+            &Change::CoolDown,
+            &cool_down_targets(1, true, false),
+            &state
+        ));
+        // A typed target goes through.
+        assert!(!needs_confirmation(
+            &Change::Card,
+            &[(Heater::Hotend(0), 220.0)],
+            &state
+        ));
+        // A preset asks when it changes a target.
+        let pla = Change::Preset("PLA".into());
+        let same = [(Heater::Hotend(0), 215.0), (Heater::Bed, 0.0)];
+        assert!(!needs_confirmation(&pla, &same, &state));
+        let hotter = [(Heater::Hotend(0), 215.0), (Heater::Bed, 60.0)];
+        assert!(needs_confirmation(&pla, &hotter, &state));
+        // Nothing heats: cooling down needs no question.
+        let cold = PrinterState::default();
+        assert!(!needs_confirmation(
+            &Change::CoolDown,
+            &cool_down_targets(2, true, true),
+            &cold
+        ));
+
+        let pending = Pending::new(&Change::Card, hot_off.to_vec(), &state, 1);
+        assert_eq!(pending.title, "Turn the Hotend off?");
+        assert_eq!(pending.details, "Hotend: 215 °C \u{2192} off");
+        assert!(pending.danger);
+        let pending = Pending::new(&pla, hotter.to_vec(), &state, 2);
+        assert_eq!(pending.title, "Set the PLA temperatures?");
+        assert_eq!(
+            pending.details,
+            "Hotend T0: 215 °C \u{2192} 215 °C\nBed: off \u{2192} 60 °C"
+        );
+        assert!(!pending.danger);
+        let pending = Pending::new(
+            &Change::CoolDown,
+            cool_down_targets(1, true, false),
+            &state,
+            1,
+        );
+        assert_eq!(pending.title, "Turn every heater off?");
+        assert!(pending.danger);
     }
 
     #[test]
