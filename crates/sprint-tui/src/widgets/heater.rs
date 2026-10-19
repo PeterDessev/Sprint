@@ -206,7 +206,8 @@ impl Widget for HeaterGauge<'_> {
             Some(l) => util::truncate(&sanitize(l), MAX_LABEL).into_owned(),
             None => self.kind.label(),
         };
-        let label_cols = util::width(&label_text).max(self.label_width);
+        // Padding beyond the row would only allocate blanks nobody sees.
+        let label_cols = util::width(&label_text).max(self.label_width.min(total));
         let label = format!(
             "{label_text}{} ",
             " ".repeat(label_cols - util::width(&label_text))
@@ -355,6 +356,17 @@ mod tests {
         assert_eq!(buf[(3, 0)].fg, theme.accent);
         // The label uses the hotend color.
         assert_eq!(buf[(0, 0)].fg, theme.heater(HeaterKind::Hotend(0)));
+    }
+
+    #[test]
+    fn oversized_label_width_is_capped_at_the_row() {
+        let gauge = HeaterGauge::new(HeaterKind::Bed, 20.0, None).label_width(usize::MAX);
+        let buf = render(gauge, 12, 1);
+        assert_eq!(lines(&buf), vec!["Bed         "]);
+        // Padding wider than the row leaves no room for the readout.
+        let gauge = HeaterGauge::new(HeaterKind::Bed, 20.0, None).label_width(40);
+        let buf = render(gauge, 30, 1);
+        assert_eq!(lines(&buf)[0].trim_end(), "Bed");
     }
 
     #[test]
