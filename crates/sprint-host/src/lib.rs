@@ -10,6 +10,7 @@ pub use sprint_sim;
 
 pub mod config;
 pub mod console;
+mod engine;
 mod error;
 pub mod event;
 pub mod job;
