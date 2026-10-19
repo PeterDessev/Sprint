@@ -113,12 +113,18 @@ pub fn suggestions(input: &str) -> Vec<&'static GcodeDoc> {
         .collect()
 }
 
-/// The dangerous commands among `lines` (with their reference entries).
+/// Emergency commands: the reference marks M112 dangerous, but a typed
+/// emergency stop (or M108 / M410 / M876, which the host sends past the
+/// queue) must never wait for a confirmation.
+const EMERGENCY: &[&str] = &["M112", "M108", "M410", "M876"];
+
+/// The dangerous commands among `lines` (with their reference entries),
+/// emergency commands excepted.
 pub fn dangerous_commands(lines: &[String]) -> Vec<&'static GcodeDoc> {
     lines
         .iter()
         .filter_map(|l| sprint_proto::gcode_doc(l.trim()))
-        .filter(|d| d.dangerous)
+        .filter(|d| d.dangerous && !EMERGENCY.contains(&d.code))
         .collect()
 }
 
@@ -1313,7 +1319,11 @@ mod tests {
         assert!(suggestions("G1 X").is_empty());
         let danger = dangerous_commands(&["G28".into(), "M502".into(), "m112".into()]);
         let codes: Vec<_> = danger.iter().map(|d| d.code).collect();
-        assert_eq!(codes, vec!["M502", "M112"]);
+        // A typed emergency stop never waits for a confirmation.
+        assert_eq!(codes, vec!["M502"]);
+        for code in ["M112", "M108", "M410", "M876 S0"] {
+            assert!(dangerous_commands(&[code.into()]).is_empty(), "{code}");
+        }
     }
 
     #[test]

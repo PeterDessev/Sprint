@@ -584,6 +584,16 @@ fn the_estop_halts_and_the_banner_recovers() {
 }
 
 #[test]
+fn an_emergency_stop_typed_in_the_console_goes_out_at_once() {
+    let mut h = app(sim_options(), WINDOW);
+    connect(&mut h);
+    type_command(&mut h, "M112");
+    assert!(!h.state().console().is_confirming());
+    expect(&mut h, "the firmware to halt", |app| app.state().halted);
+    assert!(received(h.state()).iter().any(|c| c == "M112"));
+}
+
+#[test]
 fn host_prompts_are_answered() {
     let mut h = app(sim_options(), WINDOW);
     connect(&mut h);
