@@ -308,4 +308,17 @@ fn documented_items_are_reexported_at_the_crate_root() {
     let (_, _, handle): (_, _, sprint_host::LinkHandle) =
         sprint_host::Link::new(std::io::empty(), std::io::sink()).split();
     handle.close();
+    // Macro arguments, the atomic writer, the disconnect summary.
+    assert_eq!(sprint_host::macro_args_needed("M104 S{0}"), 1);
+    assert_eq!(
+        sprint_host::macro_args("{args}"),
+        [sprint_host::MacroArg::All]
+    );
+    assert_eq!(
+        sprint_host::expand_macro_args("G28", &["x".into()]),
+        Err(sprint_host::MacroArgsError::Unexpected { given: 1 })
+    );
+    let dir = TempDir::new("reexports");
+    sprint_host::write_atomic(dir.path().join("x.txt"), "x").unwrap();
+    assert!(!sprint_host::DisconnectSummary::default().acknowledged());
 }
