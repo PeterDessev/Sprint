@@ -38,6 +38,9 @@ pub(super) struct Motion {
     target: [f32; 3],
     /// `target` was initialised from the profile.
     seeded: bool,
+    /// The card was open last frame: keyboard jogging only works while
+    /// its controls are in view.
+    open: bool,
 }
 
 impl Default for Motion {
@@ -47,6 +50,7 @@ impl Default for Motion {
             key_step: 1.0,
             target: [0.0, 0.0, 10.0],
             seeded: false,
+            open: true,
         }
     }
 }
@@ -212,13 +216,13 @@ impl Motion {
             self.target = clamp_to_volume(profile, [cx, cy, 10.0]);
             self.seeded = true;
         }
-        if self.keyboard && lock.is_none() && keyboard_free(ui) {
+        if self.keyboard && self.open && lock.is_none() && keyboard_free(ui) {
             let jogs = ui.input_mut(|i| take_jog_keys(&mut i.events, self.key_step));
             for (axis, distance) in jogs {
                 printer.jog(axis, distance, feed_for(axis, feeds));
             }
         }
-        section(
+        let shown = section(
             ui,
             icons::MOVE,
             "Motion",
@@ -250,6 +254,7 @@ impl Motion {
                 self.keyboard_row(ui);
             },
         );
+        self.open = shown.is_some();
     }
 
     fn jog_row(&self, ui: &mut Ui, printer: &Printer, feeds: (f32, f32), lock: Option<&str>) {
@@ -367,7 +372,8 @@ impl Motion {
                 ui.add(Toggle::new(&mut self.keyboard).label("Keyboard jog"))
                     .on_hover_text(
                         "Jog with the keyboard: arrows move X/Y, Page Up/Down move Z, \
-                         Shift moves ten times as far. Ignored while typing in a field.",
+                         Shift moves ten times as far. Ignored while typing in a field \
+                         and while this card is collapsed.",
                     );
             },
             |ui| {

@@ -407,6 +407,27 @@ fn keyboard_jogging_needs_the_toggle_and_a_free_keyboard() {
 }
 
 #[test]
+fn keyboard_jogging_pauses_while_the_motion_card_is_collapsed() {
+    let mut h = connected();
+    let p = printer(&h);
+    h.get_by_label("Keyboard jog").click();
+    h.run_ok();
+    // Collapse the card by its header.
+    click(&mut h, "Motion");
+    h.run_ok();
+    assert!(h.query_by_label("Keyboard jog").is_none(), "card collapsed");
+    h.key_press(egui::Key::ArrowUp);
+    h.run_ok();
+    assert_nothing_sent(&mut h, "arrows with the motion card collapsed");
+    // Open again: the toggle is still on and the arrows jog.
+    click(&mut h, "Motion");
+    h.run_ok();
+    h.key_press(egui::Key::ArrowUp);
+    h.run_ok();
+    wait_for_commands(&p, &["G91", "G1 Y1 F3000", "G90"]);
+}
+
+#[test]
 fn offline_sidebar_sends_nothing_and_does_not_panic() {
     let mut h = sidebar_fixed(Theme::Light, (420.0, 2600.0), Rig::offline());
     controls_common::settle(&mut h);
