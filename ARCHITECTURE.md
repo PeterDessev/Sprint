@@ -16,13 +16,15 @@ change, update this file in the same commit.
 
 ```
 crates/
-  sprint-gcode   G-code lexer, file model, machine-state tracking, toolpath
-                 analysis, kinematic time estimation, slicer metadata,
-                 thumbnails, resume-from-line preamble. Pure, no I/O except
-                 file loading.
+  sprint-gcode   G-code lexer, file model, content sniffing (is it G-code?),
+                 machine-state tracking, toolpath analysis (layers, features,
+                 objects, part bounds), kinematic time estimation, slicer
+                 metadata, thumbnails, resume-from-line preamble. Pure, no
+                 I/O except file loading.
   sprint-proto   Firmware protocol (pure): line numbers + checksums, reply
                  parsing (ok/resend/temps/position/M115/M503/SD/mesh/...),
-                 firmware info, settings model + catalog, G-code reference.
+                 firmware info, settings model + catalog, G-code reference,
+                 the command-safety classifier every front end uses.
   sprint-sim     Virtual Marlin printer (thermal model, planner timing,
                  checksum validation, fault injection, SD card, mesh, PID
                  autotune, host prompts). Std-only; independent of the other
@@ -38,6 +40,10 @@ crates/
   sprint         The `sprint` binary: clap subcommands that dispatch to the
                  GUI, TUI, shell and headless commands.
 samples/         Generated sample G-code files (see sprint-gcode examples).
+docs/            The user guide (GUI, TUI, shell, CLI, configuration,
+                 virtual printer, troubleshooting), the Printrun comparison
+                 and the screenshots they use (docs/images/).
+README.md, CHANGELOG.md, LICENSE-MIT, LICENSE-APACHE
 ```
 
 Dependency graph (arrows = "depends on"):
@@ -45,8 +51,11 @@ Dependency graph (arrows = "depends on"):
 ```
 sprint ──► sprint-gui ──► sprint-viewer ──► sprint-gcode
    │           └────────► sprint-host ───► sprint-gcode, sprint-proto, sprint-sim
-   └─────► sprint-tui ──► sprint-host
+   ├─────► sprint-tui ──► sprint-host
+   └─────► sprint-host, sprint-gcode, sprint-proto, sprint-sim (headless commands)
 ```
+sprint-gui and sprint-tui also use sprint-gcode and sprint-proto directly;
+sprint-gcode, sprint-proto and sprint-sim depend on no other Sprint crate.
 
 ## Ground rules
 
@@ -56,6 +65,11 @@ sprint ──► sprint-gui ──► sprint-viewer ──► sprint-gcode
   simulator. Enumerating port names is fine; opening them is not. The GUI and
   TUI must never auto-connect unless the user enabled it in their profile
   (default: off).
+* Every front end loads and saves the configuration through
+  `sprint_host::AppConfig::path()`, which honours `SPRINT_CONFIG`. Tests and
+  demos point `SPRINT_CONFIG` at a scratch file or keep the configuration in
+  memory (`sprint_gui::app::AppOptions::headless`), so they never read,
+  auto-connect from or write the user's configuration.
 * Library crates use `thiserror` error types; binaries/UI use `anyhow`.
 * No `unwrap()` on data from files, the network or the printer. Malformed
   input degrades gracefully.
@@ -72,9 +86,9 @@ sprint ──► sprint-gui ──► sprint-viewer ──► sprint-gcode
 
 ## sprint-gcode
 
-Modules: `parse`, `file`, `state`, `analyze`, `estimate`, `meta`, `resume`,
-`toolpath` (already defined — see `crates/sprint-gcode/src/toolpath.rs`).
-Everything below is re-exported at the crate root.
+Modules: `parse`, `file`, `content`, `state`, `analyze`, `estimate`, `meta`,
+`resume`, `toolpath` (object labels are parsed by a private `objects`
+module). Everything below is re-exported at the crate root.
 
 ### parse
 
@@ -257,6 +271,78 @@ impl Default for ResumeOptions;
 /// interrupted print: temps, fan, units/modes, homing, safe travel to the
 /// position in effect at `line`, `G92 E` restore, feedrate.
 pub fn resume_preamble(file: &GcodeFile, line: usize, options: &ResumeOptions) -> Vec<String>;
+```
+
+### content
+
+```rust
+pub const SNIFF_BYTES: usize = 64 * 1024;          // bytes of the head that are looked at
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize)]
+pub enum ContentKind { #[default] Gcode, Empty, AsciiStl, BinaryStl, Zip3mf, Obj, Step, BinaryGcode, Binary, OtherText }
+impl ContentKind {
+    pub fn is_gcode(self) -> bool;                  // the only kind front ends stream
+    pub fn is_model(self) -> bool;                  // STL, 3MF, OBJ, STEP
+    pub fn description(self) -> &'static str;
+    pub fn problem(self) -> Option<&'static str>;   // the sentence shown when refusing the file
+}
+pub fn sniff_content(head: &[u8], total_len: u64) -> ContentKind;
+pub fn sniff_file(path: impl AsRef<std::path::Path>) -> std::io::Result<ContentKind>; // reads the head only
+impl GcodeFile { pub fn content_kind(&self) -> ContentKind; } // sniffed at load
+```
+
+### toolpath
+
+The analysis result. Every struct derives `Default` and fields may be
+added; `Bounds`, `Stats`, `FeatureStat`, `SlicerMetadata`, `Thumbnail`,
+`ObjectInfo`, `Feature` and `MoveKind` derive `serde::Serialize` (for
+`sprint analyze --json`).
+
+```rust
+pub enum MoveKind { Travel, Extrude }
+pub enum Feature { Unknown, ExternalPerimeter, Perimeter, OverhangPerimeter, InternalInfill,
+    SolidInfill, TopSolidInfill, BridgeInfill, GapFill, Skirt, Support, SupportInterface,
+    Ironing, WipeTower, Custom }                     // COUNT, ALL, index, from_index, name, default_color
+pub struct Segment {                                 // 64 bytes; one per move (arcs tessellated)
+    pub start: [f32; 3], pub end: [f32; 3],          // machine coordinates (G92 applied)
+    pub feedrate: f32, pub width: f32, pub height: f32, pub extruded: f32,
+    pub time: f32 /* start time, s */, pub duration: f32,
+    pub line: u32 /* 0-based source line */, pub layer: u32,
+    pub kind: MoveKind, pub feature: Feature, pub tool: u8, pub fan: u8,
+    pub object: u16,                                 // index into Toolpath::objects, NO_OBJECT outside
+}
+pub struct Retraction { pub pos: [f32; 3], pub amount: f32, pub line: u32, pub layer: u32, pub tool: u8 }
+pub struct Layer { pub z: f32, pub height: f32, pub segments: Range<usize>, pub lines: Range<u32>,
+                   pub time_start: f32, pub duration: f32, pub extruded: f32 }
+pub struct Bounds { pub min: [f32; 3], pub max: [f32; 3] } // empty, is_empty, include, include_bead, size, center
+pub struct FeatureStat { pub feature: Feature, pub time: f32, pub extruded: f32, pub distance: f32, pub segments: usize }
+pub struct Stats { /* estimated_time, filament_length/_per_tool/_volume/_weight, move and retraction
+                      counts, distances, print and travel speeds, layer_count, layer heights,
+                      features, tools_used, hotend_temps, bed_temps, uses_relative_e/_arcs/
+                      _firmware_retraction, heat_waits, travel_time, other_time */ }
+pub struct Thumbnail { pub width: u32, pub height: u32, pub format: ThumbnailFormat /* Png, Jpeg, Qoi */, pub data: Vec<u8> }
+pub struct SlicerMetadata { /* slicer, estimated_time, filament_used_mm/_g, layer heights, nozzle and
+                               filament diameter, filament_type, temperatures, object_names,
+                               thumbnails, settings, filament_density, layer_count, flavor */ }
+pub struct ObjectInfo { pub name: String, pub id: Option<u32>, pub bounds: Bounds,
+                        pub lines: Vec<Range<u32>>, pub time: f32, pub extruded: f32, pub segments: usize }
+pub struct Toolpath {
+    pub segments: Vec<Segment>, pub layers: Vec<Layer>, pub retractions: Vec<Retraction>,
+    pub bounds: Bounds,        // every extrusion, purge lines included
+    pub travel_bounds: Bounds,
+    pub part_bounds: Bounds,   // the printed part(s): the size front ends show
+    pub stats: Stats, pub metadata: SlicerMetadata, pub line_count: u32,
+    pub objects: Vec<ObjectInfo>,
+}
+impl Toolpath {
+    pub fn object_at_line(&self, line: u32) -> Option<usize>;
+    pub fn segment_at_line(&self, line: u32) -> Option<usize>;   // last segment with line <= line
+    pub fn layer_at_line(&self, line: u32) -> Option<usize>;
+    pub fn layer_starts_cleanly(&self, layer: usize) -> bool;
+    pub fn next_clean_layer(&self, layer: usize) -> Option<usize>;
+    pub fn time_at_line(&self, line: u32) -> f32;
+    pub fn progress_at_line(&self, line: u32) -> f32;           // 0..=1 of the estimated time
+    pub fn layer_at_z(&self, z: f32) -> Option<usize>;
+}
 ```
 
 ### Implementation notes (additive API and clarified semantics)
@@ -690,7 +776,7 @@ pub struct GcodeDoc {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum GcodeCategory { Motion, Temperature, Extruder, Fan, SdCard, Settings, Calibration, Leveling, Info, Control, Display, Other }
-pub fn gcode_docs() -> &'static [GcodeDoc];         // ~150 entries
+pub fn gcode_docs() -> &'static [GcodeDoc];         // ~240 entries
 pub fn gcode_doc(code: &str) -> Option<&'static GcodeDoc>; // case-insensitive, "g1" == "G1" == "G01"
 /// Prefix search for autocomplete ("M1" -> M104, M105, M106, ...), ordered by relevance.
 pub fn search_gcode(prefix: &str) -> Vec<&'static GcodeDoc>;
@@ -1561,15 +1647,27 @@ Every public item is also re-exported at the crate root.
 
 ## sprint-viewer
 
+Public modules `camera` (orbit camera math: `Camera`, `Projection`, `Ray`,
+presets, fitting, `FitFrame` for fits within insets), `color` (palettes, gradient ramps, `ScalarRange(s)`
+and the `Legend` model), `demo` (`demo_toolpath`, `stress_toolpath`),
+`instance` (GPU instance data built off the UI thread), `pick` (CPU
+picking: `PickIndex`, `PickHit`, `PickKind::{Extrusions, Travels}`) and
+`scene` (bead template, markers, axes, tool head, bed and build volume
+geometry) are GPU-agnostic and unit-tested without a GPU. The root
+re-exports:
+
 ```rust
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum ColorMode { #[default] Feature, Speed, Width, LayerHeight, Tool, Fan, Layer, Time }
+    // ALL, name, index, is_gradient, unit
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum RenderStyle { #[default] Tubes, Lines }
+pub enum RenderStyle { #[default] Tubes, Lines }                     // ALL, name
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ViewMode { #[default] Perspective, LayerTop /* orthographic top-down of the top visible layer, lower layers ghosted */ }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum GhostStyle { #[default] Opaque /* dim solid beads */, Translucent /* about 25 % opaque, drawn last */ }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ViewPreset { Iso, Top, Bottom, Front, Back, Left, Right }
+pub enum ViewPreset { Iso, Top, Bottom, Front, Back, Left, Right }   // ALL, name, angles
 #[derive(Clone, Debug, PartialEq)]
 pub struct ViewerOptions {
     pub color_mode: ColorMode,
@@ -1587,83 +1685,301 @@ pub struct ViewerOptions {
     pub progress_line: Option<u32>,
     /// Source line to highlight (selection from the G-code text view).
     pub highlight_line: Option<u32>,
-    pub show_tool_head: bool,         // marker at the current progress/scrub position
+    pub show_tool_head: bool,         // nozzle marker at the current progress/scrub position
     pub background: [u8; 3],
+    pub ghost_style: GhostStyle,      // how moves not printed yet (and, in LayerTop, lower layers) look
+    /// Object to highlight (index into Toolpath::objects): its extrusions
+    /// drawn brighter, everything else greyed.
+    pub highlight_object: Option<usize>,
 }
-impl Default for ViewerOptions;
+impl ViewerOptions { pub fn is_feature_hidden(&self, f: Feature) -> bool; pub fn set_feature_hidden(&mut self, f: Feature, hidden: bool);
+                     pub fn hidden_mask(&self) -> u32; pub fn clamped_layer_range(&self, layer_count: usize) -> Option<(usize, usize)>; }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BedSpec { pub size: [f32; 2], pub max_z: f32, pub origin_center: bool }
+    // MAX_SIZE, sanitized, min_xy, max_xy, volume
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ViewInsets { pub left: f32, pub right: f32, pub top: f32, pub bottom: f32 } // logical points; NONE
 
-pub struct GcodeViewer { /* GPU resources, camera, cached uploads */ }
+pub const DEFAULT_LOD_PIXELS: f32 = 3.0;
+pub struct GcodeViewer { /* GPU resources, both cameras, background scene builder */ }
 impl GcodeViewer {
     pub fn new(render_state: &egui_wgpu::RenderState) -> GcodeViewer;
-    pub fn set_toolpath(&mut self, toolpath: std::sync::Arc<Toolpath>); // uploads on next frame; resets layer_range to all
-    pub fn toolpath(&self) -> Option<&std::sync::Arc<Toolpath>>;
+    /// Without egui integration (tests, thumbnails): render_to_image works,
+    /// ui() handles input but shows no image.
+    pub fn new_headless(device: &wgpu::Device, queue: &wgpu::Queue) -> GcodeViewer;
+    /// Show a toolpath: instances are built on a background thread and
+    /// streamed to the GPU over the next frames; resets the layer range to
+    /// all layers and fits the camera.
+    pub fn set_toolpath(&mut self, toolpath: Arc<Toolpath>);
+    /// A new analysis of the same file: like set_toolpath, but the layer
+    /// range (clamped), both cameras (3D and layer view) and automatic
+    /// fitting stay as they are.
+    pub fn replace_toolpath(&mut self, toolpath: Arc<Toolpath>);
+    pub fn toolpath(&self) -> Option<&Arc<Toolpath>>;
     pub fn clear(&mut self);
-    pub fn set_bed(&mut self, bed: BedSpec);
+    pub fn set_bed(&mut self, bed: BedSpec); pub fn bed(&self) -> BedSpec;
     pub fn options(&self) -> &ViewerOptions; pub fn options_mut(&mut self) -> &mut ViewerOptions;
-    pub fn set_view(&mut self, preset: ViewPreset);
-    pub fn fit_to_view(&mut self);
+    pub fn camera(&self) -> &Camera; pub fn camera_mut(&mut self) -> &mut Camera;
+    pub fn set_view(&mut self, preset: ViewPreset);   // animated; switches LayerTop back to Perspective
+    pub fn fit_to_view(&mut self);                     // the toolpath, or the bed when empty
+    /// Keep the part clear of margins the application covers (floating
+    /// cards, a scrub bar): every later fit frames it in the rest of the view.
+    pub fn set_fit_insets(&mut self, insets: ViewInsets); pub fn fit_insets(&self) -> ViewInsets;
+    pub fn fit_to_view_within(&mut self, insets: ViewInsets);
+    /// Beads narrower than this on screen are drawn as ribbons (2
+    /// triangles) instead of prisms (24).
+    pub fn set_lod_pixels(&mut self, pixels: f32); pub fn lod_pixels(&self) -> f32;
+    /// Physical pixels per logical point: the tool head and retraction
+    /// markers keep their size in points, like the pick tolerance. ui()
+    /// takes it from egui; set it before render_to_image for a high-DPI
+    /// image (default 1, clamped 0.25..=8).
+    pub fn set_pixels_per_point(&mut self, pixels_per_point: f32); pub fn pixels_per_point(&self) -> f32;
+    pub fn is_loading(&self) -> bool;
+    pub fn poll(&mut self) -> bool;                    // advance loading without drawing (headless)
+    pub fn wait_until_loaded(&mut self);
+    pub fn layer_count(&self) -> usize;
+    pub fn current_layer(&self) -> Option<usize>;      // the layer of progress_line
+    /// Only the first instance::MAX_OBJECTS objects can be highlighted.
+    pub fn can_highlight_object(&self, index: usize) -> bool;
+    pub fn scalar_ranges(&self) -> Option<&ScalarRanges>;
+    pub fn legend(&self) -> Legend;
+    /// Picking: the nearest visible bead along a world-space ray; the
+    /// nearest shown travel move within `radius` mm; or, at a screen
+    /// position, the bead under it or a shown travel within a few pixels
+    /// that no bead hides (tell them apart by the segment's kind).
+    pub fn pick(&self, ray: &Ray, min_radius: f32) -> Option<PickHit>;
+    pub fn pick_travel(&self, ray: &Ray, radius: f32) -> Option<PickHit>;
+    pub fn pick_screen(&self, pos: [f32; 2], size: [f32; 2]) -> Option<PickHit>;
     /// Allocate the remaining space and draw; handles orbit (LMB drag), pan
-    /// (RMB/MMB drag or Shift+LMB), zoom (wheel, towards cursor), double-click
-    /// to focus, click to pick.
+    /// (RMB/MMB drag or Shift+LMB), zoom (wheel, towards the cursor),
+    /// double-click to focus, click to pick, and preset / fit keys while
+    /// hovered.
     pub fn ui(&mut self, ui: &mut egui::Ui) -> ViewerResponse;
-    /// Compact color legend for the current color mode (features with counts,
-    /// or a gradient with min/max values).
+    /// Compact color legend for the current color mode (features with
+    /// counts, or a gradient with min/max values).
     pub fn legend_ui(&mut self, ui: &mut egui::Ui);
     /// Render one frame offscreen and return RGBA8 pixels (tests, thumbnails).
     pub fn render_to_image(&mut self, width: u32, height: u32) -> Option<(u32, u32, Vec<u8>)>;
-    /// Physical pixels per logical point: the tool head (46 pt tall) and the
-    /// retraction markers keep their size in points, like the pick
-    /// tolerance. ui() takes it from the egui context; set it before
-    /// render_to_image for a high-DPI image (default 1, clamped 0.25..=8).
-    pub fn set_pixels_per_point(&mut self, pixels_per_point: f32);
-    pub fn pixels_per_point(&self) -> f32;
+    pub fn render_offscreen(&mut self, width: u32, height: u32) -> bool; // without the read-back
 }
-pub struct ViewerResponse { pub response: egui::Response, pub clicked_line: Option<u32>, pub hovered_line: Option<u32> }
+#[derive(Clone, Debug)]
+pub struct ViewerResponse {
+    pub response: egui::Response,
+    pub clicked_line: Option<u32>,   // the bead, or (travels shown) the travel move, clicked this frame
+    pub hovered_line: Option<u32>,
+}
+/// A wgpu device for new_headless: a discrete GPU if any, else a software
+/// adapter (WARP / llvmpipe); WGPU_BACKEND restricts the backends tried.
+pub fn headless_device() -> Option<(wgpu::Device, wgpu::Queue)>;
+pub use egui_wgpu::wgpu;
 ```
 Rendering: one instance per segment (positions, width/height, attributes),
-expanded to lit boxes in the vertex shader; color modes are computed in the
+expanded to lit beads in the vertex shader; color modes are computed in the
 shader from per-instance attributes + a uniform palette, so switching modes,
 layer ranges, progress and highlight never re-upload geometry. Layer ranges
-are contiguous instance ranges. Travel moves are a separate line-list buffer.
-The scene is drawn into an offscreen MSAA color+depth target and shown as an
-egui image (re-rendered only when something changed). Handles 5M+ segments.
+are contiguous instance ranges; big layers are cut into spatially coherent
+clusters culled against the view frustum. Travel moves are a separate
+line-list buffer. The scene is drawn into an offscreen 4x MSAA color+depth
+target (reversed Z) and shown as an egui image, re-rendered only when the
+camera, options, data or size change. Handles 5M+ segments.
+
+`cargo run -p sprint-viewer --example snapshot [-- DIR]` renders the demo
+toolpath headlessly in several color modes and views into
+`<target>/viewer-snapshots/` (or `DIR`); `view` opens it in a window and
+`viewer_bench` times loading and drawing.
 
 ---
 
 ## sprint-gui
 
-`pub fn run(options: GuiOptions) -> anyhow::Result<()>` (see `src/lib.rs`).
-Layout (all panels resizable/collapsible):
-* Top: menu bar; connection bar (profile, port picker incl. "Virtual
-  printer", baud incl. Auto, connect/disconnect, status pill, firmware name),
-  always-visible red **E-STOP**.
-* Left: controls — XY jog pad + Z/E jog, homing, motors off, temperatures
-  (hotends/bed/chamber with presets), fan, speed/flow overrides, babystep,
-  live position, user macros.
-* Centre: tabs — 3D view, Layer view, G-code text (line numbers, syntax
-  colors, reference tooltips, synced with viewer selection), Temperature
-  graph, Printer (firmware/capabilities/stats/endstops/link/thermal
-  stability), Tuning (catalog-driven settings editor + EEPROM), Calibration
-  (PID autotune, E-steps, bed mesh heatmap), SD card.
-* Right: console (filters, search, colored kinds, autocomplete from the
-  G-code reference, history).
-* Bottom: job bar (open/print/pause/resume/cancel, progress, elapsed, ETA,
-  layer, filament) and status bar (link stats).
-Dark theme by default (custom palette), light theme option, Phosphor icons,
-drag-and-drop G-code, background analysis with progress, toasts, keyboard
-shortcuts, confirmation dialogs for dangerous actions.
+```rust
+#[derive(Clone, Debug, Default)]
+pub struct GuiOptions {
+    pub file: Option<PathBuf>,              // G-code file to load at startup
+    pub simulator: bool,                    // connect to the virtual printer at startup
+    pub connect: Option<ConnectTarget>,     // connect to this target at startup
+}
+pub const WINDOW_SIZE: [f32; 2];            // initial size, points (1440 x 900)
+pub const MIN_WINDOW_SIZE: [f32; 2];        // 1024 x 640
+/// Title, size, icon, drag and drop; `app_id` also names eframe's storage.
+pub fn native_options(app_id: &str) -> eframe::NativeOptions;
+/// The desktop app: run_app(AppOptions::desktop(options)); blocks until the window closes.
+pub fn run(options: GuiOptions) -> anyhow::Result<()>;
+/// Any AppOptions; options that do not restore the UI preferences keep
+/// their window state apart from the desktop app's ("sprint-demo").
+pub fn run_app(options: app::AppOptions) -> anyhow::Result<()>;
+
+// app
+pub struct AppOptions {
+    pub file: Option<PathBuf>,
+    pub simulator: Option<SimConfig>,       // connect to this virtual printer at startup
+    pub config: AppConfig,
+    pub config_path: Option<PathBuf>,       // where the configuration is saved; None = in memory
+    pub scan_ports: bool,                   // enumerate serial ports in the background (never opened)
+    pub native_dialogs: bool,               // without them "Open" only counts the request (tests)
+    pub restore_prefs: bool,                // restore UI preferences from eframe's storage
+    // + the connect target of GuiOptions::connect
+}
+impl AppOptions {
+    pub fn desktop(gui: GuiOptions) -> AppOptions;  // AppConfig::path() (SPRINT_CONFIG), port scans, native dialogs
+    pub fn headless() -> AppOptions;                // default configuration in memory, nothing scanned or restored
+}
+pub struct SprintApp;                               // impl eframe::App
+impl SprintApp {
+    pub fn new(cc: &eframe::CreationContext<'_>, options: AppOptions) -> SprintApp;
+    /// Draw one frame into `ui` (eframe calls it; egui_kittest harnesses too).
+    pub fn frame(&mut self, ui: &mut egui::Ui);
+    // Read access for tests and embedders: printer(), state(), config(),
+    // config_path(), file(), is_loading(), tab(), selected_line(), dialog(),
+    // toasts(), console(), gcode_tab(), viewer_tab(), ui_prefs(),
+    // file_changed_on_disk(), connection_busy(), quit_requested(),
+    // window_title(); and control: push_action(AppAction),
+    // set_state_override(Option<PrinterState>), set_side_panels(sidebar, console),
+    // start_print_dialog_mut(), settings_dialog_mut(), toasts_mut(),
+    // console_mut(), viewer_tab_mut().
+}
+```
+
+Modules: `app` (the shell: layout, actions, dialogs, keyboard shortcuts),
+`context` (`AppCtx` lent to every panel per frame, `AppAction`, `Tab`),
+`panels` (connection bar, controls sidebar, the tabs, console, job and
+status bars), `insight` (the pure logic behind the Printer, Tuning,
+Calibration, Bed mesh and SD card tabs: thermal statistics, mesh and screw
+maths, calibration formulas, 8.3 names; unit-tested without a UI),
+`widgets` (the design system: buttons, cards, toggles, charts, heatmap, jog
+pad, temperature cards, toasts, confirmations), `theme` (palettes,
+typography, `setup`), `connection` (connect/disconnect and port scans on
+worker threads, link quality), `loader` (background reading, analysis and
+thumbnails with progress and cancellation), `config_store` (debounced,
+off-thread configuration saves), `prefs` (UI state persisted by eframe),
+`notify` (printer events to toasts), `job_text` (shared wording of job
+questions), `menu`, `dialogs`, `settings`, `native_dialog` (file dialogs,
+the external editor), `format`, `fonts`, `icons`, `app_icon`, `fsutil`.
+
+Layout (panels resizable and collapsible):
+* Top: menu bar (File, Printer, View, Tools, Help); connection bar
+  (profile, port picker incl. "Virtual printer" and a TCP address, baud
+  incl. Auto, connect/disconnect, status pill, firmware name, link
+  quality), always-visible red **E-STOP** (drawn above modals); a halted
+  banner with Reset board, Restart firmware (M999, when restartable) and
+  Reconnect.
+* Left: controls sidebar (temperatures with presets, motion with jog pad,
+  move-to and keyboard jog, extruder with load/unload, live tuning, macros).
+* Centre: tabs `Tab::{View3D, Gcode, Temperature, Printer, Tuning,
+  Calibration, BedMesh, SdCard}`: 3D/layer view (toolbar, legend, file and
+  objects cards, layer slider, scrub bar, follow print), G-code text
+  (virtualized, syntax colors, reference tooltips, find, go to line,
+  context menu, external editor), temperature graph, printer insight
+  cards, the catalog-driven settings editor, calibration wizards (PID,
+  E-steps, Z offset, flow), bed mesh (heatmap, surface, leveling, screw
+  helper), SD card.
+* Right: console (filters incl. automatic traffic and streamed print
+  lines, search, timestamps, copy/export/clear, autocomplete from the
+  G-code reference, history, multi-line paste, quick commands).
+* Bottom: job bar (open/print/pause/resume/cancel, Continue for waits,
+  Recover after a failed or cancelled host print, progress, elapsed, ETA,
+  finish time, layer, line, filament) and status bar (link stats, last
+  firmware message, version).
+
+Behaviour contract:
+* No serial port is opened unless the user connects, `GuiOptions` names a
+  target (or `simulator`), or the active profile has `auto_connect`.
+  Blocking calls (`connect`, `reset_board`, `disconnect`) run off the UI
+  thread.
+* Every typed or sent line, macro, pasted block and raw settings edit goes
+  through `sprint_proto::classify` with the job context (`Idle`,
+  `Printing`, `Paused`); M112 is sent at once without a question.
+* Files whose `content_kind()` is not G-code are refused for printing and
+  streaming with `ContentKind::problem`. Part sizes come from
+  `Toolpath::part_bounds`; file sizes from `GcodeFile::source_len`.
+* The job is matched to the loaded file by `JobInfo::path`. Queries a
+  panel issues itself use the `Printer::request_*` methods.
+* Prints started from the GUI default to the profile's `emit_progress`;
+  a completed or failed print requests the user's attention
+  (`ViewportCommand::RequestUserAttention`) besides the toast.
+* Dark theme by default (custom palette), light theme option, Phosphor
+  icons, drag-and-drop G-code, background analysis with progress, toasts,
+  keyboard shortcuts, confirmation dialogs for risky actions.
+
+Testing: `egui_kittest` harnesses drive `SprintApp` with
+`AppOptions::headless()` and the virtual printer; snapshot tests write
+`tests/snapshots/*.png` (`UPDATE_SNAPSHOTS=1` refreshes them).
+`cargo run -p sprint-gui --example gui_demo [FILE] [--fast]` opens the app
+on the virtual printer without touching the user's configuration;
+`--example gallery` shows every widget in both themes.
 
 ## sprint-tui
 
 ```rust
-pub struct TuiOptions { pub file: Option<std::path::PathBuf>, pub connect: Option<ConnectTarget> }
-pub fn run_tui(options: TuiOptions) -> anyhow::Result<()>;     // full-screen ratatui app
-pub fn run_shell(options: TuiOptions) -> anyhow::Result<()>;   // pronsole-style line shell
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TuiOptions {
+    pub file: Option<PathBuf>,            // G-code file to load at startup
+    pub connect: Option<ConnectTarget>,   // without one, only a profile with auto_connect connects
+    pub profile: Option<String>,          // profile name, unique prefix or 1-based number; the file is not changed
+    pub execute: Vec<String>,             // shell only: commands to run instead of stdin (pronsole's -e)
+}
+pub fn run_tui(options: TuiOptions) -> anyhow::Result<()>;   // full-screen ratatui app
+pub fn run_shell(options: TuiOptions) -> anyhow::Result<()>; // pronsole-style line shell
+pub use theme::{ColorSupport, Theme}; pub use widgets::*;
 ```
 
-### Foundation widgets (implemented; `run_tui`/`run_shell` come with the app)
+Public modules besides the widgets (shared with the `sprint` binary's
+headless commands):
+* `commands`: the command set of the shell and the TUI's command palette:
+  `COMMANDS: &[CommandSpec]` (`name`, `aliases`, `usage`, `summary`,
+  `group: Group`), `command_spec`, `command_candidates`, `parse(line) ->
+  Result<Input, ParseError>` (`Input` is a `Command`, raw G-code or
+  nothing; command words are case-insensitive, G-code-looking lines and
+  `!`-prefixed lines are raw, `;` lines are comments), `looks_like_gcode`,
+  `split_args`, `suggest` (one edit away), and `PRONSOLE` /
+  `pronsole_word` for the pronsole words that differ.
+* `actions`: decisions shared by the shell and the TUI: target and profile
+  resolution (`startup_target`, `resolve_target`, `find_profile`),
+  presets, heaters and safe targets, macros (`find_macro`, `macro_call`,
+  `define_macro`, `remove_macro`, `macro_gcode`: `{0}`, `{1}`, `{1=200}`
+  defaults, `{args}`), settings edits (`merged_setting`), print options
+  and blockers, SD names, the cancel question with the rendered cancel
+  script.
+* `config`: where the configuration lives (`config_path()` is
+  `AppConfig::path()`, so `SPRINT_CONFIG` applies), loading with the
+  `ConfigReport`, saving edits and recent files, profile selection, the
+  shell history file (`shell-history.txt` next to the configuration).
+* `loader`: `LoadedFile` (path, `GcodeFile`, `Toolpath`), `LoadJob`
+  (background analysis with progress and cancel), `load_with_progress`,
+  `analyze_options(profile)`, `read_file`.
+* `session`: blocking helpers for the shell and the headless commands:
+  `connect_blocking`, `wait_for`, `wait_setup`, `wait_idle`,
+  `cancel_before_closing`, `heaters_off`, `everything_off`; every wait
+  polls with a timeout and gives up on Ctrl+C.
+* `interrupt`: Ctrl+C as a request (`global()` installs one handler per
+  process that counts presses).
+* `report`: text reports of the printer state (`status_lines`,
+  `temperature_lines`, `settings_lines`, `mesh_lines`, `firmware_lines`,
+  `sd_lines`, `ports_lines`, `stats_lines`, `file_lines`, help, macros,
+  profiles, presets, `monitor_text`) as `ReportLine`s with `Tone`s,
+  rendered by `render(lines, ColorSupport)`.
+* `paths`: file-name completion (`complete_path`, `common_completion`,
+  `GCODE_EXTENSIONS`).
+* `format`: number, length, duration and size formatting shared with the
+  reports.
+
+Behaviour contract:
+* Neither front end connects unless `connect` is given or the profile has
+  `auto_connect`. The TUI logs nothing to the terminal.
+* Typed G-code, palette commands, macros and pasted blocks go through
+  `sprint_proto::classify`; the TUI asks in a dialog, the interactive shell
+  with `[y/N]`; a script (stdin or `-e`) never asks: G-code it sends on
+  purpose is sent, a line that would disturb a running print is skipped,
+  and `eeprom reset` needs `yes`. M112 is never asked about.
+* The shell's commands are listed in `docs/shell.md`; besides pronsole's
+  they include `reset` (`Printer::reset_board`), `recover` (start again
+  at `JobInfo::stopped_at` with `resume_preamble`), `objects`, `exclude`
+  and `include`. At the end of a script the shell waits for the queue and
+  a running print, and cancels a print the script left paused.
+* The TUI hides automatic traffic and streamed print lines in its console
+  by default (`ConsoleEntry::stream`).
+
+### Widgets
 
 Modules `theme`, `format`, `widgets` (re-exported at the crate root). Every
 widget takes its own small input types, never sprint-host types, so the app
@@ -1712,8 +2028,8 @@ any area size, including zero, is safe.
 * `KeyHints::new([(key, action)])`; `HelpOverlay::new(&[HelpSection])`,
   rendered over the whole screen (it centers and clears its own box).
 * `StatsPanel::{new(&Stats, &SlicerMetadata), from_toolpath}`,
-  `summary_rows`, `feature_rows`, `part_bounds` (extrusions without custom
-  G-code, skirt/brim and wipe tower); `sprint analyze` prints the same rows.
+  `summary_rows`, `feature_rows`, `part_bounds` (the part size,
+  `Toolpath::part_bounds`); `sprint analyze` prints the same rows.
 
 `examples/widgets_demo.rs` shows every widget on a simulated print; its
 tests draw each screen with a `TestBackend`.
@@ -1721,38 +2037,82 @@ tests draw each screen with a `TestBackend`.
 ## sprint (binary)
 
 ```
-sprint [gui] [FILE] [--sim]          launch the GUI (default)
-sprint tui [FILE] [--connect T]      full-screen terminal UI
-sprint shell [--connect T]           interactive line shell
-sprint print FILE --connect T        headless print with progress output
-sprint analyze FILE [--json]         print toolpath statistics
-sprint send --connect T CMD...       send commands, print replies
-sprint ports                         list serial ports (no opening)
-sprint sim [--tcp ADDR]              run the virtual printer over TCP
+sprint [FILE] [--sim]                         the GUI (default)
+sprint gui [FILE] [--sim] [--connect T]       the GUI
+sprint tui [FILE] [-c T] [-p NAME]            full-screen terminal UI
+sprint shell [FILE] [-e CMD]... [-c T] [-p NAME]
+                                              pronsole-style shell (stdin or -e scripts)
+sprint print FILE -c T|profile [-p NAME] [--start-line N [--board-reset]
+             [--z-clearance MM] [--no-wait-temps]] [--pause-at-layer L]
+             [--progress-on-printer] [--no-progress] [--answer-prompts ask|continue]
+                                              headless print with progress on stderr
+sprint send -c T|profile [-p NAME] [--timeout SECS] CMD...
+                                              send commands, print the replies
+sprint analyze FILE [--json] [--filament-diameter MM]
+                                              toolpath statistics (report or JSON)
+sprint ports                                  list serial ports (never opened)
+sprint sim [--tcp ADDR] [--time-scale X] [--extruders N] [--checksum-error-rate R]
+           [--drop-ok-rate R] [--no-heated-bed] [--heated-chamber] [--instant-moves]
+           [--advanced-ok] [--boot-delay-ms MS] [--seed N] [--name NAME]
+                                              the virtual printer as a TCP server
 ```
-`T` is a `ConnectTarget::parse` string (`COM3@115200`, `tcp://host:port`,
-`sim`).
+`T` is a `ConnectTarget::parse` string (`COM3`, `COM3@250000`, `COM3@auto`,
+`tcp://host:port`, `sim`, `sim://?key=value&...`), validated while the
+arguments are parsed (nothing is opened). `print` and `send` also take
+`profile`, the profile's own printer, named explicitly so no serial port is
+opened by surprise. `-p`/`--profile` picks a profile by name, unique
+prefix or number without changing the configuration file. The docs for
+users are `docs/cli.md`; `--help` on every subcommand is the reference
+text.
 
-Implementation notes (current state):
-* Exit codes: 0 success, 1 failure (`sprint: error: <anyhow chain>` on
-  stderr), 2 usage errors and the commands not implemented yet (`tui`,
-  `shell`, `print`, `send`, `ports` print `sprint <cmd>: not implemented
-  yet`). `--connect` values are only checked to be non-blank so far.
-  Logging: env_logger on stderr, `RUST_LOG` (default `warn`; `sim` adds
-  `sprint_sim=info`).
+Modules: `cli` (the clap definitions), `analyze`, `print`, `prompts` (the
+printer's questions during `print`), `send`, `sim`, `ports`, `headless`
+(connect and wait shared by `print` and `send`), `console` (the Windows
+console of a GUI launch). The GUI, TUI and shell are the library crates'
+`run`/`run_tui`/`run_shell`.
+
+Behaviour contract:
+* Exit codes: 0 success; 1 failure (`sprint: error: <anyhow chain>` on
+  stderr); 2 usage errors (clap); 130 after Ctrl+C (`print` cancels the
+  job first; a second Ctrl+C stops waiting for the cancel but still turns
+  the heaters off). `send` exits 1 after a timeout, a lost link, an error
+  reply or an `Unknown command`.
+* Nothing connects unless a command is given a target, or the GUI, TUI or
+  shell starts with an `auto_connect` profile. `SPRINT_CONFIG` names the
+  configuration file for every front end, the GUI included.
+* Logging: env_logger on stderr, `RUST_LOG` (default `warn`; `sim` adds
+  `sprint_sim=info`; `tui` is `off` so nothing is drawn over the screen).
+* `print` loads and analyses the file, refuses files that are not G-code,
+  connects, waits for the setup queries and streams with the profile's
+  scripts, options and `emit_progress` (or `--progress-on-printer`). The
+  progress line is redrawn on a terminal and printed every 10 %
+  otherwise; `Completed <name>: <percent> in <time>` goes to stdout. A
+  failed or cancelled print reports `resume with: sprint print FILE
+  --start-line N` from `JobInfo::stopped_at`; a failure while the printer
+  answers turns the heaters off before disconnecting. `--start-line`
+  streams from that line with `resume_preamble` (`--board-reset` =
+  `restore_z_position`, `--z-clearance`, `--no-wait-temps`);
+  `--pause-at-layer` uses `Printer::pause_at_lines` with the layer's first
+  line. Printer questions are printed and answered from stdin (`ask`) or
+  at once (`continue`, never for a pause made at the printer).
 * `analyze FILE [--json] [--filament-diameter MM]` (the diameter applies
   when the file's metadata has none, like `AnalyzeOptions`). A progress
   line is drawn on stderr only when it is a terminal. `--json` prints
-  `{file: {name, path, bytes, lines, commands}, stats, metadata,
-  bounds, travel_bounds, part_bounds, layers: [{z, height, time_start,
-  duration, filament_mm, first_line}]}` with thumbnails without their
-  bytes; empty bounds and non-finite numbers are `null`.
-* `sim [--tcp ADDR] [--time-scale X] [--extruders N]
-  [--checksum-error-rate R] [--drop-ok-rate R] [--no-heated-bed]
-  [--heated-chamber] [--instant-moves] [--advanced-ok] [--boot-delay-ms MS]
-  [--seed N] [--name NAME]`: the first stdout line is `Virtual printer
-  listening on <addr>` (the address is its last word; port 0 picks one),
-  then connection hints; it serves until the process is stopped.
+  `{file: {name, path, bytes, lines, commands}, stats, metadata, bounds,
+  travel_bounds, part_bounds, layers: [{z, height, time_start, duration,
+  filament_mm, first_line}]}` with thumbnails without their bytes; empty
+  bounds and non-finite numbers are `null`. The report's size is the part
+  size (`Toolpath::part_bounds`).
+* `sim`: the first stdout line is `Virtual printer listening on <addr>`
+  (the address is its last word; port 0 picks one), then connection hints;
+  it serves one client at a time, each on a freshly booted printer, until
+  Ctrl+C, and exits with an error when the accept loop fails
+  (`SimServer::wait`).
 * GUI mode on Windows: when `GetConsoleProcessList` reports the console is
   this process's alone (started from Explorer), `FreeConsole()` closes it
-  and errors are shown in a message box instead.
+  and errors and panics are shown in a message box instead.
+
+Tests run the binary as a child process and never name a serial port:
+`tests/cli.rs` (usage, exit codes, help), `tests/printer.rs` (`print`,
+`send` and `shell` against `sim` targets, with `SPRINT_CONFIG` pointing at
+a scratch file) and `tests/sim.rs` (`sprint sim` over loopback TCP).
