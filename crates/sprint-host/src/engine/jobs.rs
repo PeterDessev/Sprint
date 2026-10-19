@@ -265,7 +265,12 @@ impl JobRuntime {
             let Some(cmd) = file.command(index) else {
                 continue;
             };
-            if host_print && is_object_motion(&cmd) {
+            // (Only parsed while an excluded object is involved: this is
+            // the hot path of every print.)
+            if host_print
+                && (self.skipped_motion || self.objects.skipping())
+                && is_object_motion(&cmd)
+            {
                 if self.objects.skipping() {
                     // Not sent, but the file's position moves on.
                     self.machine.apply(&sprint_gcode::parse_line(&cmd));
