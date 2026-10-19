@@ -9,8 +9,8 @@
 //! that many segments instead of the demo print.
 //!
 //! Left panel: data set, color mode, style, view mode and presets, layer
-//! range, scrubbing, progress, highlight, overlays, level of detail and the
-//! legend. Drag with the left button to orbit, right/middle (or Shift+left)
+//! range, scrubbing, progress (with solid or translucent ghosts), highlight,
+//! overlays, level of detail and the legend. Drag with the left button to orbit, right/middle (or Shift+left)
 //! to pan, wheel to zoom towards the cursor, double-click to focus, keys
 //! 0-6 for presets and Z to fit.
 //!
@@ -23,7 +23,9 @@ use std::time::Instant;
 
 use eframe::egui;
 use sprint_gcode::Toolpath;
-use sprint_viewer::{BedSpec, ColorMode, GcodeViewer, RenderStyle, ViewMode, ViewPreset, demo};
+use sprint_viewer::{
+    BedSpec, ColorMode, GcodeViewer, GhostStyle, RenderStyle, ViewMode, ViewPreset, demo,
+};
 
 struct App {
     viewer: GcodeViewer,
@@ -149,6 +151,12 @@ impl App {
             ui.checkbox(&mut options.show_build_volume, "Volume");
             ui.checkbox(&mut options.show_axes, "Axes");
             ui.checkbox(&mut options.show_tool_head, "Tool head");
+        });
+        ui.horizontal(|ui| {
+            ui.label("Ghosts");
+            for style in GhostStyle::ALL {
+                ui.radio_value(&mut options.ghost_style, style, style.name());
+            }
         });
         ui.horizontal_wrapped(|ui| {
             for preset in ViewPreset::ALL {
