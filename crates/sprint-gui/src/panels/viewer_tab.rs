@@ -381,7 +381,12 @@ impl ViewerTab {
             overlay_frame(&p).show(&mut legend_ui, |ui| {
                 ui.set_max_width(280.0);
                 ui.style_mut().override_font_id = Some(egui::FontId::proportional(13.0));
-                viewer.legend_ui(ui);
+                // Scrolls in short views instead of running under the
+                // scrub bar.
+                egui::ScrollArea::vertical()
+                    .id_salt("sprint-legend-scroll")
+                    .max_height(ui.available_height().max(40.0))
+                    .show(ui, |ui| viewer.legend_ui(ui));
             });
         }
         if show_info {
@@ -1081,8 +1086,6 @@ fn file_info_card(
     p: &Palette,
 ) {
     let name = format::sanitize(file.file.name(), 40);
-    let meta = &toolpath.metadata;
-    let stats = &toolpath.stats;
     overlay_frame(p).show(ui, |ui| {
         ui.set_width(260.0);
         let id = ui.make_persistent_id("sprint-file-info-open");
@@ -1123,94 +1126,110 @@ fn file_info_card(
             state.toggle(ui);
         }
         state.show_body_unindented(ui, |ui| {
-            ui.add_space(4.0);
-            if let Some(tex) = thumbnail {
-                let size = tex.size_vec2();
-                if size.x > 0.0 && size.y > 0.0 {
-                    let scale = (ui.available_width() / size.x).min(140.0 / size.y).min(2.0);
-                    let shown = size * scale;
-                    ui.vertical_centered(|ui| {
-                        let (rect, _) = ui.allocate_exact_size(shown, Sense::hover());
-                        ui.painter().rect_filled(
-                            rect.expand(4.0),
-                            CornerRadius::same(6),
-                            theme::with_alpha(p.bg, 0.6),
-                        );
-                        ui.painter().image(
-                            tex.id(),
-                            rect,
-                            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                            Color32::WHITE,
-                        );
-                    });
-                    ui.add_space(6.0);
-                }
-            }
-            KeyValueGrid::new("sprint-file-info")
-                .row_spacing(4.0)
-                .copyable(false)
-                .show(ui, |kv| {
-                    if let Some(slicer) = &meta.slicer {
-                        kv.row("Slicer", &format::sanitize(slicer, 32));
-                    }
-                    let ours = f64::from(stats.estimated_time);
-                    kv.row("Estimate", &format::duration(ours));
-                    if let Some(theirs) = meta.estimated_time {
-                        let diff = format::relative_difference(ours, f64::from(theirs))
-                            .map(|d| format!("  ({d})"))
-                            .unwrap_or_default();
-                        kv.row(
-                            "Slicer says",
-                            &format!("{}{diff}", format::duration(f64::from(theirs))),
-                        );
-                    }
-                    let grams = if stats.filament_weight > 0.0 {
-                        format!(" · {:.1} g", stats.filament_weight)
-                    } else {
-                        meta.filament_used_g
-                            .map(|g| format!(" · {g:.1} g"))
-                            .unwrap_or_default()
-                    };
-                    kv.row(
-                        "Filament",
-                        &format!(
-                            "{}{grams}",
-                            format::length_mm(f64::from(stats.filament_length))
-                        ),
-                    );
-                    let height = if stats.layer_height > 0.0 {
-                        format!(" × {} mm", format::mm(stats.layer_height, 3))
-                    } else {
-                        String::new()
-                    };
-                    kv.row(
-                        "Layers",
-                        &format!("{}{height}", format::count(toolpath.layers.len() as u64)),
-                    );
-                    if !toolpath.bounds.is_empty() {
-                        let [x, y, z] = toolpath.bounds.size();
-                        kv.row(
-                            "Size",
-                            &format!(
-                                "{} × {} × {} mm",
-                                format::mm(x, 1),
-                                format::mm(y, 1),
-                                format::mm(z, 1)
-                            ),
-                        );
-                    }
-                    if let Some(kind) = &meta.filament_type {
-                        kv.row("Material", &format::sanitize(kind, 24));
-                    }
-                    if !meta.object_names.is_empty() {
-                        let all = meta.object_names.join(", ");
-                        let shown = format::sanitize(&all, 36);
-                        kv.row("Objects", &shown)
-                            .on_hover_text(format::sanitize(&all, 600));
-                    }
-                });
+            // Scrolls in short views instead of running under the scrub bar.
+            egui::ScrollArea::vertical()
+                .id_salt("sprint-file-info-scroll")
+                .max_height(ui.available_height().max(40.0))
+                .show(ui, |ui| file_info_body(ui, toolpath, thumbnail, p));
         });
     });
+}
+
+/// The file information card's body: thumbnail and statistics.
+fn file_info_body(
+    ui: &mut Ui,
+    toolpath: &Toolpath,
+    thumbnail: Option<&egui::TextureHandle>,
+    p: &Palette,
+) {
+    let meta = &toolpath.metadata;
+    let stats = &toolpath.stats;
+    ui.add_space(4.0);
+    if let Some(tex) = thumbnail {
+        let size = tex.size_vec2();
+        if size.x > 0.0 && size.y > 0.0 {
+            let scale = (ui.available_width() / size.x).min(140.0 / size.y).min(2.0);
+            let shown = size * scale;
+            ui.vertical_centered(|ui| {
+                let (rect, _) = ui.allocate_exact_size(shown, Sense::hover());
+                ui.painter().rect_filled(
+                    rect.expand(4.0),
+                    CornerRadius::same(6),
+                    theme::with_alpha(p.bg, 0.6),
+                );
+                ui.painter().image(
+                    tex.id(),
+                    rect,
+                    Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                    Color32::WHITE,
+                );
+            });
+            ui.add_space(6.0);
+        }
+    }
+    KeyValueGrid::new("sprint-file-info")
+        .row_spacing(4.0)
+        .copyable(false)
+        .show(ui, |kv| {
+            if let Some(slicer) = &meta.slicer {
+                kv.row("Slicer", &format::sanitize(slicer, 32));
+            }
+            let ours = f64::from(stats.estimated_time);
+            kv.row("Estimate", &format::duration(ours));
+            if let Some(theirs) = meta.estimated_time {
+                let diff = format::relative_difference(ours, f64::from(theirs))
+                    .map(|d| format!("  ({d})"))
+                    .unwrap_or_default();
+                kv.row(
+                    "Slicer says",
+                    &format!("{}{diff}", format::duration(f64::from(theirs))),
+                );
+            }
+            let grams = if stats.filament_weight > 0.0 {
+                format!(" · {:.1} g", stats.filament_weight)
+            } else {
+                meta.filament_used_g
+                    .map(|g| format!(" · {g:.1} g"))
+                    .unwrap_or_default()
+            };
+            kv.row(
+                "Filament",
+                &format!(
+                    "{}{grams}",
+                    format::length_mm(f64::from(stats.filament_length))
+                ),
+            );
+            let height = if stats.layer_height > 0.0 {
+                format!(" × {} mm", format::mm(stats.layer_height, 3))
+            } else {
+                String::new()
+            };
+            kv.row(
+                "Layers",
+                &format!("{}{height}", format::count(toolpath.layers.len() as u64)),
+            );
+            if !toolpath.bounds.is_empty() {
+                let [x, y, z] = toolpath.bounds.size();
+                kv.row(
+                    "Size",
+                    &format!(
+                        "{} × {} × {} mm",
+                        format::mm(x, 1),
+                        format::mm(y, 1),
+                        format::mm(z, 1)
+                    ),
+                );
+            }
+            if let Some(kind) = &meta.filament_type {
+                kv.row("Material", &format::sanitize(kind, 24));
+            }
+            if !meta.object_names.is_empty() {
+                let all = meta.object_names.join(", ");
+                let shown = format::sanitize(&all, 36);
+                kv.row("Objects", &shown)
+                    .on_hover_text(format::sanitize(&all, 600));
+            }
+        });
 }
 
 #[cfg(test)]

@@ -268,3 +268,27 @@ fn smallest_window() {
     );
     snapshot(&mut h, "app_smallest");
 }
+
+#[test]
+fn smallest_window_halted_with_a_hidden_prompt() {
+    // The banner and the prompt's notice leave the 3D view little height:
+    // the file card scrolls instead of running under the scrub bar.
+    let size = egui::Vec2::from(sprint_gui::MIN_WINDOW_SIZE);
+    let mut h = with_cube_at(AppOptions::headless(), size);
+    let mut state = connected_state();
+    state.halted = true;
+    state.last_error = Some("Printer halted. kill() called!".into());
+    state.prompt = Some(HostPrompt {
+        message: "Insert filament and press Continue".into(),
+        buttons: vec!["Continue".into()],
+    });
+    h.state_mut().set_state_override(Some(state));
+    h.state_mut().viewer_tab_mut().prefs.show_legend = false;
+    settle(&mut h);
+    h.get_by_label("Hide").click();
+    settle(&mut h);
+    assert!(h.query_by_label("Answer").is_some());
+    h.remove_cursor();
+    settle(&mut h);
+    snapshot(&mut h, "app_smallest_halted");
+}
