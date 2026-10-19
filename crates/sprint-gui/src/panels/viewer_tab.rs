@@ -38,6 +38,9 @@ const INFO_W: f32 = 282.0;
 const LEGEND_W: f32 = 300.0;
 /// Below this width the toolbar is compact.
 const COMPACT_TOOLBAR_W: f32 = 820.0;
+/// Room the "Follow print" toggle takes in the full toolbar (while the file
+/// prints).
+const FOLLOW_TOGGLE_W: f32 = 130.0;
 /// Height of a layer tag beside the layer slider.
 const TAG_H: f32 = 30.0;
 
@@ -512,8 +515,10 @@ impl ViewerTab {
                 j.status.is_active() && format::job_prints_file(j, file.file.name())
             });
         // Narrow views move the style and visibility toggles into the View
-        // menu and shorten the rest.
-        let compact = ui.available_width() < COMPACT_TOOLBAR_W;
+        // menu and shorten the rest; while the file prints, the follow
+        // control needs room too.
+        let follow_room = if printing { FOLLOW_TOGGLE_W } else { 0.0 };
+        let compact = ui.available_width() < COMPACT_TOOLBAR_W + follow_room;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
             let mut layer_view = self.prefs.layer_view;
@@ -589,13 +594,16 @@ impl ViewerTab {
             ui.menu_button(view_label, |ui| self.view_menu(ui))
                 .response
                 .on_hover_text("Camera and visibility");
-            if ui
-                .add(
-                    IconButton::new(icons::phosphor::CORNERS_OUT)
-                        .ghost()
-                        .tooltip("Fit to view (Z)"),
-                )
-                .clicked()
+            // A compact toolbar has no room for it next to the follow
+            // button: the View menu and Z fit the view then.
+            if !(compact && printing)
+                && ui
+                    .add(
+                        IconButton::new(icons::phosphor::CORNERS_OUT)
+                            .ghost()
+                            .tooltip("Fit to view (Z)"),
+                    )
+                    .clicked()
             {
                 self.fit();
             }

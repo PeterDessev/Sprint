@@ -1208,6 +1208,47 @@ fn a_click_below_a_single_layer_lowers_the_bottom_handle() {
 }
 
 #[test]
+fn the_3d_toolbar_buttons_never_overlap_while_printing() {
+    let options = with_file(AppOptions::headless(), sample("calibration-cube.gcode"));
+    for width in [1024.0, 1280.0, 1440.0, 1920.0] {
+        let mut h = app(options.clone(), egui::vec2(width, 800.0));
+        expect(&mut h, "the cube to be analyzed", analyzed);
+        let mut state = printing_state(JobStatus::Printing);
+        if let Some(job) = &mut state.job {
+            job.name = "calibration-cube.gcode".into();
+        }
+        h.state_mut().set_state_override(Some(state));
+        settle(&mut h);
+        // The toolbar's row: the controls level with "File information".
+        let row = h.get_by_label("File information").rect().center().y;
+        let rects: Vec<(String, egui::Rect)> = h
+            .root()
+            .children_recursive()
+            .filter(|n| {
+                matches!(
+                    n.accesskit_node().role(),
+                    Role::Button | Role::CheckBox | Role::Switch | Role::ComboBox
+                )
+            })
+            .map(|n| {
+                let label = n.accesskit_node().label().unwrap_or_default();
+                (label, n.rect())
+            })
+            .filter(|(_, r)| (r.center().y - row).abs() < 6.0 && r.left() > 250.0)
+            .collect();
+        assert!(rects.len() >= 4, "{width}: {rects:?}");
+        for (i, (a, ra)) in rects.iter().enumerate() {
+            for (b, rb) in &rects[i + 1..] {
+                assert!(
+                    ra.intersect(*rb).width() <= 0.5,
+                    "{width}: {a:?} {ra:?} overlaps {b:?} {rb:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn moving_the_layers_pauses_following_for_this_print_only() {
     let options = with_file(AppOptions::headless(), sample("calibration-cube.gcode"));
     let mut h = app(options, WINDOW);
