@@ -11,6 +11,16 @@ use sprint_host::{
 
 use crate::loader::LoadedFile;
 
+/// What to connect to at startup: the target asked for, else the
+/// profile's printer only when the profile turns `auto_connect` on (off by
+/// default: a front end never opens a port by itself).
+pub fn startup_target(
+    asked: Option<ConnectTarget>,
+    profile: &PrinterProfile,
+) -> Option<ConnectTarget> {
+    asked.or_else(|| profile.auto_connect.then(|| profile.connection.clone()))
+}
+
 /// The target of `connect [target] [baud]`: the profile's connection when
 /// none is given, with `baud` overriding a serial target's rate.
 pub fn resolve_target(
@@ -259,6 +269,31 @@ mod tests {
                 .contains("only applies to serial ports")
         );
         assert!(resolve_target(Some("ftp://x"), None, &profile).is_err());
+    }
+
+    #[test]
+    fn startup_connects_only_when_asked_or_allowed() {
+        let mut profile = PrinterProfile {
+            connection: ConnectTarget::Serial {
+                port: "COM9".into(),
+                baud: 115_200,
+            },
+            ..PrinterProfile::default()
+        };
+        // The default profile never connects by itself.
+        assert!(!PrinterProfile::default().auto_connect);
+        assert_eq!(startup_target(None, &profile), None);
+        let sim = ConnectTarget::Simulator(SimConfig::default());
+        assert_eq!(
+            startup_target(Some(sim.clone()), &profile),
+            Some(sim.clone())
+        );
+        profile.auto_connect = true;
+        assert_eq!(
+            startup_target(None, &profile),
+            Some(profile.connection.clone())
+        );
+        assert_eq!(startup_target(Some(sim.clone()), &profile), Some(sim));
     }
 
     #[test]

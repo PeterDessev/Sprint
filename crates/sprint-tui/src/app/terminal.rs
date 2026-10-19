@@ -116,10 +116,8 @@ pub fn run_tui(options: TuiOptions) -> Result<()> {
         app.open_file(file);
     }
     // Connect only when asked to, or when the profile says so.
-    match options.connect {
-        Some(target) => app.connect(target),
-        None if profile.auto_connect => app.connect(profile.connection.clone()),
-        None => {}
+    if let Some(target) = crate::actions::startup_target(options.connect, &profile) {
+        app.connect(target);
     }
     let result = {
         let (_guard, mut terminal) = TerminalGuard::enter()?;

@@ -160,10 +160,8 @@ impl Shell {
         if let Some(file) = options.file {
             self.load(&file);
         }
-        match options.connect {
-            Some(target) => self.connect(target),
-            None if self.profile.auto_connect => self.connect(self.profile.connection.clone()),
-            None => {}
+        if let Some(target) = actions::startup_target(options.connect, &self.profile) {
+            self.connect(target);
         }
     }
 
