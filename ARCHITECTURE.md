@@ -737,28 +737,30 @@ commands are known by name. Rules:
   `SET_KINEMATIC_POSITION`/`FORCE_MOVE` (`ForcesPosition`) always Confirm,
   except M112: Allow with `emergency` (never asked).
 * Printing: moves (G0-G3, G5, G6, G10/G11 retraction, G12, G27, G42, G61,
-  M125, parameter-only lines, `STEPPER_BUZZ`), homing and probing (G28,
-  G26, G29-G30, G32-G35, G38.x, G76, G80, M45, M48, `BED_MESH_CALIBRATE`,
-  every `PROBE*`, `Z_TILT_ADJUST`, `QUAD_GANTRY_LEVEL`, ...), mode changes
-  (G90/G91/G20/G21/M82/M83), coordinate shifts (G92, G53-G59, M206, M428,
-  G10 L, `SET_GCODE_OFFSET X/Y`), tool changes (T<n>, T-1, Prusa MMU
-  `T?`/`Tx`/`Tc`, `ACTIVATE_EXTRUDER`), motors off (M18/M84 except
-  `S<timeout>` alone, `SET_STEPPER_ENABLE ENABLE=0`), heaters off (hotend target below `MIN_EXTRUSION_TEMP`, bed or
-  chamber below `HEATER_OFF_BELOW`, `TURN_OFF_HEATERS`,
-  `SET_HEATER_TEMPERATURE` without `TARGET`), temperature waits
-  (M109/M190/M191/M116, `TEMPERATURE_WAIT`), calibration (M303, M306 T,
-  `PID_CALIBRATE`, `SHAPER_CALIBRATE`, ...), leveling changes (M420 S/Z,
-  M561, `BED_MESH_CLEAR`, `BED_MESH_PROFILE LOAD=`),
-  M410, start/end/cancel macros (`PRINT_START`, `START_PRINT`, `PRINT_END`,
-  `END_PRINT`, `CANCEL_PRINT`) Confirm; M28 and starting an SD print (M24,
-  M32, `SDCARD_PRINT_FILE`) Block. Tuning (temperatures, fans, M220/M221,
+  M125, M701/M702 filament load/unload, parameter-only lines, `STEPPER_BUZZ`),
+  homing and probing (G28, G26, G29-G30, G32-G35, G38.x, G76, G80, M45, M48,
+  M401 probe deploy, `BED_MESH_CALIBRATE`, every `PROBE*`, `Z_TILT_ADJUST`,
+  `QUAD_GANTRY_LEVEL`, ...), mode changes (G90/G91/G20/G21/M82/M83, G17-G19
+  arc plane), coordinate shifts (G92, G53-G59, M206, M428, G10 L,
+  `SET_GCODE_OFFSET X/Y`), tool changes (T<n>, T-1, Prusa MMU `T?`/`Tx`/`Tc`,
+  `ACTIVATE_EXTRUDER`), motors off (M18/M84 except `S<timeout>` alone,
+  `SET_STEPPER_ENABLE ENABLE=0`), heaters off (hotend target below
+  `MIN_EXTRUSION_TEMP`, bed or chamber below `HEATER_OFF_BELOW`,
+  `TURN_OFF_HEATERS`, `SET_HEATER_TEMPERATURE` without `TARGET`), temperature
+  waits (M109/M190/M191/M116/M192, `TEMPERATURE_WAIT`), calibration (M303,
+  M306 T, M915 Z stall alignment, M916-M918, M863, `PID_CALIBRATE`,
+  `SHAPER_CALIBRATE`, ...), leveling changes (M420 S/Z, M561,
+  `BED_MESH_CLEAR`, `BED_MESH_PROFILE LOAD=`), M410, start/end/cancel macros
+  (`PRINT_START`, `START_PRINT`, `PRINT_END`, `END_PRINT`, `CANCEL_PRINT`) and
+  M524 (abort SD print) Confirm; M28 and starting an SD print (M24, M32,
+  `SDCARD_PRINT_FILE`) Block. Tuning (temperatures, fans, M220/M221,
   babysteps, M600, object exclusion) is allowed.
 * Paused: moves, extrusion, mode changes, `G92 E`, heaters and waits, M410
-  Allow (the host restores position and modes on resume); homing Z (G28
-  naming Z, or neither X nor Y: firmware homes every axis for `G28`,
-  Prusa's `G28 W`, `G28 O`, ...), probing, other coordinate shifts, tool
-  changes, motors off, calibration, leveling changes, SD prints and
-  start/end macros Confirm; M28 Block.
+  Allow (the host restores position and modes on resume); homing Z (G28 naming
+  Z, or neither X nor Y: firmware homes every axis for `G28`, Prusa's `G28 W`,
+  `G28 O`, ...), probing, the arc plane (not restored), other coordinate
+  shifts, tool changes, motors off, calibration, leveling changes, SD prints
+  and start/end macros Confirm; M28 Block.
 * Idle: everything else is allowed. Unknown commands and macros are allowed.
 
 ---

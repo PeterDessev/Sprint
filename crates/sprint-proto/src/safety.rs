@@ -74,8 +74,8 @@ pub enum SafetyReason {
     ForcesPosition,
     /// Moves, extrudes or retracts between the print's own lines.
     InterleavesWithPrint,
-    /// Changes the positioning, extrusion or unit mode the print's lines are
-    /// read in (G90/G91, M82/M83, G20/G21).
+    /// Changes the positioning, extrusion or unit mode or the arc plane the
+    /// print's lines are read in (G90/G91, M82/M83, G20/G21, G17-G19).
     ChangesModes,
     /// Shifts the coordinates the print continues in (G92, workspace and
     /// home offsets).
@@ -122,7 +122,7 @@ impl SafetyReason {
                 "it would interleave with the print: the nozzle moves between the print's own lines"
             }
             SafetyReason::ChangesModes => {
-                "it changes how the print's next lines are read (positioning, extrusion or units)"
+                "it changes how the print's next lines are read (positioning, extrusion, units or arc plane)"
             }
             SafetyReason::ShiftsCoordinates => "it shifts the coordinates the print continues in",
             SafetyReason::HomesOrProbes => {
@@ -305,6 +305,9 @@ enum Class {
     Probe,
     /// Positioning / extrusion / unit modes.
     Mode,
+    /// The arc plane (G17-G19): read like a mode, but not restored on
+    /// resume.
+    Plane,
     /// Coordinate shift; `e_only` for `G92 E..`.
     Coordinates {
         e_only: bool,
@@ -352,7 +355,7 @@ fn rule(class: Class, ctx: JobContext) -> Decision {
             }
         }
         (Class::Probe, Paused) => Confirm(R::HomesOrProbes),
-        (Class::Mode, Printing) => Confirm(R::ChangesModes),
+        (Class::Mode, Printing) | (Class::Plane, _) => Confirm(R::ChangesModes),
         (Class::Coordinates { .. }, Printing) => Confirm(R::ShiftsCoordinates),
         (Class::Coordinates { e_only }, Paused) => {
             if e_only {
@@ -470,6 +473,7 @@ fn classic_class(letter: u8, number: u32, w: &[Word]) -> Class {
         },
         (b'G', 26 | 29..=30 | 32..=35 | 38 | 76 | 80) => Class::Probe,
         (b'G', 20 | 21 | 90 | 91) | (b'M', 82 | 83) => Class::Mode,
+        (b'G', 17..=19) => Class::Plane,
         (b'G', 92) => Class::Coordinates {
             // `G92` alone resets every axis.
             e_only: has(w, b'E') && !has_any(b"XYZABCUVW"),
@@ -501,19 +505,25 @@ fn classic_class(letter: u8, number: u32, w: &[Word]) -> Class {
                 Class::Heater { off }
             }
         }
-        (b'M', 116) => Class::Wait,
-        (b'M', 303) => Class::Calibration,
+        // M192: wait for the probe temperature.
+        (b'M', 116 | 192) => Class::Wait,
+        // M915: Z stall alignment drives Z to the top; M916-M918 driver
+        // tests and M863 encoder calibration jog the axes.
+        (b'M', 303 | 863 | 915..=918) => Class::Calibration,
         // M306 T: MPC autotune (other M306 forms set the model).
         (b'M', 306) if has(w, b'T') => Class::Calibration,
-        // M45: Prusa bed skew calibration.
-        (b'M', 45 | 48) => Class::Probe,
+        // M45: Prusa bed skew calibration; M401 deploys the probe.
+        (b'M', 45 | 48 | 401) => Class::Probe,
         (b'M', 420) if has_any(b"SZ") => Class::Leveling,
         // RepRapFirmware: clear the bed transform (mesh off).
         (b'M', 561) => Class::Leveling,
         (b'M', 410) => Class::QuickStop,
         (b'M', 28) => Class::SdWrite,
         (b'M', 24 | 32) => Class::SdPrint,
-        (b'M', 125) => Class::Move,
+        // M524: abort the SD print.
+        (b'M', 524) => Class::EndMacro,
+        // Park, load and unload filament.
+        (b'M', 125 | 701 | 702) => Class::Move,
         _ => Class::Other,
     }
 }
@@ -914,6 +924,14 @@ mod tests {
             ("G10 L2 P1 X5", Allow, shift, shift),
             ("SET_GCODE_OFFSET X=1", Allow, shift, shift),
             ("SET_GCODE_OFFSET Z_ADJUST=0.02 MOVE=1", Allow, Allow, Allow),
+            // Loading and unloading filament drive the extruder (and park).
+            ("M701", Allow, moves, Allow),
+            ("M702 T0", Allow, moves, Allow),
+            // The arc plane decides how the print's G2/G3 are read, and the
+            // host does not restore it on resume.
+            ("G17", Allow, modes, modes),
+            ("G18", Allow, modes, modes),
+            ("g19", Allow, modes, modes),
         ]);
     }
 
@@ -975,6 +993,14 @@ mod tests {
             ("M306 E0 P40", Allow, Allow, Allow),
             ("PID_CALIBRATE HEATER=extruder TARGET=210", Allow, cal, cal),
             ("SHAPER_CALIBRATE", Allow, cal, cal),
+            // Routines that drive the axes: Z stall alignment, driver and
+            // encoder tests.
+            ("M915 S30 Z5", Allow, cal, cal),
+            ("M916 X", Allow, cal, cal),
+            ("M863 X", Allow, cal, cal),
+            // Deploying the probe drops its pin onto the part.
+            ("M401", Allow, home, home),
+            ("M402", Allow, Allow, Allow),
             ("M420 S0", Allow, level, level),
             ("M420 Z10", Allow, level, level),
             ("M420 V", Allow, Allow, Allow),
@@ -1031,6 +1057,7 @@ mod tests {
             ("M109 R150", Allow, off, Allow),
             ("M190 S60", Allow, wait, Allow),
             ("M116", Allow, wait, Allow),
+            ("M192 R40", Allow, wait, Allow),
             (
                 "TEMPERATURE_WAIT SENSOR=extruder MINIMUM=200",
                 Allow,
@@ -1092,6 +1119,7 @@ mod tests {
             ("PRINT_START BED=60", Allow, start, start),
             ("END_PRINT", Allow, end, end),
             ("CANCEL_PRINT", Allow, end, end),
+            ("M524", Allow, end, end),
         ]);
     }
 
