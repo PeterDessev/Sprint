@@ -105,7 +105,7 @@ pub fn run(args: &PrintArgs) -> Result<ExitCode> {
 
     let mut progress = Progress::new(show_progress, stderr_tty);
     let mut prompts = PromptWatch::new(args.answer_prompts);
-    let outcome = follow(&printer, &interrupt, &mut prompts, &mut progress);
+    let outcome = follow_or_close(&printer, &interrupt, &mut prompts, &mut progress);
     progress.finish();
     let heaters = stop_safely(&printer, &outcome, &mut |text| eprintln!("{text}"));
     printer.disconnect();
@@ -327,6 +327,34 @@ pub fn follow(
             }
         }
         std::thread::sleep(POLL);
+    }
+}
+
+/// [`follow`], except that a panic (a bug) does not leave the printer
+/// heating with nobody watching: the job is cancelled (its cancel script
+/// turns the heaters off; they are switched off here should the cancel
+/// not finish) and the link closed before the panic goes on.
+pub fn follow_or_close(
+    printer: &Printer,
+    interrupt: &Interrupt,
+    prompts: &mut PromptWatch,
+    report: &mut dyn Report,
+) -> Outcome {
+    let followed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        follow(printer, interrupt, prompts, report)
+    }));
+    match followed {
+        Ok(outcome) => outcome,
+        Err(panic) => {
+            let _ = session::cancel_before_closing(printer, session::CANCEL_WAIT, |name| {
+                eprintln!("Cancelling {name} before closing the connection…");
+            });
+            if printer.with_state(sprint_host::PrinterState::job_active) {
+                let _ = session::heaters_off(printer, session::HEATERS_OFF_WAIT);
+            }
+            printer.disconnect();
+            std::panic::resume_unwind(panic)
+        }
     }
 }
 
@@ -723,6 +751,48 @@ mod tests {
             seen.views.last()
         );
         printer.disconnect();
+    }
+
+    /// Breaks once the job is under way (a bug in the progress line).
+    struct Breaks;
+
+    impl Report for Breaks {
+        fn show(&mut self, view: &JobView) {
+            if view.progress > 0.02 {
+                panic!("the progress line broke");
+            }
+        }
+
+        fn say(&mut self, _text: &str) {}
+    }
+
+    #[test]
+    fn a_panic_while_following_still_cancels_the_print_before_closing() {
+        let printer = connect(SimConfig {
+            boot_delay_ms: 20,
+            time_scale: 5.0,
+            instant_moves: false,
+            ..SimConfig::default()
+        });
+        let control = printer.sim_control().expect("simulator");
+        printer
+            .start_print(hot_job(), Default::default())
+            .expect("start");
+        let (_typing, typed) = crossbeam_channel::unbounded();
+        let mut prompts = PromptWatch::with_answers(AnswerPrompts::Ask, typed, true);
+        let ended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            follow_or_close(&printer, &Interrupt::new(), &mut prompts, &mut Breaks)
+        }));
+        assert!(ended.is_err(), "the panic goes on");
+        assert_eq!(
+            printer.with_state(|s| s.job.as_ref().map(|j| j.status.clone())),
+            Some(JobStatus::Cancelled)
+        );
+        assert!(!printer.with_state(|s| s.status.is_open()));
+        // The cancel script turned the heaters off before the link closed.
+        let got = control.received_commands();
+        assert!(got.iter().any(|c| c == "M104 S0"), "{got:?}");
+        assert!(got.iter().any(|c| c == "M140 S0"), "{got:?}");
     }
 
     fn print_args(extra: &[&str]) -> PrintArgs {
