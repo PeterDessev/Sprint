@@ -573,8 +573,9 @@ pub struct Skipped {
 /// What an import contains.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Import {
-    /// Setting commands, in file order (a later line for the same key
-    /// replaces an earlier one).
+    /// Setting commands in the order their settings first appear (a later
+    /// line for the same key replaces an earlier one); at most
+    /// [`MAX_IMPORT_SETTINGS`].
     pub commands: Vec<SettingCommand>,
     /// Lines that were not used.
     pub skipped: Vec<Skipped>,
@@ -583,6 +584,11 @@ pub struct Import {
 /// Commands that must never come from a settings file.
 const NOT_SETTINGS: [&str; 4] = ["M500", "M501", "M502", "M503"];
 
+/// Most distinct settings taken from one file (a firmware reports well
+/// under a hundred); more are skipped, so a wrong file cannot stall the
+/// UI with a preview of thousands of rows.
+pub const MAX_IMPORT_SETTINGS: usize = 1000;
+
 /// Parse a file of setting commands (an export, an M503 log, a list of
 /// `M92 E415` lines). Comments and blank lines are ignored; `echo:`
 /// prefixes are accepted. Only settings known to the catalog or reported
@@ -590,6 +596,8 @@ const NOT_SETTINGS: [&str; 4] = ["M500", "M501", "M502", "M503"];
 /// a reason.
 pub fn parse_import(text: &str, known_codes: &[String]) -> Import {
     let mut import = Import::default();
+    // Where each key is in `import.commands`.
+    let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for (i, line) in text.lines().enumerate().take(100_000) {
         let trimmed = line.trim().trim_start_matches('\u{feff}');
         let trimmed = trimmed.strip_prefix("echo:").map_or(trimmed, str::trim);
@@ -617,9 +625,17 @@ pub fn parse_import(text: &str, known_codes: &[String]) -> Import {
             import.skipped.push(skip("not a known setting"));
             continue;
         }
-        let key = cmd.key();
-        import.commands.retain(|c| c.key() != key);
-        import.commands.push(cmd);
+        // A later line for the same setting replaces the earlier one.
+        match index.get(&cmd.key()) {
+            Some(&at) => import.commands[at] = cmd,
+            None if import.commands.len() >= MAX_IMPORT_SETTINGS => {
+                import.skipped.push(skip("too many settings in one file"));
+            }
+            None => {
+                index.insert(cmd.key(), import.commands.len());
+                import.commands.push(cmd);
+            }
+        }
     }
     import
 }
@@ -948,6 +964,38 @@ mod tests {
         assert_eq!(
             d.entry("M569").map(|e| e.draft.to_gcode()).as_deref(),
             Some("M569 S1 X")
+        );
+    }
+
+    #[test]
+    fn huge_imports_stay_fast_and_bounded() {
+        // A sliced print picked by mistake: hundreds of thousands of lines,
+        // the same few settings over and over.
+        let mut print = String::new();
+        for i in 0..100_000 {
+            print.push_str(&format!("G1 X{i} E0.1\nM204 S{}\n", i % 3000));
+        }
+        let start = std::time::Instant::now();
+        let import = parse_import(&print, &[]);
+        assert_eq!(import.commands.len(), 1);
+        assert_eq!(import.commands[0].to_gcode(), "M204 S1999");
+        // Distinct settings by the thousand (every hotend index).
+        let many: String = (0..20_000)
+            .map(|i| format!("M301 E{i} P22 I1 D100\n"))
+            .collect();
+        let import = parse_import(&many, &[]);
+        assert_eq!(import.commands.len(), MAX_IMPORT_SETTINGS);
+        assert_eq!(
+            import.skipped.len(),
+            20_000 - MAX_IMPORT_SETTINGS,
+            "the rest is skipped"
+        );
+        assert_eq!(import.skipped[0].reason, "too many settings in one file");
+        // Both used to take minutes (every line rescanned every command).
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "{:?}",
+            start.elapsed()
         );
     }
 
