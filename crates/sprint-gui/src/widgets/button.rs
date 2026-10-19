@@ -1,8 +1,9 @@
 //! Buttons: icon buttons, labelled action buttons and the E-STOP button.
 
 use egui::{
-    Align2, Color32, CornerRadius, CursorIcon, FontId, Pos2, Rect, Response, Sense, Shape, Stroke,
-    StrokeKind, Ui, Vec2, Widget, WidgetInfo, WidgetText, WidgetType, epaint::PathShape, vec2,
+    Align2, Color32, CornerRadius, CursorIcon, FontId, PointerButton, Pos2, Rect, Response, Sense,
+    Shape, Stroke, StrokeKind, Ui, Vec2, Widget, WidgetInfo, WidgetText, WidgetType,
+    epaint::PathShape, vec2,
 };
 
 use crate::theme::{self, Palette, RADIUS, RADIUS_LG, TextRole, mix, with_alpha};
@@ -469,12 +470,17 @@ pub enum EStopStyle {
 
 /// The emergency-stop button: unmistakably red, octagon-marked.
 ///
-/// The caller sends M112 when it is clicked; the button only reports the click.
+/// It fires on *press*: [`Response::changed`] is set on the frame the
+/// pointer goes down on it (or it is activated from the keyboard or
+/// accessibility tools), once per press. Test `changed()`, not
+/// `clicked()`: egui only reports a click on release, and not at all when
+/// a hurried press slides more than a few points before letting go. The
+/// caller sends M112; the button only reports the press.
 ///
 /// ```no_run
 /// # use sprint_gui::widgets::{EStopButton, EStopStyle};
 /// # fn demo(ui: &mut egui::Ui) {
-/// if ui.add(EStopButton::new()).clicked() { /* printer.emergency_stop() */ }
+/// if ui.add(EStopButton::new()).changed() { /* printer.emergency_stop() */ }
 /// ui.add(EStopButton::new().style(EStopStyle::Octagon(72.0)));
 /// # }
 /// ```
@@ -530,6 +536,32 @@ pub(crate) fn octagon_points(center: Pos2, radius: f32) -> Vec<Pos2> {
         .collect()
 }
 
+/// Mark `response` changed when the E-STOP is triggered this frame: on the
+/// pointer press, or on a keyboard / accessibility click. A pointer click
+/// whose press already fired does not fire again on release.
+fn mark_estop_trigger(ui: &Ui, response: &mut Response) {
+    let fired_key = response.id.with("estop-fired");
+    let pressed_now = response.is_pointer_button_down_on()
+        && ui.input(|i| i.pointer.button_pressed(PointerButton::Primary));
+    let triggered = if pressed_now {
+        ui.data_mut(|d| d.insert_temp(fired_key, true));
+        true
+    } else if response.clicked_by(PointerButton::Primary) {
+        // Press and release can fall in one frame; then this is the press.
+        !ui.data_mut(|d| d.remove_temp::<bool>(fired_key))
+            .unwrap_or(false)
+    } else {
+        if !response.is_pointer_button_down_on() {
+            ui.data_mut(|d| d.remove::<bool>(fired_key));
+        }
+        // Space / Enter on the focused button, or an accessibility click.
+        response.clicked()
+    };
+    if triggered {
+        response.mark_changed();
+    }
+}
+
 fn estop_fill(p: &Palette, hover: f32, pressed: bool) -> Color32 {
     // Always a saturated red, in both themes.
     let base = if p.dark {
@@ -556,7 +588,9 @@ impl Widget for EStopButton<'_> {
                 let height = 34.0;
                 let mark = 20.0;
                 let width = 12.0 + mark + 8.0 + galley.size().x + 14.0;
-                let (rect, response) = ui.allocate_exact_size(vec2(width, height), Sense::click());
+                let (rect, mut response) =
+                    ui.allocate_exact_size(vec2(width, height), Sense::click());
+                mark_estop_trigger(ui, &mut response);
                 response.widget_info(|| {
                     WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), self.label)
                 });
@@ -626,8 +660,9 @@ impl Widget for EStopButton<'_> {
                 } else {
                     72.0
                 };
-                let (rect, response) =
+                let (rect, mut response) =
                     ui.allocate_exact_size(Vec2::splat(diameter), Sense::click());
+                mark_estop_trigger(ui, &mut response);
                 response.widget_info(|| {
                     WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), self.label)
                 });

@@ -761,3 +761,62 @@ fn long_card_title_is_cut_short_with_a_tooltip() {
     common::hover(&mut h, egui::pos2(off.min.x - 40.0, off.center().y));
     assert!(h.query_by_label(title).is_some(), "full title tooltip");
 }
+
+#[test]
+fn estop_fires_once_on_press_even_when_the_pointer_slides() {
+    let mut h = harness_state(Theme::Dark, (360.0, 160.0), 0_usize, |ui, fired| {
+        ui.horizontal(|ui| {
+            if ui.add(EStopButton::new()).changed() {
+                *fired += 1;
+            }
+            if ui
+                .add(
+                    EStopButton::new()
+                        .label("STOP")
+                        .style(EStopStyle::Octagon(72.0)),
+                )
+                .changed()
+            {
+                *fired += 1;
+            }
+            ui.add_enabled(false, EStopButton::new().label("OFF"));
+        });
+    });
+    let badge = h.get_by_label("E-STOP").rect();
+    // A plain click fires once: on the press, not again on the release.
+    click_at(&mut h, badge.center());
+    assert_eq!(*h.state(), 1);
+    // A hurried press that slides 30 pt before letting go is a drag to
+    // egui, never a click, but it must still stop the printer.
+    let start = badge.left_center() + egui::vec2(16.0, 0.0);
+    h.hover_at(start);
+    h.step();
+    h.event(egui::Event::PointerButton {
+        pos: start,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.step();
+    let end = start + egui::vec2(30.0, 0.0);
+    h.hover_at(end);
+    h.step();
+    h.event(egui::Event::PointerButton {
+        pos: end,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.step();
+    assert_eq!(*h.state(), 2);
+    // Keyboard / accessibility activation, and the octagon style.
+    h.get_by_label("E-STOP").click();
+    h.run_ok();
+    let octagon = h.get_by_label("STOP").rect();
+    click_at(&mut h, octagon.center());
+    assert_eq!(*h.state(), 4);
+    // A disabled E-STOP stays quiet.
+    let off = h.get_by_label("OFF").rect();
+    click_at(&mut h, off.center());
+    assert_eq!(*h.state(), 4);
+}

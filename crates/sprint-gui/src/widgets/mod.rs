@@ -63,8 +63,9 @@
 //!   `ui.add(IconButton::new(icons::HOME).tooltip("Home all")).clicked()`
 //! * [`ActionButton`] — label with optional icon; `.large()` for big machine actions:
 //!   `ui.add(ActionButton::new("Start print").icon(icons::PLAY).primary().large()).clicked()`
-//! * [`EStopButton`] — the unmistakable red emergency stop, badge or octagon:
-//!   `if ui.add(EStopButton::new()).clicked() { /* M112 */ }`
+//! * [`EStopButton`] — the unmistakable red emergency stop, badge or octagon;
+//!   it fires on press, reported as `changed()`:
+//!   `if ui.add(EStopButton::new()).changed() { /* M112 */ }`
 //!
 //! **Status**
 //! * [`StatusPill`] — colored dot (or icon) + label capsule:
