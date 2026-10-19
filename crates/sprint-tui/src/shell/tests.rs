@@ -281,6 +281,39 @@ fn reports_print_tables_instead_of_raw_replies() {
 }
 
 #[test]
+fn sd_upload_writes_a_file_to_the_card() {
+    let (mut shell, buffer) = connected();
+    let cube = sample("calibration-cube.gcode");
+    // The end of the script waits for the upload job.
+    script(
+        &mut shell,
+        &[&format!("sd upload \"{}\"", cube.display()), "sd ls"],
+    );
+    let text = buffer.text();
+    assert!(
+        text.contains("Uploading to the SD card as CALIBRAT.GCO"),
+        "{text}"
+    );
+    wait_for(&shell, "the upload", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Completed)
+    });
+    let got = received(&shell);
+    assert!(
+        got.iter().any(|c| c == "M28 CALIBRAT.GCO"),
+        "{:?}",
+        &got[..got.len().min(5)]
+    );
+    assert!(got.iter().any(|c| c.starts_with("M29")), "no M29");
+    buffer.clear();
+    script(&mut shell, &["sd upload", "sd upload missing.gcode"]);
+    let text = buffer.text();
+    assert!(text.contains("No file loaded"), "{text}");
+    assert!(text.contains("no such file"), "{text}");
+}
+
+#[test]
 fn a_script_prints_a_file_and_waits_for_it() {
     let (mut shell, buffer) = connected();
     let cube = sample("calibration-cube.gcode");
