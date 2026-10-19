@@ -1651,7 +1651,16 @@ fn the_cards_over_the_3d_view_keep_the_pointer_from_the_toolpath() {
     settle(&mut h);
     let camera =
         |h: &Harness<'_, SprintApp>| *h.state().viewer_tab().viewer().expect("viewer").camera();
-    let before = camera(&h);
+    // The fit glides to frame the part clear of the cards: wait for it.
+    let mut before = camera(&h);
+    for _ in 0..20 {
+        settle(&mut h);
+        let now = camera(&h);
+        if now == before {
+            break;
+        }
+        before = now;
+    }
     // A click on the file card's text (the toolpath's top layer lies
     // beneath it) selects nothing.
     let estimate = h.get_by_label("Estimate").rect().center();

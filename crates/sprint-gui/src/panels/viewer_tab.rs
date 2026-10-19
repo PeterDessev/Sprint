@@ -15,7 +15,7 @@ use egui::{
 };
 use sprint_gcode::{GcodeFile, Layer, Toolpath};
 use sprint_host::BedOrigin;
-use sprint_viewer::{BedSpec, ColorMode, GcodeViewer, ViewPreset};
+use sprint_viewer::{BedSpec, ColorMode, GcodeViewer, ViewInsets, ViewPreset};
 
 use crate::context::{AppAction, AppCtx, LoadedFile, Tab};
 use crate::loader::{LoadStatus, Stage};
@@ -117,8 +117,11 @@ struct Overlay {
     /// The file whose toolpath is shown: a new toolpath of the same file
     /// (a re-analysis) keeps the view.
     shown_file: Option<Weak<GcodeFile>>,
-    /// The user moved the camera (orbit, pan, zoom) since the last fit.
-    camera_moved: bool,
+    /// Where the floating cards were drawn last frame: camera fits keep
+    /// the part clear of them (see [`fit_insets`]).
+    cards: Vec<Rect>,
+    /// The view's rectangle last frame.
+    view: Option<Rect>,
     /// Open (or collapse) the file card once, for a file just shown.
     info_open: Option<bool>,
     bed: Option<BedSpec>,
@@ -154,6 +157,12 @@ impl ViewerTab {
     /// The GPU viewer, when available.
     pub fn viewer(&self) -> Option<&GcodeViewer> {
         self.viewer.as_ref()
+    }
+
+    /// Where the 3D view and the cards over it (legend, file card) were
+    /// drawn last frame.
+    pub fn view_and_cards(&self) -> Option<(Rect, &[Rect])> {
+        Some((self.ov.view?, &self.ov.cards))
     }
 
     /// The visible layer range (inclusive), once a toolpath is shown.
@@ -216,12 +225,11 @@ impl ViewerTab {
         self.ov.followed = None;
     }
 
-    /// Fit the camera to the toolpath.
+    /// Fit the camera to the toolpath, clear of the floating cards.
     pub fn fit(&mut self) {
         if let Some(v) = &mut self.viewer {
             v.fit_to_view();
         }
-        self.ov.camera_moved = false;
     }
 
     /// Draw the tab.
@@ -274,8 +282,9 @@ impl ViewerTab {
         if self.ov.shown != Some(key) {
             // A re-analysis of the file on screen (with the firmware's
             // motion limits once connected, or for another profile) keeps
-            // what the user was looking at: the layers, the scrub and a
-            // camera they moved. Another file starts afresh.
+            // what the user was looking at: the layers, the scrub and both
+            // cameras (GcodeViewer::replace_toolpath). Another file starts
+            // afresh.
             let same_file = self.ov.shown.is_some()
                 && self
                     .ov
@@ -283,29 +292,20 @@ impl ViewerTab {
                     .as_ref()
                     .and_then(Weak::upgrade)
                     .is_some_and(|shown| Arc::ptr_eq(&shown, &file.file));
-            let kept = same_file.then(|| (viewer.options().layer_range, *viewer.camera()));
-            viewer.set_toolpath(Arc::clone(&toolpath));
+            if same_file {
+                viewer.replace_toolpath(Arc::clone(&toolpath));
+            } else {
+                viewer.set_toolpath(Arc::clone(&toolpath));
+                self.ov.scrub = None;
+                self.ov.scrub_layer = None;
+                self.ov.followed = None;
+                // Open the first time ever, collapsed from then on: the
+                // card covers much of the part.
+                self.ov.info_open = Some(!self.prefs.file_info_seen);
+                self.prefs.file_info_seen = true;
+            }
             self.ov.shown = Some(key);
             self.ov.shown_file = Some(Arc::downgrade(&file.file));
-            match kept {
-                Some((range, camera)) => {
-                    let last = viewer.layer_count().saturating_sub(1);
-                    viewer.options_mut().layer_range = (range.0.min(last), range.1.min(last));
-                    if self.ov.camera_moved {
-                        *viewer.camera_mut() = camera;
-                    }
-                }
-                None => {
-                    self.ov.scrub = None;
-                    self.ov.scrub_layer = None;
-                    self.ov.followed = None;
-                    self.ov.camera_moved = false;
-                    // Open the first time ever, collapsed from then on: the
-                    // card covers much of the part.
-                    self.ov.info_open = Some(!self.prefs.file_info_seen);
-                    self.prefs.file_info_seen = true;
-                }
-            }
         }
         if self.ov.bed != Some(bed) {
             viewer.set_bed(bed);
@@ -415,14 +415,17 @@ impl ViewerTab {
             }
         }
 
-        // The view itself.
-        let zooming = over_view
-            && ui.input(|i| i.smooth_scroll_delta.y != 0.0 || (i.zoom_delta() - 1.0).abs() > 1e-4);
+        // The view itself; fits keep the part clear of the cards drawn
+        // over it last frame, the layer slider and the scrub bar.
+        let mut fixed = vec![slider_rect];
+        if layer_count > 0 {
+            fixed.push(scrub_rect);
+        }
+        let cards: Vec<Rect> = fixed.iter().chain(&self.ov.cards).copied().collect();
+        viewer.set_fit_insets(fit_insets(view, &cards));
+        self.ov.view = Some(view);
         let mut view_ui = ui.new_child(UiBuilder::new().max_rect(view));
         let response = viewer.ui(&mut view_ui);
-        if response.response.dragged() || response.response.double_clicked() || zooming {
-            self.ov.camera_moved = true;
-        }
         if let Some(line) = response.clicked_line {
             ctx.actions.push(AppAction::SelectLine(line));
         }
@@ -438,6 +441,7 @@ impl ViewerTab {
         // toolpath. When the legend and the file card do not fit side by
         // side, only the one switched on last is shown.
         let loading = viewer.is_loading();
+        let mut cards = Vec::new();
         let room = view.width() >= LEGEND_W + INFO_W + SLIDER_W + 3.0 * EDGE;
         let (show_legend, show_info) = match (self.prefs.show_legend, self.prefs.show_file_info) {
             (true, true) if !room => match self.ov.last_overlay {
@@ -454,18 +458,23 @@ impl ViewerTab {
                     scrub_rect.top() - EDGE,
                 ),
             );
-            overlay_layer(ui, "sprint-viewer-legend", legend_rect, |ui| {
-                overlay_frame(&p).show(ui, |ui| {
-                    ui.set_max_width(280.0);
-                    ui.style_mut().override_font_id = Some(egui::FontId::proportional(13.0));
-                    // Scrolls in short views instead of running under the
-                    // scrub bar.
-                    egui::ScrollArea::vertical()
-                        .id_salt("sprint-legend-scroll")
-                        .max_height(ui.available_height().max(40.0))
-                        .show(ui, |ui| viewer.legend_ui(ui));
-                });
-            });
+            cards.push(overlay_layer(
+                ui,
+                "sprint-viewer-legend",
+                legend_rect,
+                |ui| {
+                    overlay_frame(&p).show(ui, |ui| {
+                        ui.set_max_width(280.0);
+                        ui.style_mut().override_font_id = Some(egui::FontId::proportional(13.0));
+                        // Scrolls in short views instead of running under the
+                        // scrub bar.
+                        egui::ScrollArea::vertical()
+                            .id_salt("sprint-legend-scroll")
+                            .max_height(ui.available_height().max(40.0))
+                            .show(ui, |ui| viewer.legend_ui(ui));
+                    });
+                },
+            ));
         }
         if show_info {
             let right = slider_rect.left() - EDGE * 0.5;
@@ -476,10 +485,16 @@ impl ViewerTab {
                 Pos2::new(right, scrub_rect.top() - EDGE),
             );
             let open = self.ov.info_open.take();
-            overlay_layer(ui, "sprint-viewer-file-info", info_rect, |ui| {
-                file_info_card(ui, file, &toolpath, extras.thumbnail, open, &p);
-            });
+            cards.push(overlay_layer(
+                ui,
+                "sprint-viewer-file-info",
+                info_rect,
+                |ui| {
+                    file_info_card(ui, file, &toolpath, extras.thumbnail, open, &p);
+                },
+            ));
         }
+        self.ov.cards = cards;
         if loading {
             loading_pill(ui, view, &p);
         }
@@ -1123,8 +1138,9 @@ fn set_handle(range: &mut (usize, usize), handle: Handle, index: usize) {
 /// below menus, dialogs and toasts) that takes every pointer input over
 /// it: clicks and drags on a card's empty parts, the wheel and hovering
 /// reach neither the toolpath (no pick, orbit or zoom) nor the view's
-/// layer keys. The card's own widgets work as usual.
-fn overlay_layer(ui: &Ui, id: &str, rect: Rect, add: impl FnOnce(&mut Ui)) {
+/// layer keys. The card's own widgets work as usual. Returns where the
+/// card was drawn.
+fn overlay_layer(ui: &Ui, id: &str, rect: Rect, add: impl FnOnce(&mut Ui)) -> Rect {
     egui::Area::new(Id::new(id))
         .order(egui::Order::Middle)
         .fixed_pos(rect.min)
@@ -1134,7 +1150,52 @@ fn overlay_layer(ui: &Ui, id: &str, rect: Rect, add: impl FnOnce(&mut Ui)) {
         .show(ui.ctx(), |ui| {
             ui.set_max_size(rect.size());
             ui.with_layout(Layout::top_down(Align::Min), add);
-        });
+        })
+        .response
+        .rect
+}
+
+/// The insets of `view` that camera fits keep the part out of, so it is
+/// not drawn under `cards` (rectangles drawn over the view). Each card
+/// costs the view the cheaper of two strips: from its side of the view
+/// (left or right) to its far edge, or from the top or bottom to its far
+/// edge, whichever leaves the larger share of the view.
+pub fn fit_insets(view: Rect, cards: &[Rect]) -> ViewInsets {
+    let mut insets = ViewInsets::NONE;
+    let (w, h) = (view.width().max(1.0), view.height().max(1.0));
+    for card in cards {
+        let card = card.intersect(view);
+        if !card.is_positive() {
+            continue;
+        }
+        let left = card.right() - view.left();
+        let right = view.right() - card.left();
+        let top = card.bottom() - view.top();
+        let bottom = view.bottom() - card.top();
+        // The nearer side in each direction.
+        let (side, side_is_left) = if left <= right {
+            (left, true)
+        } else {
+            (right, false)
+        };
+        let (end, end_is_top) = if top <= bottom {
+            (top, true)
+        } else {
+            (bottom, false)
+        };
+        if side / w <= end / h {
+            if side_is_left {
+                insets.left = insets.left.max(side);
+            } else {
+                insets.right = insets.right.max(side);
+            }
+        } else if end_is_top {
+            insets.top = insets.top.max(end);
+        } else {
+            insets.bottom = insets.bottom.max(end);
+        }
+    }
+    insets
 }
 
 /// The translucent card frame of the overlays.
@@ -1439,6 +1500,33 @@ mod tests {
         let _ = tag_centers(f32::NAN, 1.0, false, 10.0, 0.0);
         let _ = tag_centers(5.0, 5.0, true, f32::NAN, 0.0);
         assert_eq!(tag_centers(5.0, 5.0, true, 10.0, 0.0), (10.0, None));
+    }
+
+    #[test]
+    fn cards_inset_the_view_by_their_cheaper_strip() {
+        let view = Rect::from_min_size(Pos2::new(100.0, 50.0), vec2(800.0, 600.0));
+        let at = |x: f32, y: f32, w: f32, h: f32| {
+            Rect::from_min_size(Pos2::new(100.0 + x, 50.0 + y), vec2(w, h))
+        };
+        // A slider down the right edge: a right inset.
+        let slider = at(720.0, 12.0, 70.0, 576.0);
+        // A scrub bar along the bottom: a bottom inset.
+        let scrub = at(12.0, 540.0, 700.0, 50.0);
+        // A tall legend at the top left: cheaper from the left.
+        let legend = at(12.0, 12.0, 280.0, 500.0);
+        // A collapsed card at the top right: cheaper from the top.
+        let header = at(430.0, 12.0, 280.0, 40.0);
+        let insets = fit_insets(view, &[slider, scrub, legend, header]);
+        assert_eq!(insets.right, 80.0);
+        assert_eq!(insets.bottom, 60.0);
+        assert_eq!(insets.left, 292.0);
+        assert_eq!(insets.top, 52.0);
+        // Nothing over the view, or cards outside it: no insets.
+        assert_eq!(fit_insets(view, &[]), ViewInsets::NONE);
+        let outside = Rect::from_min_size(Pos2::new(0.0, 0.0), vec2(50.0, 40.0));
+        assert_eq!(fit_insets(view, &[outside]), ViewInsets::NONE);
+        // A degenerate view never panics.
+        let _ = fit_insets(Rect::NOTHING, &[legend]);
     }
 
     #[test]

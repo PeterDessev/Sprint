@@ -594,3 +594,58 @@ fn sizes_are_the_parts_and_the_files_on_disk() {
     drop(h);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn the_3d_view_frames_the_part_clear_of_its_cards() {
+    let mut options = AppOptions::headless();
+    options.file = Some(app_support::sample("calibration-cube.gcode"));
+    let mut h = app(options, WINDOW);
+    expect(&mut h, "the cube to be analyzed", analyzed);
+    if h.state().viewer_tab().viewer().is_none() {
+        eprintln!("no GPU viewer on this machine: not tested");
+        return;
+    }
+    // Room for the legend and the file card side by side.
+    h.state_mut().set_side_panels(false, false);
+    let camera =
+        |h: &Harness<'_, SprintApp>| *h.state().viewer_tab().viewer().expect("viewer").camera();
+    let mut last = camera(&h);
+    for _ in 0..20 {
+        settle(&mut h);
+        if camera(&h) == last {
+            break;
+        }
+        last = camera(&h);
+    }
+    let (view, cards) = h
+        .state()
+        .viewer_tab()
+        .view_and_cards()
+        .map(|(v, c)| (v, c.to_vec()))
+        .expect("drawn");
+    assert_eq!(cards.len(), 2, "the legend and the file card");
+    let toolpath = h
+        .state()
+        .file()
+        .and_then(|f| f.toolpath.clone())
+        .expect("toolpath");
+    let b = toolpath.part_bounds;
+    let size = [view.width(), view.height()];
+    let viewer = h.state().viewer_tab().viewer().expect("viewer");
+    for i in 0..8 {
+        let corner = [
+            if i & 1 == 0 { b.min[0] } else { b.max[0] },
+            if i & 2 == 0 { b.min[1] } else { b.max[1] },
+            if i & 4 == 0 { b.min[2] } else { b.max[2] },
+        ];
+        let [x, y] = viewer.project(corner, size).expect("in front");
+        let on_screen = view.min + egui::vec2(x, y);
+        assert!(view.contains(on_screen), "{corner:?} at {on_screen:?}");
+        for card in &cards {
+            assert!(
+                !card.contains(on_screen),
+                "{corner:?} at {on_screen:?} under the card {card:?}"
+            );
+        }
+    }
+}
