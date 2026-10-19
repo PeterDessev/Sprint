@@ -18,6 +18,13 @@ anyhow.workspace = true
 log.workspace = true
 unicode-width = "0.2"
 
+[dev-dependencies]
+# PNG snapshots of test screens (src/snapshot.rs): the Hack font egui
+# bundles, its outlines read with the skrifa version epaint already uses.
+image.workspace = true
+skrifa = { version = "0.44", default-features = false, features = ["std"] }
+epaint_default_fonts = "0.36"
+
 # The demo carries tests that draw every screen with a test backend.
 [[example]]
 name = "widgets_demo"

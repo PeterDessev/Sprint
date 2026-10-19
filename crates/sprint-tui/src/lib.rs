@@ -22,6 +22,8 @@ pub mod format;
 pub mod loader;
 pub mod paths;
 pub mod report;
+#[cfg(test)]
+mod snapshot;
 pub mod theme;
 pub mod widgets;
 
