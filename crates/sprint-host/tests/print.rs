@@ -441,6 +441,29 @@ fn a_board_reset_mid_print_fails_the_job_and_reconnects() {
 }
 
 #[test]
+fn empty_and_comment_only_files_complete() {
+    let printer = connect(fast_sim(100.0), options());
+    for text in ["", "; just a comment\n\n   \n(another)\n"] {
+        let file = Arc::new(GcodeFile::from_text("empty.gcode", text));
+        let (got, _) = print(&printer, Arc::clone(&file), PrintOptions::default());
+        assert!(got.is_empty(), "{got:?}");
+        let job = printer.with_state(|s| s.job.clone()).unwrap();
+        assert_eq!(job.current_line, job.total_lines);
+        assert_eq!(job.progress, 1.0);
+    }
+    // A preamble alone is a job too.
+    let (got, _) = print(
+        &printer,
+        Arc::new(GcodeFile::from_text("empty.gcode", "")),
+        PrintOptions {
+            preamble: vec!["G28".into(), "; nothing".into()],
+            ..PrintOptions::default()
+        },
+    );
+    assert_eq!(got, ["G28"]);
+}
+
+#[test]
 fn toolpath_progress_eta_layers_and_filament() {
     use sprint_host::sprint_gcode::{AnalyzeOptions, analyze_simple};
     let file = cube();
