@@ -451,22 +451,33 @@ impl<'a> FeatureLegend<'a> {
         self
     }
 
-    /// The features shown, in display order.
+    /// The features shown, in display order. For the whole toolpath they
+    /// come from its feature statistics (no pass over millions of
+    /// segments on every frame), else from the segments.
     pub fn features(&self) -> Vec<Feature> {
         let mut present = [false; Feature::COUNT];
-        let segments: &[Segment] = match self.layer {
-            Some(i) => self
-                .toolpath
-                .layers
-                .get(i)
-                .and_then(|l| self.toolpath.segments.get(l.segments.clone()))
-                .unwrap_or(&[]),
-            None => &self.toolpath.segments,
-        };
-        for s in segments.iter().filter(|s| s.is_extrusion()) {
-            if let Some(p) = present.get_mut(s.feature.index()) {
+        let mut mark = |feature: Feature| {
+            if let Some(p) = present.get_mut(feature.index()) {
                 *p = true;
             }
+        };
+        let stats = &self.toolpath.stats.features;
+        if self.layer.is_none() && !stats.is_empty() {
+            stats.iter().for_each(|s| mark(s.feature));
+        } else {
+            let segments: &[Segment] = match self.layer {
+                Some(i) => self
+                    .toolpath
+                    .layers
+                    .get(i)
+                    .and_then(|l| self.toolpath.segments.get(l.segments.clone()))
+                    .unwrap_or(&[]),
+                None => &self.toolpath.segments,
+            };
+            segments
+                .iter()
+                .filter(|s| s.is_extrusion())
+                .for_each(|s| mark(s.feature));
         }
         Feature::ALL
             .into_iter()
@@ -752,6 +763,24 @@ M83\n;TYPE:Custom\nG1 Z0.3 F600\nG1 X0 Y-3\nG1 X60 Y-3 E9 F1000\n\
         );
         assert_eq!(object_bounds(&tp), tp.bounds);
         assert!(object_bounds(&Toolpath::default()).is_empty());
+    }
+
+    #[test]
+    fn whole_toolpath_legend_reads_the_feature_statistics() {
+        let mut tp = two_layers();
+        // The statistics answer without a pass over the segments.
+        tp.segments.clear();
+        assert_eq!(
+            FeatureLegend::new(&tp, None).features(),
+            vec![Feature::ExternalPerimeter, Feature::InternalInfill]
+        );
+        // Without statistics (a hand-built toolpath) the segments count.
+        let mut tp = two_layers();
+        tp.stats.features.clear();
+        assert_eq!(
+            FeatureLegend::new(&tp, None).features(),
+            vec![Feature::ExternalPerimeter, Feature::InternalInfill]
+        );
     }
 
     #[test]
