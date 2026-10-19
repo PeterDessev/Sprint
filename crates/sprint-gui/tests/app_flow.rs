@@ -487,6 +487,36 @@ fn host_prompts_are_answered() {
 }
 
 #[test]
+fn a_prompt_with_many_choices_stays_centered() {
+    let mut h = app(AppOptions::headless(), WINDOW);
+    let choices = [
+        "Continue printing",
+        "Purge more filament",
+        "Disable the runout sensor",
+        "Cancel the print",
+    ];
+    h.state_mut().set_state_override(Some(PrinterState {
+        status: ConnectionStatus::Connected,
+        prompt: Some(sprint_host::HostPrompt {
+            message: "Filament runout detected. What now?".into(),
+            buttons: choices.iter().map(|c| (*c).to_owned()).collect(),
+        }),
+        ..PrinterState::default()
+    }));
+    settle(&mut h);
+    // The dialog is about 460 points wide around the middle; the choices
+    // wrap inside it instead of widening it to one side.
+    let middle = WINDOW.x / 2.0;
+    for label in choices.into_iter().chain(["Hide"]) {
+        let rect = h.get_by_label(label).rect();
+        assert!(
+            rect.left() >= middle - 240.0 && rect.right() <= middle + 240.0,
+            "{label}: {rect:?}"
+        );
+    }
+}
+
+#[test]
 fn reconnect_and_disconnect() {
     let mut h = app(sim_options(), WINDOW);
     connect(&mut h);

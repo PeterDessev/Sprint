@@ -548,32 +548,37 @@ pub fn prompt_dialog(egui_ctx: &egui::Context, prompt: &HostPrompt) -> Option<us
             };
             ui.label(RichText::new(message).color(p.text).size(15.0));
             ui.add_space(4.0);
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if prompt.buttons.is_empty() {
-                    if ui.add(ActionButton::new("Continue").primary()).clicked() {
-                        answer = Some(0);
-                    }
-                } else {
-                    // Right to left: the first choice ends up rightmost.
-                    for (i, label) in prompt.buttons.iter().enumerate() {
-                        let label = format::sanitize(label, 30);
-                        let mut button = ActionButton::new(&label);
-                        if i == 0 {
-                            button = button.primary();
+            // Many or long choices wrap onto more rows instead of widening
+            // the dialog off-center.
+            ui.with_layout(
+                Layout::right_to_left(Align::Min).with_main_wrap(true),
+                |ui| {
+                    if prompt.buttons.is_empty() {
+                        if ui.add(ActionButton::new("Continue").primary()).clicked() {
+                            answer = Some(0);
                         }
-                        if ui.add(button).clicked() {
-                            answer = Some(i);
+                    } else {
+                        // Right to left: the first choice ends up rightmost.
+                        for (i, label) in prompt.buttons.iter().enumerate() {
+                            let label = format::sanitize(label, 30);
+                            let mut button = ActionButton::new(&label);
+                            if i == 0 {
+                                button = button.primary();
+                            }
+                            if ui.add(button).clicked() {
+                                answer = Some(i);
+                            }
                         }
                     }
-                }
-                if ui
-                    .add(ActionButton::new("Hide").ghost())
-                    .on_hover_text("Close this without answering (the printer keeps waiting)")
-                    .clicked()
-                {
-                    answer = Some(usize::MAX);
-                }
-            });
+                    if ui
+                        .add(ActionButton::new("Hide").ghost())
+                        .on_hover_text("Close this without answering (the printer keeps waiting)")
+                        .clicked()
+                    {
+                        answer = Some(usize::MAX);
+                    }
+                },
+            );
         });
     // Escape or a click beside the dialog hides it, like "Hide".
     if answer.is_none() && modal.should_close() {
