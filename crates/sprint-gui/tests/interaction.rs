@@ -588,3 +588,53 @@ fn widgets_in_sibling_columns_do_not_share_ids() {
     h.run_ok();
     assert_eq!(h.state().1, vec![(0, TemperatureAction::SetTarget(200.0))]);
 }
+
+#[test]
+fn jog_pad_moves_by_the_ring_that_was_pressed() {
+    // Press near the outer edge of the 10 mm ring and release a few points
+    // further out (still a click): the move is 10 mm, not 100 mm.
+    let mut h = jog_harness();
+    let geo = JogGeometry::new(h.get_by_label("XY jog").rect(), true);
+    let (_, edge) = geo.ring_radii(2);
+    let slide = |h: &mut egui_kittest::Harness<'_, Vec<JogAction>>,
+                 press: egui::Pos2,
+                 release: egui::Pos2| {
+        h.hover_at(press);
+        h.step();
+        h.event(egui::Event::PointerButton {
+            pos: press,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.step();
+        h.hover_at(release);
+        h.step();
+        h.event(egui::Event::PointerButton {
+            pos: release,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.step();
+    };
+    slide(
+        &mut h,
+        geo.center + egui::vec2(edge - 2.0, 0.0),
+        geo.center + egui::vec2(edge + 2.0, 0.0),
+    );
+    // A press in the dead zone outside the rings does nothing, even when
+    // released over the outer ring.
+    slide(
+        &mut h,
+        geo.center - egui::vec2(0.0, geo.outer_radius + 2.0),
+        geo.center - egui::vec2(0.0, geo.outer_radius - 2.0),
+    );
+    assert_eq!(
+        h.state().as_slice(),
+        &[JogAction::Move {
+            axis: Axis::X,
+            distance: 10.0
+        }]
+    );
+}

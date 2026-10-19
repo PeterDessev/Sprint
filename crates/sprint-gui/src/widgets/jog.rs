@@ -537,13 +537,31 @@ impl JogPad {
             .hover_pos()
             .filter(|_| ui.is_enabled())
             .and_then(|pos| geo.hit(pos));
-        let pressed = response.is_pointer_button_down_on();
+        // egui reports the click on release, when the pointer may already
+        // be over a neighbouring ring (within the click distance), so the
+        // region under the *press* is remembered and acted on, like a
+        // button that keeps its click when released just outside it.
+        let press_key = response.id.with("pressed-region");
+        let down = response.is_pointer_button_down_on();
+        if down && let Some(origin) = ui.input(|i| i.pointer.press_origin()) {
+            ui.data_mut(|d| d.insert_temp(press_key, geo.hit(origin)));
+        }
+        let pressed = if down && ui.input(|i| i.pointer.could_any_button_be_click()) {
+            ui.data(|d| d.get_temp::<Option<JogRegion>>(press_key))
+                .flatten()
+        } else {
+            None
+        };
         let action = if response.clicked() {
-            response
-                .interact_pointer_pos()
-                .and_then(|pos| geo.hit(pos))
+            // Press and release in one frame leave nothing stored: then the
+            // release position is the press position.
+            ui.data_mut(|d| d.remove_temp::<Option<JogRegion>>(press_key))
+                .unwrap_or_else(|| response.interact_pointer_pos().and_then(|pos| geo.hit(pos)))
                 .map(|region| self.action_for(region))
         } else {
+            if !down {
+                ui.data_mut(|d| d.remove::<Option<JogRegion>>(press_key));
+            }
             None
         };
         if ui.is_rect_visible(rect) {
@@ -559,7 +577,15 @@ impl JogPad {
         ActionResponse::new(response, action)
     }
 
-    fn paint(&self, ui: &Ui, geo: &JogGeometry, hovered: Option<JogRegion>, pressed: bool) {
+    /// Paint the pad. `pressed` is the region held down (it may differ
+    /// from `hovered` once the pointer slides off it).
+    fn paint(
+        &self,
+        ui: &Ui,
+        geo: &JogGeometry,
+        hovered: Option<JogRegion>,
+        pressed: Option<JogRegion>,
+    ) {
         let p = theme::ui_palette(ui);
         let painter = ui.painter();
         let gap = 2.5;
@@ -569,8 +595,8 @@ impl JogPad {
         );
         // Fill and outline of a region in its hover / pressed state.
         let highlight = |region: JogRegion, base: Color32| -> (Color32, Option<Stroke>) {
-            match (hovered == Some(region), pressed) {
-                (true, true) => (p.accent, None),
+            match (hovered == Some(region), pressed == Some(region)) {
+                (_, true) => (p.accent, None),
                 (true, false) => (
                     mix(base, p.accent, if p.dark { 0.22 } else { 0.16 }),
                     Some(Stroke::new(1.5, p.accent)),
@@ -598,17 +624,19 @@ impl JogPad {
                     outline,
                 ));
                 // Step labels sit on the vertical axis, plus the hovered sector.
-                let show_label = matches!(direction, JogDirection::Up | JogDirection::Down)
-                    || hovered == Some(region);
+                let hot = hovered == Some(region) || pressed == Some(region);
+                let show_label = matches!(direction, JogDirection::Up | JogDirection::Down) || hot;
                 if show_label {
                     let (r0, r1) = geo.ring_radii(ring);
                     let pos = geo.center + (r0 + r1) / 2.0 * Vec2::angled(a);
-                    let color = match (hovered == Some(region), pressed) {
-                        (true, true) => p.on_accent,
-                        (true, false) => hot_text,
-                        _ => p.text_dim,
+                    let color = if pressed == Some(region) {
+                        p.on_accent
+                    } else if hot {
+                        hot_text
+                    } else {
+                        p.text_dim
                     };
-                    let label = if hovered == Some(region) {
+                    let label = if hot {
                         let (_, sign) = direction.axis_sign();
                         signed_step(sign * self.steps[ring])
                     } else {
@@ -635,14 +663,17 @@ impl JogPad {
             );
         }
         // Center home button.
-        let center_fill = if hovered == Some(JogRegion::Center) {
-            if pressed { p.accent_pressed } else { p.accent }
+        let center_fill = if pressed == Some(JogRegion::Center) {
+            p.accent_pressed
+        } else if hovered == Some(JogRegion::Center) {
+            p.accent
         } else if p.dark {
             theme::hex(0x3B434E)
         } else {
             Color32::WHITE
         };
-        let center_fg = if hovered == Some(JogRegion::Center) {
+        let center_fg = if hovered == Some(JogRegion::Center) || pressed == Some(JogRegion::Center)
+        {
             p.on_accent
         } else {
             p.text
@@ -665,12 +696,15 @@ impl JogPad {
             let label_font = FontId::new(10.5, theme::font(ui, TextRole::Section).family);
             for corner in JogCorner::ALL {
                 let r = geo.corner_rect(corner).shrink(1.0);
-                let hot = hovered == Some(JogRegion::Corner(corner));
+                let region = JogRegion::Corner(corner);
+                let hot = hovered == Some(region) || pressed == Some(region);
                 let danger = corner == JogCorner::BottomRight;
-                let fill = match (hot, pressed) {
-                    (true, true) => mix(p.raised, p.bg, 0.35),
-                    (true, false) => p.raised_hover,
-                    _ => p.raised,
+                let fill = if pressed == Some(region) {
+                    mix(p.raised, p.bg, 0.35)
+                } else if hot {
+                    p.raised_hover
+                } else {
+                    p.raised
                 };
                 let stroke = Stroke::new(1.0, if hot { p.border_strong } else { p.border });
                 painter.rect(
