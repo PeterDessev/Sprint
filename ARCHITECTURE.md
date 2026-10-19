@@ -759,6 +759,8 @@ impl Printer {
     /// (or failed); the handshake continues in the background and is reported
     /// through state/events. Err if already connected or the port can't open.
     pub fn connect(&self, target: ConnectTarget, options: ConnectOptions) -> Result<(), HostError>;
+    /// (A disconnect() meanwhile cancels it: Err(HostError::Cancelled), status Disconnected, no failure
+    /// event; auto-baud stops between and during its attempts.)
     pub fn disconnect(&self);
     pub fn is_connected(&self) -> bool;                 // handshake complete
     /// Queue G-code typed by the user or produced by UI controls. Multiple
@@ -1020,7 +1022,7 @@ pub fn heaters_off(hotends: u8, bed: bool, chamber: bool) -> Vec<String>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum HostError { /* NotConnected, AlreadyConnected, Busy(String), Halted, Io(std::io::Error), Serial(String), InvalidTarget(String), Config(String),
-                        InvalidArgument(String), Timeout(String), Unsupported(String), ... */ }
+                        InvalidArgument(String), Timeout(String), Unsupported(String), Cancelled, ... */ }
 ```
 
 Engine design (inside sprint-host):

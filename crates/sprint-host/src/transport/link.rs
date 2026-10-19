@@ -83,12 +83,23 @@ impl Link {
         reset: bool,
         log: &mut dyn FnMut(&str),
     ) -> Result<Link, HostError> {
+        Link::serial_until(port, baud, reset, log, &|| false)
+    }
+
+    fn serial_until(
+        port: &str,
+        baud: u32,
+        reset: bool,
+        log: &mut dyn FnMut(&str),
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Link, HostError> {
         if baud == 0 {
-            let (_, link) = serial::detect_baud(
+            let (_, link) = serial::detect_baud_until(
                 super::BAUD_RATES,
                 |b| serial::open(port, b, reset),
                 serial::AUTO_BAUD_WAIT,
                 log,
+                cancelled,
             )?;
             Ok(link)
         } else {
@@ -102,9 +113,21 @@ impl Link {
         reset_on_connect: bool,
         log: &mut dyn FnMut(&str),
     ) -> Result<Link, HostError> {
+        Link::open_until(target, reset_on_connect, log, &|| false)
+    }
+
+    /// [`Link::open`] that gives up with [`HostError::Cancelled`] once
+    /// `cancelled` says so: auto-baud stops between (and during) its
+    /// attempts.
+    pub(crate) fn open_until(
+        target: &ConnectTarget,
+        reset_on_connect: bool,
+        log: &mut dyn FnMut(&str),
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Link, HostError> {
         match target {
             ConnectTarget::Serial { port, baud } => {
-                Link::serial(port, *baud, reset_on_connect, log)
+                Link::serial_until(port, *baud, reset_on_connect, log, cancelled)
             }
             ConnectTarget::Tcp { host, port } => Link::tcp(host, *port),
             ConnectTarget::Simulator(config) => Ok(Link::simulator(config.clone())),

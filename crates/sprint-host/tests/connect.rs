@@ -120,3 +120,85 @@ fn status_events_are_published() {
         ]
     );
 }
+
+fn failures(events: &crossbeam_channel::Receiver<Event>) -> Vec<Event> {
+    events
+        .try_iter()
+        .filter(|e| {
+            matches!(
+                e,
+                Event::Error(_) | Event::Status(ConnectionStatus::Failed(_))
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn disconnecting_during_the_handshake_is_not_a_failure() {
+    // A printer that never answers: the handshake is still running.
+    let printer = Printer::new();
+    let events = printer.subscribe();
+    let silent = sprint_host::Link::new(SilentReader, std::io::sink());
+    printer
+        .connect_link(silent, "silent printer", options())
+        .unwrap();
+    wait_for(&printer, "the handshake", |s| {
+        s.status == ConnectionStatus::Handshaking
+    });
+    printer.disconnect();
+    assert_eq!(
+        printer.with_state(|s| s.status.clone()),
+        ConnectionStatus::Disconnected
+    );
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert!(failures(&events).is_empty());
+    assert_eq!(printer.with_state(|s| s.last_error.clone()), None);
+}
+
+/// A reader that never has data.
+struct SilentReader;
+
+impl std::io::Read for SilentReader {
+    fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "no data"))
+    }
+}
+
+#[test]
+fn a_cancelled_tcp_attempt_ends_disconnected() {
+    // Nothing listens on the port; on Windows a refused loopback connect
+    // takes about two seconds, long enough to cancel it.
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let printer = Printer::new();
+    let events = printer.subscribe();
+    let target = sprint_host::ConnectTarget::parse(&format!("tcp://127.0.0.1:{port}")).unwrap();
+    let started = std::time::Instant::now();
+    let connecting = {
+        let printer = printer.clone();
+        std::thread::spawn(move || printer.connect(target, options()))
+    };
+    wait_for(&printer, "connecting", |s| {
+        s.status == ConnectionStatus::Connecting
+    });
+    printer.disconnect();
+    let result = connecting.join().unwrap();
+    if started.elapsed() < std::time::Duration::from_millis(50) {
+        // The attempt failed before the cancel (fast refusal): nothing to
+        // check.
+        return;
+    }
+    assert!(
+        matches!(result, Err(sprint_host::HostError::Cancelled)),
+        "{result:?}"
+    );
+    assert_eq!(
+        printer.with_state(|s| s.status.clone()),
+        ConnectionStatus::Disconnected
+    );
+    assert!(failures(&events).is_empty(), "no failure was reported");
+}

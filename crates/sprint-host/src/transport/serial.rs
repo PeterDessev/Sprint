@@ -297,16 +297,35 @@ pub(crate) fn looks_valid(line: &str) -> bool {
 /// links are closed). Attempts are reported through `log`.
 ///
 /// An error from `open` aborts the search (the port itself is unusable).
+#[cfg(test)]
 pub(crate) fn detect_baud<F>(
     rates: &[u32],
-    mut open: F,
+    open: F,
     wait: Duration,
     log: &mut dyn FnMut(&str),
 ) -> Result<(u32, Link), HostError>
 where
     F: FnMut(u32) -> Result<Link, HostError>,
 {
+    detect_baud_until(rates, open, wait, log, &|| false)
+}
+
+/// [`detect_baud`] that gives up with [`HostError::Cancelled`] as soon as
+/// `cancelled` says so (a disconnect during the search).
+pub(crate) fn detect_baud_until<F>(
+    rates: &[u32],
+    mut open: F,
+    wait: Duration,
+    log: &mut dyn FnMut(&str),
+    cancelled: &dyn Fn() -> bool,
+) -> Result<(u32, Link), HostError>
+where
+    F: FnMut(u32) -> Result<Link, HostError>,
+{
     for &baud in rates {
+        if cancelled() {
+            return Err(HostError::Cancelled);
+        }
         log(&format!("Auto-baud: trying {baud}"));
         let mut link = open(baud)?;
         if let Err(e) = link
@@ -317,11 +336,12 @@ where
             log(&format!("Auto-baud: {baud}: write failed: {e}"));
             continue;
         }
-        match wait_for_reply(&mut link, wait) {
+        match wait_for_reply(&mut link, wait, cancelled) {
             Some(line) => {
                 log(&format!("Auto-baud: {baud} answered \"{line}\""));
                 return Ok((baud, link));
             }
+            None if cancelled() => return Err(HostError::Cancelled),
             None => log(&format!("Auto-baud: no valid reply at {baud}")),
         }
     }
@@ -330,12 +350,12 @@ where
     ))
 }
 
-/// Read lines until one looks valid or `wait` passes.
-fn wait_for_reply(link: &mut Link, wait: Duration) -> Option<String> {
+/// Read lines until one looks valid or `wait` passes (or `cancelled`).
+fn wait_for_reply(link: &mut Link, wait: Duration, cancelled: &dyn Fn() -> bool) -> Option<String> {
     let deadline = Instant::now() + wait;
     let mut pending: Vec<u8> = Vec::new();
     let mut buf = [0u8; 512];
-    while Instant::now() < deadline {
+    while Instant::now() < deadline && !cancelled() {
         match link.reader.read(&mut buf) {
             Ok(0) => return None,
             Ok(n) => {
@@ -483,6 +503,26 @@ mod tests {
         );
         assert!(matches!(result, Err(HostError::Timeout(_))));
         assert_eq!(logs.len(), 4, "{logs:?}");
+    }
+
+    #[test]
+    fn a_cancelled_search_stops_at_once() {
+        use std::cell::Cell;
+        let opened = Cell::new(0);
+        let started = Instant::now();
+        let result = detect_baud_until(
+            &[9600, 19_200, 38_400],
+            |_| {
+                opened.set(opened.get() + 1);
+                Ok(fake(b"").0)
+            },
+            Duration::from_secs(5),
+            &mut |_| {},
+            &|| opened.get() >= 1 && started.elapsed() > Duration::from_millis(100),
+        );
+        assert!(matches!(result, Err(HostError::Cancelled)));
+        assert_eq!(opened.get(), 1);
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     #[test]

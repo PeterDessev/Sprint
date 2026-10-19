@@ -119,7 +119,9 @@ impl Printer {
     /// (or failed); the handshake continues in the background and is
     /// reported through the state and events. Fails if a connection is open
     /// or being opened, or the link cannot be opened. Serial auto-baud
-    /// (baud 0) probes each rate before returning.
+    /// (baud 0) probes each rate before returning. A [`Printer::disconnect`]
+    /// meanwhile cancels the attempt: [`HostError::Cancelled`], status
+    /// `Disconnected` and no failure event.
     pub fn connect(&self, target: ConnectTarget, options: ConnectOptions) -> Result<(), HostError> {
         let label = target.label();
         let generation = self.begin_connect(&label)?;
@@ -130,11 +132,23 @@ impl Printer {
             None,
         );
         let shared = Arc::clone(&self.inner.shared);
-        let link = Link::open(&target, options.reset_on_connect, &mut |message| {
-            shared.log(ConsoleKind::Info, message, false, None);
-        });
+        let cancelled = || self.inner.slot.lock().generation != generation;
+        let link = Link::open_until(
+            &target,
+            options.reset_on_connect,
+            &mut |message| {
+                shared.log(ConsoleKind::Info, message, false, None);
+            },
+            &cancelled,
+        );
         match link {
             Ok(link) => self.finish_connect(link, label, options, generation, Some(target)),
+            Err(_) if cancelled() => {
+                // disconnect() already reported Disconnected: no failure.
+                self.inner.slot.lock().connecting = false;
+                self.connect_cancelled();
+                Err(HostError::Cancelled)
+            }
             Err(e) => {
                 self.connect_failed(&e);
                 Err(e)
@@ -207,8 +221,8 @@ impl Printer {
             drop(slot);
             let (_, _, handle) = link.split();
             handle.close();
-            self.set_status(ConnectionStatus::Disconnected);
-            return Err(HostError::NotConnected);
+            self.connect_cancelled();
+            return Err(HostError::Cancelled);
         }
         match engine::start(
             Arc::clone(&self.inner.shared),
@@ -227,6 +241,17 @@ impl Printer {
                 Err(e)
             }
         }
+    }
+
+    /// A connect ended by `disconnect()`: Disconnected, without a failure.
+    fn connect_cancelled(&self) {
+        self.shared().log(
+            ConsoleKind::Info,
+            "Connection attempt cancelled",
+            false,
+            None,
+        );
+        self.set_status(ConnectionStatus::Disconnected);
     }
 
     fn connect_failed(&self, e: &HostError) {

@@ -41,6 +41,10 @@ pub enum HostError {
     /// Something did not answer in time.
     #[error("timed out: {0}")]
     Timeout(String),
+    /// The connection attempt was cancelled ([`Printer::disconnect`](crate::Printer::disconnect)
+    /// while connecting).
+    #[error("the connection attempt was cancelled")]
+    Cancelled,
 }
 
 impl From<serialport::Error> for HostError {
