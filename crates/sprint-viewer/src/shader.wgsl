@@ -51,6 +51,9 @@ struct Globals {
     // x: shadow radius (mm), y: strength, z: height (mm) above the tip it
     // is cast from, w: unused.
     head_shadow: vec4<f32>,
+    // x: highlighted object (index + 1, as in the attributes; 0 = none),
+    // yzw: unused.
+    objects: vec4<u32>,
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -314,6 +317,11 @@ fn feature_of(s: SegmentIn) -> u32 {
     return s.attrs & 31u;
 }
 
+// Index + 1 of the segment's object, 0 outside any object.
+fn object_of(s: SegmentIn) -> u32 {
+    return (s.attrs >> 24u) & 255u;
+}
+
 fn limited_out(line: u32, layer: u32) -> bool {
     return has_flag(FLAG_LINE_LIMIT) && layer >= g.layers.z && line > g.lines.z;
 }
@@ -403,6 +411,17 @@ fn segment_shade(s: SegmentIn) -> vec4<f32> {
         // The layer being printed: a touch brighter, with a faint glow.
         c = mix(c, vec3<f32>(1.0, 0.97, 0.9), 0.22);
         emissive = 0.12;
+    }
+    if (g.objects.x != 0u) {
+        if (object_of(s) == g.objects.x) {
+            // The highlighted object: brighter, with a warm glow.
+            c = mix(c, vec3<f32>(1.0, 0.96, 0.86), 0.35);
+            emissive = max(emissive, 0.35);
+        } else {
+            // Everything else steps back, greyed.
+            let grey = dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
+            c = mix(c, vec3<f32>(grey), 0.7) * 0.42;
+        }
     }
     if (has_flag(FLAG_HOVER) && s.line == g.lines.w) {
         c = mix(c, vec3<f32>(1.0), 0.3);

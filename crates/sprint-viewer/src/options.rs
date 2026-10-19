@@ -246,6 +246,12 @@ pub struct ViewerOptions {
     pub progress_line: Option<u32>,
     /// Source line to highlight (selection from the G-code text view).
     pub highlight_line: Option<u32>,
+    /// Object to highlight (index into `Toolpath::objects`): its
+    /// extrusions are drawn brighter and everything else greyed. Only the
+    /// first [`MAX_OBJECTS`](crate::instance::MAX_OBJECTS) objects can be
+    /// highlighted (see
+    /// [`GcodeViewer::can_highlight_object`](crate::GcodeViewer::can_highlight_object)).
+    pub highlight_object: Option<usize>,
     /// Marker at the current progress/scrub position.
     pub show_tool_head: bool,
     /// Background color (sRGB).
@@ -270,6 +276,7 @@ impl Default for ViewerOptions {
             line_limit: None,
             progress_line: None,
             highlight_line: None,
+            highlight_object: None,
             show_tool_head: true,
             background: crate::color::BACKGROUND,
             ghost_style: GhostStyle::Opaque,

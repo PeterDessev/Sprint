@@ -14,7 +14,9 @@ use crate::color::{
     srgb_to_linear, srgb_to_linear_rgb,
 };
 use crate::gpu::{self, DrawParams, Globals, Renderer, Slot, flags};
-use crate::instance::{self, CLUSTER_SIZE, Cluster, LayerRanges, MAX_COORD, SceneData};
+use crate::instance::{
+    self, CLUSTER_SIZE, Cluster, LayerRanges, MAX_COORD, MAX_OBJECTS, SceneData,
+};
 use crate::options::{
     BedSpec, ColorMode, GhostStyle, RenderStyle, ViewInsets, ViewMode, ViewPreset, ViewerOptions,
 };
@@ -1372,6 +1374,27 @@ impl GcodeViewer {
         (p.is_finite() && p.abs().max_element() < MAX_COORD).then_some(p)
     }
 
+    /// Whether [`ViewerOptions::highlight_object`] can highlight object
+    /// `index` of the toolpath shown: it exists and is one of the first
+    /// [`MAX_OBJECTS`](crate::instance::MAX_OBJECTS) (an application
+    /// selects such an object's first line instead).
+    pub fn can_highlight_object(&self, index: usize) -> bool {
+        index < MAX_OBJECTS
+            && self
+                .toolpath
+                .as_ref()
+                .is_some_and(|tp| index < tp.objects.len())
+    }
+
+    /// The highlighted object as the instance attributes store it (index
+    /// plus one), 0 for none.
+    fn highlighted_object_attr(&self) -> u32 {
+        self.options
+            .highlight_object
+            .filter(|&i| self.can_highlight_object(i))
+            .map_or(0, |i| i as u32 + 1)
+    }
+
     /// The layer being printed while a print progress line is set: the
     /// layer of the last move at or before it.
     pub fn current_layer(&self) -> Option<usize> {
@@ -1574,6 +1597,7 @@ impl GcodeViewer {
                 scene::TOOL_HEAD_HEIGHT * 0.2 * head_scale,
                 0.0,
             ],
+            objects: [self.highlighted_object_attr(), 0, 0, 0],
         };
 
         let passes = match (range, &self.info) {

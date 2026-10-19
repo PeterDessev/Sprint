@@ -40,7 +40,16 @@ pub mod attrs {
     pub const TOOL_SHIFT: u32 = 8;
     /// Fan speed shift (8 bits, 0..=255).
     pub const FAN_SHIFT: u32 = 16;
+    /// Object shift (8 bits): the index into `Toolpath::objects` plus one,
+    /// 0 outside any object and for objects past
+    /// [`MAX_OBJECTS`](super::MAX_OBJECTS).
+    pub const OBJECT_SHIFT: u32 = 24;
 }
+
+/// Objects a segment instance can name (see [`attrs::OBJECT_SHIFT`]): the
+/// first 255 objects of a toolpath can be highlighted
+/// ([`ViewerOptions::highlight_object`](crate::ViewerOptions::highlight_object)).
+pub const MAX_OBJECTS: usize = 255;
 
 /// Per-segment GPU instance (48 bytes, `#[repr(C)]`, matches the WGSL
 /// vertex layout).
@@ -60,7 +69,7 @@ pub struct SegmentInstance {
     /// Layer index.
     pub layer: u32,
     /// Feature (bits 0..5), travel flag (bit 5), tool (bits 8..16), fan
-    /// (bits 16..24). See [`attrs`].
+    /// (bits 16..24), object (bits 24..32). See [`attrs`].
     pub attrs: u32,
     /// Speed in mm/s as an IEEE half float (low 16 bits) and the segment
     /// start time as a fraction of the total time in 1/65535 units (high 16
@@ -90,10 +99,15 @@ impl SegmentInstance {
             (render_width(seg.width), render_height(seg.height))
         };
         let feature = (seg.feature.index() as u32) & attrs::FEATURE_MASK;
+        let object = seg
+            .object_index()
+            .filter(|&i| i < MAX_OBJECTS)
+            .map_or(0, |i| i as u32 + 1);
         let attrs = feature
             | if travel { attrs::TRAVEL_BIT } else { 0 }
             | ((seg.tool as u32) << attrs::TOOL_SHIFT)
-            | ((seg.fan as u32) << attrs::FAN_SHIFT);
+            | ((seg.fan as u32) << attrs::FAN_SHIFT)
+            | (object << attrs::OBJECT_SHIFT);
         let fraction = if time_scale > 0.0 && seg.time.is_finite() {
             seg.time * time_scale
         } else {
@@ -135,6 +149,14 @@ impl SegmentInstance {
     /// Fan speed 0..=255.
     pub fn fan(&self) -> u8 {
         (self.attrs >> attrs::FAN_SHIFT) as u8
+    }
+
+    /// Index of the object the segment belongs to (into
+    /// `Toolpath::objects`), `None` outside any object or past
+    /// [`MAX_OBJECTS`].
+    pub fn object(&self) -> Option<usize> {
+        let value = (self.attrs >> attrs::OBJECT_SHIFT) as usize;
+        value.checked_sub(1)
     }
 
     /// Speed in mm/s (half precision).

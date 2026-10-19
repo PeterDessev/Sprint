@@ -930,6 +930,52 @@ fn translucent_ghosts_in_the_layer_view_raise_no_gpu_errors() {
     assert!(error.is_none(), "{error:?}");
 }
 
+#[test]
+fn a_highlighted_object_stands_out() {
+    let Some((device, queue)) = device() else {
+        return;
+    };
+    // The block's front half is one object, its back half another.
+    let mut tp = block();
+    for s in &mut tp.segments {
+        s.object = if s.start[1] < 110.0 { 0 } else { 1 };
+    }
+    for name in ["front", "back"] {
+        tp.objects.push(sprint_gcode::ObjectInfo {
+            name: name.into(),
+            ..Default::default()
+        });
+    }
+    let mut viewer = loaded_viewer(&device, &queue, tp);
+    viewer.options_mut().show_bed = false;
+    viewer.set_view(ViewPreset::Top);
+    let plain = render(&mut viewer);
+    let front = screen_of(&viewer, Vec3::new(110.0, 104.0, 2.0));
+    let back = screen_of(&viewer, Vec3::new(110.0, 116.0, 2.0));
+    let lum = |img: &[u8], (x, y): (u32, u32)| luma(px(img, x, y));
+    assert!(viewer.can_highlight_object(1));
+    assert!(!viewer.can_highlight_object(2), "no such object");
+    viewer.options_mut().highlight_object = Some(1);
+    let lit = render(&mut viewer);
+    assert!(
+        lum(&lit, back) > lum(&plain, back) * 1.05,
+        "the back object is brighter: {} vs {}",
+        lum(&lit, back),
+        lum(&plain, back)
+    );
+    assert!(
+        lum(&lit, front) < lum(&plain, front) * 0.85,
+        "the rest steps back: {} vs {}",
+        lum(&lit, front),
+        lum(&plain, front)
+    );
+    // An object the toolpath does not have highlights nothing.
+    viewer.options_mut().highlight_object = Some(7);
+    assert_eq!(render(&mut viewer), plain);
+    viewer.options_mut().highlight_object = None;
+    assert_eq!(render(&mut viewer), plain);
+}
+
 /// Screen position of a world point in the viewer's 3D camera.
 fn screen_of(viewer: &GcodeViewer, p: Vec3) -> (u32, u32) {
     let s = viewer

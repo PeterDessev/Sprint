@@ -9,7 +9,7 @@ use sprint_viewer::ColorMode;
 use sprint_viewer::color::{Legend, build_legend};
 use sprint_viewer::demo;
 use sprint_viewer::instance::{
-    CLUSTER_SIZE, RetractionInstance, SceneData, SegmentInstance, build_scene,
+    CLUSTER_SIZE, MAX_OBJECTS, RetractionInstance, SceneData, SegmentInstance, build_scene,
     extrusion_speed_range, layer_count, layer_segment_ranges, total_time,
 };
 
@@ -238,6 +238,38 @@ fn time_fraction_and_speed_survive_packing() {
         assert_eq!(inst.feature(), seg.feature);
         assert_eq!((inst.tool(), inst.fan()), (seg.tool, seg.fan));
     }
+}
+
+#[test]
+fn objects_survive_packing() {
+    let mut seg = Segment {
+        start: [0.0, 0.0, 0.2],
+        end: [10.0, 0.0, 0.2],
+        width: 0.45,
+        height: 0.2,
+        kind: MoveKind::Extrude,
+        feature: Feature::ExternalPerimeter,
+        tool: 3,
+        fan: 200,
+        ..Default::default()
+    };
+    let pack = |seg: &Segment| SegmentInstance::pack(seg, 0.0, 0.0).expect("packed");
+    // Outside any object.
+    assert_eq!(pack(&seg).object(), None);
+    for index in [0u16, 1, 254] {
+        seg.object = index;
+        let inst = pack(&seg);
+        assert_eq!(inst.object(), Some(usize::from(index)));
+        // The other attributes are untouched.
+        assert_eq!(inst.feature(), Feature::ExternalPerimeter);
+        assert_eq!((inst.tool(), inst.fan()), (3, 200));
+        assert!(!inst.is_travel());
+    }
+    // Objects past the ones that fit are not named.
+    seg.object = MAX_OBJECTS as u16;
+    assert_eq!(pack(&seg).object(), None);
+    seg.object = Segment::NO_OBJECT;
+    assert_eq!(pack(&seg).object(), None);
 }
 
 #[test]

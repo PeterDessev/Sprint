@@ -65,6 +65,9 @@ pub(crate) struct Globals {
     /// Shadow radius in mm (x), strength (y) and the height above the tip
     /// it is cast from (z); w unused.
     pub head_shadow: [f32; 4],
+    /// The highlighted object as stored in the instance attributes (its
+    /// index plus one; 0 = none) (x); yzw unused.
+    pub objects: [u32; 4],
 }
 
 /// Bits of `Globals::mode[2]`.
