@@ -400,9 +400,9 @@ impl Printer {
             (
                 s.status.is_open(),
                 s.job
-                    .clone()
+                    .as_ref()
                     .filter(|j| j.status.is_active())
-                    .map(|j| (j.kind, j.name)),
+                    .map(|j| (j.kind, j.name.clone())),
             )
         });
         let mut summary = DisconnectSummary {
