@@ -1271,6 +1271,11 @@ impl App {
                 Err(e) => self.error(format!("Cannot print {name}: {e}")),
             },
             Action::SdDelete(name) => {
+                // The card may have become busy while the question was open.
+                if let Some(why) = self.printer.with_state(actions::sd_delete_blocker) {
+                    self.warn(why);
+                    return;
+                }
                 self.printer.delete_sd_file(&name);
                 self.info(format!("Deleted {name} from the SD card"));
             }
@@ -2138,6 +2143,10 @@ impl App {
                 )));
             }
             Command::Sd(SdCommand::Remove(name)) => {
+                if let Some(why) = printer.with_state(actions::sd_delete_blocker) {
+                    self.warn(why);
+                    return;
+                }
                 self.modal = Some(Modal::Confirm(Confirm::new(
                     "Delete from the SD card?",
                     vec![format!("{name} is deleted from the printer's card (M30).")],

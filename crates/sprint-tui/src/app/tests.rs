@@ -2015,3 +2015,47 @@ fn the_palette_defines_and_runs_macros_with_arguments() {
     app.run_action(action);
     assert!(!app.config.macros.iter().any(|m| m.name == "park"));
 }
+
+#[test]
+fn sd_files_are_not_deleted_while_the_card_prints() {
+    let printer = Printer::new();
+    let sim = SimConfig {
+        boot_delay_ms: 20,
+        time_scale: 20.0,
+        instant_moves: false,
+        sd_files: vec![("big.gcode".into(), 2_000_000)],
+        ..SimConfig::default()
+    };
+    printer
+        .connect(ConnectTarget::Simulator(sim), ConnectOptions::default())
+        .expect("connect to the simulator");
+    let mut app = App::new(printer, AppConfig::default(), None, Theme::dark());
+    wait(&mut app, "the setup queries", |s| {
+        s.is_connected() && s.settings_loaded
+    });
+    wait_idle(&mut app);
+    app.printer.start_sd_print("big.gcode").expect("SD print");
+    wait(&mut app, "the SD print", |s| {
+        s.job.as_ref().is_some_and(|j| j.bytes_done > 0)
+    });
+    received(&app);
+    app.run_line("sd rm big.gcode");
+    // (The simulator's SD print may show a host prompt; no question.)
+    assert!(
+        !matches!(app.modal, Some(Modal::Confirm(_))),
+        "asked to delete the open file"
+    );
+    assert!(
+        app.toast
+            .as_ref()
+            .is_some_and(|t| t.text.contains("is printing from the SD card")),
+        "{:?}",
+        app.toast
+    );
+    // A question opened before the print started is refused too.
+    app.run_action(dialogs::Action::SdDelete("big.gcode".into()));
+    wait_idle(&mut app);
+    assert!(!received(&app).iter().any(|c| c.starts_with("M30")));
+    app.printer.cancel();
+    wait(&mut app, "the cancel", |s| !s.job_active());
+}

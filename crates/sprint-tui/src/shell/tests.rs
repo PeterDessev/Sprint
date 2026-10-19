@@ -974,3 +974,47 @@ fn macros_are_defined_run_with_arguments_and_deleted() {
     assert!(!on_disk.macros.iter().any(|m| m.name == "park"));
     shell.printer.disconnect();
 }
+
+/// A simulator with a large file on its card, printed in (fast) real
+/// time.
+fn sd_sim() -> ConnectTarget {
+    ConnectTarget::Simulator(SimConfig {
+        boot_delay_ms: 20,
+        time_scale: 20.0,
+        instant_moves: false,
+        sd_files: vec![
+            ("big.gcode".into(), 2_000_000),
+            ("small.gcode".into(), 1_000),
+        ],
+        ..SimConfig::default()
+    })
+}
+
+#[test]
+fn sd_files_are_not_deleted_while_the_card_prints() {
+    let (mut shell, buffer) = connected_to(sd_sim());
+    let mut input = Script::new(["sd ls", "sd print big.gcode"], false);
+    shell.run_lines_until_eof_without_leaving(&mut input);
+    wait_for(&shell, "the SD print", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Printing && j.bytes_done > 0)
+    });
+    received(&shell);
+    buffer.clear();
+    let mut input = Script::new(["sd rm big.gcode", "sd rm small.gcode"], false);
+    shell.run_lines_until_eof_without_leaving(&mut input);
+    let text = buffer.text();
+    assert_eq!(
+        text.matches("big.gcode is printing from the SD card")
+            .count(),
+        2,
+        "{text}"
+    );
+    assert!(
+        !received(&shell).iter().any(|c| c.starts_with("M30")),
+        "M30 sent while printing from the card"
+    );
+    shell.printer.cancel();
+    wait_for(&shell, "the cancel", |s| !s.job_active());
+}

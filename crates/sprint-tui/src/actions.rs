@@ -535,6 +535,36 @@ fn script_summary(script: &str) -> Option<String> {
     Some(text)
 }
 
+/// Why no file may be deleted from the SD card now, if none may: while
+/// the printer prints from the card (deleting the open file can corrupt
+/// the card or abort the print), while a file is being written to it, or
+/// while a listing comes in. The GUI's SD tab refuses in the same cases.
+pub fn sd_delete_blocker(state: &PrinterState) -> Option<String> {
+    let job = state.job.as_ref().filter(|j| j.status.is_active());
+    match job.map(|j| (j.kind, j.name.as_str())) {
+        Some((JobKind::SdPrint, name)) => {
+            return Some(format!(
+                "{name} is printing from the SD card: cancel it before deleting files"
+            ));
+        }
+        Some((JobKind::SdUpload, name)) => {
+            return Some(format!(
+                "{name} is being written to the SD card: wait for it (or cancel it) first"
+            ));
+        }
+        _ => {}
+    }
+    if state.sd.printing.is_some() {
+        return Some(
+            "The printer is printing from the SD card: cancel it before deleting files".into(),
+        );
+    }
+    state
+        .sd
+        .listing
+        .then(|| "The SD card is being listed; try again in a moment".to_string())
+}
+
 /// Why a print cannot start, if it cannot.
 pub fn print_blocker(state: &PrinterState, loaded: Option<&LoadedFile>) -> Option<String> {
     if !state.is_connected() {
@@ -724,6 +754,39 @@ mod tests {
             Some("Bed".into())
         );
         assert!(remove_macro(&mut list, "bed").is_none());
+    }
+
+    #[test]
+    fn sd_files_are_not_deleted_while_the_card_is_busy() {
+        let mut state = PrinterState::default();
+        assert_eq!(sd_delete_blocker(&state), None);
+        let mut job = JobInfo::new(JobKind::SdPrint, "ABSE.GCO", 0, 1000);
+        job.status = sprint_host::JobStatus::Printing;
+        state.job = Some(job.clone());
+        let why = sd_delete_blocker(&state).expect("printing");
+        assert!(
+            why.contains("ABSE.GCO is printing from the SD card"),
+            "{why}"
+        );
+        job.kind = JobKind::SdUpload;
+        state.job = Some(job.clone());
+        assert!(sd_delete_blocker(&state).is_some_and(|w| w.contains("being written")));
+        // A host print does not use the card.
+        job.kind = JobKind::HostPrint;
+        state.job = Some(job.clone());
+        assert_eq!(sd_delete_blocker(&state), None);
+        // Started at the printer: no job, but the card is printing.
+        state.sd.printing = Some((10, 100));
+        assert!(sd_delete_blocker(&state).is_some());
+        state.sd.printing = None;
+        state.sd.listing = true;
+        assert!(sd_delete_blocker(&state).is_some_and(|w| w.contains("listed")));
+        // A finished SD print no longer blocks.
+        state.sd.listing = false;
+        job.kind = JobKind::SdPrint;
+        job.status = sprint_host::JobStatus::Completed;
+        state.job = Some(job);
+        assert_eq!(sd_delete_blocker(&state), None);
     }
 
     #[test]

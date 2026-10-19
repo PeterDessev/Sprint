@@ -1355,7 +1355,9 @@ impl Shell {
                 Err(e) => self.out.error(format!("Cannot print {name}: {e}")),
             },
             Command::Sd(SdCommand::Remove(name)) => {
-                if self.confirm(input, &format!("Delete {name} from the SD card?"), true) {
+                if let Some(why) = printer.with_state(actions::sd_delete_blocker) {
+                    self.out.warn(why);
+                } else if self.confirm(input, &format!("Delete {name} from the SD card?"), true) {
                     printer.delete_sd_file(&name);
                     self.out.dim(format!("Deleted {name} (M30)"));
                 }
