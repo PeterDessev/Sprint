@@ -32,7 +32,12 @@ impl Engine {
             self.on_handshake_replies(replies, now);
             return;
         }
-        for reply in replies {
+        // What an `ok` line carries ("ok T:...", "ok FIRMWARE_NAME:...")
+        // belongs to the command it acknowledges: apply it first.
+        let (oks, others): (Vec<Reply>, Vec<Reply>) = replies
+            .into_iter()
+            .partition(|r| matches!(r, Reply::Ok { .. }));
+        for reply in others.into_iter().chain(oks) {
             self.on_reply(reply, now);
             if self.exit.is_some() {
                 return;
