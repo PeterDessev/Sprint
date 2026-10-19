@@ -524,7 +524,7 @@ impl App {
         };
         let mut spans = vec![
             Span::styled("Fan ", theme.dim()),
-            Span::styled(fan_percent(self.view.fan), theme.text()),
+            Span::styled(crate::report::fan_percent(self.view.fan), theme.text()),
             Span::styled(format!("{gap}{speed}"), theme.dim()),
             Span::styled(pct(self.view.feedrate_pct), theme.text()),
             Span::styled(format!("{gap}Flow "), theme.dim()),
@@ -941,11 +941,6 @@ impl App {
             Modal::Prompt(d) => d.draw(frame, &theme),
         }
     }
-}
-
-/// A fan speed (0..=255) in whole percent.
-pub(crate) fn fan_percent(speed: u8) -> String {
-    format!("{}%", (f32::from(speed) / 255.0 * 100.0).round())
 }
 
 /// `spans` cut to `width` columns, ending in a dim `…` when cut.

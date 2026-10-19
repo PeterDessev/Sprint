@@ -477,6 +477,11 @@ pub fn status_lines(state: &PrinterState, file: Option<&LoadedFile>) -> Vec<Repo
     lines
 }
 
+/// A fan speed (0..=255) in whole percent: "50%" for 128.
+pub fn fan_percent(speed: u8) -> String {
+    format!("{}%", (f32::from(speed) / 255.0 * 100.0).round())
+}
+
 /// "fan 100%  speed 100%  flow 100%".
 pub fn overrides_text(state: &PrinterState) -> String {
     let fan = state.fan_speeds.first().copied().unwrap_or(0);
@@ -488,7 +493,7 @@ pub fn overrides_text(state: &PrinterState) -> String {
         .unwrap_or(100.0);
     format!(
         "fan {}  speed {}%  flow {}%",
-        format::percent(f64::from(fan) / 255.0).replace(".0%", "%"),
+        fan_percent(fan),
         format::trimmed(f64::from(state.feedrate_pct), 1),
         format::trimmed(f64::from(flow), 1)
     )
@@ -1403,6 +1408,22 @@ mod tests {
         // A flat mesh does not divide by zero.
         let flat = BedMesh::from_rows(vec![vec![0.0, 0.0]], "mbl");
         assert!(joined(&mesh_lines(&flat)).contains("range 0.000 mm"));
+    }
+
+    #[test]
+    fn fan_speeds_are_whole_percent() {
+        assert_eq!(fan_percent(0), "0%");
+        assert_eq!(fan_percent(128), "50%");
+        assert_eq!(fan_percent(255), "100%");
+        let state = PrinterState {
+            fan_speeds: vec![191],
+            ..PrinterState::default()
+        };
+        assert!(
+            overrides_text(&state).starts_with("fan 75%"),
+            "{}",
+            overrides_text(&state)
+        );
     }
 
     #[test]
