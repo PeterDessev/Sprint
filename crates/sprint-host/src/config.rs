@@ -216,7 +216,11 @@ pub struct PrinterProfile {
     pub cancel_script: String,
     /// Motion limits for print-time estimation; `None` = defaults or the
     /// values reported by M503.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "kinematics_toml"
+    )]
     pub kinematics: Option<KinematicLimits>,
 }
 
@@ -249,6 +253,94 @@ impl Default for PrinterProfile {
             cancel_script: DEFAULT_CANCEL_SCRIPT.to_string(),
             kinematics: None,
         }
+    }
+}
+
+/// `PrinterProfile::kinematics` in TOML. `KinematicLimits` serializes
+/// `junction_deviation: None` (classic jerk) by leaving the key out, and a
+/// missing key reads back as the default junction deviation, so classic
+/// jerk would not survive a save. Here `junction_deviation = false` stands
+/// for `None`; files without the key keep their old meaning.
+mod kinematics_toml {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use sprint_gcode::KinematicLimits;
+
+    #[derive(Serialize, Deserialize)]
+    #[serde(untagged)]
+    enum Junction {
+        /// `false`: classic jerk; `true`: the default junction deviation.
+        Enabled(bool),
+        /// Junction deviation in mm.
+        Mm(f32),
+    }
+
+    #[derive(Serialize, Deserialize)]
+    #[serde(default)]
+    struct Repr {
+        max_feedrate: [f32; 4],
+        max_accel: [f32; 4],
+        print_accel: f32,
+        retract_accel: f32,
+        travel_accel: f32,
+        junction_deviation: Junction,
+        jerk: [f32; 4],
+        min_feedrate: f32,
+    }
+
+    impl Default for Repr {
+        fn default() -> Self {
+            Repr::from(KinematicLimits::default())
+        }
+    }
+
+    impl From<KinematicLimits> for Repr {
+        fn from(k: KinematicLimits) -> Self {
+            Repr {
+                max_feedrate: k.max_feedrate,
+                max_accel: k.max_accel,
+                print_accel: k.print_accel,
+                retract_accel: k.retract_accel,
+                travel_accel: k.travel_accel,
+                junction_deviation: k
+                    .junction_deviation
+                    .map_or(Junction::Enabled(false), Junction::Mm),
+                jerk: k.jerk,
+                min_feedrate: k.min_feedrate,
+            }
+        }
+    }
+
+    impl From<Repr> for KinematicLimits {
+        fn from(r: Repr) -> Self {
+            let junction_deviation = match r.junction_deviation {
+                Junction::Enabled(false) => None,
+                Junction::Enabled(true) => KinematicLimits::default().junction_deviation,
+                Junction::Mm(mm) => Some(mm),
+            };
+            KinematicLimits {
+                max_feedrate: r.max_feedrate,
+                max_accel: r.max_accel,
+                print_accel: r.print_accel,
+                retract_accel: r.retract_accel,
+                travel_accel: r.travel_accel,
+                junction_deviation,
+                jerk: r.jerk,
+                min_feedrate: r.min_feedrate,
+            }
+        }
+    }
+
+    pub(super) fn serialize<S: Serializer>(
+        value: &Option<KinematicLimits>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        value.map(Repr::from).serialize(serializer)
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<KinematicLimits>, D::Error> {
+        Ok(Option::<Repr>::deserialize(deserializer)?.map(KinematicLimits::from))
     }
 }
 
@@ -635,6 +727,64 @@ mod tests {
         let text = toml::to_string_pretty(&c).unwrap();
         let back: AppConfig = toml::from_str(&text).unwrap();
         assert_eq!(back, c, "{text}");
+    }
+
+    #[test]
+    fn classic_jerk_kinematics_survive_a_round_trip() {
+        let classic = KinematicLimits {
+            junction_deviation: None,
+            jerk: [10.0, 10.0, 0.3, 4.5],
+            ..KinematicLimits::default()
+        };
+        let mut c = AppConfig::default();
+        c.active_mut().kinematics = Some(classic);
+        let text = toml::to_string_pretty(&c).unwrap();
+        assert!(text.contains("junction_deviation = false"), "{text}");
+        let back: AppConfig = toml::from_str(&text).unwrap();
+        assert_eq!(back.active().kinematics, Some(classic));
+
+        let custom = KinematicLimits {
+            junction_deviation: Some(0.02),
+            ..KinematicLimits::default()
+        };
+        c.active_mut().kinematics = Some(custom);
+        let back: AppConfig = toml::from_str(&toml::to_string_pretty(&c).unwrap()).unwrap();
+        assert_eq!(back.active().kinematics, Some(custom));
+
+        // Files written before (no key, a number) keep their meaning.
+        let parse = |table: &str| -> Option<KinematicLimits> {
+            let text = format!("[[profiles]]\nname = \"p\"\n[profiles.kinematics]\n{table}\n");
+            toml::from_str::<AppConfig>(&text).unwrap().profiles[0].kinematics
+        };
+        assert_eq!(
+            parse("print_accel = 900.0"),
+            Some(KinematicLimits {
+                print_accel: 900.0,
+                ..KinematicLimits::default()
+            })
+        );
+        assert_eq!(
+            parse("junction_deviation = 0.05")
+                .unwrap()
+                .junction_deviation,
+            Some(0.05)
+        );
+        assert_eq!(
+            parse("junction_deviation = 0").unwrap().junction_deviation,
+            Some(0.0)
+        );
+        assert_eq!(
+            parse("junction_deviation = true")
+                .unwrap()
+                .junction_deviation,
+            KinematicLimits::default().junction_deviation
+        );
+        assert!(
+            toml::from_str::<AppConfig>(
+                "[[profiles]]\n[profiles.kinematics]\njunction_deviation = \"x\"\n"
+            )
+            .is_err()
+        );
     }
 
     #[test]
