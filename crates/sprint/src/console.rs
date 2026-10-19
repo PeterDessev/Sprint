@@ -69,25 +69,13 @@ fn panic_message(thread: Option<&str>, main: bool, info: &PanicHookInfo<'_>) -> 
 /// See [`panic_message`].
 fn panic_text(thread: Option<&str>, main: bool, what: &str, location: Option<&str>) -> String {
     let mut text = if main {
-        format!(
-            "Sprint stopped because of an internal error:
-
-{what}"
-        )
+        format!("Sprint stopped because of an internal error:\n\n{what}")
     } else {
         let name = thread.unwrap_or("a background thread");
-        format!(
-            "Internal error in {name}:
-
-{what}"
-        )
+        format!("Internal error in {name}:\n\n{what}")
     };
     if let Some(location) = location {
-        text.push_str(&format!(
-            "
-
-(at {location})"
-        ));
+        text.push_str(&format!("\n\n(at {location})"));
     }
     text
 }
@@ -171,23 +159,15 @@ mod tests {
     fn panic_reports_name_the_error_and_where() {
         assert_eq!(
             panic_text(Some("main"), true, "boom", Some("src/app.rs:12")),
-            "Sprint stopped because of an internal error:
-
-boom
-
-(at src/app.rs:12)"
+            "Sprint stopped because of an internal error:\n\nboom\n\n(at src/app.rs:12)"
         );
         assert_eq!(
             panic_text(Some("sprint-load"), false, "bad file", None),
-            "Internal error in sprint-load:
-
-bad file"
+            "Internal error in sprint-load:\n\nbad file"
         );
         assert_eq!(
             panic_text(None, false, "x", None),
-            "Internal error in a background thread:
-
-x"
+            "Internal error in a background thread:\n\nx"
         );
     }
 

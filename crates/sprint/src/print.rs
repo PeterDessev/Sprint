@@ -483,31 +483,13 @@ mod tests {
         // A line longer than the firmware's line buffer is rejected again
         // and again until the engine gives up on the job, while the link
         // stays usable.
-        let mut text = String::from(
-            "M104 S200
-M140 S60
-G28
-G90
-",
-        );
+        let mut text = String::from("M104 S200\nM140 S60\nG28\nG90\n");
         for i in 0..50 {
-            text.push_str(&format!(
-                "G1 X{} Y20 F3000
-",
-                20 + i % 2
-            ));
+            text.push_str(&format!("G1 X{} Y20 F3000\n", 20 + i % 2));
         }
-        text.push_str(&format!(
-            "M117 {}
-",
-            "x".repeat(600)
-        ));
+        text.push_str(&format!("M117 {}\n", "x".repeat(600)));
         for i in 0..50 {
-            text.push_str(&format!(
-                "G1 X{} Y30 F3000
-",
-                20 + i % 2
-            ));
+            text.push_str(&format!("G1 X{} Y30 F3000\n", 20 + i % 2));
         }
         let file = Arc::new(sprint_gcode::GcodeFile::from_text("long.gcode", &text));
         printer
