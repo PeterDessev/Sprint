@@ -496,8 +496,21 @@ fn esteps_zoffset_and_flow_reach_the_simulator() {
             .first()
             .is_some_and(|r| (r.current - 205.0).abs() <= 2.0)
     });
-    h.get_by_label("Next").click();
-    h.run_ok();
+    // The simulated hotend swings around its target: "Next" is enabled
+    // only while it is within the tolerance.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while h.query_by_label("Marked").is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the heat step never let go"
+        );
+        let next = h.get_by_label("Next");
+        if !next.accesskit_node().is_disabled() {
+            next.click();
+        }
+        h.step();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
     h.get_by_label("Marked").click();
     h.run_ok();
     clear_received(&printer);
