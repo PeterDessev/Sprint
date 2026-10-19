@@ -1188,9 +1188,18 @@ impl Shell {
                     Err(why) => self.out.error(why),
                 }
             }
-            Command::GetTemp => self
-                .out
-                .lines(&printer.with_state(report::temperature_lines)),
+            // Asked for, as pronsole does: a target just set shows.
+            Command::GetTemp => {
+                if self.request(
+                    Awaited::Temperatures,
+                    false,
+                    REPORT_TIMEOUT,
+                    Printer::request_temperatures,
+                ) {
+                    self.out
+                        .lines(&printer.with_state(report::temperature_lines));
+                }
+            }
             Command::Off => {
                 let job = printer.with_state(|s| {
                     s.job

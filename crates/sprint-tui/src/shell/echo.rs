@@ -44,6 +44,8 @@ pub(crate) enum Awaited {
     Mesh,
     /// M78 statistics.
     Stats,
+    /// M105 temperatures.
+    Temperatures,
     /// The SD card listing.
     SdFiles,
     /// Nothing in particular: the link going idle.
@@ -60,6 +62,7 @@ impl Awaited {
                 | (Awaited::Endstops, Event::Endstops(_))
                 | (Awaited::Mesh, Event::Mesh(_))
                 | (Awaited::Stats, Event::Stats(_))
+                | (Awaited::Temperatures, Event::Temperatures(_))
                 | (Awaited::SdFiles, Event::SdFiles(_))
         )
     }

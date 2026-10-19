@@ -1014,6 +1014,8 @@ pub(crate) enum ReportSource {
     Mesh,
     Stats,
     SdFiles,
+    /// `gettemp`.
+    Temperatures,
 }
 
 /// A report waiting for the printer's answer.

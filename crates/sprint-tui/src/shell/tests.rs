@@ -1330,3 +1330,17 @@ fn resume_goes_on_after_a_wait_the_printer_paused_the_print_for() {
     );
     shell.printer.disconnect();
 }
+
+#[test]
+fn gettemp_asks_the_printer_for_its_temperatures() {
+    let (mut shell, buffer) = connected();
+    // As pronsole does: the report shows the target just set.
+    script(&mut shell, &["settemp 205", "gettemp"]);
+    let text = buffer.text();
+    let report = text
+        .lines()
+        .find(|l| l.starts_with("Hotend ") && l.contains("power"))
+        .unwrap_or_else(|| panic!("no hotend report in\n{text}"));
+    assert!(report.contains("/ 205 °C"), "{text}");
+    assert!(received(&shell).iter().any(|c| c == "M105"));
+}

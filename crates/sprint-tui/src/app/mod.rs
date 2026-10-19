@@ -381,6 +381,9 @@ impl App {
             Event::Endstops(_) => self.report_arrived(|w| *w == ReportSource::Endstops),
             Event::Mesh(_) => self.report_arrived(|w| *w == ReportSource::Mesh),
             Event::Stats(_) => self.report_arrived(|w| *w == ReportSource::Stats),
+            Event::Temperatures(_) => {
+                self.report_arrived(|w| *w == ReportSource::Temperatures);
+            }
             Event::SdFiles(_) => {
                 // The host takes a deleted file off the listing.
                 if let Some((name, _)) = self.pending_sd_delete.take() {
@@ -2031,9 +2034,11 @@ impl App {
                     Err(why) => self.error(why),
                 }
             }
+            // Asked for, as pronsole does: a target just set shows.
             Command::GetTemp => {
-                let lines = printer.with_state(report::temperature_lines);
-                self.show_report("Temperatures", lines);
+                printer.request_temperatures();
+                let pending = Pending::new(REPORT_TIMEOUT, false);
+                self.open_report("Temperatures", ReportSource::Temperatures, pending);
             }
             Command::Off => match self.view.job.as_ref().filter(|j| j.status.is_active()) {
                 Some(job) => {
@@ -2514,5 +2519,6 @@ fn report_lines(printer: &Printer, source: &ReportSource) -> Vec<ReportLine> {
         ),
         ReportSource::Stats => report::stats_lines(s.stats.as_ref(), &s.link),
         ReportSource::SdFiles => report::sd_lines(&s.sd),
+        ReportSource::Temperatures => report::temperature_lines(s),
     })
 }
