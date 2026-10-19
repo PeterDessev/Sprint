@@ -1,9 +1,10 @@
 //! Extruder: tool selector, extrude / retract, a cold-extrusion guard with
 //! a "heat to preset" shortcut, and filament load / unload.
 
+use crossbeam_channel::Receiver;
 use egui::Ui;
 use sprint_host::sprint_proto::FirmwareFlavor;
-use sprint_host::{Heater, Printer, PrinterState, TempPreset};
+use sprint_host::{Event, Heater, Printer, PrinterState, TempPreset};
 
 use super::temperatures::{MAX_HOTENDS, current_temp, hotend_count, target_temp};
 use super::{caption, notice, section};
@@ -31,6 +32,9 @@ const UNLOAD_TIP_MM: f32 = 5.0;
 const UNLOAD_TIP_MM_MIN: f32 = 300.0;
 const UNLOAD_MM: f32 = 80.0;
 const UNLOAD_MM_MIN: f32 = 1800.0;
+/// How long a native load/unload is watched for a rejection (s): M109 may
+/// heat for a while before the firmware even reads M701.
+const NATIVE_WATCH_SECS: f64 = 600.0;
 
 /// UI state of the extruder section.
 #[derive(Debug)]
@@ -43,6 +47,12 @@ pub(super) struct Extruder {
     seeded: bool,
     /// Tool picked in the selector (`None` = the active tool).
     tool: Option<u8>,
+    /// The firmware answered M701/M702 with "Unknown command" on this
+    /// connection: use the scripted sequences.
+    native_rejected: bool,
+    /// A native load/unload in flight, watched for a rejection.
+    watch: Option<NativeWatch>,
+    was_connected: bool,
 }
 
 impl Default for Extruder {
@@ -52,8 +62,32 @@ impl Default for Extruder {
             speed: 5.0,
             seeded: false,
             tool: None,
+            native_rejected: false,
+            watch: None,
+            was_connected: false,
         }
     }
+}
+
+/// A native filament change waiting to see whether the firmware knows it.
+#[derive(Debug)]
+struct NativeWatch {
+    op: FilamentOp,
+    tool: u8,
+    events: Receiver<Event>,
+    /// egui time when it was sent.
+    started: f64,
+}
+
+/// Whether a firmware message rejects the native command of `op`
+/// (`Unknown command: "M701"`).
+pub(super) fn rejects_native(message: &str, op: FilamentOp) -> bool {
+    let message = message.to_ascii_uppercase();
+    let code = match op {
+        FilamentOp::Load => "M701",
+        FilamentOp::Unload => "M702",
+    };
+    message.contains("UNKNOWN COMMAND") && message.contains(code)
 }
 
 /// Loading or unloading filament.
@@ -209,8 +243,43 @@ impl Extruder {
         } else {
             None
         };
+        if self.was_connected && !connected {
+            // Another connection may be another printer.
+            self.native_rejected = false;
+            self.watch = None;
+        }
+        self.was_connected = connected;
+        let now = ui.input(|i| i.time);
+        if let Some(watch) = &self.watch {
+            let rejected = watch
+                .events
+                .try_iter()
+                .any(|e| matches!(e, Event::FirmwareMessage(ref m) if rejects_native(m, watch.op)));
+            if rejected {
+                let (op, tool) = (watch.op, watch.tool);
+                self.native_rejected = true;
+                self.watch = None;
+                let title = match op {
+                    FilamentOp::Load => "The printer has no M701",
+                    FilamentOp::Unload => "The printer has no M702",
+                };
+                if job_active {
+                    ctx.toasts.warning(title);
+                } else {
+                    // Heating already happened: just the scripted moves.
+                    let plan = filament_plan(op, tool, false, false, f32::NAN);
+                    run_plan(printer, tool, plan.get(1..).unwrap_or_default());
+                    ctx.toasts
+                        .info(title)
+                        .message("Used Sprint's scripted sequence instead.");
+                }
+            } else if now - watch.started > NATIVE_WATCH_SECS {
+                self.watch = None;
+            }
+        }
         let presets = &profile.temp_presets;
-        let native = native_load_unload(state);
+        let native = !self.native_rejected && native_load_unload(state);
+        let mut started = None;
         section(
             ui,
             icons::FILAMENT,
@@ -293,6 +362,15 @@ impl Extruder {
                         }
                     });
                     if let Some(op) = run {
+                        if native {
+                            // Listen before sending so the reply is not missed.
+                            started = Some(NativeWatch {
+                                op,
+                                tool,
+                                events: printer.subscribe(),
+                                started: now,
+                            });
+                        }
                         let plan = filament_plan(op, tool, hotends > 1, native, heat);
                         run_plan(printer, tool, &plan);
                     }
@@ -300,6 +378,9 @@ impl Extruder {
                 });
             },
         );
+        if started.is_some() {
+            self.watch = started;
+        }
     }
 }
 
@@ -439,6 +520,23 @@ mod tests {
             ..PrinterState::default()
         };
         assert!(native_load_unload(&caps));
+    }
+
+    #[test]
+    fn native_rejections_are_recognised() {
+        assert!(rejects_native(
+            "Unknown command: \"M701\"",
+            FilamentOp::Load
+        ));
+        assert!(rejects_native(
+            "unknown command: M702 T1",
+            FilamentOp::Unload
+        ));
+        assert!(!rejects_native(
+            "Unknown command: \"M702\"",
+            FilamentOp::Load
+        ));
+        assert!(!rejects_native("M701 done", FilamentOp::Load));
     }
 
     #[test]
