@@ -11,7 +11,7 @@
 
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use egui::Vec2;
@@ -69,15 +69,49 @@ fn wgpu_setup() -> egui_wgpu::WgpuSetup {
     egui_wgpu::WgpuSetup::CreateNew(setup)
 }
 
-/// A wgpu renderer, or `None` when the machine has no usable adapter.
+/// The GPU every app of this test binary renders on, created once (`None`
+/// when the machine has no usable adapter). A device per test meant dozens
+/// of devices created at once by the parallel tests, which some drivers do
+/// not survive.
+fn shared_gpu() -> Option<egui_wgpu::WgpuSetupExisting> {
+    static GPU: OnceLock<Option<(wgpu::Instance, wgpu::Adapter, wgpu::Device, wgpu::Queue)>> =
+        OnceLock::new();
+    let (instance, adapter, device, queue) = GPU
+        .get_or_init(|| {
+            let previous = std::panic::take_hook();
+            std::panic::set_hook(Box::new(|_| {}));
+            let state = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                egui_kittest::wgpu::create_render_state(
+                    wgpu_setup(),
+                    egui_wgpu::RendererOptions::PREDICTABLE,
+                )
+            }))
+            .ok();
+            std::panic::set_hook(previous);
+            state.map(|s| (s.instance, s.adapter, s.device, s.queue))
+        })
+        .clone()?;
+    Some(egui_wgpu::WgpuSetupExisting {
+        instance,
+        adapter,
+        device,
+        queue,
+    })
+}
+
+/// A wgpu renderer on the shared GPU, or `None` when the machine has no
+/// usable adapter.
 fn renderer() -> Option<WgpuTestRenderer> {
-    let previous = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
-    let renderer = std::panic::catch_unwind(AssertUnwindSafe(|| {
-        WgpuTestRenderer::from_setup(wgpu_setup())
-    }))
-    .ok();
-    std::panic::set_hook(previous);
+    let renderer = shared_gpu().and_then(|gpu| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let renderer = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            WgpuTestRenderer::from_setup(egui_wgpu::WgpuSetup::Existing(gpu))
+        }))
+        .ok();
+        std::panic::set_hook(previous);
+        renderer
+    });
     if renderer.is_none() {
         eprintln!("no wgpu adapter: the app runs without the 3D view and snapshots are skipped");
     }
