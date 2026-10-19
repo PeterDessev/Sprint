@@ -122,6 +122,7 @@ fn entry(seq: u64, kind: ConsoleKind, text: &str) -> ConsoleEntry {
         text: text.into(),
         auto: false,
         line: None,
+        stream: false,
     }
 }
 

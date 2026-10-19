@@ -1231,6 +1231,7 @@ mod tests {
             text: text.into(),
             auto,
             line: None,
+            stream: false,
         }
     }
 

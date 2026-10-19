@@ -442,6 +442,7 @@ mod tests {
             text: text.to_string(),
             auto,
             line: None,
+            stream: false,
         }
     }
 
