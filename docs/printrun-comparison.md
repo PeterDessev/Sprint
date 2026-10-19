@@ -102,4 +102,5 @@ used; check its documentation for details of a particular version.
 The shell accepts most pronsole commands as they are; the
 [shell page](shell.md#coming-from-pronsole) lists the ones that differ
 (`ls`, `sdprint` and `upload` are `sd ls`, `sd print` and `sd upload`;
-`run_script`, `slice`, `loadrc` and `set port` have no direct equivalent).
+`set port` and `set baudrate` are `connect --save`; `run_script`, `slice`
+and `loadrc` have no direct equivalent).
