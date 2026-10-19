@@ -48,18 +48,13 @@ pub fn pick_gcode_file(directory: Option<&Path>) -> Option<PathBuf> {
 }
 
 /// The editor command for [`open_in_editor`]: `SPRINT_EDITOR`, `VISUAL` or
-/// `EDITOR` (a program and its arguments, split at spaces), else the
-/// platform's text editor.
+/// `EDITOR` (a program and its arguments, split at spaces outside double
+/// quotes), else the platform's text editor.
 pub fn editor_command() -> Vec<String> {
     let configured = ["SPRINT_EDITOR", "VISUAL", "EDITOR"]
         .iter()
         .filter_map(|name| std::env::var(name).ok())
-        .map(|value| {
-            value
-                .split_whitespace()
-                .map(str::to_owned)
-                .collect::<Vec<_>>()
-        })
+        .map(|value| command_words(&value))
         .find(|words| !words.is_empty());
     configured.unwrap_or_else(|| {
         let default: &[&str] = if cfg!(windows) {
@@ -71,6 +66,39 @@ pub fn editor_command() -> Vec<String> {
         };
         default.iter().map(|s| (*s).to_owned()).collect()
     })
+}
+
+/// The program and arguments of an editor setting: words split at spaces,
+/// double-quoted words kept whole (`"C:\Program Files\…\editor.exe" -n`),
+/// and an unquoted path to an existing program taken as it is.
+fn command_words(value: &str) -> Vec<String> {
+    let value = value.trim();
+    if !value.is_empty() && Path::new(value).is_file() {
+        return vec![value.to_owned()];
+    }
+    let mut words = Vec::new();
+    let mut word = String::new();
+    // Inside a word (an empty quoted word "" counts).
+    let mut in_word = false;
+    let mut quoted = false;
+    for c in value.chars() {
+        if c == '"' {
+            quoted = !quoted;
+            in_word = true;
+        } else if c.is_whitespace() && !quoted {
+            if in_word {
+                words.push(std::mem::take(&mut word));
+                in_word = false;
+            }
+        } else {
+            word.push(c);
+            in_word = true;
+        }
+    }
+    if in_word {
+        words.push(word);
+    }
+    words
 }
 
 /// Open `path` in the external text editor (see [`editor_command`])
@@ -115,5 +143,30 @@ mod tests {
     fn results_arrive_through_the_channel() {
         let rx = spawn(None, || 42);
         assert_eq!(rx.recv_timeout(Duration::from_secs(10)), Ok(42));
+    }
+
+    #[test]
+    fn editor_settings_keep_paths_with_spaces_whole() {
+        let words = |value: &str| command_words(value);
+        assert_eq!(words("code --wait"), ["code", "--wait"]);
+        assert_eq!(words("  "), Vec::<String>::new());
+        // Quoted, as Windows paths under Program Files are written.
+        assert_eq!(
+            words(r#""C:\Program Files\Notepad++\notepad++.exe" -multiInst"#),
+            [r"C:\Program Files\Notepad++\notepad++.exe", "-multiInst"]
+        );
+        assert_eq!(words(r#"ed "two words""#), ["ed", "two words"]);
+        // An unquoted path to an existing program, spaces and all.
+        let dir = std::env::temp_dir().join(format!(
+            "sprint-gui-editor-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let program = dir.join("my editor.exe");
+        std::fs::write(&program, "").expect("program");
+        let value = program.to_string_lossy().into_owned();
+        assert_eq!(words(&value), [value]);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
