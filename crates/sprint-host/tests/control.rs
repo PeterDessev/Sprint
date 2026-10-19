@@ -338,3 +338,73 @@ fn the_waker_is_called_and_rate_limited() {
     // At most one call per 16 ms (plus slack for the first call).
     assert!(n <= elapsed / 0.016 + 2.0, "{n} calls in {elapsed} s");
 }
+
+#[test]
+fn a_manual_m110_renumbers_the_following_lines() {
+    let printer = connect(fast_sim(20.0), options());
+    let before = last_seq(&printer);
+    let got = executed(&printer, |p| p.send("M110 N100\nG28\nM114"));
+    assert_eq!(got, ["M110 N100", "G28", "M114"]);
+    let lines: Vec<(String, Option<u32>)> = printer
+        .console_since(before, usize::MAX)
+        .into_iter()
+        .filter(|e| e.kind == ConsoleKind::Sent)
+        .map(|e| (e.text, e.line))
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            ("M110 N100".to_string(), Some(100)),
+            ("G28".to_string(), Some(101)),
+            ("M114".to_string(), Some(102))
+        ]
+    );
+    let control = printer.sim_control().unwrap();
+    assert_eq!(control.snapshot().last_line_number, 102);
+}
+
+#[test]
+fn emergency_commands_bypass_the_queue() {
+    // One planner slot: every move is acknowledged only when the previous
+    // one finished, so the queue drains slowly.
+    let sim = SimConfig {
+        instant_moves: false,
+        planner_buffer: 1,
+        ..fast_sim(10.0)
+    };
+    let printer = connect(sim, options());
+    let control = printer.sim_control().unwrap();
+    wait_idle(&printer);
+    control.clear_received();
+    let moves: String = (0..40)
+        .map(|i| format!("G1 X{} F600\n", 10 + i % 2 * 10))
+        .collect();
+    printer.send(&moves);
+    wait_for(&printer, "a few moves", |_| {
+        control.received_commands().len() > 3
+    });
+    printer.send("M108");
+    printer.send_immediate("M105");
+    wait_for(&printer, "M108 and M105", |_| {
+        let got = control.received_commands();
+        got.iter().any(|c| c == "M108") && got.iter().any(|c| c == "M105")
+    });
+    control.set_time_scale(1000.0);
+    wait_idle(&printer);
+    let got = control.received_commands();
+    let m108 = got.iter().position(|c| c == "M108").expect("M108 arrived");
+    assert!(
+        m108 < 20,
+        "M108 at {m108} of {}: it waited in the queue",
+        got.len()
+    );
+    let m105 = got.iter().position(|c| c == "M105").expect("M105 arrived");
+    assert!(m105 < 20, "M105 at {m105}");
+    assert_eq!(got.iter().filter(|c| c.starts_with("G1")).count(), 40);
+    // Both went out unnumbered.
+    let sent: Vec<_> = console(&printer)
+        .into_iter()
+        .filter(|e| e.kind == ConsoleKind::Sent && (e.text == "M108" || e.text == "M105"))
+        .collect();
+    assert!(sent.iter().all(|e| e.line.is_none()), "{sent:?}");
+}
