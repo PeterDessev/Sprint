@@ -191,8 +191,9 @@ fn start_line_and_preamble() {
     let control = printer.sim_control().unwrap();
     control.clear_received();
     printer.start_print(Arc::clone(&file), options).unwrap();
+    // The job may already be under way when the state is read.
     let first = printer.with_state(|s| s.job.clone()).unwrap();
-    assert_eq!(first.current_line, start);
+    assert!(first.current_line >= start, "{first:?}");
     assert!(first.bytes_done > 0 && first.progress > 0.3, "{first:?}");
     wait_for(&printer, "completion", |s| {
         s.job
