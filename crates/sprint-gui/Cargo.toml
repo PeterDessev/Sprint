@@ -31,3 +31,5 @@ skrifa = { version = "0.44", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 egui_kittest.workspace = true
+# Custom adapter selection for the snapshot renderer (see tests/common).
+egui-wgpu.workspace = true

@@ -4352,6 +4352,7 @@ dependencies = [
  "eframe",
  "egui",
  "egui-phosphor",
+ "egui-wgpu",
  "egui_extras",
  "egui_kittest",
  "egui_plot",
