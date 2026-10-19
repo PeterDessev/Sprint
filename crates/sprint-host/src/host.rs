@@ -402,7 +402,7 @@ impl Printer {
         self.command(Command::Cancel);
     }
 
-    /// Print a file from the SD card: M23 + M24, then M27 S<n> auto-reports
+    /// Print a file from the SD card: `M23` + `M24`, then `M27 S<n>` auto-reports
     /// (or M27 polling).
     pub fn start_sd_print(&self, filename: &str) -> Result<(), HostError> {
         let name = filename.to_string();
@@ -416,7 +416,7 @@ impl Printer {
         self.request(|reply| Command::UploadToSd { file, name, reply })
     }
 
-    /// Answer the active host prompt (M876 S<index>) and close it.
+    /// Answer the active host prompt (`M876 S<index>`) and close it.
     pub fn answer_prompt(&self, button: usize) {
         self.command(Command::AnswerPrompt(button));
     }

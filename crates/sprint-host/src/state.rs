@@ -53,7 +53,7 @@ pub struct PrinterState {
     pub mesh: Option<BedMesh>,
     /// Last M78 report.
     pub stats: Option<StatsReport>,
-    /// Active tool (T<n> / "Active Extruder").
+    /// Active tool (`T<n>` / "Active Extruder").
     pub active_tool: u8,
     /// Feedrate override, last set via M220 (100 default).
     pub feedrate_pct: f32,
