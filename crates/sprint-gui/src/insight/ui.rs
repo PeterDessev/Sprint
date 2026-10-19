@@ -111,6 +111,29 @@ pub(crate) fn page_header(
     }
 }
 
+/// The width a [`crate::widgets::SegmentedControl`] with these labels
+/// takes: every segment is as wide as the widest label plus its padding
+/// (13 pt text, 24 points of padding, at least 36 points, 3 points of
+/// inset on each side), so a narrow tab can pick shorter labels or another
+/// control before it overflows.
+pub(crate) fn segmented_width(ui: &Ui, labels: &[&str]) -> f32 {
+    let widest = labels
+        .iter()
+        .map(|label| {
+            ui.painter()
+                .layout_no_wrap(
+                    (*label).to_owned(),
+                    FontId::proportional(13.0),
+                    Color32::PLACEHOLDER,
+                )
+                .size()
+                .x
+                + 24.0
+        })
+        .fold(36.0, f32::max);
+    widest * labels.len().max(1) as f32 + 6.0
+}
+
 /// `text` on one line, cut with "…" to `max_width`.
 pub(crate) fn truncated(
     ui: &Ui,

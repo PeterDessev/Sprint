@@ -57,6 +57,16 @@ impl Wizard {
         }
     }
 
+    /// Short title, for the switcher of a narrow tab.
+    pub fn short_title(self) -> &'static str {
+        match self {
+            Wizard::Pid => "PID",
+            Wizard::Esteps => "E-steps",
+            Wizard::ZOffset => "Z offset",
+            Wizard::Flow => "Flow",
+        }
+    }
+
     /// One-line description.
     pub fn description(self) -> &'static str {
         match self {
@@ -150,9 +160,7 @@ impl CalibrationTab {
                 .layout(Layout::top_down(Align::Min)),
         );
         if !wide {
-            let options: Vec<(Wizard, &str)> =
-                Wizard::ALL.iter().map(|w| (*w, w.title())).collect();
-            content.add(SegmentedControl::new(&mut self.wizard, &options).fill_width(true));
+            self.switcher(&mut content);
             content.add_space(theme::GAP);
         }
         egui::ScrollArea::vertical()
@@ -168,6 +176,34 @@ impl CalibrationTab {
                 ui.add_space(theme::GAP);
             });
         ui.advance_cursor_after_rect(avail);
+    }
+
+    /// The wizard picker of a narrow tab: a segmented control with the
+    /// titles, or the short titles, whichever fits; a drop-down when
+    /// neither does. A control wider than the tab would widen every card
+    /// below it past the tab's edge.
+    fn switcher(&mut self, ui: &mut Ui) {
+        let avail = ui.available_width();
+        for title in [Wizard::title, Wizard::short_title] {
+            let labels: Vec<&str> = Wizard::ALL.iter().map(|w| title(*w)).collect();
+            if kit::segmented_width(ui, &labels) <= avail {
+                let options: Vec<(Wizard, &str)> = Wizard::ALL
+                    .iter()
+                    .zip(labels)
+                    .map(|(w, l)| (*w, l))
+                    .collect();
+                ui.add(SegmentedControl::new(&mut self.wizard, &options).fill_width(true));
+                return;
+            }
+        }
+        egui::ComboBox::from_id_salt("calibration-wizard")
+            .selected_text(self.wizard.title())
+            .width(avail)
+            .show_ui(ui, |ui| {
+                for w in Wizard::ALL {
+                    ui.selectable_value(&mut self.wizard, w, w.title());
+                }
+            });
     }
 
     /// The wizard shown.

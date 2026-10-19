@@ -267,43 +267,78 @@ impl ZOffsetWizard {
                     });
                 });
                 ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    kit::caption(ui, "Step");
-                    let options: Vec<(f32, String)> = BABYSTEP_SIZES
+                // The sizes with their unit when that fits, else the unit
+                // goes into the caption.
+                let sized = |unit: &str| -> Vec<(f32, String)> {
+                    BABYSTEP_SIZES
                         .iter()
-                        .map(|s| (*s, format!("{} mm", format::trimmed(f64::from(*s), 3))))
-                        .collect();
+                        .map(|s| (*s, format!("{}{unit}", format::trimmed(f64::from(*s), 3))))
+                        .collect()
+                };
+                let width_of = |ui: &Ui, options: &[(f32, String)]| {
+                    let labels: Vec<&str> = options.iter().map(|(_, l)| l.as_str()).collect();
+                    kit::segmented_width(ui, &labels)
+                };
+                let avail = ui.available_width();
+                let (caption, options) = {
+                    let with_unit = sized(" mm");
+                    if 40.0 + width_of(ui, &with_unit) <= avail {
+                        ("Step", with_unit)
+                    } else {
+                        ("Step (mm)", sized(""))
+                    }
+                };
+                // Home and the reset sit right of the sizes when they fit,
+                // else on a row of their own (instead of over the sizes).
+                let one_row = avail >= 70.0 + width_of(ui, &options) + 220.0;
+                let mut home = false;
+                let mut reset = false;
+                let job = ctx.job_active();
+                let mut buttons = |ui: &mut Ui| {
+                    reset = ui
+                        .add_enabled(
+                            self.total.abs() > 1e-6,
+                            ActionButton::new("Reset counter")
+                                .ghost()
+                                .small()
+                                .tooltip(RESET_TIP),
+                        )
+                        .clicked();
+                    home = ui
+                        .add_enabled(
+                            connected && !job,
+                            ActionButton::new("Home")
+                                .icon(icons::HOME)
+                                .small()
+                                .tooltip("G28"),
+                        )
+                        .clicked();
+                };
+                ui.horizontal(|ui| {
+                    kit::caption(ui, caption);
                     ui.add(
                         SegmentedControl::new(&mut self.step, &options).id_salt("babystep-size"),
                     );
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui
-                            .add_enabled(
-                                self.total.abs() > 1e-6,
-                                ActionButton::new("Reset counter")
-                                    .ghost()
-                                    .small()
-                                    .tooltip(RESET_TIP),
-                            )
-                            .clicked()
-                        {
-                            self.total = 0.0;
-                            self.baseline = None;
-                        }
-                        if ui
-                            .add_enabled(
-                                connected && !ctx.job_active(),
-                                ActionButton::new("Home")
-                                    .icon(icons::HOME)
-                                    .small()
-                                    .tooltip("G28"),
-                            )
-                            .clicked()
-                        {
-                            ctx.printer.home(Axes::ALL);
-                        }
-                    });
+                    if one_row {
+                        ui.with_layout(Layout::right_to_left(Align::Center), &mut buttons);
+                    }
                 });
+                if !one_row {
+                    ui.add_space(4.0);
+                    let width = ui.available_width();
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(width, 28.0),
+                        Layout::right_to_left(Align::Center),
+                        buttons,
+                    );
+                }
+                if reset {
+                    self.total = 0.0;
+                    self.baseline = None;
+                }
+                if home {
+                    ctx.printer.home(Axes::ALL);
+                }
             });
         if let Some(mm) = step_by {
             if self.baseline.is_none() {

@@ -297,6 +297,50 @@ fn calibration_tab_narrow_and_disconnected() {
 }
 
 #[test]
+fn every_wizard_fits_a_narrow_tab() {
+    let width = 420.0;
+    let mut h = tab(Theme::Dark, (width, 1100.0), Some(demo_state()), None);
+    // The switcher takes the short titles rather than widening the tab.
+    for (switch, wizard) in [
+        ("PID", "Start autotune at 210 °C"),
+        ("E-steps", "Heat to 205 °C"),
+        ("Z offset", "Lower the nozzle 0.025 mm"),
+        ("Flow", "Flow used"),
+    ] {
+        h.get_by_label(switch).click();
+        h.run_ok();
+        assert!(h.query_by_label_contains(wizard).is_some(), "{wizard}");
+        assert_eq!(
+            overflowing(&h, width - 24.0),
+            Vec::<String>::new(),
+            "{wizard}"
+        );
+    }
+    // Home and the counter reset do not sit on the step sizes (shown
+    // without their unit, which moved into the caption).
+    h.get_by_label("Z offset").click();
+    h.run_ok();
+    assert!(h.query_by_label("Step (mm)").is_some());
+    let controls = ["0.01", "0.025", "0.05", "0.1", "Home", "Reset counter"];
+    for label in controls {
+        assert!(h.query_by_label(label).is_some(), "{label}");
+    }
+    assert_eq!(overlapping(&h, &controls), Vec::<String>::new());
+    // Narrower still, a drop-down picks the wizard.
+    let mut h = tab(Theme::Dark, (300.0, 900.0), Some(demo_state()), None);
+    assert!(h.query_by_label("PID").is_none());
+    assert_eq!(overflowing(&h, 300.0 - 24.0), Vec::<String>::new());
+    h.get_by_role(Role::ComboBox).click();
+    h.run_ok();
+    h.get_by_label("Flow").click();
+    h.run_ok();
+    assert_eq!(
+        h.state().tab.wizard(),
+        sprint_gui::panels::calibration::Wizard::Flow
+    );
+}
+
+#[test]
 fn pid_autotune_runs_on_the_simulator() {
     let printer = sim_printer(SimConfig {
         time_scale: 400.0,
