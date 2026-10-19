@@ -67,15 +67,15 @@ pub fn clock_of(d: Duration) -> String {
 }
 
 /// A length given in millimetres: `"12.3 mm"` below a metre, `"4.32 m"` from
-/// a metre on.
+/// a metre on (counting lengths that round to 1000.0 mm).
 pub fn length_mm(mm: f64) -> String {
     if !mm.is_finite() {
         return MISSING.to_string();
     }
-    if mm.abs() >= 1000.0 {
-        format!("{:.2} m", mm / 1000.0)
+    if (mm.abs() * 10.0).round() >= 10_000.0 {
+        format!("{} m", fixed(mm / 1000.0, 2))
     } else {
-        format!("{mm:.1} mm")
+        format!("{} mm", fixed(mm, 1))
     }
 }
 
@@ -84,35 +84,27 @@ pub fn percent(fraction: f64) -> String {
     if !fraction.is_finite() {
         return MISSING.to_string();
     }
-    format!("{:.1}%", fraction * 100.0)
+    format!("{}%", fixed(fraction * 100.0, 1))
 }
 
 /// A temperature in °C with one decimal (`"205.3"`), without the unit.
 pub fn temperature(celsius: f32) -> String {
-    if !celsius.is_finite() {
-        return MISSING.to_string();
-    }
-    format!("{celsius:.1}")
+    fixed(f64::from(celsius), 1)
 }
 
 /// A number with up to `decimals` decimals and trailing zeros removed:
 /// `trimmed(0.20, 2) == "0.2"`, `trimmed(3.0, 2) == "3"`.
 pub fn trimmed(value: f64, decimals: usize) -> String {
-    if !value.is_finite() {
-        return MISSING.to_string();
-    }
-    let text = format!("{value:.decimals$}");
+    // `fixed` already drops the sign of a value that rounds to zero.
+    let text = fixed(value, decimals);
     if !text.contains('.') {
         return text;
     }
-    let text = text.trim_end_matches('0').trim_end_matches('.');
-    match text {
-        "-0" | "" => "0".to_string(),
-        t => t.to_string(),
-    }
+    text.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
 /// A number with exactly `decimals` decimals: `fixed(12.345, 1) == "12.3"`.
+/// Values that round to zero have no minus sign.
 pub fn fixed(value: f64, decimals: usize) -> String {
     if !value.is_finite() {
         return MISSING.to_string();
@@ -147,7 +139,8 @@ pub fn bytes(n: u64) -> String {
     }
     let mut value = n as f64 / 1024.0;
     let mut unit = 0;
-    while value >= 1024.0 && unit + 1 < UNITS.len() {
+    // Move up while the value would round to 1024.0 or more.
+    while (value * 10.0).round() >= 10_240.0 && unit + 1 < UNITS.len() {
         value /= 1024.0;
         unit += 1;
     }
@@ -155,14 +148,19 @@ pub fn bytes(n: u64) -> String {
 }
 
 /// Relative difference of `ours` against `reference` as a signed
-/// percentage (`"+3.1%"`, `"-0.4%"`); [`MISSING`] when the reference is zero
-/// or a value is not finite.
+/// percentage (`"+3.1%"`, `"-0.4%"`, `"+0.0%"` when it rounds to nothing);
+/// [`MISSING`] when the reference is zero or a value is not finite.
 pub fn relative_difference(ours: f64, reference: f64) -> String {
     if !ours.is_finite() || !reference.is_finite() || reference == 0.0 {
         return MISSING.to_string();
     }
     let diff = (ours - reference) / reference * 100.0;
-    format!("{diff:+.1}%")
+    let text = fixed(diff, 1);
+    if text.starts_with('-') {
+        format!("{text}%")
+    } else {
+        format!("+{text}%")
+    }
 }
 
 #[cfg(test)]
@@ -242,6 +240,32 @@ mod tests {
         assert_eq!(bytes(1536), "1.5 KB");
         assert_eq!(bytes(5 * 1024 * 1024), "5.0 MB");
         assert_eq!(bytes(u64::MAX), "16777216.0 TB");
+    }
+
+    #[test]
+    fn rounded_zeros_have_no_minus_sign() {
+        assert_eq!(trimmed(-0.4, 0), "0");
+        assert_eq!(trimmed(-0.6, 0), "-1");
+        assert_eq!(trimmed(-0.04, 1), "0");
+        assert_eq!(percent(-0.0001), "0.0%");
+        assert_eq!(percent(-0.5), "-50.0%");
+        assert_eq!(length_mm(-0.04), "0.0 mm");
+        assert_eq!(temperature(-0.04), "0.0");
+        assert_eq!(temperature(-14.0), "-14.0");
+        // A difference that rounds to nothing reads as a match.
+        assert_eq!(relative_difference(99.99, 100.0), "+0.0%");
+        assert_eq!(relative_difference(100.01, 100.0), "+0.0%");
+    }
+
+    #[test]
+    fn units_are_picked_after_rounding() {
+        assert_eq!(length_mm(999.96), "1.00 m");
+        assert_eq!(length_mm(-999.96), "-1.00 m");
+        assert_eq!(length_mm(999.94), "999.9 mm");
+        assert_eq!(bytes(1024 * 1024 - 1), "1.0 MB");
+        assert_eq!(bytes(1023 * 1024 + 1000), "1.0 MB");
+        assert_eq!(bytes(1023 * 1024), "1023.0 KB");
+        assert_eq!(bytes(1024 * 1024 * 1024 - 1), "1.0 GB");
     }
 
     #[test]
