@@ -65,6 +65,7 @@ pub mod console;
 mod engine;
 mod error;
 pub mod event;
+mod hooks;
 mod host;
 pub mod job;
 pub mod script;

@@ -985,6 +985,10 @@ pub struct PrinterProfile {
     pub pause_script: String,            // templated, see script module
     pub resume_script: String,
     pub cancel_script: String,
+    pub on_start_command: String,        // hooks (empty = none): shell commands run when a print (host or SD) starts,
+    pub on_finish_command: String,       //   completes, fails or is cancelled (Printrun's start/final/error commands);
+    pub on_fail_command: String,         //   env SPRINT_FILE, SPRINT_STATUS, SPRINT_ELAPSED_SECS, SPRINT_PRINTER (+ SPRINT_REASON
+    pub on_cancel_command: String,       //   for failures); helper thread, `cmd /C` / `sh -c`, 2 min limit; result to the console
     pub keep_heaters_on_failure: bool,   // default false: a host print the engine gives up on gets every heater and the fan switched off
     pub kinematics: Option<KinematicLimits>, // None = defaults / from M503
 }

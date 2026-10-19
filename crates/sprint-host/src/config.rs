@@ -226,6 +226,24 @@ pub struct PrinterProfile {
     pub resume_script: String,
     /// Run when a host print is cancelled.
     pub cancel_script: String,
+    /// Shell command run when a print (host or SD) starts; empty =
+    /// none. Hooks run on a helper thread (`cmd /C` on Windows, `sh -c`
+    /// elsewhere, stopped after two minutes) with `SPRINT_FILE`,
+    /// `SPRINT_STATUS` (started, completed, failed, cancelled),
+    /// `SPRINT_ELAPSED_SECS`, `SPRINT_PRINTER` (profile name) and, for
+    /// failures, `SPRINT_REASON` in the environment; the exit status
+    /// and the first lines of output go to the console. Printrun's start
+    /// command.
+    pub on_start_command: String,
+    /// Shell command run when a print completes (Printrun's final
+    /// command); see [`PrinterProfile::on_start_command`].
+    pub on_finish_command: String,
+    /// Shell command run when a print fails (Printrun's error command);
+    /// see [`PrinterProfile::on_start_command`].
+    pub on_fail_command: String,
+    /// Shell command run when a print is cancelled; see
+    /// [`PrinterProfile::on_start_command`].
+    pub on_cancel_command: String,
     /// Leave the heaters on when a host print fails while the printer
     /// still answers (a line it keeps rejecting, a lost line counter, a
     /// quick stop). Default false: every heater and the part fan are
@@ -269,6 +287,10 @@ impl Default for PrinterProfile {
             pause_script: DEFAULT_PAUSE_SCRIPT.to_string(),
             resume_script: DEFAULT_RESUME_SCRIPT.to_string(),
             cancel_script: DEFAULT_CANCEL_SCRIPT.to_string(),
+            on_start_command: String::new(),
+            on_finish_command: String::new(),
+            on_fail_command: String::new(),
+            on_cancel_command: String::new(),
             keep_heaters_on_failure: false,
             kinematics: None,
         }

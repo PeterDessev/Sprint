@@ -18,6 +18,7 @@ use super::{Engine, PROGRESS_INTERVAL, Phase};
 use crate::console::ConsoleKind;
 use crate::error::HostError;
 use crate::event::Event;
+use crate::hooks::Hook;
 use crate::job::{JobInfo, JobKind, JobStatus, PrintOptions, ProgressModel};
 use crate::script::format_number;
 
@@ -369,8 +370,50 @@ impl Engine {
             info.name
         ));
         let status = info.status.clone();
+        self.job_hook(&info, &status);
         self.shared.update(|s| s.job = Some(info));
         self.shared.emit(Event::Job(status));
+    }
+
+    /// Run the profile's hook for a print entering `status` (start,
+    /// finish, fail, cancel), if it has one.
+    fn job_hook(&self, info: &JobInfo, status: &JobStatus) {
+        if info.kind == JobKind::SdUpload {
+            return;
+        }
+        let profile = self.shared.profile.read();
+        let (event, command, word) = match status {
+            JobStatus::Starting => ("start", &profile.on_start_command, "started"),
+            JobStatus::Completed => ("finish", &profile.on_finish_command, "completed"),
+            JobStatus::Failed(_) => ("fail", &profile.on_fail_command, "failed"),
+            JobStatus::Cancelled => ("cancel", &profile.on_cancel_command, "cancelled"),
+            _ => return,
+        };
+        let command = command.trim();
+        if command.is_empty() {
+            return;
+        }
+        let file = info
+            .path
+            .as_ref()
+            .map_or_else(|| info.name.clone(), |p| p.display().to_string());
+        let mut env = vec![
+            ("SPRINT_FILE", file),
+            ("SPRINT_STATUS", word.to_string()),
+            ("SPRINT_ELAPSED_SECS", info.elapsed.as_secs().to_string()),
+            ("SPRINT_PRINTER", profile.name.clone()),
+        ];
+        // Only set when there is one: Windows drops empty variables.
+        if let JobStatus::Failed(reason) = status {
+            env.push(("SPRINT_REASON", reason.clone()));
+        }
+        let hook = Hook {
+            event,
+            command: command.to_string(),
+            env,
+        };
+        drop(profile);
+        hook.spawn(Arc::clone(&self.shared));
     }
 
     pub(super) fn start_print(
@@ -1008,6 +1051,7 @@ impl Engine {
         let kind = job.info.kind;
         if status.is_finished() {
             self.job = None;
+            self.job_hook(&info, &status);
         }
         self.shared.update(|s| s.job = Some(info.clone()));
         self.shared.emit(Event::Job(status.clone()));
