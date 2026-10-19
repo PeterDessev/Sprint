@@ -59,11 +59,14 @@ pub fn sim_options() -> AppOptions {
     }
 }
 
-/// The sample files of the repository.
+/// The sample files of the repository (full paths, as the app keeps
+/// them).
 pub fn sample(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../samples")
-        .join(name)
+    sprint_gui::loader::absolute_path(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../samples")
+            .join(name),
+    )
 }
 
 /// The app in a harness of `size`, with a wgpu render state when possible.

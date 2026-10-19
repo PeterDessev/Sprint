@@ -787,6 +787,9 @@ impl SprintApp {
             return;
         }
         if let Some(path) = &path {
+            // Once, however it was spelled before (case on Windows).
+            let recent = &mut self.core.config.recent_files;
+            recent.retain(|p| !loader::same_path(p, path));
             self.core.config.push_recent(path.clone());
             self.core.config_dirty = true;
         }
@@ -1005,14 +1008,17 @@ impl SprintApp {
         ));
     }
 
-    /// Load (and analyze) `path`; refused for the file being printed.
+    /// Load (and analyze) `path`; refused for the file being printed. A
+    /// relative path (`sprint gui ../x.gcode`) is made absolute first, so
+    /// the recent files name it wherever Sprint starts next.
     fn load_file(&mut self, path: PathBuf) {
+        let path = loader::absolute_path(&path);
         let same = self
             .core
             .file
             .as_ref()
             .and_then(|f| f.path.as_ref())
-            .is_some_and(|p| *p == path);
+            .is_some_and(|p| loader::same_path(p, &path));
         if same && self.core.printing_loaded_file() {
             self.core
                 .toasts

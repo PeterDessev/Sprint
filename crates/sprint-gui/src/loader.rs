@@ -365,6 +365,41 @@ fn run_analysis(
     }
 }
 
+/// `path` made absolute against the working directory, with `.` and `..`
+/// resolved (lexically, as Windows does): a file opened as `../x.gcode`
+/// is remembered so that it opens from anywhere, and once only.
+pub fn absolute_path(path: &Path) -> PathBuf {
+    let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut out = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                // Above the root stays at the root.
+                if !matches!(
+                    out.components().next_back(),
+                    None | Some(std::path::Component::RootDir | std::path::Component::Prefix(_))
+                ) {
+                    out.pop();
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// Whether two paths name the same file as far as their spelling tells:
+/// equal, or equal ignoring case on Windows (its file names are).
+pub fn same_path(a: &Path, b: &Path) -> bool {
+    if cfg!(windows) {
+        a.as_os_str().to_string_lossy().to_lowercase()
+            == b.as_os_str().to_string_lossy().to_lowercase()
+    } else {
+        a == b
+    }
+}
+
 /// The name shown for a path (its file name).
 pub fn display_name(path: &Path) -> String {
     path.file_name()
@@ -766,6 +801,31 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    #[test]
+    fn paths_are_made_absolute_and_normalized() {
+        let cwd = std::env::current_dir().expect("cwd");
+        let parent = cwd.parent().expect("parent").to_path_buf();
+        assert_eq!(
+            absolute_path(Path::new("../x.gcode")),
+            parent.join("x.gcode")
+        );
+        assert_eq!(
+            absolute_path(Path::new("./a/./b/../x.gcode")),
+            cwd.join("a").join("x.gcode")
+        );
+        let root = cwd.ancestors().last().expect("root").to_path_buf();
+        let deep: PathBuf = std::iter::repeat_n("..", 64).collect();
+        assert_eq!(absolute_path(&deep.join("x.gcode")), root.join("x.gcode"));
+        let done = absolute_path(Path::new("x.gcode"));
+        assert!(done.is_absolute());
+        assert_eq!(absolute_path(&done), done);
+        assert!(same_path(&done, &done));
+        assert_eq!(
+            same_path(Path::new("C:/A/x.GCODE"), Path::new("c:/a/X.gcode")),
+            cfg!(windows)
+        );
+    }
 
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(

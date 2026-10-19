@@ -1542,6 +1542,32 @@ fn console_motion_is_guarded_while_a_job_runs() {
 }
 
 #[test]
+fn a_relative_startup_file_is_remembered_with_its_full_path() {
+    // Tests run in the crate's directory.
+    let relative = PathBuf::from("../../samples/calibration-cube.gcode");
+    let mut options = with_file(AppOptions::headless(), relative.clone());
+    // Known already, spelled differently.
+    let full = std::path::absolute(&relative).expect("absolute");
+    options.config.recent_files = vec![full.clone()];
+    let mut h = app(options, WINDOW);
+    expect(&mut h, "the cube to be analyzed", analyzed);
+    let recent = &h.state().config().recent_files;
+    assert_eq!(recent.len(), 1, "{recent:?}");
+    let saved = &recent[0];
+    assert!(saved.is_absolute(), "{saved:?}");
+    assert!(
+        !saved
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir)),
+        "{saved:?}"
+    );
+    assert!(
+        saved.ends_with("samples/calibration-cube.gcode"),
+        "{saved:?}"
+    );
+}
+
+#[test]
 fn the_gcode_footer_says_what_the_job_bar_says() {
     let options = with_file(AppOptions::headless(), sample("calibration-cube.gcode"));
     let mut h = app(options, WINDOW);
