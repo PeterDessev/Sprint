@@ -83,6 +83,9 @@ pub struct AppOptions {
     /// Connect to this virtual printer at startup (instead of the active
     /// profile's auto-connect).
     pub simulator: Option<SimConfig>,
+    /// Connect to this printer at startup: wins over `simulator` and the
+    /// active profile's auto-connect (`sprint gui --connect T`).
+    pub connect: Option<ConnectTarget>,
     /// The configuration to start with.
     pub config: AppConfig,
     /// Where the configuration is saved; `None` keeps it in memory.
@@ -104,6 +107,7 @@ impl AppOptions {
         AppOptions {
             file: gui.file,
             simulator: gui.simulator.then(SimConfig::default),
+            connect: None,
             config: AppConfig::load(),
             config_path: Some(AppConfig::path()),
             scan_ports: true,
@@ -119,6 +123,7 @@ impl AppOptions {
         AppOptions {
             file: None,
             simulator: None,
+            connect: None,
             config: AppConfig::default(),
             config_path: None,
             scan_ports: false,
@@ -309,8 +314,10 @@ pub struct SprintApp {
 impl SprintApp {
     /// Create the app from eframe's creation context: install the theme
     /// and fonts, start the printer handle (disconnected), and queue the
-    /// startup file and connection from `options`. A real port is opened
-    /// at startup only when the active profile enables `auto_connect`.
+    /// startup file and connection from `options`. At startup the app
+    /// connects to `options.connect`, else to `options.simulator`, else to
+    /// the active profile's printer when the profile enables
+    /// `auto_connect`, and to nothing otherwise.
     pub fn new(cc: &eframe::CreationContext<'_>, options: AppOptions) -> SprintApp {
         let ctx = cc.egui_ctx.clone();
         let prefs = if options.restore_prefs {
@@ -403,9 +410,12 @@ impl SprintApp {
         if let Some(path) = options.file {
             app.core.actions.push(AppAction::LoadFile(path));
         }
-        if let Some(sim) = options.simulator {
+        let startup = options
+            .connect
+            .or_else(|| options.simulator.map(ConnectTarget::Simulator));
+        if let Some(target) = startup {
             let connect_options = app.core.config.active().options.clone();
-            app.open_link(ConnectTarget::Simulator(sim), connect_options);
+            app.open_link(target, connect_options);
         } else if app.core.config.active().auto_connect {
             app.core.actions.push(AppAction::Connect);
         }

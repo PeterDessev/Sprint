@@ -50,9 +50,7 @@ fn main() -> anyhow::Result<()> {
             active_profile: 0,
             ..AppConfig::default()
         },
-        config_path: None,
-        scan_ports: false,
         native_dialogs: true,
-        restore_prefs: false,
+        ..AppOptions::headless()
     })
 }
