@@ -996,7 +996,7 @@ impl ConsolePanel {
         let text = self.export_text();
         self.export = Some(native_dialog::spawn(Some(repaint.clone()), move || {
             match native_dialog::save_text_file("Export console", "sprint-console.txt") {
-                Some(path) => std::fs::write(&path, text)
+                Some(path) => crate::fsutil::write_atomic(&path, text)
                     .map(|()| Some(path))
                     .map_err(|e| e.to_string()),
                 None => Ok(None),

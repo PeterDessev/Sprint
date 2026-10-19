@@ -578,7 +578,7 @@ impl FileTask {
             None => FileOutcome::Cancelled,
             Some(handle) => {
                 let path = handle.path().to_path_buf();
-                match std::fs::write(&path, contents) {
+                match crate::fsutil::write_atomic(&path, contents) {
                     Ok(()) => FileOutcome::Saved(path),
                     Err(err) => FileOutcome::Failed(format!("{}: {err}", path.display())),
                 }

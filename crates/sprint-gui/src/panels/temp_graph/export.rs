@@ -73,9 +73,9 @@ fn ask_and_save(csv: &str, file_name: &str) -> Outcome {
     }
 }
 
-/// Write `csv` to `path`.
+/// Write `csv` to `path` (atomically: a failed write keeps the old file).
 pub(crate) fn write_csv(path: &Path, csv: &str) -> Outcome {
-    match std::fs::write(path, csv) {
+    match crate::fsutil::write_atomic(path, csv) {
         Ok(()) => Outcome::Saved(path.to_path_buf()),
         Err(err) => Outcome::Failed(format!("{}: {err}", path.display())),
     }
