@@ -1178,3 +1178,81 @@ fn offline_commands_explain_instead_of_failing() {
             .is_some_and(|t| t.text.contains("No help"))
     );
 }
+
+#[test]
+fn palette_reports_open_as_dialogs() {
+    let mut app = connected_app();
+    load(&mut app, "calibration-cube.gcode");
+    for (line, title, fact) in [
+        ("info", "calibration-cube.gcode", "Slicer"),
+        ("status", "Status", "Loaded"),
+        ("firmware", "Firmware", "Marlin"),
+        ("stats", "Statistics", "Round trip"),
+        ("sd ls", "SD card", "card"),
+        ("macro", "Macros", "Bed mesh"),
+        ("preheat", "Presets", "PETG"),
+        ("help temp", "Help: temp", "usage: temp"),
+        ("help M92", "G-code M92", "Set steps per unit"),
+        ("settings motion", "Settings", "Maximum feedrate"),
+    ] {
+        run_palette(&mut app, line);
+        assert_eq!(app.focus, Focus::Layers, "the palette closes after {line}");
+        wait_report(&mut app, line);
+        let Some(Modal::Report(report)) = &app.modal else {
+            panic!("{line}: no report");
+        };
+        assert_eq!(report.title, title, "{line}");
+        let text = screen(&mut app, 120, 40);
+        assert!(text.contains(fact), "{line}: missing {fact:?} in\n{text}");
+        press(&mut app, KeyCode::Esc);
+        assert!(app.modal.is_none(), "{line}");
+    }
+    // Serial ports are listed (enumeration only).
+    run_palette(&mut app, "ports");
+    assert!(matches!(&app.modal, Some(Modal::Report(r)) if r.title == "Serial ports"));
+    press(&mut app, KeyCode::Esc);
+    // A macro that asks first.
+    received(&app);
+    run_palette(&mut app, "macro bed");
+    assert!(matches!(&app.modal, Some(Modal::Confirm(c)) if c.title == "Run Bed mesh?"));
+    press(&mut app, KeyCode::Char('n'));
+    run_palette(&mut app, "macro home");
+    wait_idle(&mut app);
+    let got = received(&app);
+    assert!(got.iter().any(|c| c == "G28"), "{got:?}");
+    assert!(!got.iter().any(|c| c == "G29"), "{got:?}");
+}
+
+#[test]
+fn terminal_events_resize_paste_and_cancel_typing() {
+    let mut app = app();
+    app.dirty = false;
+    app.handle_event(TermEvent::Resize(80, 24));
+    assert!(app.dirty);
+    // A paste lands in the G-code line.
+    app.handle_event(TermEvent::Paste("G28 X".into()));
+    assert_eq!(app.focus, Focus::Input);
+    assert_eq!(app.gcode_input.text(), "G28 X");
+    // Ctrl+C clears a typed line instead of quitting.
+    ctrl(&mut app, 'c');
+    assert!(app.gcode_input.is_empty());
+    assert!(!app.quit);
+    // Search: Esc goes back to the panel the search started from.
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Tab);
+    assert_eq!(app.focus, Focus::Console);
+    press(&mut app, KeyCode::Char('/'));
+    assert_eq!(app.input_mode, InputMode::Search);
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.focus, Focus::Console);
+    assert_eq!(app.input_mode, InputMode::Gcode);
+    // Key releases are ignored.
+    let mut release = KeyEvent::new(KeyCode::F(10), KeyModifiers::NONE);
+    release.kind = crossterm::event::KeyEventKind::Release;
+    app.handle_event(TermEvent::Key(release));
+    assert!(!app.quit);
+    // An empty palette closes on Enter.
+    press(&mut app, KeyCode::Char(':'));
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.focus, Focus::Console);
+}
