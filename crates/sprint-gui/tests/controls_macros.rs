@@ -142,6 +142,43 @@ fn ctrl_enter_saves_with_color_and_confirmation() {
     assert!(saved.confirm);
 }
 
+/// A long macro scrolls inside the G-code field: the dialog, its title and
+/// its buttons stay on screen.
+#[test]
+fn a_long_macro_keeps_the_editor_on_screen() {
+    let mut rig = Rig::synthetic(controls_common::heating_state());
+    let gcode: String = (0..80).map(|i| format!("G1 X{i} Y{i} F3000\n")).collect();
+    rig.config.macros.insert(
+        0,
+        Macro {
+            name: "Long".into(),
+            gcode: gcode.clone(),
+            color: None,
+            confirm: false,
+        },
+    );
+    let mut h = harness(rig);
+    menu(&mut h, "Long", "Edit");
+    for height in [700.0, 520.0] {
+        h.set_size(egui::vec2(420.0, height));
+        settle(&mut h);
+        let screen = h.ctx.content_rect();
+        for label in ["Edit macro", "Save", "Cancel", "Test send"] {
+            let rect = h.get(by_label(label)).rect();
+            assert!(
+                screen.contains_rect(rect),
+                "{label} is off screen at {height} pt: {rect:?}"
+            );
+        }
+    }
+    // The pointer reaches Save, and the text is saved unchanged.
+    let save = h.get(by_label("Save")).rect().center();
+    controls_common::click_at(&mut h, save);
+    settle(&mut h);
+    assert!(h.query(by_label("Edit macro")).is_none(), "editor closed");
+    assert_eq!(h.state().config.macros[0].gcode, gcode);
+}
+
 #[test]
 fn context_menu_edits_duplicates_reorders_and_deletes() {
     let mut h = harness(Rig::synthetic(controls_common::heating_state()));

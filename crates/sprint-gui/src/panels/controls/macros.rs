@@ -6,8 +6,8 @@ use egui::color_picker::{self, Alpha};
 use egui::ecolor::Hsva;
 use egui::{
     Align, Color32, CornerRadius, CursorIcon, FontId, Frame, Id, Key, Layout, Margin, Mesh, Modal,
-    Popup, PopupCloseBehavior, Response, RichText, Sense, Stroke, StrokeKind, TextEdit, Ui,
-    WidgetInfo, WidgetType, text::LayoutJob, vec2,
+    Popup, PopupCloseBehavior, Response, RichText, ScrollArea, Sense, Stroke, StrokeKind, TextEdit,
+    Ui, WidgetInfo, WidgetType, text::LayoutJob, vec2,
 };
 use sprint_host::{Macro, PrinterProfile};
 
@@ -33,6 +33,13 @@ const SWATCHES: [[u8; 3]; 8] = [
 const TILE_HEIGHT: f32 = 34.0;
 /// Lines of G-code shown in tooltips and confirmations.
 const PREVIEW_LINES: usize = 12;
+/// Height of everything in the macro editor but the G-code field, plus a
+/// margin to the window edges (points).
+const EDITOR_CHROME: f32 = 440.0;
+/// The G-code field scrolls beyond this height (points).
+const MAX_CODE_HEIGHT: f32 = 360.0;
+/// ... and never gets shorter than this, even in a tiny window.
+const MIN_CODE_HEIGHT: f32 = 96.0;
 
 /// The commands a macro sends, as the printer will see them (comments and
 /// blank lines dropped; `{placeholders}` are filled in when it runs).
@@ -543,7 +550,9 @@ fn editor_dialog(ctx: &egui::Context, editor: &mut Editor, app: &mut AppCtx<'_>)
         .shadow(ctx.global_style().visuals.window_shadow);
     let backdrop = Color32::from_black_alpha(if p.dark { 150 } else { 90 });
     let mut outcome = EditorOutcome::Open;
-    let width = (ctx.content_rect().width() - 48.0).clamp(280.0, 480.0);
+    let screen = ctx.content_rect();
+    let width = (screen.width() - 48.0).clamp(280.0, 480.0);
+    let code_height = (screen.height() - EDITOR_CHROME).clamp(MIN_CODE_HEIGHT, MAX_CODE_HEIGHT);
     let lines = macro_lines(&editor.draft.gcode);
     let dangerous = dangerous_commands(&editor.draft.gcode);
     let name_ok = !editor.draft.name.trim().is_empty();
@@ -582,15 +591,23 @@ fn editor_dialog(ctx: &egui::Context, editor: &mut Editor, app: &mut AppCtx<'_>)
                 editor.focus_name = false;
             }
             field_label(ui, &p, "G-code");
-            ui.add(
-                TextEdit::multiline(&mut editor.draft.gcode)
-                    .id(Id::new("sprint-controls-macro-gcode"))
-                    .code_editor()
-                    .hint_text("G28\nG1 Z10 F600")
-                    .desired_rows(8)
-                    .desired_width(f32::INFINITY)
-                    .lock_focus(true),
-            );
+            // A long macro scrolls inside the field: the dialog itself
+            // must stay on screen with its buttons.
+            ScrollArea::vertical()
+                .id_salt("sprint-controls-macro-gcode-scroll")
+                .max_height(code_height)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.add(
+                        TextEdit::multiline(&mut editor.draft.gcode)
+                            .id(Id::new("sprint-controls-macro-gcode"))
+                            .code_editor()
+                            .hint_text("G28\nG1 Z10 F600")
+                            .desired_rows(8)
+                            .desired_width(f32::INFINITY)
+                            .lock_focus(true),
+                    );
+                });
             let summary = match lines.len() {
                 0 => "No commands yet.".to_owned(),
                 1 => "1 command.".to_owned(),
