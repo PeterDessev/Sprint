@@ -32,12 +32,7 @@ pub fn cancel_question(
     let name = format::sanitize(name, 60);
     match kind {
         JobKind::HostPrint => {
-            let script = if cancel_script.trim().is_empty() {
-                "No cancel script is set in the printer profile: the heaters stay as they are."
-            } else {
-                "The printer profile's cancel script then runs (by default it parks the head \
-                 and turns the heaters off)."
-            };
+            let script = script_effect(cancel_script);
             JobQuestion {
                 title: "Cancel the print?".to_owned(),
                 message: format!(
@@ -69,6 +64,18 @@ pub fn cancel_question(
     }
 }
 
+/// What the cancel script `cancel_script` (the printer profile's; empty:
+/// none is set) does after a host print stops, in one sentence. A custom
+/// script may do anything, so only the default's effect is named.
+fn script_effect(cancel_script: &str) -> &'static str {
+    if cancel_script.trim().is_empty() {
+        "No cancel script is set in the printer profile: the heaters stay as they are."
+    } else {
+        "The printer profile's cancel script then runs (by default it parks the head and \
+         turns the heaters off)."
+    }
+}
+
 /// What closes the link while a job runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Closing {
@@ -83,8 +90,14 @@ pub enum Closing {
 /// The question before `closing` the link while the host runs the job
 /// `kind` named `name` (a host print or an SD upload; an SD print goes on
 /// by itself and is not asked about). The job is cancelled before the link
-/// closes (see [`crate::connection::close_link`]).
-pub fn close_question(kind: JobKind, name: &str, closing: Closing) -> JobQuestion {
+/// closes (see [`crate::connection::close_link`]); `cancel_script` is the
+/// printer profile's, which a cancelled host print runs (empty: none).
+pub fn close_question(
+    kind: JobKind,
+    name: &str,
+    closing: Closing,
+    cancel_script: &str,
+) -> JobQuestion {
     let name = format::sanitize(name, 60);
     let upload = kind == JobKind::SdUpload;
     let (verb, confirm, then) = match closing {
@@ -117,8 +130,8 @@ pub fn close_question(kind: JobKind, name: &str, closing: Closing) -> JobQuestio
         (
             "print",
             format!(
-                "{name} is cancelled first: the cancel script turns the heaters off and \
-                 parks the head."
+                "{name} is cancelled first. {}",
+                script_effect(cancel_script)
             ),
             "Keep printing",
         )
@@ -131,24 +144,60 @@ pub fn close_question(kind: JobKind, name: &str, closing: Closing) -> JobQuestio
     }
 }
 
+/// What the "Stopping before Sprint quits" dialog says while the job
+/// `kind` named `name` is cancelled (see [`close_question`]).
+pub fn quitting_message(kind: JobKind, name: &str, cancel_script: &str) -> String {
+    let name = format::sanitize(name, 60);
+    match kind {
+        JobKind::SdUpload => format!(
+            "Cancelling the upload of {name}: the partly written file is deleted from the \
+             card. Sprint quits once that is done."
+        ),
+        JobKind::HostPrint | JobKind::SdPrint => format!(
+            "Cancelling {name}. {} Sprint quits once the printer has stopped.",
+            script_effect(cancel_script)
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn close_questions_say_the_job_is_cancelled_first() {
-        let q = close_question(JobKind::HostPrint, "cube.gcode", Closing::Quit);
+        let script = "G91\nG1 Z10\nM104 S0";
+        let q = close_question(JobKind::HostPrint, "cube.gcode", Closing::Quit, script);
         assert_eq!(q.title, "Quit and cancel the print?");
+        assert!(q.message.contains("cancel script then runs"), "{q:?}");
         assert!(q.message.contains("heaters off"), "{q:?}");
         assert_eq!(q.confirm, "Cancel and quit");
         assert_eq!(q.keep, "Keep printing");
-        let q = close_question(JobKind::SdUpload, "CUBE.GCO", Closing::Disconnect);
+        // Without a cancel script nothing switches the heaters off.
+        let q = close_question(JobKind::HostPrint, "cube.gcode", Closing::Quit, " ");
+        assert!(q.message.contains("No cancel script"), "{q:?}");
+        assert!(!q.message.contains("heaters off"), "{q:?}");
+        let q = close_question(JobKind::SdUpload, "CUBE.GCO", Closing::Disconnect, "");
         assert_eq!(q.title, "Disconnect and cancel the upload?");
         assert!(q.message.contains("deleted from the card"), "{q:?}");
         assert_eq!(q.keep, "Keep uploading");
-        let q = close_question(JobKind::HostPrint, "x\u{1b}[2J", Closing::Reconnect);
+        let q = close_question(JobKind::HostPrint, "x\u{1b}[2J", Closing::Reconnect, script);
         assert_eq!(q.confirm, "Cancel and reconnect");
         assert!(!q.message.contains('\u{1b}'), "{q:?}");
+    }
+
+    #[test]
+    fn the_quitting_message_says_what_the_cancel_does() {
+        let m = quitting_message(JobKind::HostPrint, "cube.gcode", "M104 S0");
+        assert!(m.starts_with("Cancelling cube.gcode."), "{m}");
+        assert!(m.contains("heaters off"), "{m}");
+        let m = quitting_message(JobKind::HostPrint, "cube.gcode", "");
+        assert!(m.contains("No cancel script"), "{m}");
+        assert!(!m.contains("heaters off"), "{m}");
+        // An upload runs no cancel script.
+        let m = quitting_message(JobKind::SdUpload, "CUBE.GCO", "M104 S0");
+        assert!(m.contains("deleted from the card"), "{m}");
+        assert!(!m.contains("cancel script"), "{m}");
     }
 
     #[test]

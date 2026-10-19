@@ -1034,8 +1034,10 @@ fn disconnecting_during_a_print_cancels_it_first() {
     settle(&mut h);
     assert_eq!(h.state().dialog(), Some(DialogKind::ConfirmDisconnect));
     assert!(
-        h.query_by_label_contains("the cancel script turns the heaters off")
-            .is_some()
+        h.query_by_label_contains(
+            "cancel script then runs (by default it parks the head and turns the heaters off)"
+        )
+        .is_some()
     );
     h.get_by_label("Cancel and disconnect").click();
     expect(&mut h, "the connection to close", |app| {
@@ -1141,6 +1143,26 @@ fn the_cancel_question_says_what_cancelling_the_job_does() {
     );
     assert!(h.query_by_label("Keep uploading").is_some());
     assert!(h.query_by_label("Cancel print").is_none());
+}
+
+#[test]
+fn closing_during_a_print_says_when_no_cancel_script_is_set() {
+    // Nothing switches the heaters off then: the question must not say so.
+    let mut options = AppOptions::headless();
+    options.config.profiles[0].cancel_script = String::new();
+    let mut h = app(options, WINDOW);
+    h.state_mut()
+        .set_state_override(Some(printing_state(JobStatus::Printing)));
+    for action in [AppAction::Disconnect, AppAction::Reconnect] {
+        h.state_mut().push_action(action);
+        settle(&mut h);
+        assert_eq!(h.state().dialog(), Some(DialogKind::ConfirmDisconnect));
+        assert!(h.query_by_label_contains("heaters off").is_none());
+        assert!(h.query_by_label_contains("No cancel script").is_some());
+        h.key_press(Key::Escape);
+        settle(&mut h);
+        assert_eq!(h.state().dialog(), None);
+    }
 }
 
 #[test]

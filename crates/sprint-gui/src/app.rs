@@ -1321,7 +1321,8 @@ impl SprintApp {
     /// (`None` when it runs none).
     fn close_question(&self, closing: Closing) -> Option<JobQuestion> {
         let (name, kind) = crate::connection::job_to_cancel(&self.core.state)?;
-        Some(job_text::close_question(kind, name, closing))
+        let script = &self.core.config.active().cancel_script;
+        Some(job_text::close_question(kind, name, closing, script))
     }
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
@@ -1902,14 +1903,14 @@ impl SprintApp {
                 }
             }
             Modal::Quitting => {
-                let name = self
-                    .core
-                    .state
-                    .job
-                    .as_ref()
-                    .filter(|j| j.status.is_active())
-                    .map(|j| j.name.clone());
-                dialogs::quitting_dialog(ctx, name.as_deref());
+                // What the cancel of the host's job does (a print from the
+                // card goes on: the link just closes).
+                let message =
+                    crate::connection::job_to_cancel(&self.core.state).map(|(name, kind)| {
+                        let script = &self.core.config.active().cancel_script;
+                        job_text::quitting_message(kind, name, script)
+                    });
+                dialogs::quitting_dialog(ctx, message.as_deref());
                 self.quitting.then_some(Modal::Quitting)
             }
         }
