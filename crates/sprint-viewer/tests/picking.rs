@@ -723,3 +723,48 @@ fn rejected_hits_give_way_to_the_next_nearest() {
         Some(top)
     );
 }
+
+#[test]
+fn moves_too_far_out_to_be_drawn_cannot_be_picked() {
+    // The renderer skips moves with a coordinate beyond MAX_COORD; picking
+    // must not report them (a tooltip for a line nobody can see).
+    let far = sprint_viewer::instance::MAX_COORD * 5.0;
+    let tp = layered(vec![
+        extrude(
+            [100.0, 100.0, 0.2],
+            [far, 100.0, 0.2],
+            0,
+            0,
+            Feature::Perimeter,
+        ),
+        travel([100.0, 120.0, 0.2], [far, 120.0, 0.2], 1, 0),
+        extrude(
+            [100.0, 140.0, 0.2],
+            [200.0, 140.0, 0.2],
+            2,
+            0,
+            Feature::Perimeter,
+        ),
+    ]);
+    let down = |y: f32| Ray {
+        origin: Vec3::new(150.0, y, 30.0),
+        dir: -Vec3::Z,
+    };
+    let filter = PickFilter::default();
+    let beads = build(&tp);
+    let travels = build_travels(&tp);
+    assert_eq!(beads.pick(&tp, &down(100.0), &filter, 0.3), None);
+    assert_eq!(pick_brute_force(&tp, &down(100.0), &filter, 0.3), None);
+    assert_eq!(travels.pick(&tp, &down(120.0), &filter, 0.3), None);
+    assert_eq!(
+        pick_brute_force_kind(&tp, PickKind::Travels, &down(120.0), &filter, 0.3),
+        None
+    );
+    // The drawable bead next to them still is.
+    assert_eq!(
+        beads
+            .pick(&tp, &down(140.0), &filter, 0.3)
+            .map(|h| h.segment),
+        Some(2)
+    );
+}

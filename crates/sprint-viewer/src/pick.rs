@@ -15,7 +15,7 @@ use glam::{Vec2, Vec3};
 use sprint_gcode::{MoveKind, Segment, Toolpath};
 
 use crate::camera::Ray;
-use crate::instance::{layer_segment_ranges, render_height, render_width};
+use crate::instance::{MAX_COORD, layer_segment_ranges, render_height, render_width};
 
 /// Layers with more extrusion segments than this get a grid.
 const GRID_THRESHOLD: usize = 192;
@@ -51,9 +51,9 @@ impl PickKind {
 
     /// The segment's pick axis and the half extents of the box around it
     /// that covers every allowed pick radius: `(a, b, radius_xy, radius_z)`.
-    /// `None` for segments of another kind or with non-finite positions.
+    /// `None` for segments of another kind or that are not drawn.
     fn footprint(self, seg: &Segment) -> Option<(Vec3, Vec3, f32, f32)> {
-        if !self.includes(seg) {
+        if !self.includes(seg) || !drawn(seg) {
             return None;
         }
         let (a, b, r, rz) = match self {
@@ -81,6 +81,15 @@ impl PickKind {
             PickKind::Travels => ray_travel(ray, seg, radius),
         }
     }
+}
+
+/// Whether the renderer draws the segment: like it, skip moves with a
+/// coordinate that is not finite or lies beyond [`MAX_COORD`].
+fn drawn(seg: &Segment) -> bool {
+    seg.start
+        .iter()
+        .chain(&seg.end)
+        .all(|v| v.is_finite() && v.abs() <= MAX_COORD)
 }
 
 /// Axis-aligned box.
@@ -184,7 +193,7 @@ impl PickFilter {
     /// Hidden features only apply to extrusions: travels are drawn whatever
     /// feature they were annotated with.
     fn accepts(&self, kind: PickKind, seg: &Segment, layer: usize) -> bool {
-        if !kind.includes(seg) {
+        if !kind.includes(seg) || !drawn(seg) {
             return false;
         }
         if kind == PickKind::Extrusions
