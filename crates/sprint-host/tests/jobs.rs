@@ -594,6 +594,9 @@ fn resume_sends_no_m108_to_a_printer_that_does_not_wait() {
     wait_for(&printer, "paused by the printer", |_| {
         paused_by_firmware(&printer)
     });
+    // (Once the moves sent before the pause are done, so no "busy:
+    // processing" of theirs replaces the report.)
+    wait_idle(&printer);
     control.inject_line("echo:busy: paused for input");
     wait_for(&printer, "waiting for input", |s| s.waiting_for_user());
     printer.resume();
