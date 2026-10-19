@@ -20,7 +20,8 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::Receiver;
 use sprint_host::sprint_proto::{gcode_doc, setting_def};
 use sprint_host::{
-    AppConfig, Axis, ConnectTarget, ConnectionStatus, Heater, Printer, PrinterProfile, list_ports,
+    AppConfig, Axis, ConnectTarget, ConnectionStatus, Heater, JobKind, Printer, PrinterProfile,
+    list_ports,
 };
 
 use crate::TuiOptions;
@@ -495,15 +496,12 @@ impl Shell {
                 }
             }
             Command::Disconnect => {
-                if !self.printer.with_state(|s| s.status.is_open()) {
+                let (open, question) = self
+                    .printer
+                    .with_state(|s| (s.status.is_open(), disconnect_question(s)));
+                if !open {
                     self.out.dim("Not connected");
-                } else if !self.job_active()
-                    || self.confirm(
-                        input,
-                        "A job is running; disconnecting stops it. Disconnect?",
-                        true,
-                    )
-                {
+                } else if question.is_none_or(|q| self.confirm(input, &q, true)) {
                     self.printer.disconnect();
                 }
             }
@@ -1095,6 +1093,22 @@ impl Shell {
         });
         self.echo.settle();
     }
+}
+
+/// What to ask before disconnecting while a job runs: only a print Sprint
+/// streams stops; one from the printer's SD card goes on unwatched.
+fn disconnect_question(state: &sprint_host::PrinterState) -> Option<String> {
+    let job = state.job.as_ref().filter(|j| j.status.is_active())?;
+    let name = &job.name;
+    Some(match job.kind {
+        JobKind::HostPrint => format!("{name} is printing; disconnecting stops it. Disconnect?"),
+        JobKind::SdPrint => format!(
+            "{name} prints from the SD card and goes on unwatched (cancel ends it). Disconnect?"
+        ),
+        JobKind::SdUpload => format!(
+            "{name} is being written to the SD card; disconnecting leaves it incomplete. Disconnect?"
+        ),
+    })
 }
 
 /// Whether `heater` has a target above 0 °C.

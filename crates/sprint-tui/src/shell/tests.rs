@@ -624,3 +624,29 @@ fn a_pasted_block_runs_line_by_line() {
     assert!(got.iter().any(|c| c == "M105"), "{got:?}");
     assert!(!got.iter().any(|c| c == "M502"), "{got:?}");
 }
+
+#[test]
+fn disconnecting_says_what_happens_to_the_job() {
+    use sprint_host::{JobInfo, JobKind, PrinterState};
+    let state = |kind: JobKind, status: JobStatus| {
+        let mut job = JobInfo::new(kind, "CUBE.GCO", 100, 1000);
+        job.status = status;
+        PrinterState {
+            job: Some(job),
+            ..PrinterState::default()
+        }
+    };
+    assert_eq!(disconnect_question(&PrinterState::default()), None);
+    assert_eq!(
+        disconnect_question(&state(JobKind::HostPrint, JobStatus::Completed)),
+        None
+    );
+    let host = disconnect_question(&state(JobKind::HostPrint, JobStatus::Paused));
+    assert!(host.is_some_and(|q| q.contains("disconnecting stops it")));
+    // A print from the card goes on without Sprint.
+    let sd = disconnect_question(&state(JobKind::SdPrint, JobStatus::Printing)).unwrap_or_default();
+    assert!(sd.contains("goes on") && !sd.contains("stops it"), "{sd}");
+    let upload =
+        disconnect_question(&state(JobKind::SdUpload, JobStatus::Printing)).unwrap_or_default();
+    assert!(upload.contains("incomplete"), "{upload}");
+}
