@@ -107,6 +107,24 @@ fn help_says_what_the_configuration_and_targets_do() {
 }
 
 #[test]
+fn print_help_explains_recovery() {
+    let output = sprint(&["print", "--help"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let text = stdout(&output)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    for fact in [
+        "the line it stopped at is printed as the command that resumes it (--start-line)",
+        "Recover an interrupted print: start at line N of the file",
+        "after a resume preamble that heats to the temperatures in effect at line N",
+        "homes X and Y (never Z: the part is below the nozzle)",
+    ] {
+        assert!(text.contains(fact), "missing {fact:?} in\n{text}");
+    }
+}
+
+#[test]
 fn shell_help_explains_scripts() {
     let output = sprint(&["shell", "--help"]);
     assert!(output.status.success(), "{}", stderr(&output));

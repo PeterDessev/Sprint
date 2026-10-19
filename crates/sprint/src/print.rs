@@ -29,7 +29,7 @@ use sprint_tui::report;
 use sprint_tui::session;
 
 use crate::analyze;
-use crate::cli::PrintArgs;
+use crate::cli::{PrintArgs, TargetArg};
 use crate::headless::{self, Connected, EXIT_INTERRUPTED};
 use crate::prompts::{self, Effect, PromptWatch, Question};
 
@@ -111,13 +111,17 @@ pub fn run(args: &PrintArgs) -> Result<ExitCode> {
     printer.disconnect();
 
     let name = loaded.name();
+    let resume = outcome
+        .stopped_at
+        .map(|line| format!("\nresume with: {}", resume_command(args, line)))
+        .unwrap_or_default();
     let (status, elapsed, percent) = outcome.last;
     if outcome.abandoned {
         let heaters = match heaters {
             Some(true) => "the heaters are off",
             _ => "the heaters may still be on: check the printer",
         };
-        eprintln!("Abandoned {name} at {percent}: the cancel did not finish ({heaters})");
+        eprintln!("Abandoned {name} at {percent}: the cancel did not finish ({heaters}){resume}");
         return Ok(ExitCode::from(EXIT_INTERRUPTED));
     }
     match status {
@@ -131,7 +135,7 @@ pub fn run(args: &PrintArgs) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         JobStatus::Cancelled if outcome.cancel_sent => {
-            eprintln!("Cancelled {name} at {percent}");
+            eprintln!("Cancelled {name} at {percent}{resume}");
             Ok(ExitCode::from(EXIT_INTERRUPTED))
         }
         JobStatus::Failed(why) => {
@@ -140,10 +144,49 @@ pub fn run(args: &PrintArgs) -> Result<ExitCode> {
                 Some(false) => "; the heaters may still be on: check the printer",
                 None => "",
             };
-            Err(anyhow!("{name} failed at {percent}: {why}{heaters}"))
+            Err(anyhow!(
+                "{name} failed at {percent}: {why}{heaters}{resume}"
+            ))
         }
-        JobStatus::Cancelled => Err(anyhow!("the printer cancelled {name} at {percent}")),
-        other => Err(anyhow!("{name} stopped at {percent} ({})", other.label())),
+        JobStatus::Cancelled => Err(anyhow!("the printer cancelled {name} at {percent}{resume}")),
+        other => Err(anyhow!(
+            "{name} stopped at {percent} ({}){resume}",
+            other.label()
+        )),
+    }
+}
+
+/// The command that resumes this print from `stopped_at` (the 0-based
+/// first line the printer did not acknowledge): the same file, printer
+/// and profile, with `--start-line`.
+fn resume_command(args: &PrintArgs, stopped_at: usize) -> String {
+    let mut command = format!(
+        "sprint print {} --start-line {}",
+        shell_word(&args.file.display().to_string()),
+        stopped_at.saturating_add(1)
+    );
+    let target = match &args.connect {
+        TargetArg::Target(target) => target.to_string(),
+        TargetArg::Profile => "profile".to_string(),
+    };
+    command.push_str(&format!(" --connect {}", shell_word(&target)));
+    if let Some(profile) = &args.profile {
+        command.push_str(&format!(" --profile {}", shell_word(profile)));
+    }
+    command
+}
+
+/// `word` as one argument for a shell: quoted when it holds anything but
+/// letters, digits and `_-./:\@=,+`.
+fn shell_word(word: &str) -> String {
+    let plain = !word.is_empty()
+        && word
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_-./:\\@=,+".contains(c));
+    if plain {
+        word.to_string()
+    } else {
+        format!("\"{}\"", word.replace('"', "\\\""))
     }
 }
 
@@ -230,6 +273,10 @@ pub struct Outcome {
     /// Sprint stopped waiting before the job ended (a second Ctrl+C, or a
     /// cancel that took too long): the cancel may not have finished.
     pub abandoned: bool,
+    /// A failed or cancelled host print: the 0-based first line the
+    /// printer did not acknowledge, where a recovery starts
+    /// ([`sprint_host::JobInfo::stopped_at`]).
+    pub stopped_at: Option<usize>,
 }
 
 /// Where [`follow`] reports.
@@ -258,7 +305,7 @@ pub fn follow(
     // and without working on something (parking, unloading filament).
     let mut quiet_pause: Option<Instant> = None;
     loop {
-        let (view, elapsed, prompt, waiting, busy) = printer.with_state(|s| {
+        let (view, elapsed, prompt, waiting, busy, stopped_at) = printer.with_state(|s| {
             let job = s.job.as_ref();
             (
                 JobView {
@@ -270,6 +317,7 @@ pub fn follow(
                 s.prompt.clone(),
                 sprint_tui::actions::waiting_for_user(s),
                 s.busy.is_some(),
+                job.and_then(|j| j.stopped_at),
             )
         });
         for event in events.try_iter() {
@@ -288,6 +336,7 @@ pub fn follow(
                 last: (view.status, elapsed, percent),
                 cancel_sent: cancelled_at.is_some(),
                 abandoned: false,
+                stopped_at,
             };
         }
         let presses = interrupt.count();
@@ -304,6 +353,7 @@ pub fn follow(
                 last: (view.status, elapsed, percent),
                 cancel_sent: true,
                 abandoned: true,
+                stopped_at,
             };
         }
         let quiet = view.status == JobStatus::Paused && prompt.is_none() && !busy;
@@ -589,6 +639,7 @@ mod tests {
         assert!(outcome.cancel_sent);
         assert!(!outcome.abandoned);
         assert_eq!(outcome.last.0, JobStatus::Cancelled);
+        assert!(outcome.stopped_at.is_some(), "{outcome:?}");
         printer.disconnect();
     }
 
@@ -673,6 +724,8 @@ mod tests {
             "{outcome:?}"
         );
         assert!(!outcome.cancel_sent && !outcome.abandoned);
+        // The line it stopped at: the long M117 (line 55, 0-based 54).
+        assert_eq!(outcome.stopped_at, Some(54), "{outcome:?}");
         let mut said = Vec::new();
         let off = stop_safely(&printer, &outcome, &mut |t| said.push(t.to_string()));
         assert_eq!(off, Some(true), "{said:?}");
@@ -838,6 +891,25 @@ mod tests {
         assert!(reset.iter().any(|l| l == "G92 Z5.4"), "{reset:?}");
         assert!(!reset.iter().any(|l| l.starts_with("M109")), "{reset:?}");
         assert!(reset.iter().any(|l| l.starts_with("M104")), "{reset:?}");
+    }
+
+    #[test]
+    fn the_resume_command_names_the_line_after_the_last_acknowledged() {
+        let args = print_args(&["--profile", "Bench 2"]);
+        assert_eq!(
+            resume_command(&args, 41),
+            r#"sprint print a.gcode --start-line 42 --connect sim --profile "Bench 2""#
+        );
+        let mut args = print_args(&[]);
+        args.file = std::path::PathBuf::from("my part.gcode");
+        args.connect = crate::cli::TargetArg::Profile;
+        assert_eq!(
+            resume_command(&args, 0),
+            r#"sprint print "my part.gcode" --start-line 1 --connect profile"#
+        );
+        assert_eq!(shell_word("sim://?a=1&b=2"), r#""sim://?a=1&b=2""#);
+        assert_eq!(shell_word(r"C:\x\cube.gcode"), r"C:\x\cube.gcode");
+        assert_eq!(shell_word(""), r#""""#);
     }
 
     #[test]

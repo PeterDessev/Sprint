@@ -65,6 +65,9 @@ pub enum Command {
     /// the script paused and did not resume is cancelled.
     Shell(ShellArgs),
     /// Print a file without a UI, showing progress.
+    ///
+    /// When the print fails or is cancelled, the line it stopped at is
+    /// printed as the command that resumes it (--start-line).
     Print(PrintArgs),
     /// Analyze a G-code file and print its statistics.
     Analyze(AnalyzeArgs),
@@ -164,9 +167,14 @@ pub struct PrintArgs {
     /// its scripts, options and, with --connect profile, its printer.
     #[arg(long, short = 'p', value_name = "NAME")]
     pub profile: Option<String>,
-    /// Resume an interrupted print from line N of the file (1 = the first
-    /// line): heat, home X and Y, and move back to where line N starts.
-    /// After a power loss or a board reset add --board-reset.
+    /// Recover an interrupted print: start at line N of the file (1 = the
+    /// first line) after a resume preamble that heats to the temperatures
+    /// in effect at line N and waits for them, restores the fan, units and
+    /// modes, homes X and Y (never Z: the part is below the nozzle), lifts
+    /// the nozzle by --z-clearance, travels to where line N starts and
+    /// restores the extruder position and feedrate. A print that fails or
+    /// is cancelled prints the N to use. After a power loss or a board
+    /// reset add --board-reset.
     #[arg(long, value_name = "N", value_parser = clap::value_parser!(u64).range(1..))]
     pub start_line: Option<u64>,
     /// With --start-line: the board was reset (a power loss, or a

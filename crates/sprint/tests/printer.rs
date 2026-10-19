@@ -333,6 +333,12 @@ fn a_failed_print_turns_the_heaters_off_before_exiting() {
     assert!(err.contains("Turning the heaters off"), "{err}");
     assert!(err.contains("long.gcode failed at"), "{err}");
     assert!(err.contains("the heaters are off"), "{err}");
+    // How to go on from where it stopped: the long M117, line 24.
+    let resume = format!(
+        "resume with: sprint print {} --start-line 24 --connect \"sim://",
+        path.display()
+    );
+    assert!(err.contains(&resume), "{err}");
 }
 
 #[test]
