@@ -552,6 +552,60 @@ fn arcs_test_toolpath() {
 }
 
 #[test]
+fn starting_at_a_clean_layer_never_descends_into_the_part() {
+    // Audit A51: layers 10-59 of the arcs test lie inside one helical G2
+    // that starts at Z 2, so starting there re-printed the helix and the
+    // preamble lowered the nozzle into the part.
+    for name in [
+        "calibration-cube.gcode",
+        "twisted-vase.gcode",
+        "arcs-test.gcode",
+    ] {
+        let (file, tp) = analyzed(name);
+        for i in 1..tp.layers.len() {
+            let start = tp.layers[i].lines.start as usize;
+            let z = state_at_line(&file, start).position[2] as f32;
+            let below = z < tp.layers[i - 1].z - 1e-3;
+            assert!(
+                !(below && tp.layer_starts_cleanly(i)),
+                "{name} layer {i}: starts at Z {z}, below layer {} at {}",
+                i - 1,
+                tp.layers[i - 1].z
+            );
+            if tp.layer_starts_cleanly(i) {
+                // The preamble descends to that Z and no lower.
+                let preamble = resume_preamble(&file, start, &ResumeOptions::default());
+                let mut absolute = true;
+                let mut lowest = f32::INFINITY;
+                for line in &preamble {
+                    absolute = match line.as_str() {
+                        "G90" => true,
+                        "G91" => false,
+                        _ => absolute,
+                    };
+                    let z = line
+                        .strip_prefix("G1 Z")
+                        .and_then(|l| l.split(' ').next()?.parse::<f32>().ok());
+                    if let Some(z) = z.filter(|_| absolute) {
+                        lowest = lowest.min(z);
+                    }
+                }
+                assert!(lowest >= tp.layers[i - 1].z - 1e-3, "{name} layer {i}");
+            }
+        }
+    }
+    let (_, tp) = analyzed("arcs-test.gcode");
+    let unclean: Vec<usize> = (0..tp.layers.len())
+        .filter(|&i| !tp.layer_starts_cleanly(i))
+        .collect();
+    assert_eq!(unclean, (10..60).collect::<Vec<_>>());
+    assert_eq!(tp.next_clean_layer(9), Some(9));
+    assert_eq!(tp.next_clean_layer(13), None);
+    let (_, cube) = analyzed("calibration-cube.gcode");
+    assert!((0..cube.layers.len()).all(|i| cube.layer_starts_cleanly(i)));
+}
+
+#[test]
 fn coarser_arc_tolerance_means_fewer_segments() {
     let file = load("arcs-test.gcode");
     let fine = analyze_simple(

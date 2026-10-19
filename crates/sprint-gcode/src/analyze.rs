@@ -2101,6 +2101,37 @@ M486 S-1
     }
 
     #[test]
+    fn layers_inside_a_helix_do_not_start_cleanly() {
+        // Audit A51: one helical G2 climbs from Z 0.4 to 1.0 through three
+        // layers; only the first of them may be started from.
+        let tp = run("\
+M83
+;WIDTH:0.4
+G1 Z0.2 F600
+G1 X10 Y0 F3000
+G1 X20 Y0 E1
+G1 Z0.4
+G1 X10 Y0 E1
+G2 X10 Y0 I5 J0 Z1.0 P2 E10
+G1 Z1.2
+G1 X20 Y0 E1
+");
+        let clean: Vec<bool> = (0..tp.layers.len())
+            .map(|i| tp.layer_starts_cleanly(i))
+            .collect();
+        assert_eq!(clean, [true, true, false, false, true]);
+        // The helix line starts the unclean layers.
+        assert_eq!(tp.layers[2].lines.start, 7);
+        assert_eq!(tp.layers[3].lines.start, 7);
+        assert_eq!(tp.next_clean_layer(2), Some(4));
+        assert_eq!(tp.next_clean_layer(4), Some(4));
+        assert_eq!(tp.next_clean_layer(5), None);
+        assert!(!tp.layer_starts_cleanly(5));
+        assert!(!Toolpath::default().layer_starts_cleanly(0));
+        assert_eq!(Toolpath::default().next_clean_layer(0), None);
+    }
+
+    #[test]
     fn marlin_m486_object_labels() {
         let tp = run("\
 M486 T3

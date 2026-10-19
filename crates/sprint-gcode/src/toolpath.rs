@@ -591,6 +591,36 @@ impl Toolpath {
         Some(n.saturating_sub(1))
     }
 
+    /// True when a print can start at layer `layer` by streaming from its
+    /// first line (`lines.start`): that line does not continue a command of
+    /// the layers below.
+    ///
+    /// A helical arc (G2/G3 with Z) that climbs through several layers is a
+    /// single command, so every layer it reaches after its first one starts
+    /// on the arc's own line. Starting there would print the whole helix
+    /// again from its bottom, and the resume preamble would lower the nozzle
+    /// to the helix's start height, below the part already printed. Layer 0
+    /// always starts cleanly; layers out of range never do.
+    pub fn layer_starts_cleanly(&self, layer: usize) -> bool {
+        let Some(l) = self.layers.get(layer) else {
+            return false;
+        };
+        let Some(before) = l.segments.start.checked_sub(1) else {
+            return true;
+        };
+        self.segments
+            .get(before)
+            .is_none_or(|s| s.line < l.lines.start)
+    }
+
+    /// The first layer at or after `layer` that starts cleanly (see
+    /// [`Toolpath::layer_starts_cleanly`]): what a start-from-layer dialog
+    /// offers instead of a layer inside a multi-layer command. `None` when
+    /// no such layer follows.
+    pub fn next_clean_layer(&self, layer: usize) -> Option<usize> {
+        (layer..self.layers.len()).find(|&i| self.layer_starts_cleanly(i))
+    }
+
     /// Estimated elapsed print time (seconds) once `line` has executed.
     pub fn time_at_line(&self, line: u32) -> f32 {
         match self.segment_at_line(line) {

@@ -313,7 +313,12 @@ pub fn resume_preamble(file: &GcodeFile, line: usize, options: &ResumeOptions) -
   other (E-only moves, firmware retraction, dwells) = `estimated_time`.
   `filament_density` from slicer metadata overrides the option like the
   diameter does. Layer `lines` ranges are contiguous and cover the file; a
-  single command spanning several layers (a long helix) leaves empty ranges.
+  single command spanning several layers (a long helix) leaves empty ranges
+  and starts those layers on its own line. `Toolpath::layer_starts_cleanly(i)`
+  is false for such layers (streaming from `lines.start` would re-print the
+  command from its bottom, and the resume preamble would descend below the
+  part already printed); `Toolpath::next_clean_layer(i)` is the first layer
+  at or after `i` that a start-from-layer dialog may offer instead.
   Spiral (vase) layers, whose extrusions climb in Z, start at slicer layer
   markers when the file has any, otherwise after every layer height of
   climb; a flat extrusion inside the Z range a spiral layer has climbed
