@@ -439,6 +439,15 @@ pub(crate) fn nearest<'a>(samples: &[&'a TempSample], t: f64) -> Option<&'a Temp
         .min_by(|a, b| (a.t - t).abs().total_cmp(&(b.t - t).abs()))
 }
 
+/// The sample nearest to `t` if it is at most `tolerance` seconds away.
+pub(crate) fn nearest_within<'a>(
+    samples: &[&'a TempSample],
+    t: f64,
+    tolerance: f64,
+) -> Option<&'a TempSample> {
+    nearest(samples, t).filter(|s| (s.t - t).abs() <= tolerance)
+}
+
 /// `samples` as CSV: a header and one row per sample with the time, each
 /// heater's temperature and target and (where reported) its power in
 /// percent. Missing values are empty cells.
@@ -774,6 +783,13 @@ mod tests {
         assert_eq!(at(99.0), Some(10.0));
         assert_eq!(at(f64::NAN), None);
         assert!(nearest(&[], 1.0).is_none());
+        // Only close enough to the pointer.
+        let within = |t: f64, tol: f64| nearest_within(&h, t, tol).map(|s| s.t);
+        assert_eq!(within(5.5, 5.0), Some(2.0));
+        assert_eq!(within(5.5, 3.0), None);
+        assert_eq!(within(99.0, MAX_GAP), None);
+        assert_eq!(within(19.0, MAX_GAP), Some(10.0));
+        assert_eq!(within(1.0, f64::NAN), None);
     }
 
     #[test]

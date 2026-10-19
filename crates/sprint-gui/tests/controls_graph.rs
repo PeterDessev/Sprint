@@ -167,6 +167,26 @@ fn hovering_reads_out_every_heater() {
     snapshot(&mut h, &name("graph_hover", Theme::Dark));
 }
 
+/// Beyond the newest reading (the empty end of a 30 minute window) there is
+/// nothing to read out: no tooltip pretending the last sample is there.
+#[test]
+fn no_readout_beyond_the_readings() {
+    let mut h = synthetic_graph();
+    h.get_by_label("30 min").click();
+    settle(&mut h);
+    // Ten minutes of history fill the left third of the chart.
+    hover(&mut h, egui::pos2(800.0, 250.0));
+    assert!(
+        h.query_by_label("→ 230").is_none(),
+        "a readout far from data"
+    );
+    hover(&mut h, egui::pos2(300.0, 250.0));
+    assert!(
+        h.query_by_label("→ 230").is_some(),
+        "the readout on the data"
+    );
+}
+
 #[test]
 fn power_plot_can_be_hidden() {
     let mut h = synthetic_graph();

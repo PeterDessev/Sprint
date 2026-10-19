@@ -204,8 +204,8 @@ impl TemperatureGraphTab {
                 } else if moved {
                     self.follow = false;
                 }
-                if let Some((t, layer, id)) = hover {
-                    hover_readout(ui, history, &series, t, layer, id);
+                if let Some(hover) = hover {
+                    hover_readout(ui, history, &series, hover);
                 }
                 stats_card(ui, &series, visible, (first, last));
             });
@@ -508,71 +508,96 @@ fn grid_color(ui: &Ui) -> Color32 {
     with_alpha(p.text_dim, if p.dark { 0.45 } else { 0.5 })
 }
 
+/// The hover readout snaps to a sample this many points from the pointer
+/// (or [`data::MAX_GAP`] seconds, whichever is more); farther from any
+/// reading it stays hidden.
+const HOVER_SNAP_PX: f64 = 12.0;
+
 /// Whether the user panned or zoomed a plot this frame.
 fn user_moved(ui: &Ui, response: &Response) -> bool {
     response.dragged() || (response.hovered() && ui.input(|i| i.zoom_delta() != 1.0))
 }
 
-/// The time under the pointer, with the plot's layer and id.
-fn hovered_time(plot: &PlotResponse<()>) -> Option<(f64, LayerId, Id)> {
-    let pos = plot.response.hover_pos()?;
-    let t = plot.transform.value_from_position(pos).x;
-    t.is_finite()
-        .then_some((t, plot.response.layer_id, plot.response.id))
-}
-
-/// A tooltip with every heater's reading at the hovered time.
-fn hover_readout(
-    ui: &Ui,
-    history: &[&TempSample],
-    series: &[Series],
+/// Where the pointer is on the time axis.
+#[derive(Clone, Copy, Debug)]
+struct Hover {
+    /// The time under the pointer (s).
     t: f64,
+    /// How far (s) a sample may be from `t` to be read out.
+    tolerance: f64,
     layer: LayerId,
     id: Id,
-) {
-    let Some(sample) = data::nearest(history, t) else {
+}
+
+/// The time under the pointer, if it is over `plot`.
+fn hovered_time(plot: &PlotResponse<()>) -> Option<Hover> {
+    let pos = plot.response.hover_pos()?;
+    let t = plot.transform.value_from_position(pos).x;
+    let per_point = plot.transform.dvalue_dpos()[0].abs();
+    let snap = if per_point.is_finite() {
+        HOVER_SNAP_PX * per_point
+    } else {
+        0.0
+    };
+    t.is_finite().then_some(Hover {
+        t,
+        tolerance: data::MAX_GAP.max(snap),
+        layer: plot.response.layer_id,
+        id: plot.response.id,
+    })
+}
+
+/// A tooltip with every heater's reading at the hovered time (none where
+/// there are no readings, e.g. the empty end of a window).
+fn hover_readout(ui: &Ui, history: &[&TempSample], series: &[Series], hover: Hover) {
+    let Some(sample) = data::nearest_within(history, hover.t, hover.tolerance) else {
         return;
     };
-    egui::Tooltip::always_open(ui.ctx().clone(), layer, id, PopupAnchor::Pointer)
-        .gap(14.0)
-        .show(|ui| {
-            let p = theme::ui_palette(ui);
-            ui.label(
-                RichText::new(data::format_clock(sample.t))
-                    .font(theme::font(ui, TextRole::Title))
-                    .color(p.text),
-            );
-            Grid::new("sprint-temp-graph-hover")
-                .num_columns(4)
-                .spacing(vec2(12.0, 4.0))
-                .show(ui, |ui| {
-                    for s in series {
-                        let Some((current, target)) = s.channel.reading(sample) else {
-                            continue;
-                        };
-                        swatch_label(ui, s.color, &s.name);
-                        ui.label(
-                            RichText::new(format!("{} °C", format_temperature(current)))
-                                .color(p.text)
-                                .strong(),
-                        );
-                        let target = if target > 0.0 && target.is_finite() {
-                            format!("→ {}", format_temperature(target).trim_end_matches(".0"))
-                        } else {
-                            "off".to_owned()
-                        };
-                        ui.label(RichText::new(target).color(p.text_dim));
-                        match s.channel.power(sample) {
-                            Some(power) => ui.label(
-                                RichText::new(format!("{:.0}%", power.clamp(0.0, 1.0) * 100.0))
-                                    .color(p.text_dim),
-                            ),
-                            None => ui.label(""),
-                        };
-                        ui.end_row();
-                    }
-                });
-        });
+    egui::Tooltip::always_open(
+        ui.ctx().clone(),
+        hover.layer,
+        hover.id,
+        PopupAnchor::Pointer,
+    )
+    .gap(14.0)
+    .show(|ui| {
+        let p = theme::ui_palette(ui);
+        ui.label(
+            RichText::new(data::format_clock(sample.t))
+                .font(theme::font(ui, TextRole::Title))
+                .color(p.text),
+        );
+        Grid::new("sprint-temp-graph-hover")
+            .num_columns(4)
+            .spacing(vec2(12.0, 4.0))
+            .show(ui, |ui| {
+                for s in series {
+                    let Some((current, target)) = s.channel.reading(sample) else {
+                        continue;
+                    };
+                    swatch_label(ui, s.color, &s.name);
+                    ui.label(
+                        RichText::new(format!("{} °C", format_temperature(current)))
+                            .color(p.text)
+                            .strong(),
+                    );
+                    let target = if target > 0.0 && target.is_finite() {
+                        format!("→ {}", format_temperature(target).trim_end_matches(".0"))
+                    } else {
+                        "off".to_owned()
+                    };
+                    ui.label(RichText::new(target).color(p.text_dim));
+                    match s.channel.power(sample) {
+                        Some(power) => ui.label(
+                            RichText::new(format!("{:.0}%", power.clamp(0.0, 1.0) * 100.0))
+                                .color(p.text_dim),
+                        ),
+                        None => ui.label(""),
+                    };
+                    ui.end_row();
+                }
+            });
+    });
 }
 
 /// A colored dot and a name.
