@@ -11,6 +11,7 @@
 mod analyze;
 mod cli;
 mod console;
+mod headless;
 mod ports;
 mod print;
 mod send;

@@ -12,24 +12,20 @@ use std::io::{self, Write};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use crossbeam_channel::{Receiver, RecvTimeoutError};
 use sprint_host::{ConsoleKind, Event, Printer};
 use sprint_tui::interrupt::{self, Interrupt};
 use sprint_tui::session::{self, WaitError, link_idle};
 
 use crate::cli::SendArgs;
+use crate::headless::{self, Connected, EXIT_INTERRUPTED};
 
-/// How long the setup queries after connecting may take.
-const SETUP_TIMEOUT: Duration = Duration::from_secs(15);
 /// The link must stay idle this long after a command's last `ok`.
 const SETTLE: Duration = Duration::from_millis(100);
 /// Commands the host handles itself (M112 stops at once) may never show up
 /// as sent lines; an idle link this long also ends their wait.
 const IDLE_GIVE_UP: Duration = Duration::from_secs(1);
-
-/// Exit code after Ctrl+C.
-const EXIT_INTERRUPTED: u8 = 130;
 
 /// Run `sprint send`.
 pub fn run(args: &SendArgs) -> Result<ExitCode> {
@@ -38,21 +34,17 @@ pub fn run(args: &SendArgs) -> Result<ExitCode> {
     let printer = Printer::with_console_capacity(config.console_max_lines);
     printer.set_profile(profile.clone());
     let interrupt = interrupt::global();
-    session::connect_blocking(
+    let label = args.connect.label();
+    // The replies to the setup queries are not ours: they are over once
+    // this returns.
+    let connected = headless::connect(
         &printer,
         args.connect.clone(),
         profile.options.clone(),
         &interrupt,
-    )
-    .map_err(|e| anyhow!("{e}"))?;
-    // The replies to the setup queries are not ours.
-    match session::wait_setup(&printer, SETUP_TIMEOUT, &interrupt) {
-        Err(WaitError::Interrupted) => {
-            printer.disconnect();
-            return Ok(ExitCode::from(EXIT_INTERRUPTED));
-        }
-        Err(WaitError::Disconnected(why)) => return Err(anyhow!(closed(&why))),
-        Ok(()) | Err(WaitError::TimedOut) => {}
+    )?;
+    if connected == Connected::Interrupted {
+        return Ok(ExitCode::from(EXIT_INTERRUPTED));
     }
     let events = printer.subscribe();
     let timeout = Duration::from_secs_f32(args.timeout);
@@ -94,7 +86,7 @@ pub fn run(args: &SendArgs) -> Result<ExitCode> {
                 break;
             }
             Err(WaitError::Disconnected(why)) => {
-                eprintln!("sprint send: {}", closed(&why));
+                eprintln!("sprint send: {}", headless::closed(&label, &why));
                 code = ExitCode::FAILURE;
                 break;
             }
@@ -102,15 +94,6 @@ pub fn run(args: &SendArgs) -> Result<ExitCode> {
     }
     printer.disconnect();
     Ok(code)
-}
-
-/// "the connection closed (reason)".
-fn closed(why: &str) -> String {
-    if why.is_empty() {
-        "the connection closed".to_string()
-    } else {
-        format!("the connection closed ({why})")
-    }
 }
 
 /// What came back for one command.

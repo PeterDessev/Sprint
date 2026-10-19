@@ -20,22 +20,17 @@ use sprint_tui::format;
 use sprint_tui::interrupt::{self, Interrupt};
 use sprint_tui::loader::LoadedFile;
 use sprint_tui::report;
-use sprint_tui::session::{self, WaitError};
 
 use crate::analyze;
 use crate::cli::PrintArgs;
+use crate::headless::{self, Connected, EXIT_INTERRUPTED};
 
-/// How long the setup queries after connecting may take.
-const SETUP_TIMEOUT: Duration = Duration::from_secs(15);
 /// How often the job is looked at.
 const POLL: Duration = Duration::from_millis(100);
 /// How often the progress line is redrawn on a terminal.
 const REDRAW: Duration = Duration::from_millis(250);
 /// How long a cancel may take before Sprint stops waiting.
 const CANCEL_TIMEOUT: Duration = Duration::from_secs(60);
-
-/// Exit code after Ctrl+C.
-const EXIT_INTERRUPTED: u8 = 130;
 
 /// Run `sprint print`.
 pub fn run(args: &PrintArgs) -> Result<ExitCode> {
@@ -45,12 +40,20 @@ pub fn run(args: &PrintArgs) -> Result<ExitCode> {
     let stderr_tty = io::stderr().is_terminal();
     let show_progress = !args.no_progress;
 
-    let loaded = load(
+    let loaded = match load(
         &args.file,
         &profile,
         show_progress && stderr_tty,
         &interrupt,
-    )?;
+    ) {
+        Ok(loaded) => loaded,
+        // Ctrl+C during the analysis.
+        Err(_) if interrupt.is_raised() => {
+            eprintln!("Interrupted");
+            return Ok(ExitCode::from(EXIT_INTERRUPTED));
+        }
+        Err(e) => return Err(e),
+    };
     let mut options = sprint_tui::actions::print_options(&loaded);
     if let Some(line) = args.start_line {
         let total = loaded.file.len();
@@ -71,20 +74,15 @@ pub fn run(args: &PrintArgs) -> Result<ExitCode> {
     if show_progress {
         eprintln!("Connecting to {label}…");
     }
-    session::connect_blocking(
+    let connected = headless::connect(
         &printer,
         args.connect.clone(),
         profile.options.clone(),
         &interrupt,
-    )
-    .map_err(|e| anyhow!("{e}"))?;
-    match session::wait_setup(&printer, SETUP_TIMEOUT, &interrupt) {
-        Err(WaitError::Interrupted) => {
-            printer.disconnect();
-            return Ok(ExitCode::from(EXIT_INTERRUPTED));
-        }
-        Err(WaitError::Disconnected(_)) => bail!("{label} closed the connection"),
-        Ok(()) | Err(WaitError::TimedOut) => {}
+    )?;
+    if connected == Connected::Interrupted {
+        eprintln!("Interrupted");
+        return Ok(ExitCode::from(EXIT_INTERRUPTED));
     }
     printer
         .start_print(loaded.file.clone(), options)
@@ -298,6 +296,7 @@ mod tests {
     use super::*;
     use sprint_host::sprint_sim::SimConfig;
     use sprint_host::{ConnectOptions, ConnectTarget};
+    use sprint_tui::session;
     use std::sync::Arc;
 
     fn connect(sim: SimConfig) -> Printer {
