@@ -21,6 +21,9 @@ pub fn print_blocker(state: &PrinterState, has_file: bool) -> Option<&'static st
         Some("The printer is halted: restart the firmware (M999) or reconnect")
     } else if state.job_active() {
         Some("A job is already running")
+    } else if crate::context::printer_busy(state) {
+        // Started on its display: the two prints would interleave.
+        Some("The printer prints from its card")
     } else {
         None
     }
@@ -547,6 +550,10 @@ mod tests {
         state.halted = false;
         state.job = Some(JobInfo::new(JobKind::HostPrint, "a", 1, 1));
         assert!(print_blocker(&state, true).is_some_and(|b| b.contains("running")));
+        // A print started on the printer's display.
+        state.job = None;
+        state.sd.printing = Some((10, 100));
+        assert!(print_blocker(&state, true).is_some_and(|b| b.contains("card")));
     }
 
     #[test]

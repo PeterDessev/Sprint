@@ -1907,6 +1907,29 @@ fn a_print_from_the_card_locks_motion_and_probing() {
 }
 
 #[test]
+fn no_print_starts_while_the_printer_prints_from_its_card() {
+    let options = with_file(AppOptions::headless(), sample("calibration-cube.gcode"));
+    let mut h = app(options, WINDOW);
+    expect(&mut h, "the cube to be analyzed", analyzed);
+    // Started on the printer's display: no job, only its SD progress.
+    let mut state = printing_state(JobStatus::Printing);
+    state.job = None;
+    state.sd.printing = Some((1_000, 50_000));
+    h.state_mut().set_state_override(Some(state));
+    settle(&mut h);
+    assert!(
+        h.get_by_label("Start print… (Ctrl+P)")
+            .accesskit_node()
+            .is_disabled()
+    );
+    h.state_mut()
+        .push_action(AppAction::StartPrintDialog { start_line: 0 });
+    settle(&mut h);
+    assert_eq!(h.state().dialog(), None);
+    assert!(toast_titles(h.state()).contains(&"Cannot print right now".to_owned()));
+}
+
+#[test]
 fn console_motion_is_guarded_while_a_job_runs() {
     let mut h = app(AppOptions::headless(), WINDOW);
     h.state_mut()
