@@ -79,6 +79,63 @@ pub fn smooth_points(points: &[Pos2], samples_per_segment: usize) -> Vec<Pos2> {
     out
 }
 
+/// Thin screen-space `points` (sorted by `x`) down to about `max_points`
+/// with the same look: the x range is cut into `max_points / 2` buckets and
+/// each keeps its lowest and highest point, in their original order, so
+/// spikes survive. The first and last points are always kept. Input that
+/// is already small enough is returned unchanged.
+fn decimate(points: &[Pos2], max_points: usize) -> Vec<Pos2> {
+    let max_points = max_points.max(4);
+    let (Some(first), Some(last)) = (points.first(), points.last()) else {
+        return Vec::new();
+    };
+    if points.len() <= max_points {
+        return points.to_vec();
+    }
+    let buckets = max_points / 2;
+    let (x0, span) = (first.x, last.x - first.x);
+    let mut out = Vec::with_capacity(max_points + 2);
+    out.push(*first);
+    let mut i = 0;
+    for b in 0..buckets {
+        let end_x = x0 + span * (b + 1) as f32 / buckets as f32;
+        let start = i;
+        // The last bucket takes whatever is left (also for unsorted or
+        // single-column input).
+        while i < points.len() && (b + 1 == buckets || points[i].x <= end_x) {
+            i += 1;
+        }
+        let Some(bucket) = points.get(start..i).filter(|b| !b.is_empty()) else {
+            continue;
+        };
+        let (mut lo, mut hi) = (0, 0);
+        for (k, p) in bucket.iter().enumerate() {
+            if p.y < bucket[lo].y {
+                lo = k;
+            }
+            if p.y > bucket[hi].y {
+                hi = k;
+            }
+        }
+        out.push(bucket[lo.min(hi)]);
+        if lo != hi {
+            out.push(bucket[lo.max(hi)]);
+        }
+    }
+    out.push(*last);
+    out.dedup();
+    out
+}
+
+/// The most points a line `width` points wide needs: two per point.
+fn max_line_points(width: f32) -> usize {
+    if width.is_finite() {
+        (width.clamp(1.0, super::MAX_EXTENT) * 2.0).ceil() as usize
+    } else {
+        2
+    }
+}
+
 /// Split `values` into runs of consecutive finite values, as
 /// `(start_index, run)` pairs. NaN and infinities end a run (a gap in the
 /// line).
@@ -347,7 +404,11 @@ impl Widget for Sparkline<'_> {
                 .enumerate()
                 .map(|(j, v)| pos2(x_of(start + j), y_of(*v)))
                 .collect();
-            let pts = if self.smooth {
+            // More samples than pixels: thin them out (smoothing would only
+            // multiply points nobody can see).
+            let pts = if pts.len() > max_line_points(plot.width()) {
+                decimate(&pts, max_line_points(plot.width()))
+            } else if self.smooth {
                 smooth_points(&pts, 6)
             } else {
                 pts
@@ -660,8 +721,11 @@ fn paint_series(
         }
     }
     let stroke = Stroke::new(if s.dashed { 1.2 } else { 1.8 }, s.color);
+    let max_points = max_line_points(plot.width());
     for run in runs.into_iter().filter(|r| !r.is_empty()) {
-        let pts = if s.dashed {
+        let pts = if run.len() > max_points {
+            decimate(&run, max_points)
+        } else if s.dashed {
             run
         } else {
             smooth_points(&run, 6)
@@ -888,6 +952,72 @@ mod tests {
         assert_eq!(tick_decimals(&[0.0, 0.1], 1), 1);
         assert_eq!(tick_decimals(&[0.0, 0.05], 1), 2);
         assert_eq!(tick_decimals(&[1.0], 2), 2);
+    }
+
+    /// Points and vertices painted by one pass of `add` in a 400 × 300 ui.
+    fn painted_points(add: impl FnMut(&mut Ui)) -> usize {
+        fn count(shape: &Shape) -> usize {
+            match shape {
+                Shape::Path(path) => path.points.len(),
+                Shape::Mesh(mesh) => mesh.vertices.len(),
+                Shape::Vec(shapes) => shapes.iter().map(count).sum(),
+                Shape::LineSegment { .. } => 2,
+                _ => 0,
+            }
+        }
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(400.0, 300.0))),
+            ..Default::default()
+        };
+        let mut add = add;
+        let mut output = ctx.run_ui(input, |ui| add(ui));
+        output.textures_delta.clear();
+        output.shapes.iter().map(|s| count(&s.shape)).sum()
+    }
+
+    #[test]
+    fn dense_data_is_drawn_with_a_bounded_number_of_points() {
+        // Hours of 1 Hz readings in a 200 pt wide card.
+        let values: Vec<f32> = (0..50_000)
+            .map(|i| 200.0 + 10.0 * (i as f32 * 0.01).sin())
+            .collect();
+        let n = painted_points(|ui| {
+            ui.add(Sparkline::new(&values).width(200.0));
+        });
+        assert!(n < 2_500, "sparkline painted {n} points");
+        let points: Vec<[f64; 2]> = values
+            .iter()
+            .enumerate()
+            .map(|(i, v)| [i as f64, f64::from(*v)])
+            .collect();
+        let n = painted_points(|ui| {
+            MiniChart::new()
+                .series(ChartSeries::new("t", &points, Color32::RED).fill(true))
+                .series(ChartSeries::new("d", &points, Color32::BLUE).dashed(true))
+                .legend(false)
+                .show(ui);
+        });
+        assert!(n < 12_000, "chart painted {n} points");
+    }
+
+    #[test]
+    fn decimation_keeps_extremes_and_endpoints() {
+        let mut pts: Vec<Pos2> = (0..10_000).map(|i| pos2(i as f32 * 0.01, 0.0)).collect();
+        pts[5_000].y = 42.0;
+        pts[7_000].y = -7.0;
+        let out = decimate(&pts, 200);
+        assert!(out.len() <= 204, "{}", out.len());
+        assert_eq!(out.first(), pts.first());
+        assert_eq!(out.last(), pts.last());
+        assert!(out.iter().any(|p| p.y == 42.0));
+        assert!(out.iter().any(|p| p.y == -7.0));
+        assert!(out.windows(2).all(|w| w[1].x >= w[0].x));
+        // Sparse input is returned as is.
+        assert_eq!(decimate(&pts[..50], 200), pts[..50].to_vec());
+        // All points at one x: just the extremes (and the ends).
+        let column: Vec<Pos2> = (0..1000).map(|i| pos2(1.0, i as f32)).collect();
+        assert!(decimate(&column, 10).len() <= 4);
     }
 
     #[test]
