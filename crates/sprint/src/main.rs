@@ -12,6 +12,7 @@ mod analyze;
 mod cli;
 mod console;
 mod ports;
+mod send;
 mod sim;
 
 use std::process::ExitCode;
@@ -73,6 +74,7 @@ fn run(command: Command) -> Result<ExitCode> {
         .map(|()| ExitCode::SUCCESS),
         Command::Analyze(args) => analyze::run(&args).map(|()| ExitCode::SUCCESS),
         Command::Ports => ports::run().map(|()| ExitCode::SUCCESS),
+        Command::Send(args) => send::run(&args),
         Command::Sim(args) => sim::run(&args).map(|()| ExitCode::SUCCESS),
         other => Ok(not_implemented(other.name())),
     }

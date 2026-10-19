@@ -133,3 +133,77 @@ fn the_shell_without_a_target_stays_offline() {
     assert!(output.status.success(), "{}", stderr(&output));
     assert!(stdout(&output).contains("Ready"), "{}", stdout(&output));
 }
+
+#[test]
+fn send_prints_the_firmware_line() {
+    let scratch = Scratch::new("send-m115");
+    let output = scratch.run(&["send", "--connect", "sim", "M115"]);
+    let text = stdout(&output);
+    assert!(output.status.success(), "{text}\n{}", stderr(&output));
+    let firmware = text
+        .lines()
+        .find(|l| l.starts_with("FIRMWARE_NAME:"))
+        .unwrap_or_else(|| panic!("no firmware line in\n{text}"));
+    assert!(firmware.contains("Marlin"), "{firmware}");
+    assert!(text.lines().any(|l| l.starts_with("Cap:")), "{text}");
+    // The command's ok ends its replies.
+    assert_eq!(text.lines().last(), Some("ok"), "{text}");
+    assert!(stderr(&output).is_empty(), "{}", stderr(&output));
+}
+
+#[test]
+fn send_runs_each_argument_in_order() {
+    let scratch = Scratch::new("send-many");
+    let output = scratch.run(&[
+        "send",
+        "-c",
+        FAST_SIM,
+        "G28 X",
+        "M105",
+        "M114 ; where are we",
+        "M9999",
+    ]);
+    let text = stdout(&output);
+    assert!(output.status.success(), "{text}\n{}", stderr(&output));
+    let temp = text
+        .find("ok T:")
+        .unwrap_or_else(|| panic!("no M105 reply in\n{text}"));
+    let position = text
+        .find("X:")
+        .unwrap_or_else(|| panic!("no M114 reply in\n{text}"));
+    assert!(temp < position, "{text}");
+    // An unknown command is answered, not an error.
+    assert!(text.contains("Unknown command"), "{text}");
+}
+
+#[test]
+fn send_gives_up_after_the_timeout() {
+    // A real-time printer dwelling for 5 s; the ok cannot come within 1 s.
+    let scratch = Scratch::new("send-timeout");
+    let started = std::time::Instant::now();
+    let output = scratch.run(&[
+        "send",
+        "-c",
+        "sim://?boot_delay_ms=20",
+        "--timeout",
+        "1",
+        "G4 S5",
+        "M105",
+    ]);
+    assert_eq!(output.status.code(), Some(1), "{}", stdout(&output));
+    let err = stderr(&output);
+    assert!(err.contains("no ok for G4 S5 within"), "{err}");
+    assert!(err.contains("remaining commands were not sent"), "{err}");
+    assert!(!stdout(&output).contains("ok T:"), "{}", stdout(&output));
+    assert!(started.elapsed() < std::time::Duration::from_secs(20));
+}
+
+#[test]
+fn send_reports_an_unreachable_printer() {
+    // Loopback port 1 refuses connections: nothing leaves this machine.
+    let scratch = Scratch::new("send-refused");
+    let output = scratch.run(&["send", "-c", "tcp://127.0.0.1:1", "M105"]);
+    assert_eq!(output.status.code(), Some(1));
+    let err = stderr(&output);
+    assert!(err.starts_with("sprint: error: cannot connect to"), "{err}");
+}

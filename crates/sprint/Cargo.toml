@@ -19,6 +19,7 @@ sprint-host.workspace = true
 sprint-gui.workspace = true
 sprint-tui.workspace = true
 clap.workspace = true
+crossbeam-channel.workspace = true
 anyhow.workspace = true
 log.workspace = true
 env_logger.workspace = true

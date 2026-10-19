@@ -264,19 +264,11 @@ fn empty_and_binary_files_still_get_a_report() {
 #[test]
 fn unimplemented_commands_exit_with_2() {
     let cube = sample_arg("calibration-cube.gcode");
-    for args in [
-        vec!["print", cube.as_str(), "--connect", "sim"],
-        vec!["send", "--connect", "sim", "M105"],
-    ] {
-        let output = sprint(&args);
-        assert_eq!(output.status.code(), Some(2), "{args:?}");
-        let text = stderr(&output);
-        assert!(
-            text.contains(&format!("sprint {}: not implemented yet", args[0])),
-            "{args:?}: {text}"
-        );
-        assert!(output.stdout.is_empty(), "{args:?}");
-    }
+    let output = sprint(&["print", cube.as_str(), "--connect", "sim"]);
+    assert_eq!(output.status.code(), Some(2));
+    let text = stderr(&output);
+    assert!(text.contains("sprint print: not implemented yet"), "{text}");
+    assert!(output.stdout.is_empty());
 }
 
 #[test]
