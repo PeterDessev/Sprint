@@ -56,7 +56,7 @@ impl PrinterSettings {
             Some((body, last)) if last.eq_ignore_ascii_case("stealth") => (body, true),
             _ => (trimmed, false),
         };
-        let mut cmd = SettingCommand::parse(body)?;
+        let mut cmd = SettingCommand::parse_any(body)?;
         if stealth {
             cmd.mark_stealth();
         }

@@ -521,6 +521,10 @@ fn mesh_points_in_m503_are_separate_settings() {
             .as_deref(),
         Some("G29 S3 X2 Y1 Z0.21")
     );
+    // G29 lines that probe are not settings, with or without "echo:" (an
+    // RRF config dump can hold "G29 S1"), so nothing re-sends them.
+    let replies = run("G29 S1\nG29\necho:  G29 P1\necho:G29 S5\nok\n");
+    assert!(settings_of(&replies).is_empty(), "{replies:?}");
 }
 
 const KLIPPER: &str = "\

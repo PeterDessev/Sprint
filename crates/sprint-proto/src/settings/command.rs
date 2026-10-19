@@ -43,6 +43,32 @@ pub(crate) fn format_value(v: f64) -> String {
 /// Parse one parameter token: a single letter (flag), or one or more
 /// letter+number pairs (`X80`, `X80Y80`). Returns false when the token is
 /// not of that form (e.g. a word like `Hello` or a quoted string).
+/// The G29 forms M503 prints for a leveling mesh, with nothing else on the
+/// line: `S3 I<i> J<j> Z<z>` (Marlin 1.1: `S3 X<i> Y<j> Z<z>`), `S4 Z<z>`
+/// and bilinear `W I<i> J<j> Z<z>`. Every other G29 runs a probe or a
+/// leveling routine.
+fn is_mesh_point(params: &[(char, f64)]) -> bool {
+    let value = |letter: char| params.iter().find(|p| p.0 == letter).map(|p| p.1);
+    let number = |letter: char| value(letter).is_some_and(f64::is_finite);
+    let only = |allowed: &[char]| params.iter().all(|p| allowed.contains(&p.0));
+    if !number('Z') {
+        return false;
+    }
+    let mode = value('S');
+    if mode == Some(3.0) {
+        (only(&['S', 'I', 'J', 'Z']) && number('I') && number('J'))
+            || (only(&['S', 'X', 'Y', 'Z']) && number('X') && number('Y'))
+    } else if mode == Some(4.0) {
+        only(&['S', 'Z'])
+    } else {
+        mode.is_none()
+            && value('W').is_some_and(f64::is_nan)
+            && only(&['W', 'I', 'J', 'Z'])
+            && number('I')
+            && number('J')
+    }
+}
+
 fn parse_param_token(tok: &str, out: &mut Vec<(char, f64)>) -> bool {
     let bytes = tok.as_bytes();
     if bytes.len() == 1 {
@@ -121,8 +147,18 @@ impl SettingCommand {
     /// An `echo:` prefix and `;` / `( )` comments are ignored. The code must be
     /// a `G` or `M` number; every parameter must be a letter followed by a
     /// number, or a bare letter (flag). Anything else (quoted strings, words)
-    /// yields `None`.
+    /// yields `None`. `G29` is a setting only in the mesh-point forms M503
+    /// prints (`G29 S3 I0 J2 Z0.01`, `G29 S3 X1 Y1 Z0.01`, `G29 S4 Z0`,
+    /// `G29 W I1 J0 Z0.1`); any other G29 probes the bed and yields `None`.
     pub fn parse(text: &str) -> Option<SettingCommand> {
+        let cmd = SettingCommand::parse_any(text)?;
+        // G29 probes the bed; only the forms M503 prints set a value.
+        (cmd.code != "G29" || is_mesh_point(&cmd.params)).then_some(cmd)
+    }
+
+    /// [`SettingCommand::parse`] without the G29 check: also reads a
+    /// settings key spelled as G-code (`"g29 w i1 j0"`).
+    pub(crate) fn parse_any(text: &str) -> Option<SettingCommand> {
         let mut t = text.trim();
         if t.len() >= 5 && t.is_char_boundary(5) && t[..5].eq_ignore_ascii_case("echo:") {
             t = t[5..].trim();
@@ -395,6 +431,38 @@ mod tests {
             } else {
                 assert!(SettingCommand::parse(s).is_none(), "{s:?}");
             }
+        }
+    }
+
+    #[test]
+    fn g29_is_a_setting_only_as_a_mesh_point() {
+        // The catalog knows G29 for the mesh points M503 prints, but G29 is
+        // also the command that probes the bed: an imported file or a stray
+        // reply line must not turn "G29" into a setting that, applied,
+        // starts probing.
+        for s in [
+            "G29 S3 I0 J2 Z0.0125",
+            "echo:  G29 S3 X1 Y1 Z0.2",
+            "G29 S4 Z-0.05",
+            "G29 W I1 J0 Z0.12",
+            "g29 w i1 j0 z0.12",
+        ] {
+            assert!(SettingCommand::parse(s).is_some(), "{s:?}");
+        }
+        for s in [
+            "G29",
+            "G29 P1",
+            "G29 S1",
+            "G29 S2",
+            "G29 S5",
+            "G29 T",
+            "G29 S3 I0 J2",
+            "G29 S3 I0 Z0.1",
+            "G29 W Z0.1",
+            "G29 S3 I0 J0 Z0.1 P1",
+            "G29 S4",
+        ] {
+            assert!(SettingCommand::parse(s).is_none(), "{s:?}");
         }
     }
 

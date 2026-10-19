@@ -654,7 +654,10 @@ whole M503 report loses nothing:
   read both the Marlin 1.1 and the Marlin 2 (`M200 S0 D1.75`) forms.
 * Mesh points (`G29 S3 I<i> J<j> Z`, Marlin 1.1 `G29 S3 X<i> Y<j> Z`,
   `G29 S4 Z`, bilinear `G29 W I<i> J<j> Z`) are keyed by S/W and the
-  point indices (`"G29 S3 I0 J2"`), one setting per point.
+  point indices (`"G29 S3 I0 J2"`), one setting per point. Only these
+  forms parse as settings: any other G29 (`G29`, `G29 P1`, `G29 S1`)
+  probes the bed, so `SettingCommand::parse` returns `None` for it and
+  neither a reply line nor an imported file turns it into a setting.
 
 ### mesh
 
