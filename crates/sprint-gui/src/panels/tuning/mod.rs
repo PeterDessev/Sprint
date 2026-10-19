@@ -75,6 +75,7 @@ pub struct TuningTab {
     filter: Filter,
     /// M503 was requested automatically for this connection.
     auto_requested: bool,
+    connection: kit::ConnectionWatch,
     show_changes: bool,
     confirm: Option<Confirm>,
     import: Option<ImportPreview>,
@@ -193,9 +194,11 @@ impl TuningTab {
     /// rebase the draft on every new report.
     fn sync(&mut self, ctx: &AppCtx<'_>) {
         let state = ctx.state;
-        if !state.is_connected() {
+        if self.connection.is_new(state) {
             self.auto_requested = false;
-        } else if !state.settings_loaded
+        }
+        if state.is_connected()
+            && !state.settings_loaded
             && !self.auto_requested
             && state
                 .firmware

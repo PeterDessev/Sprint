@@ -99,6 +99,7 @@ pub struct SdCardTab {
     stale_progress: Option<(u64, u64)>,
     /// The card's print progress this frame, stale reports left out.
     card_printing: Option<(u64, u64)>,
+    connection: kit::ConnectionWatch,
 }
 
 /// The SD job in the state, if the last job was one.
@@ -215,6 +216,10 @@ impl SdCardTab {
     /// Connection bookkeeping, the automatic listing and print-after-upload.
     fn track(&mut self, ui: &Ui, ctx: &mut AppCtx<'_>) {
         self.card_printing = self.live_card_progress(ctx.state);
+        if self.connection.is_new(ctx.state) {
+            self.auto_requested = false;
+            self.released = false;
+        }
         if !ctx.connected() {
             self.auto_requested = false;
             self.print_after_upload = None;

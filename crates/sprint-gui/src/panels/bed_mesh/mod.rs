@@ -93,6 +93,7 @@ pub struct BedMeshTab {
     auto_requested: bool,
     /// Fade height being edited (mm); `None` = the reported one.
     fade: Option<f32>,
+    connection: kit::ConnectionWatch,
 }
 
 impl Default for BedMeshTab {
@@ -104,6 +105,7 @@ impl Default for BedMeshTab {
             probing: None,
             auto_requested: false,
             fade: None,
+            connection: kit::ConnectionWatch::default(),
         }
     }
 }
@@ -192,6 +194,10 @@ impl BedMeshTab {
 
     /// Connection bookkeeping, the automatic load and probe completion.
     fn track(&mut self, ui: &Ui, ctx: &mut AppCtx<'_>) {
+        if self.connection.is_new(ctx.state) {
+            self.auto_requested = false;
+            self.probing = None;
+        }
         if !ctx.connected() {
             self.auto_requested = false;
             self.probing = None;

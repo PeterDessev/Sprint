@@ -378,6 +378,46 @@ pub(crate) fn dot_label(ui: &mut Ui, color: Color32, text: &str, strong: bool) -
     response
 }
 
+/// Tells connections apart, for work done once per connection (loading
+/// the settings, the mesh, the file list). A tab only runs while it is
+/// shown, so it may never see the printer disconnected between two
+/// connections. The connection clock (`connected_secs`, wall-clock seconds
+/// since the link opened) gives a new one away: it restarted, or it moved
+/// on less than the time that passed since the tab last looked.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct ConnectionWatch {
+    /// `connected_secs` and the wall clock when last seen connected.
+    last: Option<(f64, std::time::Instant)>,
+}
+
+/// How far (seconds) the connection clock may lag behind the wall clock
+/// before the connection counts as a new one (the host publishes it every
+/// 20 ms; a reconnect takes longer than this).
+const CLOCK_SLACK: f64 = 1.0;
+
+impl ConnectionWatch {
+    /// Whether the printer is connected and this is not the connection
+    /// seen on the previous call (the first one seen, or a new one).
+    pub(crate) fn is_new(&mut self, state: &sprint_host::PrinterState) -> bool {
+        self.is_new_at(state, std::time::Instant::now())
+    }
+
+    fn is_new_at(&mut self, state: &sprint_host::PrinterState, now: std::time::Instant) -> bool {
+        if !state.is_connected() {
+            self.last = None;
+            return false;
+        }
+        let secs = state.link.connected_secs;
+        let secs = if secs.is_finite() { secs } else { 0.0 };
+        let new = self.last.is_none_or(|(last, seen)| {
+            let passed = now.saturating_duration_since(seen).as_secs_f64();
+            secs + 0.5 < last || secs - last < passed - CLOCK_SLACK
+        });
+        self.last = Some((secs, now));
+        new
+    }
+}
+
 /// The result of a [`FileTask`].
 #[derive(Debug)]
 pub(crate) enum FileOutcome {
@@ -528,6 +568,36 @@ mod tests {
         assert_eq!(column_count(f32::NAN, 340.0, 3), 1);
         assert_eq!(column_count(1000.0, 0.0, 3), 1);
         assert_eq!(column_count(1000.0, 100.0, 0), 1);
+    }
+
+    #[test]
+    fn connections_are_told_apart() {
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let at = |secs: f64| t0 + Duration::from_secs_f64(secs);
+        let mut watch = ConnectionWatch::default();
+        let mut state = sprint_host::PrinterState {
+            status: sprint_host::ConnectionStatus::Connected,
+            ..Default::default()
+        };
+        state.link.connected_secs = 3.0;
+        assert!(watch.is_new_at(&state, at(0.0)));
+        // The same connection: its clock moves with the wall clock.
+        state.link.connected_secs = 600.0;
+        assert!(!watch.is_new_at(&state, at(597.2)));
+        // Reconnected while the tab was hidden: the clock restarted...
+        state.link.connected_secs = 12.0;
+        assert!(watch.is_new_at(&state, at(700.0)));
+        assert!(!watch.is_new_at(&state, at(700.1)));
+        // ...or, seen only briefly, it is behind the time that passed.
+        state.link.connected_secs = 20.0;
+        assert!(watch.is_new_at(&state, at(800.0)));
+        // Seen disconnected in between.
+        let disconnected = sprint_host::PrinterState::default();
+        assert!(!watch.is_new_at(&disconnected, at(801.0)));
+        state.link.connected_secs = f64::NAN;
+        assert!(watch.is_new_at(&state, at(802.0)));
+        assert!(!watch.is_new_at(&state, at(802.5)));
     }
 
     #[test]

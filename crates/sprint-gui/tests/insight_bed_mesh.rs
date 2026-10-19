@@ -171,6 +171,10 @@ fn a_probe_without_a_new_mesh_ends() {
     // G28, G29 and M420 V go out and are answered (the demo link has a
     // command in flight)...
     std::thread::sleep(std::time::Duration::from_millis(1100));
+    if let Some(s) = h.state_mut().state.as_mut() {
+        // The connection's clock runs on.
+        s.link.connected_secs += 1.1;
+    }
     h.run_ok();
     assert!(h.state().tab.is_probing(), "still waiting for the answers");
     // ...but G29 failed: the same mesh comes back. Probing must not block
@@ -328,5 +332,40 @@ fn probing_and_leveling_on_the_simulator() {
     h.get_by_label("Load").click();
     h.run_ok();
     wait_for_command(&printer, "M420 V");
+    printer.disconnect();
+}
+
+#[test]
+fn the_stored_mesh_loads_again_after_a_hidden_reconnect() {
+    let printer = sim_printer(fast_sim());
+    let mut h = harness_state(
+        Theme::Dark,
+        (1180.0, 1060.0),
+        Host::<BedMeshTab>::live(printer.clone()),
+        |ui, host| host.frame(ui),
+    );
+    h.run_ok();
+    wait_for_command(&printer, "M420 V");
+    // Another tab is shown while the printer reconnects...
+    h.state_mut().hidden = true;
+    h.run_ok();
+    std::thread::sleep(std::time::Duration::from_millis(1200));
+    printer.disconnect();
+    let options = sprint_host::ConnectOptions {
+        ok_timeout_secs: 3.0,
+        ..sprint_host::ConnectOptions::default()
+    };
+    printer
+        .connect(sprint_host::ConnectTarget::Simulator(fast_sim()), options)
+        .expect("reconnect to the simulator");
+    wait_for(&printer, "the new connection", |s| {
+        s.is_connected() && s.settings_loaded
+    });
+    // ...and the new connection's clock has run for a while (longer than
+    // the old one had when the tab last saw it).
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    // Coming back to the tab loads the new connection's mesh.
+    h.state_mut().hidden = false;
+    step_until_command(&mut h, "M420 V");
     printer.disconnect();
 }
