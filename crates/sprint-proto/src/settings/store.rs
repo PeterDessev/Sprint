@@ -50,8 +50,17 @@ impl PrinterSettings {
         if let Some(pos) = self.entries.iter().position(|(k, _)| k == key) {
             return Some(pos);
         }
-        // Accept non-canonical spellings ("m301 e1", "M0092").
-        let canonical = SettingCommand::parse(key)?.key();
+        // Accept non-canonical spellings ("m301 e1", "M0092", "m203 Stealth").
+        let trimmed = key.trim();
+        let (body, stealth) = match trimmed.rsplit_once(char::is_whitespace) {
+            Some((body, last)) if last.eq_ignore_ascii_case("stealth") => (body, true),
+            _ => (trimmed, false),
+        };
+        let mut cmd = SettingCommand::parse(body)?;
+        if stealth {
+            cmd.mark_stealth();
+        }
+        let canonical = cmd.key();
         self.entries.iter().position(|(k, _)| *k == canonical)
     }
 
@@ -105,30 +114,67 @@ impl PrinterSettings {
     }
 
     /// X Y Z E of a per-axis setting; E falls back to the `T0` instance
-    /// (DISTINCT_E_FACTORS reports E separately per extruder).
-    fn axes4(&self, code: &str) -> Option<[f32; 4]> {
-        let x = self.value_f32(code, 'X')?;
-        let y = self.value_f32(code, 'Y')?;
-        let z = self.value_f32(code, 'Z')?;
+    /// (DISTINCT_E_FACTORS reports E separately per extruder). `suffix` is
+    /// appended to both keys (`" stealth"`).
+    fn axes4(&self, code: &str, suffix: &str) -> Option<[f32; 4]> {
+        let key = format!("{code}{suffix}");
+        let x = self.value_f32(&key, 'X')?;
+        let y = self.value_f32(&key, 'Y')?;
+        let z = self.value_f32(&key, 'Z')?;
         let e = self
-            .value_f32(code, 'E')
-            .or_else(|| self.value_f32(&format!("{code} T0"), 'E'))?;
+            .value_f32(&key, 'E')
+            .or_else(|| self.value_f32(&format!("{code} T0{suffix}"), 'E'))?;
         Some([x, y, z, e])
     }
 
     /// M92 steps/mm for X Y Z E.
     pub fn steps_per_mm(&self) -> Option<[f32; 4]> {
-        self.axes4("M92")
+        self.axes4("M92", "")
     }
 
-    /// M203 maximum feedrates (mm/s) for X Y Z E.
+    /// M203 maximum feedrates (mm/s) for X Y Z E (normal mode on Prusa
+    /// firmware, which also reports a stealth-mode set).
     pub fn max_feedrate(&self) -> Option<[f32; 4]> {
-        self.axes4("M203")
+        self.axes4("M203", "")
     }
 
-    /// M201 maximum accelerations (mm/s²) for X Y Z E.
+    /// M201 maximum accelerations (mm/s²) for X Y Z E (normal mode on Prusa
+    /// firmware).
     pub fn max_accel(&self) -> Option<[f32; 4]> {
-        self.axes4("M201")
+        self.axes4("M201", "")
+    }
+
+    /// Prusa's stealth-mode M203 maximum feedrates (mm/s), when reported.
+    pub fn max_feedrate_stealth(&self) -> Option<[f32; 4]> {
+        self.axes4("M203", " stealth")
+    }
+
+    /// Prusa's stealth-mode M201 maximum accelerations (mm/s²), when
+    /// reported.
+    pub fn max_accel_stealth(&self) -> Option<[f32; 4]> {
+        self.axes4("M201", " stealth")
+    }
+
+    /// M200 filament diameter (mm) of a tool: the `M200 T<tool>` instance,
+    /// else the shared `M200`. Marlin 1.1's `M200 D0` (volumetric off) does
+    /// not change it.
+    pub fn filament_diameter(&self, tool: u8) -> Option<f32> {
+        self.value_f32(&format!("M200 T{tool}"), 'D')
+            .or_else(|| self.value_f32("M200", 'D'))
+            .filter(|d| *d > 0.0)
+    }
+
+    /// Whether volumetric extrusion is on: Marlin 2's `M200 S`, or for
+    /// Marlin 1.1 off when it reported `M200 D0` and on when it reported a
+    /// diameter only. `None` when no M200 was reported.
+    pub fn volumetric_extrusion(&self) -> Option<bool> {
+        if let Some(s) = self.value("M200", 'S') {
+            return Some(s != 0.0);
+        }
+        if self.get("M200 D0").is_some() {
+            return Some(false);
+        }
+        self.value("M200", 'D').map(|d| d > 0.0)
     }
 
     /// M301 (Kp, Ki, Kd) for a hotend: the `M301 E<tool>` instance, or the
@@ -313,6 +359,48 @@ mod tests {
         assert_eq!(m.jerk, Some([8.0, 8.0, 0.4, 4.5]));
         assert_eq!(m.junction_deviation, None);
         assert_eq!(m.max_accel, None);
+    }
+
+    #[test]
+    fn reports_that_mean_different_things_keep_their_own_keys() {
+        // Known issue K21.
+        let mut stealth = SettingCommand::parse("M203 X100 Y100 Z12 E120").unwrap();
+        stealth.mark_stealth();
+        stealth.mark_stealth();
+        assert!(stealth.is_stealth());
+        assert_eq!(stealth.raw, "M203 X100 Y100 Z12 E120 ; stealth");
+        assert_eq!(stealth.key(), "M203 stealth");
+        assert_eq!(stealth.to_gcode(), "M203 X100 Y100 Z12 E120");
+        let mut s = settings(&["M203 X200 Y200 Z12 E120", "M200 D2.85"]);
+        s.insert(stealth);
+        s.insert(SettingCommand::parse("M200 D0").unwrap());
+        assert_eq!(
+            s.keys().collect::<Vec<_>>(),
+            ["M203", "M200", "M203 stealth", "M200 D0"]
+        );
+        assert_eq!(s.max_feedrate(), Some([200.0, 200.0, 12.0, 120.0]));
+        assert_eq!(s.max_feedrate_stealth(), Some([100.0, 100.0, 12.0, 120.0]));
+        assert_eq!(s.max_accel_stealth(), None);
+        assert_eq!(s.filament_diameter(0), Some(2.85));
+        assert_eq!(s.volumetric_extrusion(), Some(false));
+        // A later report of the same thing still replaces it.
+        s.insert(SettingCommand::parse("M200 D1.75").unwrap());
+        assert_eq!(s.filament_diameter(3), Some(1.75));
+        assert_eq!(s.len(), 4);
+        // Marlin 2: S switches volumetric mode, D0 with S is not the D0 key.
+        let s = settings(&["M200 S1 D1.75", "M200 T1 D2.85"]);
+        assert_eq!(s.volumetric_extrusion(), Some(true));
+        assert_eq!(s.filament_diameter(1), Some(2.85));
+        assert_eq!(SettingCommand::parse("M200 S0 D0").unwrap().key(), "M200");
+        assert_eq!(
+            SettingCommand::parse("M200 T1 D0").unwrap().key(),
+            "M200 T1 D0"
+        );
+        assert_eq!(settings(&["M200 D1.75"]).volumetric_extrusion(), Some(true));
+        assert_eq!(PrinterSettings::new().volumetric_extrusion(), None);
+        // A comment that merely mentions stealth is not the marker.
+        let c = SettingCommand::parse("M203 X1 Y1 Z1 E1 ; not stealth").unwrap();
+        assert!(!c.is_stealth());
     }
 
     #[test]

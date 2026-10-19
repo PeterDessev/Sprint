@@ -634,7 +634,26 @@ pub fn setting_def(code: &str) -> Option<&'static SettingDef>;
 ```
 Catalog covers at least: M92 M201 M203 M204 M205 M206 M301 M304 M309 M851 M900
 M200 M145 M420 M413 M906 M913 M914 M569 M593 M207 M208 M209 M217 M218 M149
-M665 M666 M250 M255 M302 M592? (Marlin 2.1 set).
+M665 M666 M250 M255 M302 M592? (Marlin 2.1 set), plus G29 for the mesh
+points M503 prints.
+
+Reports that mean different things keep separate keys, so inserting a
+whole M503 report loses nothing:
+* Prusa MK3 prints M203/M201 under "... - normal" and "... - stealth"
+  headings. The reply parser marks settings after a stealth heading with
+  `SettingCommand::mark_stealth` (a `; stealth` comment in `raw`;
+  `is_stealth`), whose key ends in `" stealth"` (`"M203 stealth"`).
+  `max_feedrate`/`max_accel`/`motion_limits` return the normal-mode
+  values; `max_feedrate_stealth`/`max_accel_stealth` the stealth ones.
+  `to_gcode` is the same for both (Prusa applies M201/M203 to the mode
+  the printer is in).
+* Marlin 1.1 prints `M200 D1.75` and then, with volumetric extrusion
+  off, `M200 D0` (off, diameter kept): that line's key is `"M200 D0"`.
+  `PrinterSettings::filament_diameter(tool)` and `volumetric_extrusion()`
+  read both the Marlin 1.1 and the Marlin 2 (`M200 S0 D1.75`) forms.
+* Mesh points (`G29 S3 I<i> J<j> Z`, Marlin 1.1 `G29 S3 X<i> Y<j> Z`,
+  `G29 S4 Z`, bilinear `G29 W I<i> J<j> Z`) are keyed by S/W and the
+  point indices (`"G29 S3 I0 J2"`), one setting per point.
 
 ### mesh
 

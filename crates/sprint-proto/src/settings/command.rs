@@ -23,6 +23,9 @@ pub struct SettingCommand {
     pub raw: String,
 }
 
+/// The comment (and key suffix) that marks a stealth-mode setting.
+const STEALTH: &str = "stealth";
+
 /// Format a parameter value with at most six decimals and no trailing
 /// zeros: `80.0` -> "80", `0.150` -> "0.15", `-0.0` -> "0".
 pub(crate) fn format_value(v: f64) -> String {
@@ -192,7 +195,18 @@ impl SettingCommand {
 
     /// Identity within a settings report: code plus the selector params
     /// present (from the catalog: E/T/I/P/S/W, or the axis flag of M593),
-    /// e.g. `"M301"`, `"M301 E1"`, `"M906 T0"`, `"M145 S1"`, `"M593 X"`.
+    /// e.g. `"M301"`, `"M301 E1"`, `"M906 T0"`, `"M145 S1"`, `"M593 X"`,
+    /// `"G29 S3 I0 J2"` (one mesh point).
+    ///
+    /// Two reports of the same command that mean different things get
+    /// different keys, so a [`PrinterSettings`](crate::PrinterSettings)
+    /// keeps both:
+    /// * Prusa's stealth-mode limits ([`is_stealth`](Self::is_stealth))
+    ///   end in `" stealth"` (`"M203 stealth"`), next to the normal-mode
+    ///   `"M203"`.
+    /// * Marlin 1.1 reports the filament diameter (`M200 D1.75`) and then,
+    ///   when volumetric extrusion is off, `M200 D0`, which switches it off
+    ///   without changing the diameter. That line's key ends in `" D0"`.
     pub fn key(&self) -> String {
         let mut key = self.code.clone();
         if let Some(def) = setting_def(&self.code) {
@@ -206,7 +220,44 @@ impl SettingCommand {
                 }
             }
         }
+        if self.is_volumetric_off() {
+            key.push_str(" D0");
+        }
+        if self.is_stealth() {
+            key.push(' ');
+            key.push_str(STEALTH);
+        }
         key
+    }
+
+    /// `M200 D0` (optionally with `T`): Marlin's way to switch volumetric
+    /// extrusion off, keeping the filament diameter.
+    fn is_volumetric_off(&self) -> bool {
+        self.code == "M200"
+            && self.get('D') == Some(0.0)
+            && self.params.iter().all(|&(l, _)| l == 'D' || l == 'T')
+    }
+
+    /// True for a stealth-mode (silent) motion limit. Prusa MK3 firmware
+    /// reports M201 and M203 twice in M503, under "normal" and "stealth"
+    /// headings; the reply parser marks the stealth copy with a `; stealth`
+    /// comment in [`raw`](Self::raw) (see [`mark_stealth`](Self::mark_stealth)).
+    /// Prusa firmware applies M201/M203 to the mode the printer is in.
+    pub fn is_stealth(&self) -> bool {
+        self.raw
+            .split(';')
+            .skip(1)
+            .any(|comment| comment.trim().eq_ignore_ascii_case(STEALTH))
+    }
+
+    /// Mark this command as a stealth-mode setting (a `; stealth` comment
+    /// in [`raw`](Self::raw)); its [`key`](Self::key) then ends in
+    /// `" stealth"`.
+    pub fn mark_stealth(&mut self) {
+        if !self.is_stealth() {
+            self.raw.push_str(" ; ");
+            self.raw.push_str(STEALTH);
+        }
     }
 
     /// G-code that applies this setting: `"M92 X80 Y80 Z400 E93"` (trailing

@@ -739,6 +739,23 @@ static DEFS: &[SettingDef] = &[
         ],
         requires_eeprom_save: true,
     },
+    SettingDef {
+        code: "G29",
+        name: "Mesh point",
+        category: C::Leveling,
+        description: "One stored point of the leveling mesh as M503 reports it: G29 S3 sets a mesh bed leveling point (I/J from 0, or X/Y from 1 on Marlin 1.1), G29 S4 the mesh Z offset, and G29 W a bilinear point.",
+        selectors: &['S', 'W', 'I', 'J', 'X', 'Y'],
+        params: &[
+            index('S', "Mode", 5.0),
+            flag('W', "Write bilinear point"),
+            index('I', "Column", 255.0),
+            index('J', "Row", 255.0),
+            index('X', "Column (from 1)", 255.0),
+            index('Y', "Row (from 1)", 255.0),
+            num('Z', "Z", MM, -10.0, 10.0, 5),
+        ],
+        requires_eeprom_save: true,
+    },
 ];
 
 /// All known setting definitions, in display order.

@@ -372,6 +372,157 @@ fn prusa_session() {
     assert!(replies.contains(&Reply::PrintTime(83)));
 }
 
+/// The settings among `replies`, inserted in order as the host does.
+fn settings_of(replies: &[Reply]) -> PrinterSettings {
+    replies
+        .iter()
+        .filter_map(|r| match r {
+            Reply::Setting(c) => Some(c.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Prusa firmware 3.x M503: normal and stealth limits, Marlin 1.1-style
+/// filament settings.
+const PRUSA_MK3S_M503: &str = "\
+echo:Steps per unit:
+echo:  M92 X100.00 Y100.00 Z400.00 E280.00
+echo:Ustep resolution:
+echo:  M350 X16 Y16 Z16 E32
+echo:Maximum feedrates - normal (mm/s):
+echo:  M203 X200.00 Y200.00 Z12.00 E120.00
+echo:Maximum feedrates - stealth (mm/s):
+echo:  M203 X100.00 Y100.00 Z12.00 E120.00
+echo:Maximum acceleration - normal (mm/s2):
+echo:  M201 X1000 Y1000 Z200 E5000
+echo:Maximum acceleration - stealth (mm/s2):
+echo:  M201 X960 Y960 Z200 E5000
+echo:Acceleration: P=print, R=retract, T=travel
+echo:  M204 P1250.00 R1250.00 T1250.00
+echo:Advanced variables: S=Min feedrate (mm/s), T=Min travel feedrate (mm/s), B=minimum segment time (us), X=maximum XY jerk (mm/s),  Z=maximum Z jerk (mm/s),  E=maximum E jerk (mm/s)
+echo:  M205 S0.00 T0.00 B20000 X8.00 Y8.00 Z0.40 E4.50
+echo:Retract: S=Length (mm) F:Speed (mm/m) Z: ZLift (mm)
+echo:   M207 S0.80 F2700.00 Z0.00
+echo:Filament settings: Disabled
+echo:  M200 D1.75
+echo:  M200 D0
+echo:Linear advance settings:
+echo:  M900 K0.00
+ok
+";
+
+#[test]
+fn prusa_m503_keeps_normal_and_stealth_limits() {
+    // Known issue K21: the stealth M203/M201 replaced the normal ones, and
+    // "M200 D0" replaced the filament diameter.
+    let settings = settings_of(&run(PRUSA_MK3S_M503));
+    let keys: Vec<&str> = settings.keys().collect();
+    assert_eq!(
+        keys,
+        [
+            "M92",
+            "M350",
+            "M203",
+            "M203 stealth",
+            "M201",
+            "M201 stealth",
+            "M204",
+            "M205",
+            "M207",
+            "M200",
+            "M200 D0",
+            "M900",
+        ]
+    );
+    assert_eq!(settings.max_feedrate(), Some([200.0, 200.0, 12.0, 120.0]));
+    assert_eq!(
+        settings.max_feedrate_stealth(),
+        Some([100.0, 100.0, 12.0, 120.0])
+    );
+    assert_eq!(settings.max_accel(), Some([1000.0, 1000.0, 200.0, 5000.0]));
+    assert_eq!(
+        settings.max_accel_stealth(),
+        Some([960.0, 960.0, 200.0, 5000.0])
+    );
+    let limits = settings.motion_limits();
+    assert_eq!(limits.max_feedrate, settings.max_feedrate());
+    assert_eq!(limits.max_accel, settings.max_accel());
+    assert_eq!(settings.filament_diameter(0), Some(1.75));
+    assert_eq!(settings.volumetric_extrusion(), Some(false));
+    // Replaying the report in order restores the same state.
+    let stealth = settings.get("M203 stealth").map(|c| c.to_gcode());
+    assert_eq!(stealth.as_deref(), Some("M203 X100 Y100 Z12 E120"));
+    assert_eq!(
+        settings.get("m203 STEALTH").map(|c| c.key()),
+        stealth.map(|_| "M203 stealth".into())
+    );
+    let gcode: Vec<String> = settings
+        .iter()
+        .filter(|c| c.code == "M200")
+        .map(|c| c.to_gcode())
+        .collect();
+    assert_eq!(gcode, ["M200 D1.75", "M200 D0"]);
+    // The stealth heading does not leak into later reports.
+    let mut parser = ReplyParser::new();
+    for line in PRUSA_MK3S_M503.lines() {
+        parser.feed(line);
+    }
+    let again = parser.feed("echo:  M203 X1 Y1 Z1 E1");
+    assert!(matches!(&again[..], [Reply::Setting(c)] if c.key() == "M203"));
+}
+
+/// Marlin 2.1 M503 with mesh bed leveling and with bilinear leveling, and
+/// Marlin 1.1's mesh bed leveling form.
+const MESH_DUMPS: &str = "\
+echo:; Mesh Bed Leveling:
+echo:  M420 S1 Z0.00 ; Leveling ON
+echo:  G29 S3 I0 J0 Z0.01250
+echo:  G29 S3 I1 J0 Z-0.02000
+echo:  G29 S3 I0 J1 Z0.03000
+echo:  G29 S3 I1 J1 Z0.00500
+echo:  G29 S4 Z0.00000
+echo:; Auto Bed Leveling:
+echo:  G29 W I0 J0 Z0.11000
+echo:  G29 W I1 J0 Z0.12000
+echo:Mesh bed leveling:
+echo:  G29 S3 X1 Y1 Z0.20000
+echo:  G29 S3 X2 Y1 Z0.21000
+ok
+";
+
+#[test]
+fn mesh_points_in_m503_are_separate_settings() {
+    // Known issue K21: every G29 line had the key "G29", so only the last
+    // mesh point survived.
+    let settings = settings_of(&run(MESH_DUMPS));
+    let keys: Vec<&str> = settings.keys().collect();
+    assert_eq!(
+        keys,
+        [
+            "M420",
+            "G29 S3 I0 J0",
+            "G29 S3 I1 J0",
+            "G29 S3 I0 J1",
+            "G29 S3 I1 J1",
+            "G29 S4",
+            "G29 W I0 J0",
+            "G29 W I1 J0",
+            "G29 S3 X1 Y1",
+            "G29 S3 X2 Y1",
+        ]
+    );
+    assert_eq!(settings.value("G29 S3 I1 J0", 'Z'), Some(-0.02));
+    assert_eq!(settings.value("g29 w i1 j0", 'Z'), Some(0.12));
+    assert_eq!(
+        settings
+            .get("G29 S3 X2 Y1")
+            .map(|c| c.to_gcode())
+            .as_deref(),
+        Some("G29 S3 X2 Y1 Z0.21")
+    );
+}
+
 const KLIPPER: &str = "\
 // Klipper state: Ready
 ok

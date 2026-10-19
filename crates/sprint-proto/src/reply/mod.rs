@@ -36,6 +36,9 @@ pub struct ReplyParser {
     mbl_header: MblHeader,
     /// PID autotune session state.
     pid: autotune::PidTracker,
+    /// The last M503 heading was one of Prusa's "... - stealth (...):"
+    /// headings: the settings that follow are stealth-mode limits.
+    stealth_settings: bool,
 }
 
 impl ReplyParser {
@@ -118,6 +121,7 @@ impl ReplyParser {
             }
         }
         if let Some(rest) = ok_remainder(line) {
+            self.stealth_settings = false;
             self.parse_ok(rest, out);
             return;
         }
@@ -140,11 +144,17 @@ impl ReplyParser {
             }
             // M503 lines: "echo:  M92 X80.00 ..." (any G/M code inside echo).
             if body.starts_with(['G', 'M', 'g', 'm'])
-                && let Some(cmd) = SettingCommand::parse(body)
+                && let Some(mut cmd) = SettingCommand::parse(body)
             {
+                if self.stealth_settings {
+                    cmd.mark_stealth();
+                }
                 out.push(Reply::Setting(cmd));
                 return;
             }
+            // Prusa reports M201/M203 under "Maximum feedrates - normal
+            // (mm/s):" and "... - stealth (mm/s):" headings.
+            self.stealth_settings = body.to_ascii_lowercase().contains("stealth");
             out.push(Reply::Echo(body.to_string()));
             return;
         }
