@@ -347,7 +347,7 @@ fn applying_the_home_offset_takes_the_babystep_back() {
     // M206 moves the next moves 0.05 mm down at once; with the babystep
     // still active the nozzle would sit 0.1 mm closer until the next homing.
     let sim = printer.sim_control().expect("simulator");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = std::time::Instant::now() + PATIENCE;
     loop {
         let babysteps: Vec<String> = sim
             .received_commands()
@@ -498,7 +498,7 @@ fn esteps_zoffset_and_flow_reach_the_simulator() {
     });
     // The simulated hotend swings around its target: "Next" is enabled
     // only while it is within the tolerance.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let deadline = std::time::Instant::now() + PATIENCE;
     while h.query_by_label("Marked").is_none() {
         assert!(
             std::time::Instant::now() < deadline,

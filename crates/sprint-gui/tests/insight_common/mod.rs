@@ -125,6 +125,11 @@ pub fn fast_sim() -> SimConfig {
     }
 }
 
+/// How long a test waits for the simulator at most: generous, as the
+/// tests share the machine with other builds and test binaries (the waits
+/// end as soon as their condition holds).
+pub const PATIENCE: Duration = Duration::from_secs(120);
+
 /// Connect a printer to the simulator and wait for the setup queries.
 pub fn sim_printer(config: SimConfig) -> Printer {
     let printer = Printer::new();
@@ -132,7 +137,9 @@ pub fn sim_printer(config: SimConfig) -> Printer {
         .connect(
             ConnectTarget::Simulator(config),
             ConnectOptions {
-                ok_timeout_secs: 3.0,
+                // A loaded machine may starve the simulator's thread for
+                // a while: no resends for that.
+                ok_timeout_secs: 10.0,
                 handshake_timeout_secs: 10.0,
                 ..ConnectOptions::default()
             },
@@ -144,22 +151,22 @@ pub fn sim_printer(config: SimConfig) -> Printer {
     printer
 }
 
-/// Poll the printer until `cond` holds (30 s at most).
+/// Poll the printer until `cond` holds (see [`PATIENCE`]).
 pub fn wait_for(printer: &Printer, what: &str, cond: impl Fn(&PrinterState) -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + PATIENCE;
     while !printer.with_state(&cond) {
         assert!(Instant::now() < deadline, "timed out waiting for {what}");
         std::thread::sleep(Duration::from_millis(5));
     }
 }
 
-/// Run harness frames until `cond` holds on the printer (30 s at most).
+/// Run harness frames until `cond` holds on the printer (see [`PATIENCE`]).
 pub fn run_until<T: Panel>(
     h: &mut Harness<'_, Host<T>>,
     what: &str,
     cond: impl Fn(&PrinterState) -> bool,
 ) {
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + PATIENCE;
     loop {
         h.step();
         if h.state().printer.with_state(&cond) {
@@ -174,7 +181,7 @@ pub fn run_until<T: Panel>(
 /// Wait until the simulator received a command starting with `prefix`.
 pub fn wait_for_command(printer: &Printer, prefix: &str) -> String {
     let sim = printer.sim_control().expect("simulator");
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + PATIENCE;
     loop {
         if let Some(cmd) = sim
             .received_commands()
@@ -194,9 +201,9 @@ pub fn wait_for_command(printer: &Printer, prefix: &str) -> String {
 
 /// Run harness frames until the simulator received a command starting
 /// with `prefix` (for commands a tab sends from a later frame, like a
-/// poll); 30 s at most.
+/// poll); [`PATIENCE`] at most.
 pub fn step_until_command<T: Panel>(h: &mut Harness<'_, Host<T>>, prefix: &str) -> String {
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + PATIENCE;
     loop {
         h.step();
         let found = h.state().printer.sim_control().and_then(|sim| {
