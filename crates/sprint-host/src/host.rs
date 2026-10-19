@@ -813,8 +813,10 @@ impl Printer {
         });
     }
 
-    /// `M999` (`FIRMWARE_RESTART` on Klipper): restart a halted firmware.
-    /// If the board resets instead, the engine reconnects by itself.
+    /// `M999` (`FIRMWARE_RESTART` on Klipper while it is shut down; never
+    /// otherwise, since it reboots the MCUs and would abort a print):
+    /// restart a halted firmware. If the board resets instead, the engine
+    /// reconnects by itself.
     ///
     /// M999 alone does not recover Marlin after M112 or a thermal runaway
     /// (kill() ignores it); check

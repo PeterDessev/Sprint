@@ -830,7 +830,7 @@ impl Printer {
     pub fn probe_bed_mesh(&self);                        // G28 (if needed) + G29, then report
     pub fn request_stats(&self);                         // M78
     pub fn start_pid_autotune(&self, heater: Heater, target: f32, cycles: u32); // M303 E<n|-1> S C U1
-    pub fn firmware_restart(&self);                      // M999 (FIRMWARE_RESTART on Klipper) (+ reconnect logic if board resets)
+    pub fn firmware_restart(&self);                      // M999 (FIRMWARE_RESTART on a shut-down Klipper) (+ reconnect logic if board resets)
     /// Reset the board (E-stop recovery: M999 alone does not recover Marlin after M112/kill()).
     /// Serial: reopen the port with a DTR pulse and handshake again; simulator: SimControl::reset();
     /// TCP and custom links: Err(HostError::Unsupported) (reset button or power cycle needed).
@@ -1212,7 +1212,8 @@ Every public item is also re-exported at the crate root.
   stop() ("Printer stopped ... use M999", or Klipper) from a kill() (M112,
   thermal runaway, "kill() called"), which ignores everything until the
   board resets: UIs offer `reset_board` first then. `firmware_restart`
-  sends M999 (FIRMWARE_RESTART on Klipper);
+  sends M999 (FIRMWARE_RESTART on a shut-down Klipper only: it reboots
+  the MCUs, which would abort a running print);
   the next `ok`/resend clears `halted` and the counter is reset. A `start` while connected re-runs the handshake and
   setup (status `Handshaking`, then `Connected`) and fails a job with
   "printer reset". Entering a halt and a board reset drop the user

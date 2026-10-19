@@ -1228,13 +1228,12 @@ impl Engine {
     }
 
     fn firmware_restart(&mut self) {
-        if self.is_klipper() {
-            // Klipper has no M999; FIRMWARE_RESTART leaves a shutdown.
+        if self.halted && self.is_klipper() {
+            // Klipper has no M999; FIRMWARE_RESTART leaves a shutdown. (Not
+            // otherwise: it reboots the MCUs and would abort a print.)
             self.send_immediate("FIRMWARE_RESTART", Source::User);
-            if self.halted {
-                self.restarting = true;
-                self.info("Restart requested (FIRMWARE_RESTART)");
-            }
+            self.restarting = true;
+            self.info("Restart requested (FIRMWARE_RESTART)");
             return;
         }
         // M999 answers with a resend request (and its ok) rather than an ok

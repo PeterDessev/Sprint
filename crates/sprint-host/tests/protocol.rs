@@ -1115,3 +1115,52 @@ fn a_pause_does_not_flood_a_heat_up_the_firmware_cannot_end() {
     assert_eq!(m108, 0, "{:?}", log.lock().unwrap());
     printer.cancel();
 }
+
+#[test]
+fn klipper_restarts_its_firmware_only_from_a_shutdown() {
+    // FIRMWARE_RESTART reboots the MCUs: on a printer that is not shut
+    // down it would abort the print ("Restart firmware" is in the GUI's
+    // menu whenever the link is open, and a typed M999 restarts too).
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut fw = Mini::new(Arc::clone(&log));
+    let (link, out) = fake(
+        |_| {},
+        move |line, out| {
+            let Some(cmd) = fw.accept(line, out) else {
+                return;
+            };
+            if cmd == "M115" {
+                out.line("ok FIRMWARE_NAME:Klipper FIRMWARE_VERSION:v0.12.0");
+                return;
+            }
+            out.line("ok");
+        },
+    );
+    let printer = connect_fake(
+        link,
+        ConnectOptions {
+            temp_poll_secs: 0.0,
+            ..options()
+        },
+    );
+    wait_for(&printer, "the firmware", |s| {
+        s.firmware.is_some() && s.is_connected()
+    });
+    wait_idle(&printer);
+    printer.firmware_restart();
+    printer.send("M999\nM117 after");
+    wait_for(&printer, "the commands", |_| {
+        log.lock().unwrap().iter().any(|c| c == "M117 after")
+    });
+    assert!(
+        !log.lock().unwrap().iter().any(|c| c == "FIRMWARE_RESTART"),
+        "{:?}",
+        log.lock().unwrap()
+    );
+    out.line("!! Shutdown due to M112 command");
+    wait_for(&printer, "shut down", |s| s.halted && s.restartable);
+    printer.firmware_restart();
+    wait_for(&printer, "FIRMWARE_RESTART", |_| {
+        log.lock().unwrap().iter().any(|c| c == "FIRMWARE_RESTART")
+    });
+}
