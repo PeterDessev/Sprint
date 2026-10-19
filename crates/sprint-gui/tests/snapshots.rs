@@ -523,3 +523,64 @@ fn dialogs_snapshot() {
         }
     }
 }
+
+/// A warped bed: a tilt plus a dome, in mm.
+fn bed_surface(rows: usize, cols: usize) -> Vec<Vec<f32>> {
+    (0..rows)
+        .map(|r| {
+            (0..cols)
+                .map(|c| {
+                    let x = c as f32 / (cols - 1).max(1) as f32 - 0.5;
+                    let y = r as f32 / (rows - 1).max(1) as f32 - 0.5;
+                    0.12 * x - 0.08 * y + 0.22 * (0.25 - x * x - y * y)
+                })
+                .collect()
+        })
+        .collect()
+}
+
+fn mesh_5x5() -> sprint_proto::BedMesh {
+    let mut points = bed_surface(5, 5);
+    points[3][1] = f32::NAN;
+    sprint_proto::BedMesh {
+        points,
+        x_positions: Some(vec![10.0, 62.5, 115.0, 167.5, 220.0]),
+        y_positions: Some(vec![10.0, 62.5, 115.0, 167.5, 220.0]),
+        kind: "bilinear".to_owned(),
+    }
+}
+
+#[test]
+fn heatmap_snapshot() {
+    let mesh = mesh_5x5();
+    let dense = bed_surface(15, 15);
+    for theme in Theme::ALL {
+        let mesh = mesh.clone();
+        let dense = dense.clone();
+        let mut h = fit(theme, 420.0, move |ui| {
+            card(
+                ui,
+                icons::MESH,
+                "Bed mesh",
+                |_| {},
+                |ui| {
+                    let _ = Heatmap::from_mesh(&mesh).show(ui);
+                },
+            );
+            ui.add_space(8.0);
+            ui.columns(2, |cols| {
+                let _ = Heatmap::new(&dense).id_salt("dense").show(&mut cols[0]);
+                let _ = Heatmap::new(&[]).show(&mut cols[1]);
+            });
+        });
+        snapshot(&mut h, &name("heatmap", theme));
+        // Hover the missing probe point (row 3, column 1).
+        let area = h.get_all_by_label("heatmap").next().map(|n| n.rect());
+        if let Some(area) = area {
+            let cell = area.width() / 5.0;
+            let pos = egui::pos2(area.min.x + 1.5 * cell, area.min.y + 1.5 * cell);
+            hover(&mut h, pos);
+            snapshot(&mut h, &name("heatmap_hover", theme));
+        }
+    }
+}

@@ -39,6 +39,7 @@ mod button;
 mod card;
 mod chart;
 mod dialog;
+mod heatmap;
 mod jog;
 mod keyvalue;
 mod numeric;
@@ -54,6 +55,9 @@ pub use card::{
 };
 pub use chart::{ChartSeries, MiniChart, Sparkline, finite_runs, nice_ticks, smooth_points};
 pub use dialog::{ConfirmDialog, DialogResult};
+pub use heatmap::{
+    GridStats, Heatmap, HeatmapCell, HeatmapResponse, diverging_color, signed_value,
+};
 pub use jog::{
     Axis, ExtruderAction, ExtruderControl, HomeTarget, JOG_RINGS, JogAction, JogCorner,
     JogDirection, JogGeometry, JogPad, JogRegion, ZJog, signed_step, step_label,

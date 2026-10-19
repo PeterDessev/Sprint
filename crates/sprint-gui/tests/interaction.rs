@@ -491,3 +491,33 @@ fn toasts_dismiss_and_expire() {
     h.run_ok();
     assert!(h.state().is_empty());
 }
+
+#[test]
+fn heatmap_reports_clicked_cell_with_row_zero_at_bottom() {
+    let grid = vec![vec![0.1, 0.2, 0.3], vec![-0.1, f32::NAN, -0.3]];
+    let mut h = harness_state(
+        Theme::Dark,
+        (300.0, 300.0),
+        Vec::new(),
+        move |ui, clicks| {
+            let r = Heatmap::new(&grid).legend(false).max_cell(40.0).show(ui);
+            if let Some(c) = r.clicked {
+                clicks.push((c.row, c.col, c.value));
+            }
+        },
+    );
+    let area = h.get_by_label("heatmap").rect();
+    let cell = area.width() / 3.0;
+    // Top-left on screen is the last row.
+    click_at(&mut h, area.min + egui::vec2(0.5 * cell, 0.5 * cell));
+    // Bottom-right is row 0, last column.
+    click_at(&mut h, area.min + egui::vec2(2.5 * cell, 1.5 * cell));
+    // The missing cell reports NaN.
+    click_at(&mut h, area.min + egui::vec2(1.5 * cell, 0.5 * cell));
+    let clicks = h.state();
+    assert_eq!(clicks.len(), 3);
+    assert_eq!((clicks[0].0, clicks[0].1, clicks[0].2), (1, 0, -0.1));
+    assert_eq!((clicks[1].0, clicks[1].1, clicks[1].2), (0, 2, 0.3));
+    assert_eq!((clicks[2].0, clicks[2].1), (1, 1));
+    assert!(clicks[2].2.is_nan());
+}
