@@ -389,6 +389,41 @@ fn thousands_of_files_draw_only_the_visible_rows() {
     assert!(h.query_by_label("Print batch part 0000.gcode").is_none());
 }
 
+/// `state` with the firmware capability `name` reported as missing.
+fn lacking(mut state: PrinterState, name: &str) -> PrinterState {
+    for (cap, on) in &mut state.capabilities {
+        if cap == name {
+            *on = false;
+        }
+    }
+    state
+}
+
+#[test]
+fn firmware_without_sd_support_says_so() {
+    let mut state = lacking(sd_state(), "SDCARD");
+    state.sd = Default::default();
+    let mut h = tab(Theme::Dark, (1000.0, 760.0), state);
+    h.state_mut().file = Some(loaded("cube.gcode", &small_gcode()));
+    h.run_ok();
+    assert!(h.query_by_label("No SD card support").is_some());
+    assert!(h.get_by_label("Upload").accesskit_node().is_disabled());
+    // A card that cannot be written to still prints, but takes no upload.
+    let mut h = tab(
+        Theme::Dark,
+        (1000.0, 760.0),
+        lacking(sd_state(), "SD_WRITE"),
+    );
+    h.state_mut().file = Some(loaded("cube.gcode", &small_gcode()));
+    h.run_ok();
+    assert!(h.get_by_label("Upload").accesskit_node().is_disabled());
+    assert!(
+        !h.get_by_label("Print calibration_cube.gcode")
+            .accesskit_node()
+            .is_disabled()
+    );
+}
+
 #[test]
 fn odd_file_lists_never_panic() {
     let mut state = sd_state();

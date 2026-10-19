@@ -444,10 +444,16 @@ pub(crate) const NO_EEPROM: &str = concat!(
 /// The firmware said it has no EEPROM (`Cap:EEPROM:0`); M500 and M501 do
 /// nothing there. Firmware that does not report it counts as having one.
 pub(crate) fn lacks_eeprom(state: &sprint_host::PrinterState) -> bool {
+    lacks_capability(state, "EEPROM")
+}
+
+/// The firmware reported capability `name` as missing (`Cap:<name>:0`).
+/// Capabilities it does not report count as present.
+pub(crate) fn lacks_capability(state: &sprint_host::PrinterState, name: &str) -> bool {
     state
         .capabilities
         .iter()
-        .any(|(name, on)| name.eq_ignore_ascii_case("EEPROM") && !on)
+        .any(|(cap, on)| cap.eq_ignore_ascii_case(name) && !on)
 }
 
 /// Tells connections apart, for work done once per connection (loading

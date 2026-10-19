@@ -25,6 +25,15 @@ const RELEASED_HELP: &str = concat!(
     "and initialize it to use it again.",
 );
 
+/// Shown for firmware built without SD card support.
+const NO_SD_SUPPORT: &str = concat!(
+    "The firmware reports no SD card support (Cap:SDCARD:0), so it can neither list ",
+    "nor print files from a card. Print from Sprint instead.",
+);
+
+/// Why Upload is disabled on firmware that cannot write to its card.
+const NO_SD_WRITE: &str = "The firmware cannot write to its card (Cap:SD_WRITE:0)";
+
 /// Shown for an empty card when a file is loaded.
 const EMPTY_WITH_FILE: &str =
     "The card is empty. Upload the loaded file to print it from the card.";
@@ -146,6 +155,13 @@ impl SdCardTab {
                 .show(ui);
             return;
         }
+        if kit::lacks_capability(ctx.state, "SDCARD") {
+            ui.add_space(40.0);
+            let _ = EmptyState::new(icons::SD_CARD, "No SD card support")
+                .message(NO_SD_SUPPORT)
+                .show(ui);
+            return;
+        }
         egui::ScrollArea::vertical()
             .id_salt("sd-card-scroll")
             .auto_shrink([false, false])
@@ -242,6 +258,7 @@ impl SdCardTab {
         let sd = &ctx.state.sd;
         if !self.auto_requested
             && !ctx.job_active()
+            && !kit::lacks_capability(ctx.state, "SDCARD")
             && sd.card_present != Some(false)
             && sd.files.is_empty()
             && !sd.listing
@@ -297,8 +314,12 @@ impl SdCardTab {
         let state = ctx.state;
         let sd = &state.sd;
         let total: u64 = sd.files.iter().filter_map(|f| f.size).sum();
+        let no_sd = kit::lacks_capability(state, "SDCARD");
+        let no_write = no_sd || kit::lacks_capability(state, "SD_WRITE");
         let subtitle = if !ctx.connected() {
             "Files on the printer's card".to_owned()
+        } else if no_sd {
+            "Not supported by the firmware".to_owned()
         } else if sd.card_present == Some(false) {
             "No card".to_owned()
         } else if self.released {
@@ -324,13 +345,14 @@ impl SdCardTab {
             let upload_tip = match (&file_name, connected, job) {
                 (None, _, _) => "Open a G-code file to upload it".to_owned(),
                 (_, false, _) => "Connect to a printer first".to_owned(),
+                _ if no_write => NO_SD_WRITE.to_owned(),
                 (_, _, true) => "Not while a job runs".to_owned(),
                 _ if released => "Initialize the card first".to_owned(),
                 (Some(name), _, _) => format!("Write {name} to the card"),
             };
             if ui
                 .add_enabled(
-                    connected && !job && !released && file_name.is_some(),
+                    connected && !job && !released && !no_write && file_name.is_some(),
                     ActionButton::new("Upload")
                         .icon(icons::UPLOAD)
                         .primary()
@@ -342,14 +364,14 @@ impl SdCardTab {
             }
             if ui
                 .add_enabled(
-                    connected,
+                    connected && !no_sd,
                     IconButton::new(icons::REFRESH).tooltip("Read the file list again (M20)"),
                 )
                 .clicked()
             {
                 refresh = true;
             }
-            if connected {
+            if connected && !no_sd {
                 let (text, tone) = match sd.card_present {
                     _ if self.released => ("Released", Tone::Neutral),
                     Some(true) => ("Card ready", Tone::Success),
@@ -799,7 +821,9 @@ impl SdCardTab {
             && ctx.connected()
             && !ctx.job_active()
             && self.card_printing.is_none()
-            && !self.released;
+            && !self.released
+            && !kit::lacks_capability(ctx.state, "SDCARD")
+            && !kit::lacks_capability(ctx.state, "SD_WRITE");
         let mut submit = false;
         let mut cancel = false;
         let modal = egui::Modal::new(egui::Id::new("sd-upload"))
