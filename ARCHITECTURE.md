@@ -1176,13 +1176,19 @@ Every public item is also re-exported at the crate root.
   tracked `MachineState` starts from `state_at_line`. Pause: `Pausing` until
   in-flight stream lines are acknowledged and the pause script is
   acknowledged, then `Paused` (manual commands work meanwhile); resume:
-  `Resuming` while the resume script (followed by `G91` or `M83` when the
-  stream used relative modes) is acknowledged, streaming continues right
-  behind it. User commands queued before a script (pause, resume, cancel,
-  SD control) are sent before it, so a purge typed while paused runs
-  before the head returns to the part; commands queued afterwards follow
-  the script. The scripts start with `G21` while the stream is in inches
-  (the resume script ends with `G20`). `//action:pause|paused` pause
+  `Resuming` while the resume script is acknowledged, streaming continues
+  right behind it. User commands queued before a script (pause, resume,
+  cancel, SD control) are sent before it, so a purge typed while paused
+  runs before the head returns to the part; commands queued afterwards
+  follow the script. Scripts run in the modes templates are written for,
+  judged from every command sent plus those queued before the script: the
+  pause and cancel scripts start with `G21` (printer in inches) and `G90`
+  (printer relative) when needed; the resume script always starts with
+  `G90` and the stream's extruder mode (`M82`/`M83`, after `G21` when the
+  printer is in inches) and ends with the stream's `G90`/`G91`, its
+  extruder mode again (Marlin's `G90`/`G91` reset it) and `G20` for an
+  inch stream, so a `G91` or `G20` typed while paused cannot shift the
+  rest of the print. `//action:pause|paused` pause
   without scripts and `//action:resume|resumed` continue; `resume()` after
   such a pause sends
   M108 when the firmware waits for the user. `cancel` sends M108 first when

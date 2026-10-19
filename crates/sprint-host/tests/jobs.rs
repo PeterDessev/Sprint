@@ -119,15 +119,17 @@ fn pause_and_resume_run_the_scripts_between_stream_lines() {
         ["G91", "G1 X5 F3000", "G90"]
     );
     // The resume script restores the position of the last streamed line;
-    // the file extrudes relatively, so `G92 E{e}` is left out and M83 is
-    // restored after the script's G90.
+    // the file extrudes relatively, so `G92 E{e}` is left out. The modes
+    // the script is written for come first, the stream's modes after it.
     let state = state_at_line(&file, paused_at);
-    let mut resume = render_script(sprint_host::script::DEFAULT_RESUME_SCRIPT, &state);
-    assert!(!resume.iter().any(|l| l.starts_with("G92")));
-    resume.push("M83".to_string());
+    let template = render_script(sprint_host::script::DEFAULT_RESUME_SCRIPT, &state);
+    assert!(!template.iter().any(|l| l.starts_with("G92")));
+    let mut resume = vec!["G90".to_string(), "M83".to_string()];
+    resume.extend(template);
+    resume.extend(["G90".to_string(), "M83".to_string()]);
     let r = after_pause + 3;
     assert_eq!(&got[r..r + resume.len()], resume.as_slice());
-    assert!(resume[0].starts_with(&format!("G1 X{} Y{}", state.position[0], state.position[1])));
+    assert!(resume[2].starts_with(&format!("G1 X{} Y{}", state.position[0], state.position[1])));
     // Then the rest of the stream, nothing lost or repeated.
     assert_eq!(&got[r + resume.len()..], &want[p..]);
 
@@ -228,10 +230,15 @@ fn scripts_run_in_millimetres_when_the_file_uses_inches() {
     let state = state_at_line(&file, paused_at);
     let pause_len = 6;
     let r = p + pause_len;
-    assert_eq!(got[r], "G21", "{:?}", &got[p..r + 3]);
+    assert_eq!(
+        &got[r..r + 3],
+        ["G21", "G90", "M83"],
+        "{:?}",
+        &got[p..r + 4]
+    );
     let x = state.position[0];
     assert!(x > 20.0, "positions are in mm: {x}");
-    assert!(got[r + 1].starts_with(&format!("G1 X{}", sprint_host::format_number(x, 3))));
+    assert!(got[r + 3].starts_with(&format!("G1 X{}", sprint_host::format_number(x, 3))));
     // The resume script ends by restoring the stream's modes.
     let end = got[r..].iter().position(|c| c == "G20").expect("G20 again") + r;
     assert_eq!(got[end - 1], "M83");
@@ -551,4 +558,37 @@ fn a_pause_before_homing_does_not_park_or_lift() {
             .is_some_and(|j| j.status == JobStatus::Completed)
     });
     assert_eq!(printer.with_state(|s| s.homed), Some(Axes::ALL));
+}
+
+#[test]
+fn modes_typed_while_paused_do_not_move_the_rest_of_the_print() {
+    // A G91 + Z lift without the closing G90, and a G20, typed while
+    // paused: the resume moves and the rest of the layer must still go
+    // where the file says.
+    let printer = connect(sim(), options());
+    let file = file();
+    start(&printer, &file, PrintOptions::default());
+    printer.pause();
+    wait_for(&printer, "paused", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Paused)
+    });
+    printer.send("G91\nG1 Z5 F600\nG20");
+    printer.resume();
+    wait_for(&printer, "completed", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Completed)
+    });
+    wait_idle(&printer);
+    let end = state_at_line(&file, file.len());
+    let pos = printer.sim_control().unwrap().snapshot().position;
+    for axis in 0..3 {
+        assert!(
+            (f64::from(pos[axis]) - end.position[axis]).abs() < 0.01,
+            "axis {axis}: printer {pos:?}, file {:?}",
+            end.position
+        );
+    }
 }

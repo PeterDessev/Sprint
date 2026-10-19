@@ -1,10 +1,14 @@
 //! Turning the pause, resume and cancel templates into the commands a job
-//! sends: rendering with the profile, millimetres for inch streams, and
-//! leaving out moves of axes that are not known to be homed.
+//! sends: rendering with the profile, the modes the templates are written
+//! for (and the stream's modes back after a resume), and leaving out moves
+//! of axes that are not known to be homed.
+
+use std::collections::VecDeque;
 
 use sprint_gcode::{MachineState, parse_line};
 
 use super::Shared;
+use super::meta::Meta;
 use crate::console::ConsoleKind;
 use crate::script::render_script_with;
 use crate::state::Axes;
@@ -21,21 +25,64 @@ pub(super) fn render_job_script(
     render_script_with(template, &profile.script_context(state).covering(&temps))
 }
 
-/// Scripts are written in millimetres (and their placeholders are mm): for
-/// a stream in inch mode (G20) run them after a G21 and, with `restore`,
-/// switch back to G20 at the end.
-pub(super) fn in_millimetres(
-    mut lines: Vec<String>,
-    state: &MachineState,
-    restore: bool,
-) -> Vec<String> {
-    if state.inches && !lines.is_empty() {
-        lines.insert(0, "G21".to_string());
-        if restore {
-            lines.push("G20".to_string());
-        }
+/// The printer's modes once the queued user commands have run: `printer`
+/// (every command sent so far) with `queued` applied. Scripts go after the
+/// commands queued before them, so a `G91` or `G20` typed while paused
+/// counts even when it has not been sent yet.
+pub(super) fn modes_after(printer: &MachineState, queued: &VecDeque<Meta>) -> MachineState {
+    let mut modes = printer.clone();
+    for m in queued {
+        modes.apply(&parse_line(&m.text));
     }
-    lines
+    modes
+}
+
+/// A pause or cancel script with the modes templates are written for
+/// first: millimetres (their placeholders and distances are mm) and
+/// absolute positioning, each only when `printer` is not in it already.
+pub(super) fn in_script_modes(lines: Vec<String>, printer: &MachineState) -> Vec<String> {
+    if lines.is_empty() {
+        return lines;
+    }
+    let mut out = Vec::with_capacity(lines.len() + 2);
+    if printer.inches {
+        out.push("G21".to_string());
+    }
+    if !printer.absolute {
+        out.push("G90".to_string());
+    }
+    out.extend(lines);
+    out
+}
+
+/// The resume script: the rendered template between the modes it is
+/// written for and the stream's modes.
+///
+/// Before: `G21` when the printer is in inches, `G90`, and the stream's
+/// extruder mode (`M82` makes the template's `G92 E{e}` meaningful), so a
+/// `G91` or `G20` typed while paused cannot send the return move and the
+/// rest of the layer elsewhere. After: the stream's positioning and
+/// extruder modes explicitly (on Marlin `G90`/`G91` also switch the
+/// extruder mode) and `G20` for an inch stream.
+pub(super) fn resume_script(
+    template: Vec<String>,
+    snapshot: &MachineState,
+    printer: &MachineState,
+) -> Vec<String> {
+    let e_mode = if snapshot.absolute_e { "M82" } else { "M83" };
+    let mut out = Vec::with_capacity(template.len() + 7);
+    if printer.inches || snapshot.inches {
+        out.push("G21".to_string());
+    }
+    out.push("G90".to_string());
+    out.push(e_mode.to_string());
+    out.extend(template);
+    out.push(if snapshot.absolute { "G90" } else { "G91" }.to_string());
+    out.push(e_mode.to_string());
+    if snapshot.inches {
+        out.push("G20".to_string());
+    }
+    out
 }
 
 /// Leave the X/Y/Z words out of the moves (G0..G3) of axes that are not
@@ -136,6 +183,69 @@ mod tests {
 
     fn lines(text: &str) -> Vec<String> {
         text.lines().map(str::to_string).collect()
+    }
+
+    fn modes(gcode: &[&str]) -> MachineState {
+        let mut m = MachineState::new();
+        for l in gcode {
+            m.apply(&parse_line(l));
+        }
+        m
+    }
+
+    #[test]
+    fn resume_restores_the_modes_around_the_template() {
+        let template = vec!["G1 X1 Y2 F6000".to_string(), "G1 Z3 F600".to_string()];
+        // An absolute file; the user left the printer relative.
+        let out = resume_script(template.clone(), &modes(&["G90", "M82"]), &modes(&["G91"]));
+        assert_eq!(
+            out,
+            ["G90", "M82", "G1 X1 Y2 F6000", "G1 Z3 F600", "G90", "M82"]
+        );
+        // Relative extrusion; the user typed G20.
+        let out = resume_script(template.clone(), &modes(&["M83"]), &modes(&["M83", "G20"]));
+        assert_eq!(
+            out,
+            [
+                "G21",
+                "G90",
+                "M83",
+                "G1 X1 Y2 F6000",
+                "G1 Z3 F600",
+                "G90",
+                "M83"
+            ]
+        );
+        // A relative inch stream gets both back.
+        let stream = modes(&["G20", "G91"]);
+        let out = resume_script(template, &stream, &stream);
+        assert_eq!(out.first().map(String::as_str), Some("G21"));
+        assert_eq!(&out[out.len() - 3..], ["G91", "M83", "G20"]);
+    }
+
+    #[test]
+    fn pause_and_cancel_scripts_start_in_absolute_millimetres() {
+        let script = vec!["G1 Z10".to_string()];
+        assert_eq!(
+            in_script_modes(script.clone(), &modes(&["G90"])),
+            ["G1 Z10"]
+        );
+        assert_eq!(
+            in_script_modes(script, &modes(&["G20", "G91"])),
+            ["G21", "G90", "G1 Z10"]
+        );
+        assert!(in_script_modes(Vec::new(), &modes(&["G91"])).is_empty());
+    }
+
+    #[test]
+    fn queued_commands_count_for_the_modes() {
+        use super::super::meta::{CmdMeta, Source};
+        let queued: VecDeque<Meta> = ["G91", "G1 Z5", "G20"]
+            .iter()
+            .map(|c| CmdMeta::new(*c, Source::User))
+            .collect();
+        let m = modes_after(&MachineState::new(), &queued);
+        assert!(!m.absolute && m.inches);
     }
 
     #[test]
