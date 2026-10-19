@@ -1668,15 +1668,25 @@ impl App {
                 ));
             }
             Command::Macro(Some(name)) => match actions::find_macro(&self.config.macros, &name) {
-                Ok(m) if m.confirm => {
+                // While a job runs the commands go between the print's
+                // lines (a G28 there ruins it): always asked, as danger.
+                Ok(m) if m.confirm || self.view.job_active() => {
                     let name = m.name.clone();
-                    let gcode: Vec<String> = m.gcode.lines().map(str::to_string).collect();
+                    let job_active = self.view.job_active();
+                    let mut message = Vec::new();
+                    if job_active {
+                        message.push(
+                            "A job is running: these commands go between the print's lines."
+                                .to_string(),
+                        );
+                    }
+                    message.extend(macro_preview(&m.gcode));
                     self.modal = Some(Modal::Confirm(Confirm::new(
                         format!("Run {name}?"),
-                        gcode,
+                        message,
                         "Run",
                         "Not now",
-                        false,
+                        job_active,
                         Action::RunMacro(name),
                     )));
                 }
@@ -1714,6 +1724,30 @@ impl App {
             true
         }
     }
+}
+
+/// Lines of macro G-code shown when asking to run it.
+const MACRO_PREVIEW_LINES: usize = 12;
+
+/// The first lines of a macro's G-code, and how many more there are.
+fn macro_preview(gcode: &str) -> Vec<String> {
+    let lines: Vec<&str> = gcode
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    let mut out: Vec<String> = lines
+        .iter()
+        .take(MACRO_PREVIEW_LINES)
+        .map(|l| (*l).to_string())
+        .collect();
+    if lines.len() > MACRO_PREVIEW_LINES {
+        out.push(format!(
+            "… {} more lines",
+            lines.len() - MACRO_PREVIEW_LINES
+        ));
+    }
+    out
 }
 
 /// Start writing `file` to the SD card as `sd_name`: the status message.

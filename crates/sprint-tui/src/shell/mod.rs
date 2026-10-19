@@ -892,9 +892,22 @@ impl Shell {
             Command::Macro(Some(name)) => match actions::find_macro(&self.config.macros, &name) {
                 Ok(m) => {
                     let m = m.clone();
-                    if !m.confirm || self.confirm(input, &format!("Run {}?", m.name), true) {
+                    // While a job runs the commands go between the print's
+                    // lines (a G28 there ruins it): asked on a terminal.
+                    let question = if self.job_active() {
+                        Some(format!(
+                            "A job is running; run {} between its lines?",
+                            m.name
+                        ))
+                    } else {
+                        m.confirm.then(|| format!("Run {}?", m.name))
+                    };
+                    let go = question.is_none_or(|q| self.confirm(input, &q, true));
+                    if go {
                         printer.run_macro(&m);
                         self.out.dim(format!("Macro {}", m.name));
+                    } else {
+                        self.out.dim("Not run");
                     }
                 }
                 Err(why) => self.out.error(why),

@@ -275,6 +275,38 @@ fn printing_app() -> App {
 }
 
 #[test]
+fn macros_ask_first_while_a_job_runs() {
+    let mut app = printing_app();
+    app.run_line("macro home");
+    let Some(Modal::Confirm(confirm)) = &app.modal else {
+        panic!("no question: {:?}", app.toast);
+    };
+    assert_eq!(confirm.action, dialogs::Action::RunMacro("Home".into()));
+    assert!(confirm.danger, "asked as a dangerous action");
+    assert!(!confirm.on_yes, "the safe answer is the default");
+    assert!(
+        confirm.message[0].contains("A job is running"),
+        "{:?}",
+        confirm.message
+    );
+    assert!(confirm.message.contains(&"G28".to_string()));
+    press(&mut app, KeyCode::Enter);
+    assert!(app.modal.is_none());
+    // A long macro shows its first lines.
+    let long: String = (0..20)
+        .map(|i| {
+            format!(
+                "G4 P{i}
+"
+            )
+        })
+        .collect();
+    let preview = macro_preview(&long);
+    assert_eq!(preview.len(), MACRO_PREVIEW_LINES + 1);
+    assert_eq!(preview.last().map(String::as_str), Some("… 8 more lines"));
+}
+
+#[test]
 fn printing_screen_at_120x40() {
     let mut app = printing_app();
     let buf = render(&mut app, 120, 40);

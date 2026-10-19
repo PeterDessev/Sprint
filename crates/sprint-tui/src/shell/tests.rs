@@ -542,6 +542,10 @@ fn pause_resume_cancel_and_the_prompt() {
     let text = buffer.text();
     let refused = text[before..].matches("would lower the nozzle").count();
     assert_eq!(refused, 3, "{text}");
+    // A macro asks first on a terminal: here the answer is no.
+    let mut input = Script::new(["macro home", "n"], true);
+    shell.run_lines_until_eof_without_leaving(&mut input);
+    assert!(buffer.text().contains("Not run"), "{}", buffer.text());
     let mut input = Script::new(["move z 1", "resume"], false);
     shell.run_lines_until_eof_without_leaving(&mut input);
     wait_for(&shell, "the resume", |s| {
