@@ -19,6 +19,7 @@ use crate::options::{
     BedSpec, ColorMode, GhostStyle, RenderStyle, ViewMode, ViewPreset, ViewerOptions,
 };
 use crate::pick::{PickFilter, PickHit, PickIndex, PickKind};
+use crate::scene;
 
 /// Bytes of instance data uploaded per frame while a toolpath streams in
 /// (a 5M-segment file needs about 15 frames).
@@ -48,6 +49,12 @@ const DEPTH_CUE: f32 = 0.35;
 const EXPOSURE: f32 = 1.18;
 /// Opacity of translucent ghosts.
 const GHOST_ALPHA: f32 = 0.24;
+/// On-screen height the tool head marker aims for (pixels).
+const HEAD_PIXELS: f32 = 46.0;
+/// Limits of the tool head scale (1 = real size, about 7 mm tall).
+const HEAD_SCALE: (f32, f32) = (0.7, 12.0);
+/// Darkness of the nozzle's contact shadow at its centre (0..1).
+const HEAD_SHADOW: f32 = 0.72;
 
 /// Camera-relative studio lights: direction towards the light (xyz) and
 /// intensity (w).
@@ -1299,6 +1306,19 @@ impl GcodeViewer {
         if o.ghost_style == GhostStyle::Translucent {
             flag_bits |= flags::TRANSLUCENT_GHOSTS;
         }
+        let head = self.tool_head_position();
+        // Scale the nozzle to a steady size on screen, within reason.
+        let head_scale = head.map_or(0.0, |tip| {
+            let world_px = match cam.projection {
+                Projection::Perspective => (tip - eye).dot(f).max(cam.near()) * pixel,
+                Projection::Orthographic => pixel,
+            };
+            (HEAD_PIXELS * world_px / scene::TOOL_HEAD_HEIGHT).clamp(HEAD_SCALE.0, HEAD_SCALE.1)
+        });
+        let tip = head.unwrap_or(Vec3::ZERO);
+        if head.is_some() {
+            flag_bits |= flags::HEAD;
+        }
 
         let scalar = self
             .info
@@ -1352,6 +1372,13 @@ impl GcodeViewer {
             fog_range: [fog_start, fog_inv_span, 0.0, 0.0],
             shading: [CAVITY, DETAIL_PIXELS.0, DETAIL_PIXELS.1, EXPOSURE],
             ghost: [GHOST_ALPHA, 0.0, 0.0, 0.0],
+            head: [tip.x, tip.y, tip.z, head_scale],
+            head_shadow: [
+                scene::TOOL_HEAD_RADIUS * 2.1 * head_scale,
+                HEAD_SHADOW,
+                scene::TOOL_HEAD_HEIGHT * 0.2 * head_scale,
+                0.0,
+            ],
         };
 
         let passes = match (range, &self.info) {
@@ -1409,7 +1436,7 @@ impl GcodeViewer {
             bed: o.show_bed,
             volume: o.show_build_volume,
             axes: o.show_axes,
-            tool_head: self.tool_head_position(),
+            tool_head: head,
         }
     }
 

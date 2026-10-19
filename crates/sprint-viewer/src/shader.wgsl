@@ -45,6 +45,11 @@ struct Globals {
     shading: vec4<f32>,
     // x: opacity of translucent ghosts, yzw: unused.
     ghost: vec4<f32>,
+    // xyz: nozzle tip, w: scale of the tool head mesh.
+    head: vec4<f32>,
+    // x: shadow radius (mm), y: strength, z: height (mm) above the tip it
+    // is cast from, w: unused.
+    head_shadow: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -56,6 +61,7 @@ const FLAG_HOVER: u32 = 8u;
 const FLAG_LAYER_TOP: u32 = 16u;
 const FLAG_ENCODE_GAMMA: u32 = 32u;
 const FLAG_TRANSLUCENT_GHOSTS: u32 = 64u;
+const FLAG_HEAD: u32 = 128u;
 
 const TRAVEL_BIT: u32 = 32u;
 
@@ -193,6 +199,27 @@ fn post(world: vec3<f32>, c: vec3<f32>) -> vec3<f32> {
     return tone(depth_cue(world, c));
 }
 
+// Soft shadow of the nozzle on whatever lies below it: a blurred disc cast
+// from the nozzle body away from the key light, widening and fading with
+// the distance below the tip.
+fn head_shadow(world: vec3<f32>) -> f32 {
+    if (!has_flag(FLAG_HEAD)) {
+        return 1.0;
+    }
+    let below = g.head.z - world.z;
+    if (below < -0.05) {
+        return 1.0;
+    }
+    let r0 = max(g.head_shadow.x, 1e-3);
+    let depth = max(below, 0.0);
+    let r = r0 + 0.2 * depth;
+    let away = -g.key_light.xy / max(g.key_light.z, 0.35);
+    let centre = g.head.xy + away * (g.head_shadow.z + depth);
+    let d = length(world.xy - centre) / r;
+    let fade = exp(-depth / (5.0 * r0)) * (r0 / r);
+    return 1.0 - g.head_shadow.y * exp(-2.0 * d * d) * fade;
+}
+
 // ------------------------------------------------------------ bead shading
 //
 // Up close a bead is a rounded tube; far away it covers less than a pixel
@@ -265,7 +292,7 @@ fn bead_light(world: vec3<f32>, n_bead: vec3<f32>, m: vec3<f32>, pixels: f32, ba
     let groove = 1.0 - clamp(dot(n_bead, m), 0.0, 1.0);
     let cavity = mix(1.0 - 0.18 * g.shading.x, 1.0 - g.shading.x * groove * groove, groove_detail);
     let c = light(world, n, base, emissive, mix(0.3, 1.0, shape_detail));
-    return c * cavity;
+    return c * (cavity * head_shadow(world));
 }
 
 // --------------------------------------------------------- segment attrs
@@ -418,13 +445,6 @@ struct LitOut {
 fn fs_lit(in: LitOut) -> @location(0) vec4<f32> {
     let c = shade(in.world, in.normal, in.color.rgb, in.color.a);
     return finish(vec4<f32>(post(in.world, c), 1.0));
-}
-
-// Occluded parts of markers (drawn with an inverted depth test): faint.
-@fragment
-fn fs_xray(in: LitOut) -> @location(0) vec4<f32> {
-    let c = shade(in.world, in.normal, in.color.rgb, in.color.a);
-    return finish(vec4<f32>(post(in.world, c), 0.32));
 }
 
 // ------------------------------------------------------------------ tubes
@@ -651,7 +671,7 @@ fn extrusion_line(vi: u32, s: SegmentIn, ghost_pass: bool) -> FlatOut {
     let right = segment_right(dir);
     let up = cross(right, dir);
     let bm = bead_macro(feature_of(s), right, up, 0.5 * s.width, 0.5 * s.height, (s.start + s.end) * 0.5 - drop);
-    let lit = light(p, bm.normal, c.rgb, c.a, 0.3) * (1.0 - 0.18 * g.shading.x);
+    let lit = light(p, bm.normal, c.rgb, c.a, 0.3) * ((1.0 - 0.18 * g.shading.x) * head_shadow(p));
     out.color = vec4<f32>(post(p, lit), select(1.0, g.ghost.x, ghost_pass));
     return out;
 }
@@ -749,6 +769,49 @@ fn vs_mesh(v: MeshVertex) -> LitOut {
     return out;
 }
 
+// ------------------------------------------------------------- tool head
+//
+// The nozzle mesh is built once around the origin; the uniform places and
+// scales it, so it keeps a readable size at every zoom.
+
+@vertex
+fn vs_head(v: MeshVertex) -> LitOut {
+    var out: LitOut;
+    let world = g.head.xyz + v.pos * g.head.w;
+    out.world = world;
+    out.normal = v.normal;
+    out.clip = g.view_proj * vec4<f32>(world, 1.0);
+    out.color = vec4<f32>(srgb_to_linear(v.color.rgb), 0.0);
+    return out;
+}
+
+// Polished metal: little diffuse, a reflection of the studio's bright
+// sky and dark floor, and crisp highlights.
+fn head_color(in: LitOut) -> vec3<f32> {
+    let v = view_vector(in.world);
+    let n = facing(in.normal, v);
+    let base = in.color.rgb;
+    let r = reflect(-v, n);
+    let env = mix(vec3<f32>(0.05, 0.05, 0.06), vec3<f32>(0.75, 0.78, 0.85), smoothstep(-0.35, 0.7, r.z));
+    let key = max(dot(n, g.key_light.xyz), 0.0) * g.key_light.w;
+    let fill = max(dot(n, g.fill_light.xyz), 0.0) * g.fill_light.w;
+    let h = normalize(g.key_light.xyz + v);
+    let nh = max(dot(n, h), 0.0);
+    let spec = pow(nh, 80.0) * 1.2 + pow(nh, 14.0) * 0.18;
+    return base * (0.12 + 0.35 * key + 0.25 * fill) + base * env * 0.65 + KEY_COLOR * spec;
+}
+
+@fragment
+fn fs_head(in: LitOut) -> @location(0) vec4<f32> {
+    return finish(vec4<f32>(post(in.world, head_color(in)), 1.0));
+}
+
+// Where the print hides the nozzle (inverted depth test): faint.
+@fragment
+fn fs_head_xray(in: LitOut) -> @location(0) vec4<f32> {
+    return finish(vec4<f32>(post(in.world, head_color(in)), 0.3));
+}
+
 // --------------------------------------------------------- overlay lines
 
 struct LineVertex {
@@ -807,5 +870,6 @@ fn fs_bed(in: BedOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
     if (!front) {
         alpha = alpha * 0.35;
     }
+    color = color * head_shadow(in.world);
     return finish(vec4<f32>(depth_cue(in.world, color), alpha));
 }

@@ -112,6 +112,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             o.line_limit = Some(l.lines.start + (l.lines.end - l.lines.start) / 2);
         }
         save(&mut viewer, &dir, "09_layer_range_scrub.png")?;
+        // Close to the nozzle over the infill of the scrubbed layer.
+        let tip = viewer
+            .options()
+            .line_limit
+            .and_then(|line| toolpath.segment_at_line(line))
+            .and_then(|i| toolpath.segments.get(i))
+            .map(|s| Vec3::from(s.end));
+        if let Some(tip) = tip {
+            let cam = viewer.camera_mut();
+            cam.target = tip - Vec3::Z;
+            cam.distance = 50.0;
+            cam.yaw = -0.5;
+            cam.pitch = 0.62;
+            save(&mut viewer, &dir, "09b_scrub_closeup.png")?;
+            viewer.fit_to_view();
+        }
     }
 
     // Print progress ghosting.
@@ -125,9 +141,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Translucent ghosts: the printed part shows through.
         viewer.options_mut().ghost_style = GhostStyle::Translucent;
         save(&mut viewer, &dir, "10b_progress_translucent.png")?;
-        let o = viewer.options_mut();
-        o.ghost_style = GhostStyle::Opaque;
-        o.progress_line = None;
+        viewer.options_mut().ghost_style = GhostStyle::Opaque;
+        // Close to the nozzle: marker, contact shadow and the highlighted
+        // layer being printed.
+        let tip = mid
+            .and_then(|line| toolpath.segment_at_line(line))
+            .and_then(|i| toolpath.segments.get(i))
+            .map(|s| Vec3::from(s.end));
+        if let Some(tip) = tip {
+            // From outside the vase (centred at 138, 112), a little to the
+            // side of the nozzle.
+            let out = (tip - Vec3::new(138.0, 112.0, tip.z)).normalize_or(Vec3::NEG_Y);
+            let cam = viewer.camera_mut();
+            cam.target = tip - Vec3::Z * 1.5;
+            cam.distance = 55.0;
+            cam.yaw = out.x.atan2(-out.y) - 0.45;
+            cam.pitch = 0.5;
+            save(&mut viewer, &dir, "10c_progress_closeup.png")?;
+            viewer.options_mut().ghost_style = GhostStyle::Translucent;
+            save(&mut viewer, &dir, "10d_progress_closeup_translucent.png")?;
+            viewer.options_mut().ghost_style = GhostStyle::Opaque;
+            viewer.fit_to_view();
+        }
+        viewer.options_mut().progress_line = None;
     }
 
     // Layer view of layer 20 with lower layers ghosted, travels and

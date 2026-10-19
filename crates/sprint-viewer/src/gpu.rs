@@ -60,6 +60,11 @@ pub(crate) struct Globals {
     pub shading: [f32; 4],
     /// Opacity of translucent ghosts (x); yzw unused.
     pub ghost: [f32; 4],
+    /// Nozzle tip (xyz) and tool head mesh scale (w).
+    pub head: [f32; 4],
+    /// Shadow radius in mm (x), strength (y) and the height above the tip
+    /// it is cast from (z); w unused.
+    pub head_shadow: [f32; 4],
 }
 
 /// Bits of `Globals::mode[2]`.
@@ -71,6 +76,7 @@ pub(crate) mod flags {
     pub const LAYER_TOP: u32 = 16;
     pub const ENCODE_GAMMA: u32 = 32;
     pub const TRANSLUCENT_GHOSTS: u32 = 64;
+    pub const HEAD: u32 = 128;
 }
 
 /// Everything needed to draw one frame.
@@ -95,6 +101,8 @@ pub(crate) struct DrawParams {
     pub bed: bool,
     pub volume: bool,
     pub axes: bool,
+    /// Nozzle tip when the tool head is shown (placed and scaled by
+    /// `Globals::head`).
     pub tool_head: Option<Vec3>,
 }
 
@@ -219,21 +227,12 @@ struct MeshBuffers {
 }
 
 impl MeshBuffers {
-    fn new<V: Pod>(
-        device: &wgpu::Device,
-        label: &str,
-        mesh: &scene::Mesh<V>,
-        writable: bool,
-    ) -> MeshBuffers {
-        let mut usage = wgpu::BufferUsages::VERTEX;
-        if writable {
-            usage |= wgpu::BufferUsages::COPY_DST;
-        }
+    fn new<V: Pod>(device: &wgpu::Device, label: &str, mesh: &scene::Mesh<V>) -> MeshBuffers {
         MeshBuffers {
             vertices: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some(label),
                 contents: bytemuck::cast_slice(&mesh.vertices),
-                usage,
+                usage: wgpu::BufferUsages::VERTEX,
             }),
             indices: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some(label),
@@ -255,7 +254,8 @@ struct Pipelines {
     travel: wgpu::RenderPipeline,
     marker: wgpu::RenderPipeline,
     mesh: wgpu::RenderPipeline,
-    mesh_xray: wgpu::RenderPipeline,
+    head: wgpu::RenderPipeline,
+    head_xray: wgpu::RenderPipeline,
     bed: wgpu::RenderPipeline,
     overlay: wgpu::RenderPipeline,
 }
@@ -277,8 +277,8 @@ pub(crate) struct Renderer {
     volume: wgpu::Buffer,
     volume_count: u32,
     axes: MeshBuffers,
+    /// Tool head around the origin; the shader places and scales it.
     head: MeshBuffers,
-    head_tip: Option<Vec3>,
     scene: Option<GpuScene>,
     ui_targets: Option<Targets>,
     offscreen_targets: Option<Targets>,
@@ -395,14 +395,8 @@ impl Renderer {
             device,
             "sprint-viewer tube template",
             &scene::tube_template(),
-            false,
         );
-        let marker = MeshBuffers::new(
-            device,
-            "sprint-viewer marker",
-            &scene::marker_template(),
-            false,
-        );
+        let marker = MeshBuffers::new(device, "sprint-viewer marker", &scene::marker_template());
         let bed_vertices = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("sprint-viewer bed"),
             size: 4 * 12,
@@ -424,13 +418,11 @@ impl Renderer {
             device,
             "sprint-viewer axes",
             &scene::axes_mesh(Vec3::ZERO, 20.0),
-            false,
         );
         let head = MeshBuffers::new(
             device,
             "sprint-viewer tool head",
             &scene::tool_head_mesh(Vec3::ZERO),
-            true,
         );
         let mut renderer = Renderer {
             device: device.clone(),
@@ -447,7 +439,6 @@ impl Renderer {
             volume_count: 24,
             axes,
             head,
-            head_tip: Some(Vec3::ZERO),
             scene: None,
             ui_targets: None,
             offscreen_targets: None,
@@ -487,7 +478,6 @@ impl Renderer {
             &self.device,
             "sprint-viewer axes",
             &scene::axes_mesh(Vec3::ZERO, length),
-            false,
         );
     }
 
@@ -720,14 +710,6 @@ impl Renderer {
 
     /// Draw one frame into the targets of `slot` and submit it.
     pub fn render(&mut self, slot: Slot, params: &DrawParams) {
-        if let Some(tip) = params.tool_head
-            && self.head_tip != Some(tip)
-        {
-            let mesh = scene::tool_head_mesh(tip);
-            self.queue
-                .write_buffer(&self.head.vertices, 0, bytemuck::cast_slice(&mesh.vertices));
-            self.head_tip = Some(tip);
-        }
         self.queue
             .write_buffer(&self.globals, 0, bytemuck::bytes_of(&params.globals));
         let Some(targets) = self.targets(slot) else {
@@ -847,18 +829,22 @@ impl Renderer {
                 pass.draw_indexed(0..self.marker.count, 0, range);
             }
         }
-        if params.tool_head.is_some() || params.axes {
+        if params.tool_head.is_some() {
+            pass.set_vertex_buffer(0, self.head.vertices.slice(..));
+            pass.set_index_buffer(self.head.indices.slice(..), wgpu::IndexFormat::Uint32);
+            // First a faint silhouette where the print hides the nozzle
+            // (inverted depth test, before the nozzle's own depth is
+            // written, so it never shows through itself), then the nozzle.
+            pass.set_pipeline(&p.head_xray);
+            pass.draw_indexed(0..self.head.count, 0, 0..1);
+            pass.set_pipeline(&p.head);
+            pass.draw_indexed(0..self.head.count, 0, 0..1);
+        }
+        if params.axes {
             pass.set_pipeline(&p.mesh);
-            if params.tool_head.is_some() {
-                pass.set_vertex_buffer(0, self.head.vertices.slice(..));
-                pass.set_index_buffer(self.head.indices.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..self.head.count, 0, 0..1);
-            }
-            if params.axes {
-                pass.set_vertex_buffer(0, self.axes.vertices.slice(..));
-                pass.set_index_buffer(self.axes.indices.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..self.axes.count, 0, 0..1);
-            }
+            pass.set_vertex_buffer(0, self.axes.vertices.slice(..));
+            pass.set_index_buffer(self.axes.indices.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..self.axes.count, 0, 0..1);
         }
         if params.bed {
             pass.set_pipeline(&p.bed);
@@ -885,13 +871,6 @@ impl Renderer {
                 pass.set_vertex_buffer(0, buffer.slice(..));
                 pass.draw(0..2, r);
             }
-        }
-        if params.tool_head.is_some() {
-            // Faint silhouette where the print hides the nozzle.
-            pass.set_pipeline(&p.mesh_xray);
-            pass.set_vertex_buffer(0, self.head.vertices.slice(..));
-            pass.set_index_buffer(self.head.indices.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(0..self.head.count, 0, 0..1);
         }
     }
 
@@ -1021,7 +1000,8 @@ fn create_pipelines(
         step_mode: wgpu::VertexStepMode::Vertex,
         attributes: &mesh_attrs,
     };
-    let mesh_vertices_xray = mesh_vertices.clone();
+    let head_vertices = mesh_vertices.clone();
+    let head_vertices_xray = mesh_vertices.clone();
     let line_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Unorm8x4];
     let line_vertices = wgpu::VertexBufferLayout {
         array_stride: std::mem::size_of::<LineVertex>() as u64,
@@ -1190,11 +1170,22 @@ fn create_pipelines(
             false,
             GreaterEqual,
         ),
-        mesh_xray: make(
-            "sprint-viewer meshes (occluded)",
-            "vs_mesh",
-            "fs_xray",
-            &[Some(mesh_vertices_xray)],
+        head: make(
+            "sprint-viewer tool head",
+            "vs_head",
+            "fs_head",
+            &[Some(head_vertices)],
+            TriangleList,
+            Some(wgpu::Face::Back),
+            true,
+            false,
+            GreaterEqual,
+        ),
+        head_xray: make(
+            "sprint-viewer tool head (occluded)",
+            "vs_head",
+            "fs_head_xray",
+            &[Some(head_vertices_xray)],
             TriangleList,
             Some(wgpu::Face::Back),
             false,

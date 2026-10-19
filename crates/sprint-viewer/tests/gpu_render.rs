@@ -825,3 +825,53 @@ fn translucent_ghosts_in_the_layer_view_raise_no_gpu_errors() {
     let error = pollster::block_on(validation.pop());
     assert!(error.is_none(), "{error:?}");
 }
+
+/// Screen position of a world point in the viewer's 3D camera.
+fn screen_of(viewer: &GcodeViewer, p: Vec3) -> (u32, u32) {
+    let s = viewer
+        .camera()
+        .project_to_screen(p, Vec2::new(W as f32, H as f32))
+        .expect("visible");
+    (s.x as u32, s.y as u32)
+}
+
+#[test]
+fn the_nozzle_casts_a_soft_shadow_on_the_part() {
+    let Some((device, queue)) = device() else {
+        return;
+    };
+    let tp = block();
+    // Scrub to the middle of the top layer: the nozzle sits over its
+    // middle bead (layer 9, line 9 * 45 + 22 runs along y = 109.9).
+    let line = 9 * 45 + 22;
+    let tip = Vec3::from(tp.segments[line as usize].end);
+    let mut viewer = loaded_viewer(&device, &queue, tp);
+    viewer.options_mut().show_bed = false;
+    viewer.options_mut().line_limit = Some(line);
+    let cam = viewer.camera_mut();
+    cam.target = tip;
+    cam.distance = 40.0;
+    cam.yaw = 0.3;
+    cam.pitch = 0.9;
+    viewer.options_mut().show_tool_head = false;
+    let bare = render(&mut viewer);
+    viewer.options_mut().show_tool_head = true;
+    let with_head = render(&mut viewer);
+    // Just in front of the tip (towards the camera, on the layer below's
+    // beads) and well away from it.
+    let near_tip = screen_of(&viewer, tip + Vec3::new(-0.6, -0.9, -0.2));
+    let far = screen_of(&viewer, tip + Vec3::new(-6.0, -4.0, -0.2));
+    let lum = |img: &[u8], (x, y): (u32, u32)| luma(px(img, x, y));
+    let shade = lum(&with_head, near_tip) / lum(&bare, near_tip).max(1.0);
+    let away = lum(&with_head, far) / lum(&bare, far).max(1.0);
+    assert!(
+        shade < 0.85 && (away - 1.0).abs() < 0.02,
+        "near the tip {shade:.3}, away {away:.3}"
+    );
+    // The marker itself is drawn above the tip.
+    let above = screen_of(&viewer, tip + Vec3::Z * 3.0);
+    assert_ne!(
+        px(&bare, above.0, above.1),
+        px(&with_head, above.0, above.1)
+    );
+}

@@ -303,21 +303,106 @@ pub fn axes_mesh(origin: Vec3, length: f32) -> Mesh<MeshVertex> {
     mesh
 }
 
-/// Nozzle-shaped tool marker with its tip at `tip`.
+/// Append a closed prism with `sides` flat faces (e.g. a hex nut) between
+/// `a` and `b`, faces shaded flat.
+fn push_flat_prism(
+    mesh: &mut Mesh<MeshVertex>,
+    a: Vec3,
+    b: Vec3,
+    radius: f32,
+    color: [u8; 4],
+    sides: u32,
+) {
+    let axis = (b - a).normalize_or(Vec3::Z);
+    let helper = if axis.z.abs() < 0.9 { Vec3::Z } else { Vec3::X };
+    let u = axis.cross(helper).normalize();
+    let v = axis.cross(u);
+    let corner = |i: u32| {
+        let ang = (i as f32 + 0.5) / sides as f32 * std::f32::consts::TAU;
+        u * ang.cos() + v * ang.sin()
+    };
+    let first = mesh.vertices.len() as u32;
+    for i in 0..sides {
+        let (c0, c1) = (corner(i), corner(i + 1));
+        let n = (c0 + c1).normalize();
+        let base = mesh.vertices.len() as u32;
+        for p in [
+            a + c0 * radius,
+            b + c0 * radius,
+            a + c1 * radius,
+            b + c1 * radius,
+        ] {
+            mesh.vertices.push(MeshVertex {
+                pos: p.to_array(),
+                normal: n.to_array(),
+                color,
+            });
+        }
+        mesh.indices
+            .extend_from_slice(&[base, base + 2, base + 1, base + 1, base + 2, base + 3]);
+    }
+    for (c, n) in [(a, -axis), (b, axis)] {
+        let center = mesh.vertices.len() as u32;
+        mesh.vertices.push(MeshVertex {
+            pos: c.to_array(),
+            normal: n.to_array(),
+            color,
+        });
+        for i in 0..sides {
+            mesh.vertices.push(MeshVertex {
+                pos: (c + corner(i) * radius).to_array(),
+                normal: n.to_array(),
+                color,
+            });
+        }
+        for i in 0..sides {
+            let (p, q) = (center + 1 + i, center + 1 + (i + 1) % sides);
+            mesh.indices.extend_from_slice(&[center, p, q]);
+        }
+    }
+    fix_winding_outward(mesh, first);
+}
+
+/// Height of [`tool_head_mesh`] above its tip (mm).
+pub const TOOL_HEAD_HEIGHT: f32 = 7.0;
+
+/// Radius of the widest part of [`tool_head_mesh`] (mm).
+pub const TOOL_HEAD_RADIUS: f32 = 1.9;
+
+/// Nozzle-shaped tool marker with its tip at `tip`, [`TOOL_HEAD_HEIGHT`]
+/// tall: a small brass cone and hex nut under a steel heat break. The
+/// viewer scales it with the zoom so it keeps a readable size on screen.
 pub fn tool_head_mesh(tip: Vec3) -> Mesh<MeshVertex> {
     let mut mesh = Mesh::default();
-    let cone = [0xF2, 0xF4, 0xF8, 0xFF];
-    let body = [0x9A, 0xA4, 0xB8, 0xFF];
+    let brass = [0xE6, 0xB0, 0x55, 0xFF];
+    let nut = [0xC9, 0x93, 0x3C, 0xFF];
+    let steel = [0xB8, 0xC0, 0xCE, 0xFF];
     let up = Vec3::Z;
-    push_frustum(&mut mesh, tip, tip + up * 2.6, 0.0, 1.5, cone, 24);
-    push_frustum(&mut mesh, tip + up * 2.6, tip + up * 4.2, 3.0, 3.0, body, 6);
+    push_frustum(&mut mesh, tip, tip + up * 0.3, 0.16, 0.36, brass, 24);
     push_frustum(
         &mut mesh,
-        tip + up * 4.2,
-        tip + up * 9.0,
-        1.4,
-        1.4,
-        body,
+        tip + up * 0.3,
+        tip + up * 2.1,
+        0.36,
+        1.2,
+        brass,
+        24,
+    );
+    push_flat_prism(
+        &mut mesh,
+        tip + up * 2.1,
+        tip + up * 3.5,
+        TOOL_HEAD_RADIUS,
+        nut,
+        6,
+    );
+    push_frustum(
+        &mut mesh,
+        tip + up * 3.5,
+        tip + up * TOOL_HEAD_HEIGHT,
+        0.8,
+        0.8,
+        steel,
         16,
     );
     mesh
@@ -451,6 +536,25 @@ mod tests {
             tool_head_vertex_count(),
             tool_head_mesh(Vec3::new(5.0, 1.0, 2.0)).vertices.len()
         );
+        // The head stands on its tip, within its documented size.
+        let tip = Vec3::new(5.0, 1.0, 2.0);
+        let head = tool_head_mesh(tip);
+        let lowest = head
+            .vertices
+            .iter()
+            .map(|v| v.pos[2])
+            .fold(f32::MAX, f32::min);
+        let highest = head
+            .vertices
+            .iter()
+            .map(|v| v.pos[2])
+            .fold(f32::MIN, f32::max);
+        assert!((lowest - tip.z).abs() < 1e-5);
+        assert!((highest - tip.z - TOOL_HEAD_HEIGHT).abs() < 1e-4);
+        for v in &head.vertices {
+            let r = (Vec3::from(v.pos) - tip).truncate().length();
+            assert!(r <= TOOL_HEAD_RADIUS + 1e-4, "{r}");
+        }
         assert_eq!(build_volume_lines(&BedSpec::default()).len(), 24);
     }
 }
