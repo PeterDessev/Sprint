@@ -1,5 +1,6 @@
 //! CPU-generated geometry: the bead template expanded per instance by the
-//! vertex shader, retraction markers, axes, tool head and wireframes.
+//! vertex shader, retraction markers, axes, the nozzle-shaped tool head and
+//! wireframes.
 
 use bytemuck::{Pod, Zeroable};
 use glam::Vec3;
@@ -408,8 +409,7 @@ pub fn tool_head_mesh(tip: Vec3) -> Mesh<MeshVertex> {
     mesh
 }
 
-/// Number of vertices of [`tool_head_mesh`] (fixed size, so the GPU buffer
-/// can be rewritten in place).
+/// Number of vertices of [`tool_head_mesh`] (the same wherever the tip is).
 pub fn tool_head_vertex_count() -> usize {
     tool_head_mesh(Vec3::ZERO).vertices.len()
 }
