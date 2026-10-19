@@ -13,9 +13,12 @@
 //!   that warrants a PID autotune, an underpowered heater, ...).
 //! * [`mesh`]: bed mesh geometry, bilinear interpolation and the bed-screw
 //!   helper (how far to turn each leveling screw).
+//! * [`calibrate`]: E-steps, PID, flow and Z-offset arithmetic used by the
+//!   calibration wizards, and the setting commands that apply the results.
 
 #![warn(missing_docs)]
 
+pub mod calibrate;
 pub mod format;
 pub mod mesh;
 pub mod thermal;
