@@ -339,7 +339,8 @@ Everything Sprint sends (`>`) and the printer answers, colored by kind
 * The filter box searches; **Auto** shows automatic traffic (temperature
   and position reports and polling), **ok** shows bare `ok` replies,
   **Time** adds timestamps. The lines a print streams are hidden by
-  default; turn the stream filter on to see every line of the file go out.
+  default; the console's stream filter can show every line of the file as
+  it goes out.
 * The buttons at the top copy the shown lines, export them to a file and
   clear the console.
 * The command line sends G-code: Enter sends, Shift+Enter starts a new
@@ -480,9 +481,8 @@ printer** (switch while disconnected). Each profile has:
   diameter.
 * **Temperature presets**, **jog speeds**, and the **pause, resume and
   cancel scripts**.
-* **Printing**: whether prints show their progress on the printer's
-  display (M73) by default, and the **hook commands** with the
-  environment variables they receive.
+* Whether prints show their progress on the printer's display (M73), and
+  the **hook commands** with the environment variables they receive.
 * **Print time estimation**: custom motion limits, or the firmware's.
 
 When the configuration file had damaged lines, Sprint says so at startup,
