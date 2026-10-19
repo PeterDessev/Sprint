@@ -294,8 +294,9 @@ pub fn resume_preamble(file: &GcodeFile, line: usize, options: &ResumeOptions) -
   `GCDE` magic, the binary STL size equation, NUL bytes or over a quarter
   control/invalid bytes, `ISO-10303-21`, `solid` followed by
   `facet`/`endsolid`, OBJ statements, and finally whether at least half of
-  the statements read as G-code (G/M/T codes, parameter words, upper-case
-  extended commands, `@` host commands, RepRapFirmware meta commands);
+  the statements read as G-code (G/M/T codes, parameter words, extended
+  commands that are upper-case or lower-case with an underscore and
+  `KEY=value` arguments, `@` host commands, RepRapFirmware meta commands);
   comment-only text is G-code. Front ends must only stream `Gcode`.
 * `state`: extra public fields `relative_e_mode` (sticky M83; G90 restores
   it, as Klipper/RRF/PrusaSlicer do) and `origin_offset` (G92 shift, machine =

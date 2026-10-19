@@ -19,8 +19,9 @@ const SNIFF_LINES: usize = 4096;
 /// What a file contains, judged by [`sniff_content`] from its first bytes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize)]
 pub enum ContentKind {
-    /// G-code: most lines are G/M/T commands, parameter words, upper-case
-    /// extended commands (Klipper macros) or comments. A file with only
+    /// G-code: most lines are G/M/T commands, parameter words, extended
+    /// commands (Klipper macros: upper-case, or lower-case with an
+    /// underscore and `KEY=value` arguments) or comments. A file with only
     /// comments is G-code too (there is nothing to send).
     #[default]
     Gcode,
@@ -293,20 +294,31 @@ fn classify_line(line: &str, tally: &mut Tally) {
     }
 }
 
-/// Upper-case extended commands (Klipper `PRINT_START`, `SET_FAN_SPEED
-/// SPEED=1`), host commands (`@pause`) and RepRapFirmware meta commands.
+/// Extended commands (Klipper `PRINT_START`, `SET_FAN_SPEED SPEED=1`,
+/// `_HOME_Z`), host commands (`@pause`) and RepRapFirmware meta commands.
+/// Klipper reads commands case-insensitively, so a lower-case name counts
+/// too when it has an underscore and only `KEY=value` arguments
+/// (`bed_mesh_calibrate profile=pei`), which prose does not.
 fn is_extended_command(text: &str) -> bool {
-    let name = text.split_whitespace().next().unwrap_or("");
+    let mut tokens = text.split_whitespace();
+    let name = tokens.next().unwrap_or("");
     if name.starts_with('@') && name.len() > 1 {
         return true;
     }
     if RRF_META.contains(&name) {
         return true;
     }
-    let mut bytes = name.bytes();
-    bytes.next().is_some_and(|b| b.is_ascii_uppercase())
-        && name.len() >= 2
-        && bytes.all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+    let identifier = name.len() >= 2
+        && name
+            .bytes()
+            .next()
+            .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
+    if !identifier {
+        return false;
+    }
+    !name.bytes().any(|b| b.is_ascii_lowercase())
+        || (name.contains('_') && tokens.all(|t| t.contains('=')))
 }
 
 #[cfg(test)]
@@ -396,6 +408,21 @@ mod tests {
         assert_eq!(
             sniff("if move.axes[0].homed\n  G1 X10\nelse\n  G28\n"),
             ContentKind::Gcode
+        );
+        // Klipper reads commands case-insensitively, and macros often start
+        // with an underscore.
+        assert_eq!(
+            sniff("print_start\nbed_mesh_calibrate profile=pei\nG28\n"),
+            ContentKind::Gcode
+        );
+        assert_eq!(
+            sniff("_CLIENT_LINEAR_MOVE X=10\n_HOME_Z\nG28\n"),
+            ContentKind::Gcode
+        );
+        // Prose is still not G-code, underscores or not.
+        assert_eq!(
+            sniff("see my_notes for details\nand this text\nG28\n"),
+            ContentKind::OtherText
         );
         // Only comments (a slicer header cut off by the sniff limit).
         assert_eq!(
