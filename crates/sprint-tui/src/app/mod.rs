@@ -818,17 +818,10 @@ impl App {
             }
             Action::Open(path) => self.open_file(path),
             Action::SetTemps(targets) => {
-                let mut parts = Vec::new();
-                for (heater, celsius) in targets {
+                for &(heater, celsius) in &targets {
                     self.printer.set_temperature(heater, celsius);
-                    let value = if celsius > 0.0 {
-                        format!("{} °C", format::trimmed(f64::from(celsius), 1))
-                    } else {
-                        "off".to_string()
-                    };
-                    parts.push(format!("{} {value}", heater.name()));
                 }
-                self.info(parts.join(", "));
+                self.info(actions::targets_text(&targets));
             }
             Action::StartPrint => self.start_print(),
             Action::CancelJob => {

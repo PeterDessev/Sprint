@@ -114,6 +114,31 @@ pub fn heaters(state: &PrinterState, profile: &PrinterProfile) -> Vec<Heater> {
     out
 }
 
+/// A heater for messages: "Hotend T0", "Bed", "Chamber".
+pub fn heater_label(heater: Heater) -> String {
+    match heater {
+        Heater::Hotend(t) => format!("Hotend T{t}"),
+        Heater::Bed => "Bed".to_string(),
+        Heater::Chamber => "Chamber".to_string(),
+    }
+}
+
+/// "Hotend T0 210 °C, Bed off": what setting `targets` does.
+pub fn targets_text(targets: &[(Heater, f32)]) -> String {
+    targets
+        .iter()
+        .map(|&(heater, celsius)| {
+            let value = if celsius.is_finite() && celsius > 0.0 {
+                format!("{} °C", crate::format::trimmed(f64::from(celsius), 1))
+            } else {
+                "off".to_string()
+            };
+            format!("{} {value}", heater_label(heater))
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// A `set` edit merged into the setting the firmware reported (same key),
 /// so the parameters not given keep their values.
 pub fn merged_setting(settings: &PrinterSettings, edit: &SettingCommand) -> SettingCommand {
@@ -277,6 +302,16 @@ mod tests {
                 Heater::Chamber
             ]
         );
+    }
+
+    #[test]
+    fn heater_texts() {
+        assert_eq!(
+            targets_text(&[(Heater::Hotend(1), 215.5), (Heater::Bed, 0.0)]),
+            "Hotend T1 215.5 °C, Bed off"
+        );
+        assert_eq!(targets_text(&[(Heater::Chamber, f32::NAN)]), "Chamber off");
+        assert_eq!(targets_text(&[]), "");
     }
 
     #[test]
