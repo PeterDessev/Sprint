@@ -8,7 +8,7 @@
 use std::time::{Duration, Instant};
 
 use sprint_host::{
-    ConnectOptions, ConnectTarget, ConnectionStatus, JobKind, Printer, PrinterState,
+    ConnectOptions, ConnectTarget, ConnectionStatus, Heater, JobKind, Printer, PrinterState,
 };
 
 use crate::interrupt::Interrupt;
@@ -190,6 +190,51 @@ pub fn cancel_before_closing(
     Some(name)
 }
 
+/// How long [`heaters_off`] waits for the printer to report its heaters
+/// off.
+pub const HEATERS_OFF_WAIT: Duration = Duration::from_secs(10);
+
+/// Turn every heater off (`M104 T<n> S0` for each tool, `M140 S0`, `M141
+/// S0` when the printer has a chamber) and the part fan (`M107`), then
+/// wait, at most `timeout`, until the printer reports every target at 0.
+/// Use it before closing the link when a job ended without its cancel
+/// script (a failure, or a cancel that was not waited for). Sending the
+/// same commands again after a cancel script is harmless.
+///
+/// Returns whether the printer reported the heaters off. Nothing is sent
+/// unless the printer is connected and not halted (a halted firmware has
+/// switched them off itself and ignores commands); that returns false.
+pub fn heaters_off(printer: &Printer, timeout: Duration) -> bool {
+    let profile = printer.profile();
+    let heaters = printer.with_state(|s| {
+        (s.is_connected() && !s.halted).then(|| crate::actions::heaters(s, &profile))
+    });
+    let Some(heaters) = heaters else {
+        return false;
+    };
+    for &heater in &heaters {
+        printer.set_temperature(heater, 0.0);
+    }
+    printer.set_fan(0, 0);
+    // Ctrl+C is not wanted here: the heaters must go off.
+    wait_for(printer, timeout, &Interrupt::new(), true, |s| {
+        heaters.iter().all(|&h| !heater_on(s, h))
+    })
+    .is_ok()
+}
+
+/// Whether `heater` reports a target above 0 °C.
+pub fn heater_on(s: &PrinterState, heater: Heater) -> bool {
+    let reading = match heater {
+        Heater::Hotend(t) => s.temps.hotends.get(usize::from(t)),
+        Heater::Bed => s.temps.bed.as_ref(),
+        Heater::Chamber => s.temps.chamber.as_ref(),
+    };
+    reading
+        .and_then(|r| r.target)
+        .is_some_and(|t| t.is_finite() && t > 0.0)
+}
+
 /// Whether nothing waits to be sent or acknowledged.
 pub fn link_idle(s: &PrinterState) -> bool {
     s.link.queue_len == 0 && s.link.in_flight == 0
@@ -308,6 +353,36 @@ G1 Z0.3 F600
         // The cancel script turned the heaters off.
         let got = control.received_commands();
         assert!(got.iter().any(|c| c == "M104 S0"), "{got:?}");
+        printer.disconnect();
+    }
+
+    #[test]
+    fn heaters_off_turns_every_heater_off_and_waits_for_the_report() {
+        // Disconnected: nothing to send.
+        assert!(!heaters_off(&Printer::new(), Duration::from_secs(1)));
+        let printer = Printer::new();
+        let interrupt = Interrupt::new();
+        connect_blocking(&printer, fast_sim(), ConnectOptions::default(), &interrupt)
+            .expect("connect");
+        wait_setup(&printer, Duration::from_secs(30), &interrupt).expect("setup");
+        printer.send("M104 S200\nM140 S60\nM106 S255");
+        wait_for(&printer, Duration::from_secs(30), &interrupt, true, |s| {
+            heater_on(s, Heater::Hotend(0)) && heater_on(s, Heater::Bed)
+        })
+        .expect("heating");
+        let control = printer.sim_control().expect("simulator");
+        assert!(heaters_off(&printer, HEATERS_OFF_WAIT));
+        assert!(
+            printer.with_state(|s| !heater_on(s, Heater::Hotend(0)) && !heater_on(s, Heater::Bed))
+        );
+        let sim = control.snapshot();
+        assert_eq!(sim.hotend_targets, [0.0]);
+        assert_eq!(sim.bed_target, 0.0);
+        assert_eq!(sim.fan, 0);
+        let got = control.received_commands();
+        for want in ["M104 T0 S0", "M140 S0", "M107"] {
+            assert!(got.iter().any(|c| c == want), "missing {want} in {got:?}");
+        }
         printer.disconnect();
     }
 

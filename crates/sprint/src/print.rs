@@ -5,8 +5,10 @@
 //! the job. A progress line (percent, layer, ETA, temperatures) goes to
 //! stderr: redrawn in place on a terminal, a line per 10% otherwise. The
 //! first Ctrl+C cancels the job (the cancel script runs); a second one
-//! stops waiting. Exit status: 0 when the print completed, 1 when it
-//! failed or was cancelled by the printer, 130 after Ctrl+C.
+//! stops waiting for the cancel to finish, but the heaters are still
+//! turned off before the link closes. Exit status: 0 when the print
+//! completed, 1 when it failed or was cancelled by the printer, 130 after
+//! Ctrl+C.
 
 use std::io::{self, IsTerminal, Write};
 use std::path::Path;
@@ -20,6 +22,7 @@ use sprint_tui::format;
 use sprint_tui::interrupt::{self, Interrupt};
 use sprint_tui::loader::LoadedFile;
 use sprint_tui::report;
+use sprint_tui::session;
 
 use crate::analyze;
 use crate::cli::PrintArgs;
@@ -100,12 +103,21 @@ pub fn run(args: &PrintArgs) -> Result<ExitCode> {
     let mut progress = Progress::new(show_progress, stderr_tty);
     let outcome = follow(&printer, &interrupt, &mut |view| progress.show(view));
     progress.finish();
+    let heaters = stop_safely(&printer, &outcome, &mut |text| eprintln!("{text}"));
     printer.disconnect();
 
-    let (status, elapsed, percent) = outcome.last;
     let name = loaded.name();
-    match (status, outcome.by_user) {
-        (JobStatus::Completed, _) => {
+    let (status, elapsed, percent) = outcome.last;
+    if outcome.abandoned {
+        let heaters = match heaters {
+            Some(true) => "the heaters are off",
+            _ => "the heaters may still be on: check the printer",
+        };
+        eprintln!("Abandoned {name} at {percent}: the cancel did not finish ({heaters})");
+        return Ok(ExitCode::from(EXIT_INTERRUPTED));
+    }
+    match status {
+        JobStatus::Completed => {
             let mut out = io::stdout().lock();
             let _ = writeln!(
                 out,
@@ -114,14 +126,32 @@ pub fn run(args: &PrintArgs) -> Result<ExitCode> {
             );
             Ok(ExitCode::SUCCESS)
         }
-        (_, true) => {
+        JobStatus::Cancelled if outcome.cancel_sent => {
             eprintln!("Cancelled {name} at {percent}");
             Ok(ExitCode::from(EXIT_INTERRUPTED))
         }
-        (JobStatus::Failed(why), false) => Err(anyhow!("{name} failed at {percent}: {why}")),
-        (JobStatus::Cancelled, false) => Err(anyhow!("the printer cancelled {name} at {percent}")),
-        (other, false) => Err(anyhow!("{name} stopped at {percent} ({})", other.label())),
+        JobStatus::Failed(why) => Err(anyhow!("{name} failed at {percent}: {why}")),
+        JobStatus::Cancelled => Err(anyhow!("the printer cancelled {name} at {percent}")),
+        other => Err(anyhow!("{name} stopped at {percent} ({})", other.label())),
     }
+}
+
+/// Before the link closes: when Sprint stopped waiting for a cancel
+/// ([`Outcome::abandoned`]), the cancel script may not have turned the
+/// heaters off, so they are switched off here (see
+/// [`session::heaters_off`]). `say` gets what is going on. Returns
+/// whether the printer reported them off, or `None` when nothing was
+/// needed (or the link is gone, or the printer halted).
+fn stop_safely(printer: &Printer, outcome: &Outcome, say: &mut dyn FnMut(&str)) -> Option<bool> {
+    if !outcome.abandoned {
+        return None;
+    }
+    let reachable = printer.with_state(|s| s.is_connected() && !s.halted);
+    if !reachable {
+        return None;
+    }
+    say("Turning the heaters off before disconnecting…");
+    Some(session::heaters_off(printer, session::HEATERS_OFF_WAIT))
 }
 
 /// Load and analyze the file (progress on stderr when `progress`).
@@ -165,12 +195,16 @@ pub struct JobView {
 pub struct Outcome {
     /// The last status, the elapsed time and the progress ("42.0%").
     pub last: (JobStatus, Duration, String),
-    /// Ctrl+C cancelled (or abandoned) the job.
-    pub by_user: bool,
+    /// Ctrl+C asked the printer to cancel the job.
+    pub cancel_sent: bool,
+    /// Sprint stopped waiting before the job ended (a second Ctrl+C, or a
+    /// cancel that took too long): the cancel may not have finished.
+    pub abandoned: bool,
 }
 
-/// Follow the job until it ends: the first Ctrl+C cancels it, the second
-/// stops waiting (as does a cancel that takes too long).
+/// Follow the job until it ends. The first Ctrl+C cancels it, however
+/// quickly a second one follows; a second one (or a cancel that takes too
+/// long) then stops waiting for the cancel to finish.
 pub fn follow(printer: &Printer, interrupt: &Interrupt, show: &mut dyn FnMut(&JobView)) -> Outcome {
     let mut cancelled_at: Option<Instant> = None;
     loop {
@@ -187,25 +221,28 @@ pub fn follow(printer: &Printer, interrupt: &Interrupt, show: &mut dyn FnMut(&Jo
         });
         show(&view);
         let percent = format::percent(f64::from(view.progress));
-        let by_user = cancelled_at.is_some();
         if view.status.is_finished() {
             return Outcome {
                 last: (view.status, elapsed, percent),
-                by_user,
+                cancel_sent: cancelled_at.is_some(),
+                abandoned: false,
             };
         }
         let presses = interrupt.count();
+        // Any press cancels first: two presses between two polls must not
+        // skip the cancel (and its script, which turns the heaters off).
+        if presses >= 1 && cancelled_at.is_none() {
+            printer.cancel();
+            cancelled_at = Some(Instant::now());
+            eprintln!("\nCancelling: the cancel script runs (Ctrl+C again stops waiting for it)…");
+        }
         let gave_up = cancelled_at.is_some_and(|t| t.elapsed() >= CANCEL_TIMEOUT);
         if presses >= 2 || gave_up {
             return Outcome {
                 last: (view.status, elapsed, percent),
-                by_user: true,
+                cancel_sent: true,
+                abandoned: true,
             };
-        }
-        if presses == 1 && cancelled_at.is_none() {
-            printer.cancel();
-            cancelled_at = Some(Instant::now());
-            eprintln!("\nCancelling (Ctrl+C again stops waiting)…");
         }
         std::thread::sleep(POLL);
     }
@@ -337,7 +374,9 @@ mod tests {
         let outcome = follow(&printer, &Interrupt::new(), &mut |v| views.push(v.clone()));
         assert_eq!(outcome.last.0, JobStatus::Completed);
         assert_eq!(outcome.last.2, "100.0%");
-        assert!(!outcome.by_user);
+        assert!(!outcome.cancel_sent && !outcome.abandoned);
+        // Nothing to make safe after a completed print.
+        assert_eq!(stop_safely(&printer, &outcome, &mut |_| {}), None);
         assert!(
             views
                 .last()
@@ -365,17 +404,60 @@ mod tests {
         });
         let outcome = follow(&printer, &interrupt, &mut |_| {});
         let _ = thread.join();
-        assert!(outcome.by_user);
+        assert!(outcome.cancel_sent);
+        assert!(!outcome.abandoned);
         assert_eq!(outcome.last.0, JobStatus::Cancelled);
-        // A second press while the cancel runs stops waiting at once.
+        printer.disconnect();
+    }
+
+    /// Heats, then many short real-time moves.
+    fn hot_job() -> Arc<sprint_gcode::GcodeFile> {
+        let mut text =
+            String::from("M104 S200\nM140 S60\nM106 S255\nG28\nG90\nM83\nG1 Z0.3 F600\n");
+        for i in 0..400 {
+            text.push_str(&format!("G1 X{} Y20 E0.2 F600\n", 20 + (i % 2) * 5));
+        }
+        Arc::new(sprint_gcode::GcodeFile::from_text("hot.gcode", &text))
+    }
+
+    #[test]
+    fn a_quick_double_ctrl_c_still_cancels_and_turns_the_heaters_off() {
+        let printer = connect(SimConfig {
+            boot_delay_ms: 20,
+            time_scale: 5.0,
+            instant_moves: false,
+            ..SimConfig::default()
+        });
+        let control = printer.sim_control().expect("simulator");
         printer
-            .start_print(slow_job(), Default::default())
-            .expect("start again");
-        interrupt.reset();
+            .start_print(hot_job(), Default::default())
+            .expect("start");
+        let patience = Duration::from_secs(30);
+        session::wait_for(&printer, patience, &Interrupt::new(), true, |s| {
+            s.job.as_ref().is_some_and(|j| j.current_line > 8)
+        })
+        .expect("printing");
+        // Both presses land before the first look at the job.
+        let interrupt = Interrupt::new();
         interrupt.raise();
         interrupt.raise();
         let outcome = follow(&printer, &interrupt, &mut |_| {});
-        assert!(outcome.by_user);
+        assert!(outcome.cancel_sent && outcome.abandoned, "{outcome:?}");
+        // The cancel reached the printer all the same.
+        session::wait_for(&printer, patience, &Interrupt::new(), true, |s| {
+            s.job
+                .as_ref()
+                .is_some_and(|j| matches!(j.status, JobStatus::Cancelling | JobStatus::Cancelled))
+        })
+        .expect("the job is cancelled");
+        // Not waiting for the cancel script: the heaters go off anyway
+        // before the link closes.
+        let mut said = Vec::new();
+        let off = stop_safely(&printer, &outcome, &mut |t| said.push(t.to_string()));
+        assert_eq!(off, Some(true), "{said:?}");
+        let sim = control.snapshot();
+        assert_eq!(sim.hotend_targets, [0.0]);
+        assert_eq!(sim.bed_target, 0.0);
         printer.disconnect();
     }
 
