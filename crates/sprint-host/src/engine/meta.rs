@@ -141,12 +141,16 @@ impl CmdMeta {
     }
 }
 
+/// G80 is Prusa's mesh bed leveling (a G29), M226 waits for a pin.
 fn is_long(c: Code) -> bool {
     match c.letter {
-        b'G' => matches!(c.number, 4 | 28 | 29 | 30 | 32 | 33 | 34 | 35 | 76 | 425),
+        b'G' => matches!(
+            c.number,
+            4 | 28 | 29 | 30 | 32 | 33 | 34 | 35 | 76 | 80 | 425
+        ),
         b'M' => matches!(
             c.number,
-            0 | 1 | 48 | 109 | 190 | 191 | 303 | 400 | 600 | 701 | 702 | 1001
+            0 | 1 | 48 | 109 | 190 | 191 | 226 | 303 | 400 | 600 | 701 | 702 | 1001
         ),
         _ => false,
     }
@@ -173,6 +177,8 @@ mod tests {
         for unestimated in [
             "G28",
             "G29",
+            "G80",
+            "M226 P1 S0",
             "M109 S200",
             "M190 S60",
             "M0",

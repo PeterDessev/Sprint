@@ -1152,8 +1152,9 @@ Every public item is also re-exported at the crate root.
   `current_line` counts processed file lines (1-based number of the last
   acknowledged line, `total_lines` at completion, `start_line` at the
   start). ETA: remaining estimate x (running time without the commands
-  estimates count as zero: heat waits, homing, probing and leveling, user
-  waits and filament changes, autotune, extended commands; not G4/M400 /
+  estimates count as zero: heat waits, homing, probing and leveling (also
+  Prusa's G80), user and pin waits and filament changes, autotune, extended
+  commands; not G4/M400 /
   estimated time of the printed part), ratio clamped to 0.5..=3 and
   smoothed; raw estimate for the first 2%; without a toolpath a smoothed
   linear extrapolation by bytes after 2%. `JobProgress` at most every 100 ms.

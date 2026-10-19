@@ -980,16 +980,30 @@ fn sd_status_is_polled_without_auto_reports() {
 #[test]
 fn homing_and_probing_do_not_inflate_the_eta() {
     // Estimates count G28 and G29 as zero; their real time must not make
-    // the print look three times slower than estimated. The firmware takes
-    // 2 s for each and exactly the estimated time for every move.
+    // the print look three times slower than estimated.
+    eta_after_slow_start(&["G28", "G29"]);
+}
+
+#[test]
+fn prusa_mesh_leveling_does_not_inflate_the_eta() {
+    // PrusaSlicer's MK3 start G-code levels with G80, which estimates
+    // count as zero too.
+    eta_after_slow_start(&["G28 W", "G80"]);
+}
+
+/// Print a file starting with `start` (each taking 2 s on the firmware,
+/// every move exactly its estimated time) and check the ETA halfway.
+fn eta_after_slow_start(start: &'static [&'static str]) {
     use sprint_host::sprint_gcode::{AnalyzeOptions, analyze_simple};
-    let mut text = String::from("G28\nG29\n");
+    let mut text = start.join("\n");
+    text.push('\n');
     for i in 0..30 {
         text.push_str(&format!("G1 X{} F6000\n", if i % 2 == 0 { 15 } else { 10 }));
     }
     let file = Arc::new(GcodeFile::from_text("probe-first.gcode", text));
     let toolpath = Arc::new(analyze_simple(&file, &AnalyzeOptions::default()));
-    let moves: Vec<f64> = (2..file.len())
+    let first_move = start.len();
+    let moves: Vec<f64> = (first_move..file.len())
         .map(|i| f64::from(toolpath.time_at_line(i as u32) - toolpath.time_at_line(i as u32 - 1)))
         .collect();
     assert!(moves.iter().all(|&t| t > 0.01), "{moves:?}");
@@ -1002,7 +1016,7 @@ fn homing_and_probing_do_not_inflate_the_eta() {
             let Some(cmd) = fw.accept(line, out) else {
                 return;
             };
-            if cmd == "G28" || cmd == "G29" {
+            if start.contains(&cmd.as_str()) {
                 thread::sleep(Duration::from_secs(2));
             } else if cmd.starts_with("G1") {
                 let t = moves.get(done_moves).copied().unwrap_or(0.0);
@@ -1027,7 +1041,7 @@ fn homing_and_probing_do_not_inflate_the_eta() {
     };
     printer.start_print(Arc::clone(&file), options).unwrap();
     // Half of the moves.
-    let stop = 2 + 15;
+    let stop = first_move + 15;
     printer.pause_at_lines(&[stop]);
     wait_for(&printer, "half of the moves", |s| {
         s.job
@@ -1040,7 +1054,7 @@ fn homing_and_probing_do_not_inflate_the_eta() {
     let ratio = job.eta.unwrap().as_secs_f64() / remaining;
     assert!(
         ratio < 1.8,
-        "ETA {:?} for {remaining:.2} s of estimated printing (ratio {ratio:.2}), elapsed {:?}",
+        "{start:?}: ETA {:?} for {remaining:.2} s of estimated printing (ratio {ratio:.2}), elapsed {:?}",
         job.eta,
         job.elapsed
     );
