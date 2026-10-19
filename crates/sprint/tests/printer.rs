@@ -164,7 +164,8 @@ fn send_runs_each_argument_in_order() {
         "M9999",
     ]);
     let text = stdout(&output);
-    assert!(output.status.success(), "{text}\n{}", stderr(&output));
+    // M9999 is unknown: every command ran, and the exit status says so.
+    assert_eq!(output.status.code(), Some(1), "{text}\n{}", stderr(&output));
     let temp = text
         .find("ok T:")
         .unwrap_or_else(|| panic!("no M105 reply in\n{text}"));

@@ -8,8 +8,8 @@
 //! about a command: `busy` messages (homing, probing) and, during a heat
 //! wait (M109, M190, M191), temperature reports restart it, and a heat
 //! wait shows its progress on stderr. Exit status: 0 when every command
-//! was acknowledged, 1 after a timeout, a lost connection or a firmware
-//! error reply, 130 on Ctrl+C.
+//! was acknowledged, 1 after a timeout, a lost connection, a firmware
+//! error reply or a command the firmware does not know, 130 on Ctrl+C.
 
 use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
@@ -113,7 +113,7 @@ pub fn run(args: &SendArgs) -> Result<ExitCode> {
 /// What came back for one command.
 #[derive(Default)]
 struct Reply {
-    /// The printer reported an error.
+    /// The printer reported an error, or did not know the command.
     error: bool,
     /// Stdout is gone (`| head`): stop writing.
     closed: bool,
@@ -223,10 +223,11 @@ fn is_heat_wait(text: &str) -> bool {
     command_codes(text).any(|code| matches!(code.as_str(), "M109" | "M190" | "M191"))
 }
 
-/// Firmware errors (`Error:...`, `!! ...`).
+/// Firmware errors (`Error:...`, `!! ...`) and commands the firmware does
+/// not know (`echo:Unknown command: "M9999"`).
 fn is_error_reply(text: &str) -> bool {
     let lower = text.trim_start().to_ascii_lowercase();
-    lower.starts_with("error") || lower.starts_with("!!")
+    lower.starts_with("error") || lower.starts_with("!!") || lower.contains("unknown command")
 }
 
 /// Whether a reply says the firmware is still working on a command
@@ -339,7 +340,7 @@ mod tests {
     fn firmware_errors_are_recognised() {
         assert!(is_error_reply("Error:Printer halted. kill() called!"));
         assert!(is_error_reply("!! Thermal runaway"));
-        assert!(!is_error_reply("echo:Unknown command: \"M9999\""));
+        assert!(is_error_reply("echo:Unknown command: \"M9999\""));
         assert!(!is_error_reply("ok"));
         assert!(!is_error_reply("echo:busy: processing"));
         assert!(is_busy("echo:busy: processing"));

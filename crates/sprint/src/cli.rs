@@ -68,6 +68,11 @@ pub enum Command {
     /// Analyze a G-code file and print its statistics.
     Analyze(AnalyzeArgs),
     /// Send commands to a printer and print the replies.
+    ///
+    /// Each command waits for its "ok". Exit status: 0 when every command
+    /// was acknowledged; 1 after a timeout, a lost connection, an error
+    /// reply or a command the firmware does not know (Unknown command), so
+    /// scripts notice typos; 130 on Ctrl+C.
     Send(SendArgs),
     /// List serial ports (they are not opened).
     Ports,
