@@ -7,7 +7,12 @@
 //!
 //! * [`format`]: human-readable durations ("1d 2h 3m"), lengths, byte
 //!   counts, rates and percentages.
+//! * [`thermal`]: heater stability at target (mean, standard deviation,
+//!   peak-to-peak), heat-up detection (time to target, overshoot, settling
+//!   time), holding power and the findings derived from them (oscillation
+//!   that warrants a PID autotune, an underpowered heater, ...).
 
 #![warn(missing_docs)]
 
 pub mod format;
+pub mod thermal;
