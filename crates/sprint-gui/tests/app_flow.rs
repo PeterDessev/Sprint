@@ -1376,9 +1376,12 @@ fn connecting_keeps_the_3d_view_of_the_reanalyzed_file() {
     );
     settle(&mut h);
     assert_eq!(h.state().viewer_tab().layer_range(), Some((10, 40)));
+    // Where it looks from (the scene radius, which only sizes the depth
+    // range, follows the scene).
+    let view = |c: &sprint_viewer::camera::Camera| (c.target, c.distance, c.yaw, c.pitch);
     assert_eq!(
-        *h.state().viewer_tab().viewer().expect("viewer").camera(),
-        camera
+        view(h.state().viewer_tab().viewer().expect("viewer").camera()),
+        view(&camera)
     );
 }
 
