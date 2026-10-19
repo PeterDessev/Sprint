@@ -904,6 +904,22 @@ fn command_palette_runs_shell_commands() {
 }
 
 #[test]
+fn emergency_stop_without_a_printer_says_so() {
+    let mut app = app();
+    press(&mut app, KeyCode::F(8));
+    press(&mut app, KeyCode::F(8));
+    assert!(app.estop_armed.is_none());
+    assert!(
+        app.toast
+            .as_ref()
+            .is_some_and(|t| t.text.starts_with("Not connected")),
+        "{:?}",
+        app.toast
+    );
+    assert!(!screen(&mut app, 120, 40).contains("EMERGENCY"));
+}
+
+#[test]
 fn emergency_stop_needs_a_second_press() {
     let mut app = connected_app();
     press(&mut app, KeyCode::F(8));

@@ -725,6 +725,12 @@ impl App {
 
     /// F8: arm, then stop on the second press.
     fn emergency_key(&mut self) {
+        if !self.view.status.is_open() {
+            // Nothing would be sent: do not claim an emergency stop.
+            self.estop_armed = None;
+            self.warn("Not connected: there is no printer to stop");
+            return;
+        }
         if self.estop_armed.take().is_some() {
             self.printer.emergency_stop();
             self.error("EMERGENCY STOP sent (M112). Restart the firmware (M999) or reconnect.");
