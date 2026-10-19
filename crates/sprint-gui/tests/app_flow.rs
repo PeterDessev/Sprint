@@ -627,6 +627,31 @@ fn layer_keys_move_the_top_layer_under_the_pointer() {
 }
 
 #[test]
+fn a_click_below_a_single_layer_lowers_the_bottom_handle() {
+    let options = with_file(AppOptions::headless(), sample("calibration-cube.gcode"));
+    let mut h = app(options, WINDOW);
+    expect(&mut h, "the cube to be analyzed", analyzed);
+    if h.state().viewer_tab().viewer().is_none() {
+        eprintln!("no GPU viewer on this machine: not tested");
+        return;
+    }
+    h.state_mut().set_side_panels(false, false);
+    h.state_mut().viewer_tab_mut().set_layer_range(50, 50);
+    settle(&mut h);
+    // On the slider's track, well below the handle.
+    let track = egui::pos2(WINDOW.x - 22.0, WINDOW.y - 150.0);
+    h.hover_at(track);
+    h.step();
+    h.drag_at(track);
+    h.step();
+    h.drop_at(track);
+    settle(&mut h);
+    let (lo, hi) = h.state().viewer_tab().layer_range().expect("range");
+    assert_eq!(hi, 50, "the top stays");
+    assert!(lo < 50, "the bottom moved down: {lo}");
+}
+
+#[test]
 fn the_menu_bar_runs_commands() {
     let mut h = app(AppOptions::headless(), WINDOW);
     h.get_by_label("Help").click();

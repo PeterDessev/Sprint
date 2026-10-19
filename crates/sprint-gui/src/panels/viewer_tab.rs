@@ -787,7 +787,14 @@ impl Overlay {
             && let Some(pos) = response.interact_pointer_pos()
         {
             let i = index_at(pos.y);
-            let handle = if (y_of(hi) - pos.y).abs() <= (y_of(lo) - pos.y).abs() || i > hi {
+            // Beyond either end that end's handle (also when both are on
+            // one layer: a click below it lowers the bottom), else the
+            // nearer one.
+            let handle = if i > hi {
+                Handle::Top
+            } else if i < lo {
+                Handle::Bottom
+            } else if (y_of(hi) - pos.y).abs() <= (y_of(lo) - pos.y).abs() {
                 Handle::Top
             } else {
                 Handle::Bottom
