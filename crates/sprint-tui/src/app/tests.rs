@@ -1702,3 +1702,23 @@ fn a_hidden_prompt_can_be_shown_again() {
         app.toast
     );
 }
+
+#[test]
+fn key_hints_during_a_job_lead_with_its_controls() {
+    let mut app = printing_app();
+    let hints = app.hints();
+    // Pause, cancel and the emergency stop first (narrow terminals show
+    // only the first few), and nothing the job refuses.
+    assert_eq!(
+        &hints[..3],
+        &[("F6", "Pause"), ("F7", "Cancel"), ("F8", "E-stop")]
+    );
+    for refused in [("F5", "Print"), ("j", "Jog")] {
+        assert!(!hints.contains(&refused), "{hints:?}");
+    }
+    assert!(screen(&mut app, 64, 18).contains("F8 E-stop"));
+    // Idle: printing and jogging are offered again.
+    app.view.job = None;
+    let hints = app.hints();
+    assert!(hints.contains(&("F5", "Print")) && hints.contains(&("j", "Jog")));
+}

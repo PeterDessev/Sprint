@@ -775,7 +775,7 @@ impl App {
         }
     }
 
-    fn hints(&self) -> Vec<(&'static str, &'static str)> {
+    pub(crate) fn hints(&self) -> Vec<(&'static str, &'static str)> {
         if self.jog.is_some() {
             return vec![
                 ("←→↑↓", "Move X/Y"),
@@ -815,21 +815,38 @@ impl App {
                 if self.hidden_prompt.is_some() {
                     hints.push(("p", "Printer asks"));
                 }
-                hints.extend([
-                    ("F1", "Help"),
-                    ("F2", "Connect"),
-                    ("F3", "Open"),
-                    ("F5", "Print"),
-                    ("F6", pause),
-                    ("F7", "Cancel"),
-                    ("F8", "E-stop"),
-                    ("F10", "Quit"),
-                    (":", "Command"),
-                    ("i", "G-code"),
-                    ("j", "Jog"),
-                    ("t", "Temps"),
-                    ("Tab", "Focus"),
-                ]);
+                if self.view.job_active() {
+                    // The job's controls first (a narrow terminal shows
+                    // only the first hints); nothing the job refuses.
+                    hints.extend([
+                        ("F6", pause),
+                        ("F7", "Cancel"),
+                        ("F8", "E-stop"),
+                        ("F1", "Help"),
+                        ("t", "Temps"),
+                        (":", "Command"),
+                        ("i", "G-code"),
+                        ("F3", "Open"),
+                        ("F10", "Quit"),
+                        ("Tab", "Focus"),
+                    ]);
+                } else {
+                    hints.extend([
+                        ("F1", "Help"),
+                        ("F2", "Connect"),
+                        ("F3", "Open"),
+                        ("F5", "Print"),
+                        ("F6", pause),
+                        ("F7", "Cancel"),
+                        ("F8", "E-stop"),
+                        ("F10", "Quit"),
+                        (":", "Command"),
+                        ("i", "G-code"),
+                        ("j", "Jog"),
+                        ("t", "Temps"),
+                        ("Tab", "Focus"),
+                    ]);
+                }
                 hints
             }
         }
