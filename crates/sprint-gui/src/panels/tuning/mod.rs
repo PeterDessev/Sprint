@@ -470,7 +470,15 @@ impl TuningTab {
         if !show_list {
             self.compact_filter(&mut right);
         }
-        if self.filter == Filter::Modified && modified == 0 {
+        // A filter whose entries are gone (nothing modified any more, or a
+        // new report without that category) shows everything again
+        // instead of "Nothing matches".
+        let stale = match self.filter {
+            Filter::All => false,
+            Filter::Modified => modified == 0,
+            Filter::Category(cat) => !self.draft.entries().iter().any(|e| e.category() == cat),
+        };
+        if stale {
             self.filter = Filter::All;
         }
         let groups = cards::groups(&self.draft, self.filter, &self.search);

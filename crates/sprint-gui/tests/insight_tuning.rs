@@ -251,6 +251,32 @@ fn firmware_without_eeprom_offers_no_saving() {
 }
 
 #[test]
+fn a_category_that_disappears_shows_everything_again() {
+    let mut h = harness_state(
+        Theme::Dark,
+        (1180.0, 900.0),
+        Host::<TuningTab>::synthetic(demo_state()),
+        |ui, host| host.frame(ui),
+    );
+    h.run_ok();
+    h.get_by_label("Drivers").click();
+    h.run_ok();
+    assert!(h.query_by_label_contains("Steps per unit (M92)").is_none());
+    // A new report without any driver settings (another board, a reset).
+    if let Some(s) = h.state_mut().state.as_mut() {
+        for key in [
+            "M906", "M906 T0", "M913", "M913 T0", "M569", "M914", "M569 T0",
+        ] {
+            s.settings.remove(key);
+        }
+    }
+    h.run_ok();
+    assert!(h.query_by_label("Drivers").is_none());
+    assert!(h.query_by_label("Nothing matches").is_none());
+    assert!(h.query_by_label_contains("Steps per unit (M92)").is_some());
+}
+
+#[test]
 fn tuning_tab_warns_during_a_job() {
     let mut state = demo_state();
     let mut job =
