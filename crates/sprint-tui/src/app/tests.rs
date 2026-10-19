@@ -246,6 +246,7 @@ fn printing_app() -> App {
         file.file.len(),
         file.file.byte_len() as u64,
     );
+    job.path = file.file.path().map(std::path::Path::to_path_buf);
     job.status = JobStatus::Printing;
     job.current_line = current_line;
     job.progress = 0.42;
@@ -316,6 +317,36 @@ fn printing_app() -> App {
     ];
     app.toast = None;
     app
+}
+
+#[test]
+fn the_job_is_matched_to_the_loaded_file_by_path() {
+    let mut app = printing_app();
+    assert_eq!(app.printing_layer(), Some(41));
+    assert!(app.progress_line().is_some());
+    // Another file of the same name, from another folder: not the one
+    // printing, so the view does not follow the job on it.
+    let other = std::env::temp_dir().join(format!("sprint-tui-same-name-{}", std::process::id()));
+    std::fs::create_dir_all(&other).expect("scratch dir");
+    let copy = other.join("calibration-cube.gcode");
+    std::fs::copy(sample("calibration-cube.gcode"), &copy).expect("copy");
+    let view = app.view.clone();
+    app.open_file(copy);
+    wait_app(&mut app, "the analysis", |a| a.loader.is_none());
+    app.view = view;
+    assert_eq!(
+        app.file.as_ref().map(LoadedFile::name),
+        Some("calibration-cube.gcode")
+    );
+    assert_eq!(app.printing_layer(), None);
+    assert_eq!(app.progress_line(), None);
+    // A job without a file on disk is no loaded file either.
+    load(&mut app, "calibration-cube.gcode");
+    if let Some(job) = app.view.job.as_mut() {
+        job.path = None;
+    }
+    assert_eq!(app.printing_layer(), None);
+    let _ = std::fs::remove_dir_all(&other);
 }
 
 #[test]

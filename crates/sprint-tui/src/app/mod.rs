@@ -787,13 +787,23 @@ impl App {
         self.last_load_progress = 0;
     }
 
+    /// The job and the loaded file, when the job is a host print of that
+    /// very file: the same file on disk ([`sprint_host::JobInfo::path`]),
+    /// not just one with the same name from another folder.
+    pub(crate) fn job_of_loaded_file(&self) -> Option<(&sprint_host::JobInfo, &LoadedFile)> {
+        let job = self
+            .view
+            .job
+            .as_ref()
+            .filter(|j| j.kind == JobKind::HostPrint)?;
+        let file = self.file.as_ref()?;
+        let path = job.path.as_deref()?;
+        (file.file.path() == Some(path)).then_some((job, file))
+    }
+
     /// The layer being printed, when the job prints the loaded file.
     pub(crate) fn printing_layer(&self) -> Option<usize> {
-        let job = self.view.job.as_ref()?;
-        let file = self.file.as_ref()?;
-        if job.kind != JobKind::HostPrint || job.name != file.name() {
-            return None;
-        }
+        let (job, file) = self.job_of_loaded_file()?;
         job.layer.map(|(index, _)| index).or_else(|| {
             let line = u32::try_from(job.current_line.saturating_sub(1)).ok()?;
             file.toolpath.layer_at_line(line)
@@ -803,12 +813,8 @@ impl App {
     /// The last printed source line (0-based), for dimming what is still
     /// to print; `None` draws everything.
     pub(crate) fn progress_line(&self) -> Option<u32> {
-        let job = self.view.job.as_ref()?;
-        let file = self.file.as_ref()?;
-        if job.kind != JobKind::HostPrint
-            || job.name != file.name()
-            || job.status == JobStatus::Completed
-        {
+        let (job, _) = self.job_of_loaded_file()?;
+        if job.status == JobStatus::Completed {
             return None;
         }
         u32::try_from(job.current_line.saturating_sub(1)).ok()
