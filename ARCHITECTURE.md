@@ -1105,9 +1105,9 @@ Every public item is also re-exported at the crate root.
   halted or before M115 was answered. Nothing but the upload reaches the
   printer while it writes to the card.
 * Halt: a fatal error or `emergency_stop` sets `halted`, fails the job and
-  frees the window (E-stop also drops the queues); the link stays open.
-  `firmware_restart` sends M999; the next `ok`/resend clears `halted` and
-  the counter is reset. A `start` while connected re-runs the handshake and
+  frees the window (E-stop also drops the queues); the link stays open and
+  commands are sent unnumbered meanwhile. `firmware_restart` sends M999;
+  the next `ok`/resend clears `halted` and the counter is reset. A `start` while connected re-runs the handshake and
   setup (status `Handshaking`, then `Connected`) and fails a job with
   "printer reset".
 * Jobs: preamble lines are cleaned and sent first; with `start_line` the
