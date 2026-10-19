@@ -11,14 +11,24 @@
 //! terminal, lines typed before a question are forgotten (a stray Enter
 //! must not answer it); piped answers are used in order. With
 //! `--answer-prompts continue` the answer that lets the print go on is
-//! given at once.
+//! given at once. Each question is answered once: while it still shows
+//! after its answer (a wait for the user ends with the printer's next busy
+//! message) no further line is spent on it, and one that is still there
+//! after a few seconds is asked again.
 
 use std::io::{BufRead, IsTerminal};
+use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, TryRecvError};
 use sprint_host::HostPrompt;
 
 use crate::cli::AnswerPrompts;
+
+/// How long a question may stay up after it was answered before it is
+/// asked again. A wait for the user shows until the printer's next busy
+/// message (every two seconds on Marlin), so it lingers a moment after its
+/// answer; still there after this, the answer did not take.
+const REASK: Duration = Duration::from_secs(5);
 
 /// What the printer waits for, if anything.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -75,6 +85,12 @@ pub struct PromptWatch {
     /// Forget lines typed while nothing was asked (a person at a
     /// terminal); piped answers are kept for the questions to come.
     forget_early_lines: bool,
+    /// When the question shown was answered: it is not answered again
+    /// while it lingers (a second M108 could break the next heat wait,
+    /// and a piped answer belongs to the next question), for `reask`.
+    answered: Option<Instant>,
+    /// How long an answered question may linger ([`REASK`]).
+    reask: Duration,
 }
 
 impl PromptWatch {
@@ -87,6 +103,8 @@ impl PromptWatch {
             input_closed: false,
             shown: None,
             forget_early_lines: std::io::stdin().is_terminal(),
+            answered: None,
+            reask: REASK,
         }
     }
 
@@ -110,6 +128,7 @@ impl PromptWatch {
         let mut effects = Vec::new();
         let Some(question) = question else {
             self.shown = None;
+            self.answered = None;
             // An early Enter must not answer a later question.
             self.drain();
             return effects;
@@ -117,7 +136,16 @@ impl PromptWatch {
         let now = Shown::of(question);
         if self.shown.as_ref() != Some(&now) {
             self.shown = Some(now);
+            self.answered = None;
             self.ask(question, &mut effects);
+        } else if let Some(at) = self.answered {
+            if at.elapsed() >= self.reask {
+                self.answered = None;
+                effects.push(Effect::Say(
+                    "The printer still waits for an answer".to_string(),
+                ));
+                self.ask(question, &mut effects);
+            }
         } else if let Some(line) = self.next_line(&mut effects) {
             match question {
                 Question::Prompt(prompt) => answer_line(prompt, &line, &mut effects),
@@ -126,6 +154,12 @@ impl PromptWatch {
                     effects.push(Effect::Say(continuing(question).to_string()));
                 }
             }
+        }
+        if effects
+            .iter()
+            .any(|e| matches!(e, Effect::Answer(_) | Effect::Continue))
+        {
+            self.answered = Some(Instant::now());
         }
         effects
     }
@@ -394,8 +428,49 @@ mod tests {
         let ask = || Some(Question::Prompt(&change));
         assert!(!watch.update(ask()).contains(&Effect::Answer(1)));
         assert!(watch.update(ask()).contains(&Effect::Answer(1)));
-        // Then the input has ended.
+        // Then the input has ended: the next question is answered at the
+        // printer.
+        assert_eq!(watch.update(None), []);
+        assert!(!watch.update(ask()).is_empty());
         assert!(said(&watch.update(ask())).contains("answer at the printer"));
+    }
+
+    #[test]
+    fn an_answered_wait_is_not_answered_again_while_it_lingers() {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let mut watch = PromptWatch::with_answers(AnswerPrompts::Ask, rx, false);
+        for line in ["", ""] {
+            tx.send(line.into()).expect("send");
+        }
+        let wait = || Some(Question::WaitingForUser);
+        assert!(!watch.update(wait()).contains(&Effect::Continue));
+        assert!(watch.update(wait()).contains(&Effect::Continue));
+        // The printer still reports the old wait until its next busy
+        // message: the second answer is not spent on it.
+        for _ in 0..5 {
+            assert_eq!(watch.update(wait()), []);
+        }
+        // It is there for the next question.
+        assert_eq!(watch.update(None), []);
+        assert!(!watch.update(wait()).is_empty());
+        assert!(watch.update(wait()).contains(&Effect::Continue));
+    }
+
+    #[test]
+    fn a_wait_that_outlasts_its_answer_is_asked_again() {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let mut watch = PromptWatch::with_answers(AnswerPrompts::Ask, rx, true);
+        watch.reask = Duration::ZERO;
+        let wait = || Some(Question::WaitingForUser);
+        assert!(!watch.update(wait()).is_empty());
+        tx.send(String::new()).expect("send");
+        assert!(watch.update(wait()).contains(&Effect::Continue));
+        // Still waiting long after the answer: the answer was lost.
+        let text = said(&watch.update(wait()));
+        assert!(text.contains("still waits for an answer"), "{text}");
+        assert!(text.contains("Press Enter to continue"), "{text}");
+        tx.send(String::new()).expect("send");
+        assert!(watch.update(wait()).contains(&Effect::Continue));
     }
 
     #[test]
