@@ -269,21 +269,32 @@ impl GcodeFile {
 /// Lossy UTF-8 decoding (each maximal invalid sequence becomes one U+FFFD,
 /// as with `String::from_utf8_lossy`) that records where text offsets stop
 /// matching source offsets.
+///
+/// Offsets are only mapped at line starts, so a shift is kept only when a
+/// line break follows it before the next one: binary data, with an invalid
+/// sequence every byte or two, gets at most one entry per line.
 fn decode_lossy(bytes: &[u8]) -> (String, Vec<OffsetShift>) {
     let mut text = String::with_capacity(bytes.len() + 16);
-    let mut shifts = Vec::new();
+    let mut shifts: Vec<OffsetShift> = Vec::new();
     let mut source = 0usize;
     for chunk in bytes.utf8_chunks() {
-        text.push_str(chunk.valid());
-        source += chunk.valid().len();
+        let valid = chunk.valid();
+        text.push_str(valid);
+        source += valid.len();
         let invalid = chunk.invalid();
         if !invalid.is_empty() {
             text.push(char::REPLACEMENT_CHARACTER);
             source += invalid.len();
-            shifts.push(OffsetShift {
+            let shift = OffsetShift {
                 text_start: text.len(),
                 delta: source as i64 - text.len() as i64,
-            });
+            };
+            // No line starts between the last shift and this one: it is
+            // never looked up.
+            match shifts.last_mut() {
+                Some(last) if !valid.contains(['\n', '\r']) => *last = shift,
+                _ => shifts.push(shift),
+            }
         }
     }
     (text, shifts)
@@ -435,6 +446,39 @@ mod tests {
         assert_eq!((f.source_len(), f.len()), (10, 1));
         assert_eq!(GcodeFile::default().source_len(), 0);
         assert_eq!(GcodeFile::default().source_offset(0), 0);
+    }
+
+    #[test]
+    fn offset_map_grows_with_lines_not_invalid_bytes() {
+        // Binary data has an invalid sequence every byte or two; one map
+        // entry each (16 bytes) made a large binary file cost several
+        // times its size again. Offsets are only looked up at line starts,
+        // so one entry per line is enough.
+        let mut bytes = Vec::new();
+        for line in 0..50u8 {
+            for _ in 0..2_000 {
+                bytes.extend_from_slice(&[0xFF, b'a', 0xC3]);
+            }
+            bytes.push(if line % 2 == 0 { b'\n' } else { b'\r' });
+            bytes.extend_from_slice(b"G1 X1 \xE9\r\n");
+        }
+        let f = GcodeFile::from_bytes("bin", bytes.clone());
+        assert_eq!(f.len(), 100);
+        assert!(f.offset_map.len() <= f.len() + 1, "{}", f.offset_map.len());
+        // Still exact at every line start.
+        let mut expected = vec![0u64];
+        for (i, pair) in bytes.windows(2).enumerate() {
+            let starts_line = match pair {
+                [b'\n', _] => true,
+                [b'\r', next] => *next != b'\n',
+                _ => false,
+            };
+            if starts_line {
+                expected.push(i as u64 + 1);
+            }
+        }
+        let offsets: Vec<u64> = (0..f.len()).map(|i| f.source_offset(i)).collect();
+        assert_eq!(offsets, expected);
     }
 
     #[test]
