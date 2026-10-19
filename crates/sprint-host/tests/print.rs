@@ -595,3 +595,22 @@ fn the_job_names_the_file_it_streams() {
     );
     wait_for(&printer, "completed", |s| !s.job_active());
 }
+
+#[test]
+fn the_profile_can_report_progress_on_the_printer() {
+    // Pronterface's persistent "Display progress on printer": every front
+    // end gets it from the profile, without a per-print option.
+    let mut sim = fast_sim(50.0);
+    sim.instant_moves = false;
+    let printer = connect(sim, options());
+    printer.set_profile(sprint_host::PrinterProfile {
+        emit_progress: true,
+        ..sprint_host::PrinterProfile::default()
+    });
+    let (got, _) = print(&printer, generated(300), PrintOptions::default());
+    assert!(got.iter().any(|c| c.starts_with("M73 P")), "{got:?}");
+    // Off by default.
+    printer.set_profile(sprint_host::PrinterProfile::default());
+    let (got, _) = print(&printer, generated(50), PrintOptions::default());
+    assert!(!got.iter().any(|c| c.starts_with("M73")));
+}

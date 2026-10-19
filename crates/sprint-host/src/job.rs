@@ -24,7 +24,9 @@ pub struct PrintOptions {
     pub resume_script: Option<String>,
     /// Overrides the profile's cancel script.
     pub cancel_script: Option<String>,
-    /// Send `M73 P<pct> R<min>` whenever the whole percentage changes.
+    /// Send `M73 P<pct> R<min>` whenever the whole percentage changes (also
+    /// when the profile's
+    /// [`emit_progress`](crate::PrinterProfile::emit_progress) is set).
     pub emit_progress: bool,
 }
 

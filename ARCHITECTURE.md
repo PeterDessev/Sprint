@@ -988,6 +988,7 @@ pub struct PrinterProfile {
     pub pause_script: String,            // templated, see script module
     pub resume_script: String,
     pub cancel_script: String,
+    pub emit_progress: bool,             // default false: host prints send M73 P R (as if PrintOptions::emit_progress)
     pub on_start_command: String,        // hooks (empty = none): shell commands run when a print (host or SD) starts,
     pub on_finish_command: String,       //   completes, fails or is cancelled (Printrun's start/final/error commands);
     pub on_fail_command: String,         //   env SPRINT_FILE, SPRINT_STATUS, SPRINT_ELAPSED_SECS, SPRINT_PRINTER (+ SPRINT_REASON

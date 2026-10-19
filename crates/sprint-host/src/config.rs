@@ -230,6 +230,12 @@ pub struct PrinterProfile {
     pub resume_script: String,
     /// Run when a host print is cancelled.
     pub cancel_script: String,
+    /// Show host prints' progress on the printer's display: `M73 P<pct>
+    /// R<min>` whenever the percentage changes (Pronterface's "Display
+    /// progress on printer"). A print sends it when this or
+    /// [`PrintOptions::emit_progress`](crate::PrintOptions::emit_progress)
+    /// is set. Default false.
+    pub emit_progress: bool,
     /// Shell command run when a print (host or SD) starts; empty =
     /// none. Hooks run on a helper thread (`cmd /C` on Windows, `sh -c`
     /// elsewhere, stopped after two minutes) with `SPRINT_FILE`,
@@ -291,6 +297,7 @@ impl Default for PrinterProfile {
             pause_script: DEFAULT_PAUSE_SCRIPT.to_string(),
             resume_script: DEFAULT_RESUME_SCRIPT.to_string(),
             cancel_script: DEFAULT_CANCEL_SCRIPT.to_string(),
+            emit_progress: false,
             on_start_command: String::new(),
             on_finish_command: String::new(),
             on_fail_command: String::new(),

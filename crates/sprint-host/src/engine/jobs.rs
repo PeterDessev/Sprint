@@ -419,10 +419,11 @@ impl Engine {
     pub(super) fn start_print(
         &mut self,
         file: Arc<GcodeFile>,
-        options: PrintOptions,
+        mut options: PrintOptions,
         now: Instant,
     ) -> Result<(), HostError> {
         self.check_can_start()?;
+        options.emit_progress |= self.shared.profile.read().emit_progress;
         let start = options.start_line;
         if start > file.len() {
             return Err(HostError::InvalidArgument(format!(
