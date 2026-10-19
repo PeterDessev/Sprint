@@ -295,6 +295,9 @@ fn documented_items_are_reexported_at_the_crate_root() {
     assert!(sprint_host::DEFAULT_PAUSE_SCRIPT.contains("M400"));
     assert!(sprint_host::DEFAULT_RESUME_SCRIPT.contains("G92 E{e}"));
     assert!(sprint_host::DEFAULT_CANCEL_SCRIPT.contains("M84"));
+    assert!(sprint_host::DEFAULT_CANCEL_SCRIPT.contains("{heaters_off}"));
+    assert_eq!(sprint_host::heaters_off(1, false, false), ["M104 S0"]);
+    assert!(sprint_host::ConfigReport::default().is_clean());
     assert_eq!(sprint_host::format_number(1.50, 3), "1.5");
     assert_eq!(sprint_host::Console::new(3).capacity(), 3);
     assert!(sprint_host::is_printer_vendor(0x1A86));
