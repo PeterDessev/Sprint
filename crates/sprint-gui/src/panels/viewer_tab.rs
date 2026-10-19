@@ -38,6 +38,8 @@ const INFO_W: f32 = 282.0;
 const LEGEND_W: f32 = 300.0;
 /// Below this width the toolbar is compact.
 const COMPACT_TOOLBAR_W: f32 = 820.0;
+/// Height of a layer tag beside the layer slider.
+const TAG_H: f32 = 30.0;
 
 /// The floating cards over the view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -812,16 +814,19 @@ impl Overlay {
         };
         let hy = y_of(hi);
         let ly = y_of(lo);
-        let separate = (ly - hy) >= 34.0;
-        let top_label_y = if separate { hy } else { hy - 9.0 };
-        let bottom_label_y = if separate { ly } else { ly + 9.0 };
-        for (handle, y, label_y, i) in [
-            (Handle::Bottom, ly, bottom_label_y, lo),
-            (Handle::Top, hy, top_label_y, hi),
-        ] {
-            if handle == Handle::Bottom && lo == hi && n > 1 {
-                // One handle is enough for a single layer.
-            }
+        // The painter clips 4 points outside the slider.
+        let (top_label_y, bottom_label_y) = tag_centers(
+            hy,
+            ly,
+            lo == hi,
+            rect.top() + TAG_H / 2.0 - 4.0,
+            rect.bottom() - TAG_H / 2.0 + 4.0,
+        );
+        let mut tags = vec![(Handle::Top, hy, top_label_y, hi)];
+        if let Some(label_y) = bottom_label_y {
+            tags.insert(0, (Handle::Bottom, ly, label_y, lo));
+        }
+        for (handle, y, label_y, i) in tags {
             let active = self.drag == Some(handle);
             let center = Pos2::new(track_x, y);
             painter.circle_filled(center, 8.0, if active { p.accent } else { p.surface });
@@ -835,9 +840,10 @@ impl Overlay {
             );
             let g_z = painter.layout_no_wrap(z, font, p.text_dim);
             let w = g_index.size().x.max(g_z.size().x) + 12.0;
-            let h = 30.0;
-            let tag =
-                Rect::from_min_size(Pos2::new(track_x - 14.0 - w, label_y - h / 2.0), vec2(w, h));
+            let tag = Rect::from_min_size(
+                Pos2::new(track_x - 14.0 - w, label_y - TAG_H / 2.0),
+                vec2(w, TAG_H),
+            );
             painter.rect_filled(
                 tag,
                 CornerRadius::same(5),
@@ -981,6 +987,33 @@ pub fn wheel_steps(events: &[egui::Event]) -> i64 {
     }
     let steps = lines.abs().round().clamp(1.0, 1000.0) as i64;
     steps * lines.signum() as i64
+}
+
+/// Vertical centers of the layer tags for the top handle at `top` and the
+/// bottom one at `bottom` (screen y, `top <= bottom`): beside their
+/// handles, pushed apart around their middle where they would overlap,
+/// and moved together into `min..=max`. Handles on the same layer get one
+/// tag (`None` for the bottom one).
+pub fn tag_centers(top: f32, bottom: f32, same: bool, min: f32, max: f32) -> (f32, Option<f32>) {
+    let max = max.max(min);
+    if same {
+        return (top.max(min).min(max), None);
+    }
+    let pitch = TAG_H + 2.0;
+    let (mut t, mut b) = (top, bottom.max(top));
+    if b - t < pitch {
+        let mid = (t + b) / 2.0;
+        t = mid - pitch / 2.0;
+        b = mid + pitch / 2.0;
+    }
+    let shift = if t < min {
+        min - t
+    } else if b > max {
+        max - b
+    } else {
+        0.0
+    };
+    (t + shift, Some(b + shift))
 }
 
 fn set_handle(range: &mut (usize, usize), handle: Handle, index: usize) {
@@ -1258,6 +1291,37 @@ mod tests {
         assert_eq!(r, (1, 1));
         set_handle(&mut r, Handle::Bottom, 7);
         assert_eq!(r, (7, 7));
+    }
+
+    #[test]
+    fn layer_tags_never_overlap_or_leave_the_slider() {
+        let (min, max) = (100.0, 600.0);
+        // Far apart: beside their handles.
+        assert_eq!(
+            tag_centers(200.0, 400.0, false, min, max),
+            (200.0, Some(400.0))
+        );
+        // Close: pushed apart around the middle, one tag height plus a gap.
+        let (t, b) = tag_centers(300.0, 304.0, false, min, max);
+        let b = b.expect("two tags");
+        assert!(b - t >= TAG_H, "{t} {b}");
+        assert_eq!((t + b) / 2.0, 302.0);
+        // At the ends both stay inside.
+        for (top, bottom) in [(min, min + 3.0), (max - 3.0, max), (max, max)] {
+            let (t, b) = tag_centers(top, bottom, false, min, max);
+            let b = b.expect("two tags");
+            assert!(t >= min && b <= max && b - t >= TAG_H, "{t} {b}");
+        }
+        // One layer: one tag, clamped.
+        assert_eq!(
+            tag_centers(max + 20.0, max + 20.0, true, min, max),
+            (max, None)
+        );
+        assert_eq!(tag_centers(250.0, 250.0, true, min, max), (250.0, None));
+        // A degenerate slider never panics.
+        let _ = tag_centers(f32::NAN, 1.0, false, 10.0, 0.0);
+        let _ = tag_centers(5.0, 5.0, true, f32::NAN, 0.0);
+        assert_eq!(tag_centers(5.0, 5.0, true, 10.0, 0.0), (10.0, None));
     }
 
     #[test]
