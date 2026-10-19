@@ -211,3 +211,31 @@ fn macro_editor_dialog() {
         snapshot(&mut h, &name("macro_editor", theme));
     }
 }
+
+/// With a babystep offset, the readout, its undo button and the step
+/// selector share one row without overlapping at every panel width (the
+/// "Offset" caption gives way when there is no room).
+#[test]
+fn babystep_row_fits_every_width() {
+    for width in [280.0, 300.0, 420.0, 480.0] {
+        let mut state = heating_state();
+        printing(&mut state);
+        let mut h = panel(Theme::Dark, width, rig(state));
+        for _ in 0..3 {
+            h.get(by_label("Lower")).click();
+            settle(&mut h);
+        }
+        let value = h.get(by_label("\u{2212}0.150 mm")).rect();
+        let undo = h
+            .get(controls_common::by_label_contains("Undo all babystepping"))
+            .rect();
+        let steps = h.get(by_label("0.01")).rect();
+        assert!(
+            value.max.x <= undo.min.x && undo.max.x <= steps.min.x,
+            "overlap at {width}: {value:?} {undo:?} {steps:?}"
+        );
+        if let Some(caption) = h.query(by_label("Offset")) {
+            assert!(caption.rect().max.x <= value.min.x, "caption at {width}");
+        }
+    }
+}

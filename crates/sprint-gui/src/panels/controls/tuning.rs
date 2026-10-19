@@ -29,6 +29,12 @@ pub(super) const BABYSTEPS: [f32; 3] = [0.01, 0.05, 0.1];
 const PENDING_SECS: f64 = 2.0;
 /// The most fans offered.
 const MAX_FANS: usize = 8;
+/// Width of one babystep size segment.
+const STEP_SEGMENT: f32 = 40.0;
+/// The narrowest value readout (keeps "100%" and "5%" aligned).
+const VALUE_MIN_WIDTH: f32 = 36.0;
+/// Size of a small icon button (the resets).
+const UNDO_SIZE: f32 = 24.0;
 
 /// Fan percentage (0..=100) to the 0..=255 PWM value of M106.
 pub(super) fn fan_pwm(percent: f32) -> u8 {
@@ -304,13 +310,31 @@ impl Tuning {
             let p = theme::ui_palette(ui);
             let options: Vec<(f32, String)> =
                 BABYSTEPS.iter().map(|s| (*s, step_label(*s))).collect();
+            let offset = offset_label(self.offset);
+            let undo_shown = self.offset != 0.0;
             split_row(
                 ui,
                 |ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
-                    ui.label(RichText::new("Offset").color(p.text_dim).size(13.0));
-                    value_label(ui, &offset_label(self.offset), self.offset != 0.0);
-                    if self.offset != 0.0 {
+                    // The step selector is already placed: in a narrow panel
+                    // the "Offset" caption gives way rather than overlap it.
+                    let measure = |text: &str, font: FontId| {
+                        ui.painter()
+                            .layout_no_wrap(text.to_owned(), font, Color32::PLACEHOLDER)
+                            .size()
+                            .x
+                    };
+                    let caption = RichText::new("Offset").color(p.text_dim).size(13.0);
+                    let needed = measure("Offset", FontId::proportional(13.0))
+                        + 4.0
+                        + measure(&offset, value_font(ui)).max(VALUE_MIN_WIDTH)
+                        + if undo_shown { 4.0 + UNDO_SIZE } else { 0.0 };
+                    if needed <= ui.available_width() {
+                        ui.label(caption);
+                    }
+                    value_label(ui, &offset, self.offset != 0.0)
+                        .on_hover_text("Babystepping applied since connecting");
+                    if undo_shown {
                         let undo = format!(
                             "Undo all babystepping (M290 Z{})",
                             sprint_host::format_number(f64::from(-self.offset), 3)
@@ -330,7 +354,7 @@ impl Tuning {
                 |ui| {
                     ui.add(
                         SegmentedControl::new(&mut self.step, &options)
-                            .segment_width(40.0)
+                            .segment_width(STEP_SEGMENT)
                             .id_salt("sprint-controls-babystep"),
                     )
                     .on_hover_text("Babystep size (mm)");
@@ -488,14 +512,16 @@ fn slim_slider(
 
 /// A right-aligned numeric value; accent-colored when it differs from
 /// the default.
-fn value_label(ui: &mut Ui, text: &str, modified: bool) {
+fn value_label(ui: &mut Ui, text: &str, modified: bool) -> Response {
     let p = theme::ui_palette(ui);
-    let font = FontId::new(13.0, theme::font(ui, TextRole::Title).family);
+    let font = value_font(ui);
     let galley = ui
         .painter()
         .layout_no_wrap(text.to_owned(), font.clone(), p.text);
-    let (rect, response) =
-        ui.allocate_exact_size(vec2(galley.size().x.max(36.0), 20.0), Sense::hover());
+    let (rect, response) = ui.allocate_exact_size(
+        vec2(galley.size().x.max(VALUE_MIN_WIDTH), 20.0),
+        Sense::hover(),
+    );
     response.widget_info(|| WidgetInfo::labeled(egui::WidgetType::Label, true, text));
     let color = if modified {
         if p.dark {
@@ -508,6 +534,12 @@ fn value_label(ui: &mut Ui, text: &str, modified: bool) {
     };
     ui.painter()
         .text(rect.right_center(), Align2::RIGHT_CENTER, text, font, color);
+    response
+}
+
+/// The font of [`value_label`].
+fn value_font(ui: &Ui) -> FontId {
+    FontId::new(13.0, theme::font(ui, TextRole::Title).family)
 }
 
 #[cfg(test)]
