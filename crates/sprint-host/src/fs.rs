@@ -45,10 +45,10 @@ pub fn write_atomic(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> io::Resu
     }
     let tmp = temporary_sibling(path);
     let result = (|| -> io::Result<()> {
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp)?;
+        // No live writer uses this name (process id and call number): a
+        // file by that name was left by a process that crashed, and the
+        // id came round again. Overwrite it.
+        let mut file = fs::File::create(&tmp)?;
         file.write_all(bytes.as_ref())?;
         file.sync_all()?;
         drop(file);
@@ -144,6 +144,24 @@ mod tests {
         fs::write(dir.0.join("plain"), "file").unwrap();
         assert!(write_atomic(dir.0.join("plain").join("x.txt"), b"x").is_err());
         assert_eq!(fs::read_to_string(dir.0.join("plain")).unwrap(), "file");
+    }
+
+    #[test]
+    fn a_temporary_file_left_by_a_crash_is_no_obstacle() {
+        // A process that crashed mid-write left its temporary files, and
+        // this one got the same process id (Windows reuses them soon).
+        let dir = Scratch::new("stale");
+        let path = dir.0.join("settings.toml");
+        for n in 0..500 {
+            fs::write(
+                dir.0
+                    .join(format!("settings.toml.{}-{n}.tmp", std::process::id())),
+                "half a fi",
+            )
+            .unwrap();
+        }
+        write_atomic(&path, "[ok]\n").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "[ok]\n");
     }
 
     #[test]
