@@ -2,7 +2,7 @@
 //! screen (restored on exit, on errors and on panics) and the event loop.
 
 use std::io::{self, IsTerminal, Stdout};
-use std::panic::{self, PanicHookInfo};
+use std::panic::{self, AssertUnwindSafe, PanicHookInfo};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, ThreadId};
@@ -161,17 +161,27 @@ pub fn run_tui(options: TuiOptions) -> Result<()> {
     if let Some(target) = crate::actions::startup_target(options.connect, &profile) {
         app.connect(target);
     }
-    let result = {
+    run_then_close(&printer, || {
         let (_guard, mut terminal) = TerminalGuard::enter()?;
         event_loop(&mut terminal, &mut app, &wake)
-    };
-    // Quitting during a print (after asking) cancels it, so its cancel
-    // script turns the heaters off before the link closes.
-    let _ = crate::session::cancel_before_closing(&printer, crate::session::CANCEL_WAIT, |name| {
+    })
+}
+
+/// Run the UI, then close the link the safe way however the UI ended:
+/// quitting during a print (after asking), an error, or a panic on the UI
+/// thread. A running print is cancelled first, so its cancel script turns
+/// the heaters off before the link closes; only then does a panic go on
+/// (the terminal is already restored by then).
+fn run_then_close<T>(printer: &Printer, ui: impl FnOnce() -> T) -> T {
+    let ended = panic::catch_unwind(AssertUnwindSafe(ui));
+    let _ = crate::session::cancel_before_closing(printer, crate::session::CANCEL_WAIT, |name| {
         eprintln!("Cancelling {name} before closing the connection…")
     });
     printer.disconnect();
-    result
+    match ended {
+        Ok(value) => value,
+        Err(panic) => panic::resume_unwind(panic),
+    }
 }
 
 /// Read input, follow the printer and redraw (at most every [`FRAME`],
@@ -222,6 +232,67 @@ mod tests {
 
     fn count_restore() {
         RESTORES.fetch_add(1, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn a_panicking_ui_still_cancels_the_print_before_closing() {
+        use crate::interrupt::Interrupt;
+        use crate::session;
+        use sprint_host::sprint_sim::SimConfig;
+        use sprint_host::{ConnectOptions, ConnectTarget, JobStatus};
+
+        let printer = Printer::new();
+        let interrupt = Interrupt::new();
+        let sim = ConnectTarget::Simulator(SimConfig {
+            boot_delay_ms: 20,
+            time_scale: 5.0,
+            ..SimConfig::default()
+        });
+        session::connect_blocking(&printer, sim, ConnectOptions::default(), &interrupt)
+            .expect("connect");
+        session::wait_setup(&printer, Duration::from_secs(30), &interrupt).expect("setup");
+        let mut gcode = String::from(
+            "M104 S200
+M140 S60
+G28
+G1 Z0.3 F600
+",
+        );
+        for i in 0..400 {
+            gcode.push_str(&format!(
+                "G1 X{} Y20 F600
+",
+                20 + (i % 2) * 5
+            ));
+        }
+        let file = Arc::new(sprint_host::sprint_gcode::GcodeFile::from_text(
+            "slow.gcode",
+            &gcode,
+        ));
+        printer
+            .start_print(file, Default::default())
+            .expect("start");
+        session::wait_for(&printer, Duration::from_secs(30), &interrupt, true, |s| {
+            s.job.as_ref().is_some_and(|j| j.current_line > 5)
+        })
+        .expect("printing");
+        let control = printer.sim_control().expect("simulator");
+        // The UI thread panics in the middle of the print.
+        let ended = panic::catch_unwind(AssertUnwindSafe(|| {
+            run_then_close(&printer, || -> Result<()> { panic!("the UI broke") })
+        }));
+        assert!(ended.is_err(), "the panic goes on");
+        assert_eq!(
+            printer.with_state(|s| s.job.as_ref().map(|j| j.status.clone())),
+            Some(JobStatus::Cancelled)
+        );
+        assert!(!printer.with_state(|s| s.status.is_open()));
+        // The cancel script turned the heaters off before the link closed.
+        let got = control.received_commands();
+        assert!(got.iter().any(|c| c == "M104 S0"), "{got:?}");
+        assert!(got.iter().any(|c| c == "M140 S0"), "{got:?}");
+        // A UI that ends normally hands its result back.
+        assert_eq!(run_then_close(&printer, || 7), 7);
     }
 
     #[test]
