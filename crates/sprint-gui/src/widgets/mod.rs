@@ -1,37 +1,126 @@
-//! Reusable Sprint widgets (pure egui, styled by [`crate::theme`]).
+//! Reusable Sprint widgets: pure egui, styled by [`crate::theme`].
 //!
-//! Every widget reads its colors from [`crate::theme::ui_palette`], so call
-//! [`crate::theme::setup`] once at startup. Widgets never panic on odd
-//! input: NaN and out-of-range values are clamped or shown as "—".
+//! # Getting started
 //!
-//! # Layout
-//! * [`card`] / [`Card`] — raised section with icon + title header:
-//!   `card(ui, icons::FAN, "Fan", |_| {}, |ui| { ui.label("100%"); });`
+//! Call [`crate::theme::setup`] once (fonts + style), then use the widgets
+//! anywhere. Colors come from [`crate::theme::ui_palette`], so a
+//! [`crate::theme::scope`] with the other theme renders correctly inside a
+//! window of the active one.
+//!
+//! ```no_run
+//! use sprint_gui::{icons, theme::{self, HeaterKind, Theme, Tone}, widgets::*};
+//!
+//! fn controls(ui: &mut egui::Ui, history: &[f32]) {
+//!     ui.add(StatusPill::new("Connected", Tone::Success));
+//!     card(ui, icons::MOVE, "Jog", |_| {}, |ui| {
+//!         if let Some(action) = JogPad::new().show(ui).action {
+//!             println!("{}", action.describe());
+//!         }
+//!     });
+//!     let heater = TemperatureCard::new("Hotend", HeaterKind::Hotend)
+//!         .current(212.4)
+//!         .target(215.0)
+//!         .history(history)
+//!         .show(ui);
+//!     if let Some(TemperatureAction::SetTarget(t)) = heater.action { /* M104 S{t} */ }
+//! }
+//! # let ctx = egui::Context::default();
+//! # theme::setup(&ctx, Theme::Dark);
+//! ```
+//!
+//! # Conventions
+//!
+//! * Simple widgets implement [`egui::Widget`] (`ui.add(...)` returns a
+//!   [`Response`]); composite controls have a `show(ui)` that returns an
+//!   [`ActionResponse`] whose `action` says what the user asked for. Widgets
+//!   never talk to the printer: the caller turns actions into G-code.
+//! * Builders are `#[must_use]`; invalid builder arguments (NaN sizes,
+//!   inverted ranges, ...) are ignored instead of panicking.
+//! * NaN and out-of-range data from files or printers are shown as "—",
+//!   hatched or clamped; nothing panics on them.
+//! * Internal ids derive from the parent `Ui`'s unique id, so copies of a
+//!   widget in sibling `ui.columns` stay independent. Set `id_salt` when two
+//!   identical widgets share one parent `Ui`.
+//! * Everything exposes AccessKit labels, so `egui_kittest` can drive it.
+//!
+//! # Catalog
+//!
+//! **Layout**
+//! * [`card`] / [`Card`] — raised section with icon, title and header controls:
+//!   `card(ui, icons::FAN, "Fan", |ui| { ui.add(IconButton::new(icons::OFF).ghost().small()); }, |ui| { ui.label("100%"); });`
+//! * [`card_frame`] — just the card [`egui::Frame`]: `card_frame(&theme::ui_palette(ui)).show(ui, |ui| { /* ... */ });`
 //! * [`section_header`] / [`SectionHeader`] — uppercase label with a hairline:
 //!   `section_header(ui, "Temperatures");`
 //! * [`EmptyState`] — placeholder with icon, message and optional action:
 //!   `EmptyState::new(icons::FILE, "No file").action("Open…").show(ui).action_clicked()`
 //!
-//! # Buttons
-//! * [`IconButton`] — square icon button (ghost / normal / primary / danger,
-//!   small / regular / large) with tooltip:
+//! **Buttons**
+//! * [`IconButton`] — square icon button, ghost / normal / primary / danger in
+//!   small / regular / large, with tooltip:
 //!   `ui.add(IconButton::new(icons::HOME).tooltip("Home all")).clicked()`
-//! * [`ActionButton`] — icon + label button, e.g. big machine actions:
-//!   `ui.add(ActionButton::new("Print").icon(icons::PLAY).primary().large())`
-//! * [`EStopButton`] — the red emergency stop (badge or octagon):
-//!   `ui.add(EStopButton::new()).clicked()`
+//! * [`ActionButton`] — label with optional icon; `.large()` for big machine actions:
+//!   `ui.add(ActionButton::new("Start print").icon(icons::PLAY).primary().large()).clicked()`
+//! * [`EStopButton`] — the unmistakable red emergency stop, badge or octagon:
+//!   `if ui.add(EStopButton::new()).clicked() { /* M112 */ }`
 //!
-//! # Status
-//! * [`StatusPill`] — dot + label capsule:
-//!   `ui.add(StatusPill::new("Connected", Tone::Success));`
-//! * [`Badge`] — small tinted tag: `ui.add(Badge::new("BETA").tone(Tone::Info));`
-//! * [`Chip`] — selectable capsule: `ui.add(Chip::new("Travel").selected(on)).clicked()`
+//! **Status**
+//! * [`StatusPill`] — colored dot (or icon) + label capsule:
+//!   `ui.add(StatusPill::new("Connecting", Tone::Warning).pulse(true));`
+//! * [`Badge`] — small tinted or filled tag: `ui.add(Badge::new("BETA").tone(Tone::Info));`
+//! * [`Chip`] — selectable capsule with optional icon or swatch:
+//!   `if ui.add(Chip::new("Travel").selected(on)).clicked() { on = !on; }`
 //! * [`status_dot`] — bare colored dot: `status_dot(ui, Tone::Danger, 8.0);`
 //!
-//! # Selection
+//! **Selection**
 //! * [`Toggle`] — on/off switch: `ui.add(Toggle::new(&mut on).label("Autoscroll")).changed()`
 //! * [`SegmentedControl`] — one of many with a sliding highlight:
 //!   `ui.add(SegmentedControl::new(&mut view, &[(View::Iso, "3D"), (View::Top, "Layer")]))`
+//!
+//! **Motion**
+//! * [`JogPad`] — circular XY jog: four step rings, home center, home / motors-off corners:
+//!   `if let Some(a) = JogPad::new().size(240.0).show(ui).action { /* JogAction */ }`
+//! * [`ZJog`] — vertical ± strip with a home-Z cell:
+//!   `if let Some(a) = ZJog::new().height(240.0).show(ui).action { /* JogAction */ }`
+//! * [`ExtruderControl`] — length, speed, quick lengths, extrude / retract:
+//!   `ExtruderControl::new(&mut len, &mut speed).blocked(cold.then_some("Too cold")).show(ui).action`
+//!
+//! **Thermal**
+//! * [`TemperatureCard`] — heater readout colored by [`HeaterState`], editable
+//!   target (Enter applies), presets, off button, power bar and sparkline:
+//!   `TemperatureCard::new("Bed", HeaterKind::Bed).current(59.6).target(60.0).show(ui).action`
+//!
+//! **Data**
+//! * [`Sparkline`] — compact smooth trend: `ui.add(Sparkline::new(&temps).reference(Some(215.0)));`
+//! * [`MiniChart`] — smooth multi-series line chart with grid, legend and read-out:
+//!   `MiniChart::new().series(ChartSeries::new("Hotend", &pts, color).fill(true)).unit("°C").show(ui);`
+//! * [`Heatmap`] — bed mesh / 2D grid with a diverging colormap, labels, legend:
+//!   `let cell = Heatmap::from_mesh(&mesh).show(ui).clicked;`
+//! * [`KeyValueGrid`] — info table with dim labels and click-to-copy values:
+//!   `KeyValueGrid::new("fw").show(ui, |kv| { kv.row("Firmware", "Marlin 2.1"); });`
+//!
+//! **Progress**
+//! * [`ProgressRing`] — circular progress with centered text:
+//!   `ui.add(ProgressRing::new(0.42).sublabel("1:23 left"));`
+//! * [`LinearProgress`] — slim bar, optional caption, indeterminate mode:
+//!   `ui.add(LinearProgress::new(0.66).label("Uploading").show_percentage(true));`
+//!
+//! **Input**
+//! * [`NumericField`] — label + value with unit, range, decimals and a
+//!   modified dot / reset against an original value:
+//!   `ui.add(NumericField::new(&mut steps).label("X steps").unit("steps/mm").original(80.0)).changed()`
+//!
+//! **Feedback**
+//! * [`Toasts`] — stacked auto-dismissing notifications, top-right by default:
+//!   `toasts.success("Print finished"); toasts.show(ctx);`
+//! * [`ConfirmDialog`] — modal question with optional danger styling:
+//!   `ConfirmDialog::new("reset", "Reset settings?").danger(true).show(ctx)` → `Option<DialogResult>`
+//!
+//! **Helpers**: [`smooth_points`] (monotone cubic interpolation),
+//! [`nice_ticks`], [`finite_runs`], [`diverging_color`], [`GridStats`],
+//! [`percent_label`], [`format_number`], [`is_modified`],
+//! [`format_temperature`], [`parse_temperature`], [`step_label`],
+//! [`signed_step`], [`signed_value`] and the pure jog geometry
+//! [`JogGeometry`].
 
 #![warn(missing_docs)]
 
