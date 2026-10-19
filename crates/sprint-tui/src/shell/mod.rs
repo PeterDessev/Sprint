@@ -49,6 +49,9 @@ const SETUP_TIMEOUT: Duration = Duration::from_secs(15);
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(600);
 /// How long leaving waits for a cancelled print to stop.
 const CANCEL_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long the end of a script gives a `pause` asked just before it to
+/// take effect.
+const PAUSE_SETTLE: Duration = Duration::from_secs(2);
 /// How long `resume` waits for commands typed while paused.
 const RESUME_WAIT: Duration = Duration::from_secs(600);
 /// Default `monitor` interval.
@@ -149,8 +152,9 @@ pub(crate) struct Shell {
     last_target: Option<ConnectTarget>,
     /// How deep `source` files are nested.
     sourcing: usize,
-    /// `pause` paused the job and nothing resumed it since.
-    pause_asked: bool,
+    /// When `pause` asked to pause the job (nothing in the shell resumed
+    /// it since).
+    pause_asked: Option<Instant>,
 }
 
 impl Shell {
@@ -176,7 +180,7 @@ impl Shell {
             base_dir: std::env::current_dir().unwrap_or_default(),
             last_target: None,
             sourcing: 0,
-            pause_asked: false,
+            pause_asked: None,
         }
     }
 
@@ -584,14 +588,14 @@ impl Shell {
             Command::Pause => {
                 if self.job_active() {
                     self.printer.pause();
-                    self.pause_asked = true;
+                    self.pause_asked = Some(Instant::now());
                     self.out.dim("Pausing…");
                 } else {
                     self.out.warn("No job is running");
                 }
             }
             Command::Resume => {
-                self.pause_asked = false;
+                self.pause_asked = None;
                 let release = self.printer.with_state(|s| {
                     actions::waiting_for_user(s)
                         && !s.job.as_ref().is_some_and(|j| {
@@ -1090,7 +1094,7 @@ impl Shell {
         let Some(file) = &self.file else {
             return;
         };
-        self.pause_asked = false;
+        self.pause_asked = None;
         match self
             .printer
             .start_print(file.file.clone(), actions::print_options(file))
@@ -1398,7 +1402,7 @@ impl Shell {
             }
             Command::Sd(SdCommand::Print(name)) => match printer
                 .start_sd_print(&name)
-                .inspect(|()| self.pause_asked = false)
+                .inspect(|()| self.pause_asked = None)
             {
                 Ok(()) => self.out.good(format!("Printing {name} from the SD card")),
                 Err(e) => self.out.error(format!("Cannot print {name}: {e}")),
@@ -1568,8 +1572,10 @@ impl Shell {
             }
             // Paused by the script: nothing that follows can resume it, and
             // waiting would keep the heaters on for ever. (A pause by the
-            // printer, a filament change, is answered at the printer.)
-            if self.pause_asked {
+            // printer, a filament change, is answered at the printer.) A
+            // job that runs again (resumed at the printer) or was never
+            // paused (an upload refuses) is waited for.
+            if self.paused_by_script() {
                 self.out.warn(format!(
                     "{name} is paused and a script cannot resume it: cancelling it \
                      (the cancel script turns the heaters off)"
@@ -1612,6 +1618,28 @@ impl Shell {
             self.echo.settle();
         }
         true
+    }
+
+    /// Whether `pause` paused the job and it is still paused (or
+    /// pausing). A pause asked a moment ago is given [`PAUSE_SETTLE`] to
+    /// show: the engine starts pausing a few milliseconds after `pause`.
+    fn paused_by_script(&self) -> bool {
+        let Some(asked) = self.pause_asked else {
+            return false;
+        };
+        let paused = |s: &sprint_host::PrinterState| {
+            s.job.as_ref().is_some_and(|j| {
+                matches!(
+                    j.status,
+                    sprint_host::JobStatus::Paused | sprint_host::JobStatus::Pausing
+                )
+            })
+        };
+        let settle = PAUSE_SETTLE.saturating_sub(asked.elapsed());
+        let _ = session::wait_for(&self.printer, settle, &Interrupt::new(), true, |s| {
+            paused(s) || !s.job_active()
+        });
+        self.printer.with_state(|s| paused(s) && s.job_active())
     }
 
     fn cancel_and_wait(&self) {

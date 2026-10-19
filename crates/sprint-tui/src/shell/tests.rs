@@ -1070,3 +1070,74 @@ fn a_script_that_ends_paused_cancels_instead_of_waiting_for_ever() {
     );
     assert!(received(&shell).iter().any(|c| c == "M104 S0"));
 }
+
+#[test]
+fn a_script_leaves_a_print_that_was_resumed_elsewhere_running() {
+    let scratch = Scratch::new("resumed-elsewhere");
+    let (mut shell, buffer) = connected_timed();
+    // Short enough to finish within the test: a few seconds of moves.
+    let mut gcode = String::from("G28\nG90\nM83\nG1 Z0.3 F600\n");
+    for i in 0..30 {
+        gcode.push_str(&format!("G1 X{} Y20 E0.2 F600\n", 20 + (i % 2) * 5));
+    }
+    let path = scratch.0.join("short.gcode");
+    std::fs::write(&path, gcode).expect("write");
+    shell.load(&path);
+    let mut input = Script::new(["print", "pause"], false);
+    shell.run_lines_until_eof_without_leaving(&mut input);
+    wait_for(&shell, "the pause", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Paused)
+    });
+    // Resumed at the printer (or from another front end), not by the
+    // script: at its end the print is waited for, not cancelled.
+    shell.printer.resume();
+    wait_for(&shell, "the resume", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Printing)
+    });
+    // If the end of the script waited for ever, this stops the wait.
+    let watchdog = shell.interrupt.clone();
+    let (done, finished) = crossbeam_channel::bounded::<()>(0);
+    let thread = std::thread::spawn(move || {
+        if finished.recv_timeout(Duration::from_secs(60))
+            == Err(crossbeam_channel::RecvTimeoutError::Timeout)
+        {
+            watchdog.raise();
+        }
+    });
+    script(&mut shell, &[]);
+    drop(done);
+    let _ = thread.join();
+    let text = buffer.text();
+    assert!(!text.contains("a script cannot resume it"), "{text}");
+    assert_eq!(
+        shell
+            .printer
+            .with_state(|s| s.job.as_ref().map(|j| j.status.clone())),
+        Some(JobStatus::Completed),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_script_does_not_cancel_an_upload_after_a_refused_pause() {
+    let (mut shell, buffer) = connected_to(sd_sim());
+    let cube = sample("calibration-cube.gcode");
+    script(
+        &mut shell,
+        &[&format!("sd upload {}", cube.display()), "pause"],
+    );
+    let text = buffer.text();
+    assert!(!text.contains("a script cannot resume it"), "{text}");
+    let job = shell
+        .printer
+        .with_state(|s| s.job.as_ref().map(|j| (j.kind, j.status.clone())));
+    assert_eq!(
+        job,
+        Some((JobKind::SdUpload, JobStatus::Completed)),
+        "{text}"
+    );
+}
