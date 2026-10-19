@@ -5,12 +5,16 @@
 //! demos use [`ConnectTarget::Simulator`] or TCP loopback to the simulator;
 //! [`list_ports`] only enumerates port names and never opens anything.
 
+mod link;
 mod ports;
+mod serial;
 mod target;
+mod tcp;
 
 use serde::{Deserialize, Serialize};
 use sprint_sim::SimConfig;
 
+pub use link::{Link, LinkHandle, READ_TIMEOUT, is_no_data};
 pub use ports::{PRINTER_USB_VENDORS, is_printer_vendor, list_ports};
 
 /// Baud rates tried by auto-detection (baud 0), most common first.

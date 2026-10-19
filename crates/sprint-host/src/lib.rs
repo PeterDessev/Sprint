@@ -29,4 +29,4 @@ pub use state::{
     AutotuneState, Axes, Axis, ConnectionStatus, Heater, HostPrompt, LinkStats, PrinterState,
     SdState, TempSample,
 };
-pub use transport::{BAUD_RATES, ConnectTarget, DEFAULT_BAUD, PortInfo, list_ports};
+pub use transport::{BAUD_RATES, ConnectTarget, DEFAULT_BAUD, Link, PortInfo, list_ports};
