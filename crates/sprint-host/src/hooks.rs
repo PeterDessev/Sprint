@@ -2,7 +2,9 @@
 //! or is cancelled ([`PrinterProfile::on_start_command`] and friends;
 //! Printrun's start, final and error commands), for notifications, relays
 //! or logging. They run on their own thread, never blocking the engine;
-//! their exit status and first lines of output go to the console.
+//! their exit status and first lines of output go to the console (output
+//! is read for a second after the hook ends, not for as long as a program
+//! it started in the background keeps it open).
 //!
 //! [`PrinterProfile::on_start_command`]: crate::PrinterProfile::on_start_command
 
@@ -11,6 +13,8 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
+
+use parking_lot::Mutex;
 
 use crate::console::ConsoleKind;
 use crate::engine::Shared;
@@ -23,6 +27,10 @@ const OUTPUT_LINES: usize = 5;
 const OUTPUT_BYTES: usize = 16 * 1024;
 /// Longest output line copied to the console (characters).
 const LINE_CHARS: usize = 200;
+/// After the hook ends, its output is read this much longer: a program it
+/// started in the background (a notifier) may keep the pipes open for
+/// hours, and the report must not wait for it.
+const OUTPUT_GRACE: Duration = Duration::from_secs(1);
 
 /// One hook run: `command` (a shell command line) with `env` added to the
 /// environment; `event` names it in the console ("finish").
@@ -66,15 +74,20 @@ impl Hook {
         let err = child.stderr.take().map(collect);
         let status = wait(&mut child, timeout);
         let mut output: Vec<String> = Vec::new();
-        for h in [out, err].into_iter().flatten() {
-            if let Ok(text) = h.join() {
-                output.extend(
-                    text.lines()
-                        .map(str::trim_end)
-                        .filter(|l| !l.is_empty())
-                        .map(|l| l.chars().take(LINE_CHARS).collect::<String>()),
-                );
+        let grace = Instant::now() + OUTPUT_GRACE;
+        for pipe in [out, err].into_iter().flatten() {
+            // Readers still blocked after the grace are left behind; they
+            // end when the last program holding the pipe does.
+            while !pipe.reader.is_finished() && Instant::now() < grace {
+                thread::sleep(Duration::from_millis(10));
             }
+            let text = String::from_utf8_lossy(&pipe.kept.lock()).into_owned();
+            output.extend(
+                text.lines()
+                    .map(str::trim_end)
+                    .filter(|l| !l.is_empty())
+                    .map(|l| l.chars().take(LINE_CHARS).collect::<String>()),
+            );
         }
         let more = output.len().saturating_sub(OUTPUT_LINES);
         output.truncate(OUTPUT_LINES);
@@ -138,22 +151,31 @@ impl Hook {
     }
 }
 
+/// A pipe being read on its own thread.
+struct Output {
+    /// The first bytes read so far.
+    kept: Arc<Mutex<Vec<u8>>>,
+    reader: thread::JoinHandle<()>,
+}
+
 /// Read a pipe to its end on a thread, keeping the first bytes.
-fn collect(mut pipe: impl Read + Send + 'static) -> thread::JoinHandle<String> {
-    thread::spawn(move || {
-        let mut kept = Vec::new();
+fn collect(mut pipe: impl Read + Send + 'static) -> Output {
+    let kept = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&kept);
+    let reader = thread::spawn(move || {
         let mut buf = [0u8; 4096];
         loop {
             match pipe.read(&mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
+                    let mut kept = sink.lock();
                     let room = OUTPUT_BYTES.saturating_sub(kept.len());
                     kept.extend_from_slice(&buf[..n.min(room)]);
                 }
             }
         }
-        String::from_utf8_lossy(&kept).into_owned()
-    })
+    });
+    Output { kept, reader }
 }
 
 /// Wait for `child` at most `timeout`; kill it after that (`None`).
@@ -208,6 +230,22 @@ mod tests {
         let (kind, lines) = hook("exit 3").run(Duration::from_secs(30));
         assert_eq!(kind, ConsoleKind::Warning);
         assert!(lines[0].contains("exit status 3"), "{lines:?}");
+    }
+
+    #[test]
+    fn a_program_left_running_does_not_hold_the_report() {
+        // A hook that starts a notifier in the background ends at once,
+        // but the notifier keeps the output pipes open.
+        let command = if cfg!(windows) {
+            "echo started & start /B ping -n 8 127.0.0.1"
+        } else {
+            "echo started; sleep 8 &"
+        };
+        let begun = Instant::now();
+        let (kind, lines) = hook(command).run(Duration::from_secs(30));
+        assert!(begun.elapsed() < Duration::from_secs(4), "{lines:?}");
+        assert_eq!(kind, ConsoleKind::Info, "{lines:?}");
+        assert_eq!(lines.get(1).map(String::as_str), Some("  started"));
     }
 
     #[test]
