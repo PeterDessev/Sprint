@@ -3,9 +3,9 @@
 //! their documented ranges.
 
 use sprint_proto::{
-    FirmwareFlavor, Reply, ReplyParser, SettingCommand, capability_description, gcode_doc,
-    is_emergency_command, parse_duration, parse_firmware_line, parse_framed, parse_position,
-    parse_temperatures, search_gcode, setting_def,
+    FirmwareFlavor, JobContext, Reply, ReplyParser, SettingCommand, capability_description,
+    classify, gcode_doc, is_emergency_command, parse_duration, parse_firmware_line, parse_framed,
+    parse_position, parse_temperatures, search_gcode, setting_def,
 };
 
 /// xorshift64* — small, deterministic, good enough for test input.
@@ -148,6 +148,19 @@ const FRAGMENTS: &[&str] = &[
     "M117",
     "M999",
     "M112",
+    "M 112",
+    "M410",
+    "M876",
+    "M502",
+    "N5",
+    "G28",
+    "g1x10",
+    "T1",
+    "M104 S0",
+    "BED_MESH_CALIBRATE",
+    "FIRMWARE_RESTART",
+    "SET_HEATER_TEMPERATURE",
+    "TARGET=",
     "(",
     ")",
     ";",
@@ -340,7 +353,15 @@ fn parsers_never_panic_on_random_lines() {
         let _ = parse_position(&line);
         let _ = parse_duration(&line);
         let _ = parse_framed(&line);
-        let _ = is_emergency_command(&line);
+        let emergency = is_emergency_command(&line);
+        for ctx in [JobContext::Idle, JobContext::Printing, JobContext::Paused] {
+            let verdict = classify(&line, ctx);
+            // Whatever the host sends at once is recognised as such.
+            assert!(!emergency || verdict.emergency, "{line:?}");
+            if verdict.command.as_deref() == Some("M112") {
+                assert!(verdict.is_allowed() && verdict.emergency, "{line:?}");
+            }
+        }
         let _ = gcode_doc(&line);
         let _ = setting_def(&line);
         let _ = capability_description(&line);
