@@ -620,7 +620,8 @@ impl Shell {
         if !self.connected_or_warn() {
             return;
         }
-        let interval = Duration::from_secs_f32(secs.unwrap_or(MONITOR_INTERVAL).clamp(0.2, 3600.0));
+        let secs = secs.filter(|s| s.is_finite()).unwrap_or(MONITOR_INTERVAL);
+        let interval = Duration::from_secs_f32(secs.clamp(0.2, 3600.0));
         self.interrupt.reset();
         if interactive {
             self.out.dim(format!(

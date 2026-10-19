@@ -82,6 +82,17 @@ fn closed_reason(s: &PrinterState) -> Option<String> {
     }
 }
 
+/// How long to wait for the handshake: the configured seconds (a broken
+/// value, even NaN from a hand-edited file, falls back to the default).
+fn handshake_wait(secs: f32) -> Duration {
+    let secs = if secs.is_finite() {
+        secs.clamp(1.0, 600.0)
+    } else {
+        ConnectOptions::default().handshake_timeout_secs
+    };
+    Duration::from_secs_f32(secs) + CONNECT_GRACE
+}
+
 /// Why a connect failed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConnectError {
@@ -116,13 +127,13 @@ pub fn connect_blocking(
     interrupt: &Interrupt,
 ) -> Result<(), ConnectError> {
     let label = target.label();
-    let handshake = Duration::from_secs_f32(options.handshake_timeout_secs.clamp(1.0, 600.0));
+    let handshake = handshake_wait(options.handshake_timeout_secs);
     printer
         .connect(target, options)
         .map_err(|e| ConnectError::Open(format!("cannot connect to {label}: {e}")))?;
     match wait_for(
         printer,
-        handshake + CONNECT_GRACE,
+        handshake,
         interrupt,
         true,
         PrinterState::is_connected,
@@ -212,6 +223,16 @@ mod tests {
         let again = connect_blocking(&printer, fast_sim(), ConnectOptions::default(), &interrupt);
         assert!(matches!(again, Err(ConnectError::Open(_))), "{again:?}");
         printer.disconnect();
+    }
+
+    #[test]
+    fn handshake_waits_survive_broken_settings() {
+        assert_eq!(handshake_wait(15.0), Duration::from_secs(20));
+        assert_eq!(handshake_wait(0.0), Duration::from_secs(6));
+        assert_eq!(handshake_wait(1e9), Duration::from_secs(605));
+        let default = handshake_wait(ConnectOptions::default().handshake_timeout_secs);
+        assert_eq!(handshake_wait(f32::NAN), default);
+        assert_eq!(handshake_wait(f32::NEG_INFINITY), default);
     }
 
     #[test]
