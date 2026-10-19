@@ -27,6 +27,16 @@ pub enum ConnectOutcome {
         /// Why.
         error: String,
     },
+    /// A connect that was cancelled (by [`Connector::disconnect`]) has
+    /// ended. Not an error; `opened` when the link opened all the same (the
+    /// cancel came too early for the engine to notice) and has to be
+    /// closed again.
+    Cancelled {
+        /// The target's label.
+        label: String,
+        /// The link is open.
+        opened: bool,
+    },
     /// The connection is closed.
     Closed,
 }
@@ -36,6 +46,10 @@ pub struct Connector {
     tx: Sender<ConnectOutcome>,
     rx: Receiver<ConnectOutcome>,
     connecting: Option<String>,
+    /// The running connect was cancelled.
+    cancelled: bool,
+    /// Disconnect workers that have not reported yet.
+    disconnecting: usize,
     repaint: Option<egui::Context>,
 }
 
@@ -47,6 +61,8 @@ impl Connector {
             tx,
             rx,
             connecting: None,
+            cancelled: false,
+            disconnecting: 0,
             repaint,
         }
     }
@@ -54,27 +70,36 @@ impl Connector {
     /// Open `target` on a worker thread. Ignored while a connect is
     /// already running.
     pub fn connect(&mut self, printer: &Printer, target: ConnectTarget, options: ConnectOptions) {
+        let printer = printer.clone();
+        self.spawn_connect(target.label(), move || {
+            let result = printer.connect(target, options).map_err(|e| e.to_string());
+            // The worker's clone must go before the UI hears about it, so a
+            // quick reconnect never races a stale handle.
+            drop(printer);
+            result
+        });
+    }
+
+    /// Run `open` on a worker thread as the connect to `label`.
+    fn spawn_connect(
+        &mut self,
+        label: String,
+        open: impl FnOnce() -> Result<(), String> + Send + 'static,
+    ) {
         if self.connecting.is_some() {
             return;
         }
-        let label = target.label();
         self.connecting = Some(label.clone());
-        let printer = printer.clone();
+        self.cancelled = false;
         let tx = self.tx.clone();
         let repaint = self.repaint.clone();
         let spawned = std::thread::Builder::new()
             .name("sprint-gui-connect".to_owned())
             .spawn(move || {
-                let outcome = match printer.connect(target, options) {
+                let outcome = match open() {
                     Ok(()) => ConnectOutcome::Opened { label },
-                    Err(e) => ConnectOutcome::Failed {
-                        label,
-                        error: e.to_string(),
-                    },
+                    Err(error) => ConnectOutcome::Failed { label, error },
                 };
-                // The worker's clone must go before the UI hears about
-                // it, so a quick reconnect never races a stale handle.
-                drop(printer);
                 let _ = tx.send(outcome);
                 if let Some(ctx) = repaint {
                     ctx.request_repaint();
@@ -89,9 +114,14 @@ impl Connector {
         }
     }
 
-    /// Close the connection on a worker thread (also stops a connect in
-    /// progress: the engine gives up once the link opens).
+    /// Close the connection on a worker thread. A connect in progress is
+    /// cancelled: the engine gives up once the link opens, and the connect
+    /// reports [`ConnectOutcome::Cancelled`] instead of a failure.
     pub fn disconnect(&mut self, printer: &Printer) {
+        if self.connecting.is_some() {
+            self.cancelled = true;
+        }
+        self.disconnecting += 1;
         let worker = printer.clone();
         let tx = self.tx.clone();
         let repaint = self.repaint.clone();
@@ -117,16 +147,49 @@ impl Connector {
         self.connecting.is_some()
     }
 
+    /// True while a cancelled connect is still running.
+    pub fn is_cancelling(&self) -> bool {
+        self.connecting.is_some() && self.cancelled
+    }
+
+    /// True when no connect or disconnect worker runs.
+    pub fn is_idle(&self) -> bool {
+        self.connecting.is_none() && self.disconnecting == 0
+    }
+
     /// What the workers reported since the last call.
     pub fn poll(&mut self) -> Vec<ConnectOutcome> {
         let mut out = Vec::new();
         while let Ok(outcome) = self.rx.try_recv() {
-            if matches!(
-                outcome,
-                ConnectOutcome::Opened { .. } | ConnectOutcome::Failed { .. }
-            ) {
-                self.connecting = None;
-            }
+            let outcome = match outcome {
+                ConnectOutcome::Opened { label } => {
+                    self.connecting = None;
+                    if std::mem::take(&mut self.cancelled) {
+                        ConnectOutcome::Cancelled {
+                            label,
+                            opened: true,
+                        }
+                    } else {
+                        ConnectOutcome::Opened { label }
+                    }
+                }
+                ConnectOutcome::Failed { label, error } => {
+                    self.connecting = None;
+                    if std::mem::take(&mut self.cancelled) {
+                        ConnectOutcome::Cancelled {
+                            label,
+                            opened: false,
+                        }
+                    } else {
+                        ConnectOutcome::Failed { label, error }
+                    }
+                }
+                ConnectOutcome::Closed => {
+                    self.disconnecting = self.disconnecting.saturating_sub(1);
+                    ConnectOutcome::Closed
+                }
+                cancelled @ ConnectOutcome::Cancelled { .. } => cancelled,
+            };
             out.push(outcome);
         }
         out
@@ -388,6 +451,70 @@ mod tests {
         assert_eq!(label, "tcp://127.0.0.1:1");
         assert!(!error.is_empty());
         assert!(!connector.is_connecting());
+    }
+
+    #[test]
+    fn a_cancelled_connect_reports_a_cancel_not_a_failure() {
+        // Never connected: its disconnect is a no-op.
+        let printer = Printer::new();
+        let mut connector = Connector::new(None);
+        assert!(connector.is_idle());
+        // A slow connect (serial auto-baud probing), cancelled meanwhile.
+        let (release, wait) = crossbeam_channel::bounded::<()>(1);
+        connector.spawn_connect("COM9".into(), move || {
+            let _ = wait.recv_timeout(Duration::from_secs(20));
+            Err("not connected".into())
+        });
+        connector.disconnect(&printer);
+        assert!(connector.is_cancelling());
+        wait_for(&mut connector, |o| *o == ConnectOutcome::Closed);
+        assert!(!connector.is_idle(), "the connect still runs");
+        let _ = release.send(());
+        let ended = wait_for(&mut connector, |o| {
+            matches!(o, ConnectOutcome::Cancelled { .. })
+        });
+        assert_eq!(
+            ended,
+            ConnectOutcome::Cancelled {
+                label: "COM9".into(),
+                opened: false
+            }
+        );
+        assert!(connector.is_idle());
+        assert!(!connector.is_cancelling());
+
+        // The cancel came before the link opened: it says so.
+        connector.spawn_connect("sim".into(), || Ok(()));
+        connector.disconnect(&printer);
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut seen = Vec::new();
+        while !connector.is_idle() {
+            assert!(Instant::now() < deadline, "workers never finished");
+            seen.extend(connector.poll());
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(seen.contains(&ConnectOutcome::Closed), "{seen:?}");
+        assert!(
+            seen.contains(&ConnectOutcome::Cancelled {
+                label: "sim".into(),
+                opened: true
+            }),
+            "{seen:?}"
+        );
+
+        // Without a cancel a failure stays a failure.
+        connector.spawn_connect("tcp".into(), || Err("refused".into()));
+        let failed = wait_for(&mut connector, |o| {
+            matches!(o, ConnectOutcome::Failed { .. })
+        });
+        assert_eq!(
+            failed,
+            ConnectOutcome::Failed {
+                label: "tcp".into(),
+                error: "refused".into()
+            }
+        );
+        assert!(connector.is_idle());
     }
 
     #[test]

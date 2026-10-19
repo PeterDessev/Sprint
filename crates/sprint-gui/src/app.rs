@@ -480,6 +480,12 @@ impl SprintApp {
         self.watch.is_changed()
     }
 
+    /// True while a connect or disconnect runs on its worker thread, or a
+    /// reconnect waits for them.
+    pub fn connection_busy(&self) -> bool {
+        !self.connector.is_idle() || self.reconnect_pending
+    }
+
     /// The window title of the last frame.
     pub fn window_title(&self) -> &str {
         &self.title
@@ -540,12 +546,18 @@ impl SprintApp {
             Some(state) => state.clone(),
             None => self.core.printer.snapshot(),
         };
+        // Events first: a cancelled connect's failure event comes before its
+        // outcome, and is only recognised as cancelled until then.
+        self.poll_events(secs);
         for outcome in self.connector.poll() {
             self.connect_outcome(outcome);
         }
+        if self.reconnect_pending && self.connector.is_idle() {
+            self.reconnect_pending = false;
+            self.connect_again();
+        }
         self.poll_file_dialog();
         self.poll_loader(ctx);
-        self.poll_events(secs);
         self.panels.console.sync(&self.core.printer);
         {
             let c = self.core.ctx();
@@ -616,11 +628,16 @@ impl SprintApp {
                 }
                 self.reconnect_pending = false;
             }
-            ConnectOutcome::Closed => {
-                if std::mem::take(&mut self.reconnect_pending) {
-                    self.connect_again();
+            // The user cancelled: not an error. A link that opened all the
+            // same is closed again (a pending reconnect follows once it is).
+            ConnectOutcome::Cancelled { opened, .. } => {
+                if opened {
+                    self.connector.disconnect(&self.core.printer);
                 }
             }
+            // A pending reconnect starts once nothing is opening or closing
+            // any more (see begin_frame).
+            ConnectOutcome::Closed => {}
         }
     }
 
@@ -725,7 +742,17 @@ impl SprintApp {
 
     fn poll_events(&mut self, secs: f64) {
         let job_name = self.core.state.job.as_ref().map(|j| j.name.clone());
+        let cancelling = self.connector.is_cancelling();
         for event in self.events.try_iter().take(EVENTS_PER_FRAME) {
+            // A connect the user cancelled may still fail: not news.
+            if cancelling
+                && matches!(
+                    event,
+                    Event::Status(sprint_host::ConnectionStatus::Failed(_))
+                )
+            {
+                continue;
+            }
             if let Some(notice) = self.notifier.notice(&event, secs, job_name.as_deref()) {
                 notice.show(&mut self.core.toasts);
             }
@@ -869,10 +896,15 @@ impl SprintApp {
     fn reconnect(&mut self) {
         let open = self.core.printer.with_state(|s| s.status.is_open());
         if open || self.connector.is_connecting() {
-            self.reconnect_pending = true;
             self.connector.disconnect(&self.core.printer);
-        } else {
+        }
+        if self.connector.is_idle() {
             self.connect_again();
+        } else {
+            // Opened again once nothing is opening or closing any more
+            // (see begin_frame): a connect started meanwhile would be
+            // cancelled by the disconnect still running.
+            self.reconnect_pending = true;
         }
     }
 

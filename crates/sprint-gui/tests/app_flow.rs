@@ -505,6 +505,50 @@ fn reconnect_and_disconnect() {
 }
 
 #[test]
+fn cancelling_a_connect_is_not_an_error() {
+    // Nothing listens on port 1 of the loopback interface: the connect
+    // fails a moment later, after the user cancelled it.
+    let mut options = sim_options();
+    options.config.profiles[0].connection = ConnectTarget::Tcp {
+        host: "127.0.0.1".into(),
+        port: 1,
+    };
+    let mut h = app(options, WINDOW);
+    h.state_mut().push_action(AppAction::Connect);
+    h.state_mut().push_action(AppAction::Disconnect);
+    h.step();
+    expect(&mut h, "the connect to end", |app| !app.connection_busy());
+    settle(&mut h);
+    let errors: Vec<_> = h
+        .state()
+        .toasts()
+        .iter()
+        .filter(|t| t.kind() == sprint_gui::widgets::ToastKind::Error)
+        .map(|t| t.title().to_owned())
+        .collect();
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+#[test]
+fn reconnecting_while_connecting_comes_back() {
+    let mut h = app(sim_options(), WINDOW);
+    // Reconnect before the first connect has reported.
+    h.state_mut().push_action(AppAction::Connect);
+    h.state_mut().push_action(AppAction::Reconnect);
+    expect(&mut h, "the virtual printer to connect", |app| {
+        app.state().is_connected() && !app.connection_busy()
+    });
+    let errors: Vec<_> = h
+        .state()
+        .toasts()
+        .iter()
+        .filter(|t| t.kind() == sprint_gui::widgets::ToastKind::Error)
+        .map(|t| t.title().to_owned())
+        .collect();
+    assert!(errors.is_empty(), "{errors:?}");
+}
+
+#[test]
 fn closing_during_a_print_asks_first() {
     let options = with_file(slow_sim_options(5.0), sample("calibration-cube.gcode"));
     let mut h = app(options, WINDOW);
