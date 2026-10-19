@@ -275,7 +275,7 @@ pub(super) enum Change {
     CoolDown,
 }
 
-/// Whether a change must be confirmed while a job runs: turning off a
+/// Whether a change must be confirmed while a print runs: turning off a
 /// heater that is heating makes the print fail, and a preset button
 /// changes several heaters with one click. Typed targets and targets that
 /// stay the same go through.
@@ -357,7 +357,7 @@ impl Pending {
 /// UI state of the temperatures section.
 #[derive(Debug, Default)]
 pub(super) struct Temperatures {
-    /// A change waiting for "Are you sure?" while a job runs.
+    /// A change waiting for "Are you sure?" while a print runs.
     pending: Option<Pending>,
 }
 
@@ -367,7 +367,9 @@ impl Temperatures {
         let state = ctx.state;
         let hotends = hotend_count(state, ctx.config.active());
         if let Some((change, targets)) = show(ui, ctx) {
-            if ctx.job_active() && needs_confirmation(&change, &targets, state) {
+            // Also a print the printer runs from its card: it fails
+            // without heat just the same.
+            if ctx.printer_busy() && needs_confirmation(&change, &targets, state) {
                 self.pending = Some(Pending::new(&change, targets, state, hotends));
             } else {
                 apply(ctx.printer, &targets);
@@ -375,19 +377,16 @@ impl Temperatures {
         }
     }
 
-    /// The confirmation of a change during a job, while one is open.
+    /// The confirmation of a change during a print, while one is open.
     pub(super) fn dialogs(&mut self, ui: &Ui, ctx: &mut AppCtx<'_>) {
         let Some(pending) = &self.pending else {
             return;
         };
         let (message, confirm) = if pending.danger {
-            (
-                "A job is running: without heat the print fails.",
-                "Turn off",
-            )
+            ("A print is running: without heat it fails.", "Turn off")
         } else {
             (
-                "A job is running: the new targets apply to the print right away.",
+                "A print is running: the new targets apply to it right away.",
                 "Set",
             )
         };

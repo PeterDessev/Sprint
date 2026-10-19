@@ -473,6 +473,32 @@ fn heaters_off_during_a_job_asks_first() {
     wait_for_commands(&p, &["M104 T0 S0", "M140 S0"]);
 }
 
+/// A print started on the printer's display fails without heat just the
+/// same: "Cool down" asks first then too.
+#[test]
+fn heaters_off_during_a_print_from_the_card_asks_first() {
+    let mut rig = Rig::simulator();
+    // No job of Sprint's: only the card's progress reports tell.
+    rig.tweak = Some(|state: &mut sprint_host::PrinterState| {
+        state.sd.printing = Some((1_000, 50_000));
+    });
+    let mut h = sidebar_fixed(Theme::Dark, (420.0, 2600.0), rig);
+    controls_common::settle(&mut h);
+    let p = printer(&h);
+    p.set_temperature(sprint_host::Heater::Hotend(0), 200.0);
+    wait_for(&p, "the target", |s| {
+        s.temps.hotends.first().and_then(|t| t.target) == Some(200.0)
+    });
+    run_for(&mut h, Duration::from_millis(50));
+    clear(&h);
+    click(&mut h, "Cool down");
+    h.run_ok();
+    assert!(h.query_by_label("Turn every heater off?").is_some());
+    h.get_by_label("Cancel").click();
+    h.run_ok();
+    assert_nothing_sent(&mut h, "a cancelled cool down");
+}
+
 #[test]
 fn babystep_tracks_and_undoes_its_offset() {
     let mut h = connected();
