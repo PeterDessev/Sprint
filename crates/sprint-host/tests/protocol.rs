@@ -431,10 +431,12 @@ fn klipper_is_not_asked_for_m503_and_reports_meshes_its_way() {
     });
     wait_idle(&printer);
     printer.request_bed_mesh();
-    wait_idle(&printer);
+    // Waiting for an idle link could look before the request arrived.
+    wait_for(&printer, "BED_MESH_OUTPUT", |_| {
+        log.lock().unwrap().iter().any(|c| c == "BED_MESH_OUTPUT")
+    });
     let log = log.lock().unwrap().clone();
     assert!(!log.iter().any(|c| c == "M503"), "{log:?}");
-    assert!(log.iter().any(|c| c == "BED_MESH_OUTPUT"), "{log:?}");
 }
 
 #[test]
