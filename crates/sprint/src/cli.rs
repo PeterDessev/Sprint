@@ -17,12 +17,14 @@ use sprint_host::ConnectTarget;
     about = "Sprint: a fast, modern 3D printer host (GUI, TUI and CLI)",
     long_about = None,
     args_conflicts_with_subcommands = true,
-    after_help = "Connection targets (T): a serial port such as COM3 or COM3@250000, \
-                  /dev/ttyUSB0@115200, tcp://host:port, or sim for the built-in virtual printer \
+    after_help = "Connection targets (T): a serial port such as COM3 (115200 baud) or \
+                  COM3@250000 (COM3@auto detects the rate), /dev/ttyUSB0@115200, \
+                  tcp://host:port, or sim for the built-in virtual printer \
                   (sim://?time_scale=50&instant_moves=true sets its options).\n\
-                  Sprint connects only to the target given, or in the TUI and the shell to the \
-                  profile's printer when the profile turns auto_connect on.\n\
-                  Configuration: SPRINT_CONFIG names another configuration file.\n\
+                  Sprint connects only to the target given, or at startup (GUI, TUI and shell) \
+                  to the active profile's printer when the profile turns auto_connect on.\n\
+                  Configuration: SPRINT_CONFIG names another configuration file; every front \
+                  end uses it, the GUI included.\n\
                   Logging: set RUST_LOG (for example RUST_LOG=debug)."
 )]
 pub struct Cli {

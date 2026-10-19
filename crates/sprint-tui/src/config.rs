@@ -2,8 +2,9 @@
 //!
 //! The configuration file is [`AppConfig::path`] unless the `SPRINT_CONFIG`
 //! environment variable names another file (a portable setup, or a test
-//! that must not touch the user's configuration). The shell's history sits
-//! next to it.
+//! that must not touch the user's configuration); the GUI honours the same
+//! variable, so every front end edits the same file. The shell's history
+//! sits next to it.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};

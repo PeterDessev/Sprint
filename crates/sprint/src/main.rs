@@ -5,8 +5,9 @@
 //! 130 Ctrl+C (`print` cancels the job first).
 //!
 //! Nothing connects to a printer unless a command is given a `--connect`
-//! target (or, in the TUI and the shell, the active profile turns
-//! `auto_connect` on).
+//! target, or (at the start of the GUI, the TUI and the shell) the active
+//! profile turns `auto_connect` on. `SPRINT_CONFIG` names the
+//! configuration file for every front end, the GUI included.
 
 mod analyze;
 mod cli;

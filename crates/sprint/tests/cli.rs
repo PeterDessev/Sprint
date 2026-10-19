@@ -85,6 +85,28 @@ fn help_lists_every_subcommand() {
 }
 
 #[test]
+fn help_says_what_the_configuration_and_targets_do() {
+    let output = sprint(&["--help"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    // Clap wraps the text: compare it with single spaces.
+    let text = stdout(&output)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    for fact in [
+        "COM3 (115200 baud)",
+        "COM3@auto detects the rate",
+        "at startup (GUI, TUI and shell) to the active profile's printer \
+         when the profile turns auto_connect on",
+        "SPRINT_CONFIG names another configuration file; every front end uses it, \
+         the GUI included",
+    ] {
+        assert!(text.contains(fact), "missing {fact:?} in\n{text}");
+    }
+    assert!(!text.contains("in the TUI and the shell to the"), "{text}");
+}
+
+#[test]
 fn version_is_printed() {
     let output = sprint(&["--version"]);
     assert!(output.status.success());
