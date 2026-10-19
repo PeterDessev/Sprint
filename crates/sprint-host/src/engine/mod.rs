@@ -219,6 +219,7 @@ pub(crate) enum Command {
     Pause,
     Resume,
     Cancel,
+    PauseAt(Vec<usize>),
     AnswerPrompt(usize),
     Extrude {
         tool: u8,
@@ -1140,6 +1141,7 @@ impl Engine {
             Command::Pause => self.pause_job(now),
             Command::Resume => self.resume_job(now),
             Command::Cancel => self.cancel_job(now),
+            Command::PauseAt(lines) => self.set_pause_points(lines),
             Command::AnswerPrompt(index) => self.answer_prompt(index),
             Command::Extrude {
                 tool,

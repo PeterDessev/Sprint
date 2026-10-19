@@ -756,3 +756,137 @@ fn a_pause_during_a_wait_for_the_user_ends_it() {
             .is_some_and(|j| j.status == JobStatus::Completed)
     });
 }
+
+/// A short file with `marker` after the second move.
+fn file_with(marker: &str) -> Arc<GcodeFile> {
+    let mut text = format!("G28\nM302 P1\nM83\nG1 X10 F3000\nG1 X11 F3000\n{marker}\n");
+    for i in 0..20 {
+        text.push_str(&format!("G1 X{} Y20 E0.5 F3000\n", 20 + i));
+    }
+    Arc::new(GcodeFile::from_text("marked.gcode", text))
+}
+
+fn statuses(events: &crossbeam_channel::Receiver<Event>) -> Vec<JobStatus> {
+    events
+        .try_iter()
+        .filter_map(|e| match e {
+            Event::Job(s) => Some(s),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn host_pause_commands_in_the_file_pause_the_job() {
+    for marker in [";@pause", "@pause"] {
+        let printer = connect(sim(), options());
+        let control = printer.sim_control().unwrap();
+        let events = printer.subscribe();
+        control.clear_received();
+        printer
+            .start_print(file_with(marker), PrintOptions::default())
+            .unwrap();
+        wait_for(&printer, "paused", |s| {
+            s.job
+                .as_ref()
+                .is_some_and(|j| j.status == JobStatus::Paused)
+        });
+        let got = control.received_commands();
+        let pause = got
+            .iter()
+            .position(|c| c == "M400")
+            .expect("the pause script");
+        assert_eq!(got[pause - 1], "G1 X11 F3000", "{marker}: {got:?}");
+        printer.resume();
+        wait_for(&printer, "completed", |s| {
+            s.job
+                .as_ref()
+                .is_some_and(|j| j.status == JobStatus::Completed)
+        });
+        let got = control.received_commands();
+        assert!(!got.iter().any(|c| c.contains('@')), "{marker}: {got:?}");
+        assert_eq!(got.iter().filter(|c| c.ends_with("E0.5 F3000")).count(), 20);
+        assert!(statuses(&events).contains(&JobStatus::Paused), "{marker}");
+        assert!(
+            !console(&printer)
+                .iter()
+                .any(|e| e.text.contains("Unknown command")),
+            "{marker}"
+        );
+    }
+}
+
+#[test]
+fn host_cancel_and_unknown_host_commands() {
+    let printer = connect(sim(), options());
+    let control = printer.sim_control().unwrap();
+    control.clear_received();
+    printer
+        .start_print(file_with("@cancel"), PrintOptions::default())
+        .unwrap();
+    wait_for(&printer, "cancelled", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Cancelled)
+    });
+    let got = control.received_commands();
+    assert!(got.iter().any(|c| c == "G28 X Y"), "the cancel script ran");
+    assert!(!got.iter().any(|c| c.ends_with("E0.5 F3000")));
+
+    control.clear_received();
+    printer
+        .start_print(file_with("@unheard_of"), PrintOptions::default())
+        .unwrap();
+    wait_for(&printer, "completed", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Completed)
+    });
+    assert!(!control.received_commands().iter().any(|c| c.contains('@')));
+    assert!(
+        console(&printer)
+            .iter()
+            .any(|e| e.text.contains("\"@unheard_of\" is not known"))
+    );
+}
+
+#[test]
+fn pause_points_pause_before_their_line() {
+    let printer = connect(sim(), options());
+    let file = file();
+    let want = commands(&file);
+    start(&printer, &file, PrintOptions::default());
+    let at = printer.with_state(|s| s.job.as_ref().unwrap().current_line) + 100;
+    printer.pause_at_lines(&[at, 3, at + 50]);
+    wait_for(&printer, "the pause points", |s| {
+        s.job.as_ref().is_some_and(|j| !j.pause_at.is_empty())
+    });
+    // Lines already streamed are left out.
+    assert_eq!(
+        printer.with_state(|s| s.job.as_ref().unwrap().pause_at.clone()),
+        [at, at + 50]
+    );
+    wait_for(&printer, "paused", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Paused)
+    });
+    let job = printer.with_state(|s| s.job.clone()).unwrap();
+    assert_eq!(job.current_line, at, "every line before the point printed");
+    assert_eq!(job.pause_at, [at + 50]);
+    printer.pause_at_lines(&[]);
+    printer.resume();
+    wait_for(&printer, "completed", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Completed)
+    });
+    let got: Vec<String> = printer
+        .sim_control()
+        .unwrap()
+        .received_commands()
+        .into_iter()
+        .filter(|c| want.contains(c))
+        .collect();
+    assert!(got.len() >= want.len(), "nothing was skipped");
+}

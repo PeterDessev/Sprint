@@ -464,6 +464,16 @@ impl Printer {
         self.command(Command::Resume);
     }
 
+    /// Pause the running host print (with the pause script) before each of
+    /// `lines`, 0-based file lines not streamed yet, as if the file had a
+    /// `;@pause` there; replaces earlier pause points (an empty list
+    /// removes them). "Pause at layer N" is the first line of the layer
+    /// ([`Toolpath`](crate::sprint_gcode::Toolpath) layers). The points
+    /// still ahead are [`JobInfo::pause_at`](crate::JobInfo::pause_at).
+    pub fn pause_at_lines(&self, lines: &[usize]) {
+        self.command(Command::PauseAt(lines.to_vec()));
+    }
+
     /// Cancel the job (host prints: drop the stream and run the cancel
     /// script; SD prints: M524; uploads: close and delete the file).
     pub fn cancel(&self) {

@@ -770,6 +770,9 @@ impl Printer {
     pub fn emergency_stop(&self);                        // M112 now, abort job, mark halted
     pub fn start_print(&self, file: std::sync::Arc<GcodeFile>, options: PrintOptions) -> Result<(), HostError>;
     pub fn pause(&self); pub fn resume(&self); pub fn cancel(&self);
+    /// Pause the running host print (pause script) before each of these 0-based file lines not streamed
+    /// yet, as if the file had ";@pause" there; replaces earlier points ("pause at layer N").
+    pub fn pause_at_lines(&self, lines: &[usize]);
     pub fn start_sd_print(&self, filename: &str) -> Result<(), HostError>;   // M23 + M24, then M27 S<n>
     pub fn upload_to_sd(&self, file: std::sync::Arc<GcodeFile>, sd_name: &str) -> Result<(), HostError>; // M28 ... M29 as a job
     /// Answer an active host prompt (M876 S<index>).
@@ -889,6 +892,7 @@ pub struct JobInfo {
     pub estimated_total: Option<std::time::Duration>,
     pub layer: Option<(usize, usize)>, // (current index, total)
     pub filament_used_mm: f32,
+    pub pause_at: Vec<usize>,          // host prints: pause points still ahead (0-based lines, ascending)
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)] pub enum JobKind { HostPrint, SdPrint, SdUpload }
 #[derive(Clone, Debug, PartialEq)]
@@ -1202,6 +1206,11 @@ Every public item is also re-exported at the crate root.
   minutes; M600 keeps its own dialogue. When the active hotend is more
   than 5 °C short of its target the pause script's extruder-only moves
   (the retract) are left out, and the resume's (the prime) with them.
+  Host commands in the file are never sent to the firmware: `@pause` and
+  Printrun's `;@pause` pause the job there (pause script), `@cancel` and
+  `@abort` cancel it, other `@...` lines are reported and skipped (uploads
+  leave them all out). Pause points (`pause_at_lines`) act like `;@pause`
+  before their line.
   `//action:pause|paused` pause
   without scripts and `//action:resume|resumed` continue; `resume()` after
   such a pause sends

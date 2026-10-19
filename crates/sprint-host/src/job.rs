@@ -152,6 +152,10 @@ pub struct JobInfo {
     pub layer: Option<(usize, usize)>,
     /// Filament pushed so far (mm), with a toolpath.
     pub filament_used_mm: f32,
+    /// Host prints: 0-based file lines the job pauses before (with the
+    /// pause script), still ahead of the stream, ascending
+    /// ([`Printer::pause_at_lines`](crate::Printer::pause_at_lines)).
+    pub pause_at: Vec<usize>,
 }
 
 impl JobInfo {
@@ -176,6 +180,7 @@ impl JobInfo {
             estimated_total: None,
             layer: None,
             filament_used_mm: 0.0,
+            pause_at: Vec::new(),
         }
     }
 }

@@ -62,6 +62,45 @@ pub(super) struct JobRuntime {
     retract_skipped: bool,
     /// When a pause last sent M108 to end a wait of the stream.
     wait_broken_at: Option<Instant>,
+    /// A host command the stream reached (`@pause`, a pause point); the
+    /// stream holds until the engine acts on it.
+    held: Option<(HostCommand, usize)>,
+}
+
+/// A command for the host, not the printer, met in the job stream.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum HostCommand {
+    /// `@pause` / `;@pause`, or a pause point: pause with the pause script.
+    Pause,
+    /// `@cancel` / `@abort`: cancel with the cancel script.
+    Cancel,
+    /// Another `@` command: not sent, reported.
+    Unknown(String),
+}
+
+impl HostCommand {
+    /// The host command of a raw file line: OctoPrint's `@pause`,
+    /// `@cancel` and `@abort`, Printrun's `;@pause`. `;@` lines are
+    /// comments, so only the ones Sprint knows count; every `@` line is a
+    /// host command (the firmware would answer "Unknown command").
+    pub(super) fn parse(raw: &str) -> Option<HostCommand> {
+        let t = raw.trim_start();
+        let (comment, rest) = match t.strip_prefix(';') {
+            Some(r) => (true, r.trim_start().strip_prefix('@')?),
+            None => (false, t.strip_prefix('@')?),
+        };
+        let word = rest
+            .split(|c: char| c.is_whitespace() || c == ';')
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        match word.as_str() {
+            "pause" => Some(HostCommand::Pause),
+            "cancel" | "abort" => Some(HostCommand::Cancel),
+            _ if comment => None,
+            _ => Some(HostCommand::Unknown(rest.trim().to_string())),
+        }
+    }
 }
 
 impl JobRuntime {
@@ -106,6 +145,7 @@ impl JobRuntime {
             abort_fallback: false,
             retract_skipped: false,
             wait_broken_at: None,
+            held: None,
             options,
         }
     }
@@ -145,7 +185,7 @@ impl JobRuntime {
 
     /// Whether stream lines may be sent now.
     fn streaming(&self) -> bool {
-        if !self.scripts.is_empty() {
+        if !self.scripts.is_empty() || self.held.is_some() {
             return false;
         }
         match self.info.kind {
@@ -160,7 +200,8 @@ impl JobRuntime {
 
     /// Nothing more to stream.
     fn stream_exhausted(&self) -> bool {
-        self.preamble.is_empty()
+        self.held.is_none()
+            && self.preamble.is_empty()
             && self.pending_m73.is_none()
             && self.file.as_ref().is_none_or(|f| self.next_line >= f.len())
     }
@@ -179,7 +220,24 @@ impl JobRuntime {
         let file = Arc::clone(self.file.as_ref()?);
         while self.next_line < file.len() {
             let index = self.next_line;
+            if self.info.kind == JobKind::HostPrint
+                && let Some(at) = self.info.pause_at.iter().position(|&l| l == index)
+            {
+                // A pause point: pause before this line, then stream it.
+                self.info.pause_at.remove(at);
+                self.held = Some((HostCommand::Pause, index));
+                return None;
+            }
             self.next_line += 1;
+            if let Some(host) = HostCommand::parse(file.line(index)) {
+                // Never sent: the firmware does not know them (uploads
+                // leave them out too).
+                if self.info.kind == JobKind::HostPrint {
+                    self.held = Some((host, index));
+                    return None;
+                }
+                continue;
+            }
             let Some(cmd) = file.command(index) else {
                 continue;
             };
@@ -653,6 +711,7 @@ impl Engine {
 
     /// Move the job along: pause drain, script completion, completion.
     pub(super) fn advance_job(&mut self, now: Instant) {
+        self.run_host_command(now);
         let (stream_pending, script_pending) = self.job_pending();
         let Some(job) = &mut self.job else {
             return;
@@ -727,6 +786,55 @@ impl Engine {
             }
             JobKind::SdPrint => {}
         }
+    }
+
+    /// Act on a host command the stream reached: pause or cancel the way
+    /// the user would, or report an unknown one and go on.
+    fn run_host_command(&mut self, now: Instant) {
+        let Some(job) = &mut self.job else {
+            return;
+        };
+        let Some((command, index)) = job.held.take() else {
+            return;
+        };
+        job.dirty = true;
+        let line = index + 1;
+        match command {
+            HostCommand::Pause => {
+                self.info(format!(
+                    "Pausing at line {line} (requested by the file or a pause point)"
+                ));
+                self.pause_job(now);
+            }
+            HostCommand::Cancel => {
+                self.info(format!("Cancelling at line {line} (requested by the file)"));
+                self.cancel_job(now);
+            }
+            HostCommand::Unknown(text) => {
+                self.warn(format!(
+                    "Line {line}: host command \"@{text}\" is not known; not sent"
+                ));
+            }
+        }
+    }
+
+    /// Pause the host print before each of `lines` (0-based file lines)
+    /// that has not been streamed yet, replacing the earlier pause points.
+    pub(super) fn set_pause_points(&mut self, mut lines: Vec<usize>) {
+        let Some(job) = &mut self.job else {
+            self.warn("No print is running: pause points ignored");
+            return;
+        };
+        if job.info.kind != JobKind::HostPrint || !job.is_active() {
+            self.warn("Pause points work only while the host streams a print");
+            return;
+        }
+        lines.retain(|&l| l >= job.next_line && l < job.info.total_lines);
+        lines.sort_unstable();
+        lines.dedup();
+        job.info.pause_at = lines;
+        let info = job.info.clone();
+        self.shared.update(|s| s.job = Some(info));
     }
 
     /// Periodic progress publishing.
@@ -1071,6 +1179,28 @@ pub(super) fn format_duration(d: Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_commands_in_files() {
+        use HostCommand::*;
+        for (line, want) in [
+            (";@pause", Some(Pause)),
+            ("  ; @pause insert magnets", Some(Pause)),
+            ("@pause", Some(Pause)),
+            ("@PAUSE ; comment", Some(Pause)),
+            ("@cancel", Some(Cancel)),
+            ("@abort", Some(Cancel)),
+            ("@resume", Some(Unknown("resume".into()))),
+            ("@my_macro x=1", Some(Unknown("my_macro x=1".into()))),
+            (";@something", None),
+            ("; pause here", None),
+            ("G1 X10 ; @pause", None),
+            ("M117 @pause", None),
+            ("", None),
+        ] {
+            assert_eq!(HostCommand::parse(line), want, "{line:?}");
+        }
+    }
 
     #[test]
     fn sd_names() {
