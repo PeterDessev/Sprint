@@ -151,6 +151,13 @@ pub static COMMANDS: &[CommandSpec] = &[
         group: Group::Job,
     },
     CommandSpec {
+        name: "recover",
+        aliases: &[],
+        usage: "recover [line]",
+        summary: "Print the loaded file again from the line its failed or cancelled print stopped at (or from a line), after a resume preamble",
+        group: Group::Job,
+    },
+    CommandSpec {
         name: "pause",
         aliases: &[],
         usage: "pause",
@@ -590,6 +597,9 @@ pub enum Command {
     Resume,
     /// `cancel`.
     Cancel,
+    /// `recover [line]`: print the loaded file again from the line its
+    /// last print stopped at, or from this 1-based line.
+    Recover(Option<u64>),
     /// `status`.
     Status,
     /// `temp <celsius|preset> [tool]`.
@@ -1028,6 +1038,19 @@ fn parse_command(spec: &'static CommandSpec, rest: &str) -> Result<Command, Pars
         "pause" => none(Command::Pause),
         "resume" => none(Command::Resume),
         "cancel" => none(Command::Cancel),
+        "recover" => {
+            at_most(spec, &args, 1)?;
+            match arg(0) {
+                None => Ok(Command::Recover(None)),
+                Some(text) => match text.parse::<u64>() {
+                    Ok(n) if n >= 1 => Ok(Command::Recover(Some(n))),
+                    _ => Err(ParseError::usage(
+                        spec,
+                        format!("'{text}' is not a line (1 is the first)"),
+                    )),
+                },
+            }
+        }
         "status" => none(Command::Status),
         "cooldown" => none(Command::Cooldown),
         "firmware" => none(Command::Firmware),
@@ -1572,6 +1595,8 @@ mod tests {
             ("Pause", Command::Pause),
             ("resume", Command::Resume),
             ("cancel", Command::Cancel),
+            ("recover", Command::Recover(None)),
+            ("recover 1200", Command::Recover(Some(1200))),
             ("status", Command::Status),
             (
                 "temp 210",
@@ -2176,7 +2201,7 @@ mod tests {
             ]
         );
         let names: Vec<&str> = command_candidates("RE").iter().map(|c| c.name).collect();
-        assert_eq!(names, ["reset", "resume", "reverse"]);
+        assert_eq!(names, ["reset", "recover", "resume", "reverse"]);
         assert!(command_candidates("zzz").is_empty());
         assert_eq!(command_candidates("").len(), COMMANDS.len());
     }

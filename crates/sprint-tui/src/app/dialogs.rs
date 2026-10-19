@@ -43,6 +43,9 @@ pub(crate) enum Action {
     /// Print the loaded file, which must still be the one at this path
     /// (the question named it), pausing before these 0-based lines.
     StartPrint(PathBuf, Vec<usize>),
+    /// Print the loaded file (still the one at this path) again from this
+    /// 0-based line, after the resume preamble.
+    Recover(PathBuf, usize),
     CancelJob,
     Quit,
     EepromReset,

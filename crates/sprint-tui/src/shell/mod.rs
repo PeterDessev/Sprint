@@ -661,6 +661,7 @@ impl Shell {
                 None => self.out.warn("No file loaded (load <file>)"),
             },
             Command::Print { pause_at } => self.print(&pause_at),
+            Command::Recover(line) => self.recover(line, input),
             Command::Pause => {
                 if self.job_active() {
                     self.printer.pause();
@@ -1208,6 +1209,60 @@ impl Shell {
         }
     }
 
+    /// `recover [line]`: print the loaded file again from the line its
+    /// failed or cancelled print stopped at (or from `line`), after the
+    /// resume preamble, which is shown first and asked about on a
+    /// terminal.
+    fn recover(&mut self, line: Option<u64>, input: &mut dyn LineSource) {
+        let blocker = self
+            .printer
+            .with_state(|s| actions::print_blocker(s, self.file.as_ref()));
+        if let Some(why) = blocker {
+            self.out.warn(why);
+            return;
+        }
+        let Some(file) = self.file.clone() else {
+            return;
+        };
+        let recovery = match self
+            .printer
+            .with_state(|s| actions::recovery(s, Some(&file), line))
+        {
+            Ok(recovery) => recovery,
+            Err(why) => {
+                self.out.error(why);
+                return;
+            }
+        };
+        let mut lines = actions::recovery_lines(&recovery, file.name()).into_iter();
+        if let Some(first) = lines.next() {
+            self.out.plain(first);
+        }
+        for line in lines {
+            self.out.dim(line);
+        }
+        let from = recovery.line + 1;
+        if !self.confirm(
+            input,
+            &format!("Recover {} from line {from}?", file.name()),
+            true,
+        ) {
+            self.out.dim("Not started");
+            return;
+        }
+        self.pause_asked = None;
+        self.layer_pauses_ahead = 0;
+        let options = actions::recovery_options(&file, &self.profile, &recovery);
+        match self.printer.start_print(file.file.clone(), options) {
+            Ok(()) => {
+                self.echo.settle();
+                self.out
+                    .dim(format!("Recovering {} from line {from}", file.name()));
+            }
+            Err(e) => self.out.error(format!("Cannot print: {e}")),
+        }
+    }
+
     /// Print a status line every `secs` seconds until Ctrl+C (and, in a
     /// script, until no job runs).
     fn monitor(&self, secs: Option<f32>, interactive: bool) {
@@ -1587,6 +1642,7 @@ impl Shell {
             | Command::Load(_)
             | Command::Info
             | Command::Print { .. }
+            | Command::Recover(_)
             | Command::Pause
             | Command::Resume
             | Command::Cancel

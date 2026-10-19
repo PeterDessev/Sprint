@@ -13,6 +13,8 @@ use sprint_host::{
     PrinterProfile, PrinterState, TempPreset,
 };
 
+use sprint_host::sprint_gcode::{ResumeOptions, resume_preamble};
+
 use crate::commands::TempTarget;
 use crate::loader::LoadedFile;
 
@@ -486,6 +488,112 @@ pub fn pause_points(
     points.sort_by_key(|p| p.line);
     points.dedup();
     Ok(points)
+}
+
+/// How to print a file again from a line: the line and the resume
+/// preamble that comes first.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Recovery {
+    /// 0-based line the print starts from.
+    pub line: usize,
+    /// The resume preamble ([`resume_preamble`]): heat and wait, fan,
+    /// units and modes, home X and Y (never Z), lift, travel back to where
+    /// `line` starts, restore E and the feedrate.
+    pub preamble: Vec<String>,
+    /// Z is not known to be homed (a reset, a halt, a new connection): the
+    /// preamble declares the nozzle's Z with `G92 Z` (it must still be
+    /// where the print stopped) instead of trusting the firmware's 0.
+    pub declares_z: bool,
+}
+
+/// What `recover [line]` does with the loaded file: start from `line`
+/// (1-based) when given, else from where the last host print of this very
+/// file (the same path) failed or was cancelled
+/// ([`JobInfo::stopped_at`]). Errors are messages for the user.
+pub fn recovery(
+    state: &PrinterState,
+    loaded: Option<&LoadedFile>,
+    line: Option<u64>,
+) -> Result<Recovery, String> {
+    let Some(loaded) = loaded else {
+        return Err("No file loaded: load the file the print stopped in".to_string());
+    };
+    let name = loaded.name();
+    let index = match line {
+        Some(n) => {
+            let index = usize::try_from(n.saturating_sub(1)).unwrap_or(usize::MAX);
+            if index >= loaded.file.len() {
+                return Err(format!(
+                    "line {n} is past the end of {name} ({} lines)",
+                    loaded.file.len()
+                ));
+            }
+            index
+        }
+        None => {
+            let stopped = state.job.as_ref().filter(|j| {
+                j.kind == JobKind::HostPrint
+                    && matches!(j.status, JobStatus::Failed(_) | JobStatus::Cancelled)
+            });
+            let Some(job) = stopped else {
+                return Err(format!(
+                    "No failed or cancelled print to recover (recover <line> starts {name} \
+                     from a line)"
+                ));
+            };
+            if job.path.as_deref() != loaded.file.path() || job.path.is_none() {
+                return Err(format!(
+                    "The print that stopped was {} from another file: load it to recover it",
+                    job.name
+                ));
+            }
+            let Some(index) = job.stopped_at else {
+                return Err(format!(
+                    "{name} did not stop at a known line (recover <line> starts it from a line)"
+                ));
+            };
+            index
+        }
+    };
+    let declares_z = !state.homed.is_some_and(|axes| axes.z);
+    let options = ResumeOptions {
+        restore_z_position: declares_z,
+        ..ResumeOptions::default()
+    };
+    Ok(Recovery {
+        line: index,
+        preamble: resume_preamble(&loaded.file, index, &options),
+        declares_z,
+    })
+}
+
+/// Print options for `recovery` of `loaded` (see [`print_options`]).
+pub fn recovery_options(
+    loaded: &LoadedFile,
+    profile: &PrinterProfile,
+    recovery: &Recovery,
+) -> PrintOptions {
+    PrintOptions {
+        start_line: recovery.line,
+        preamble: recovery.preamble.clone(),
+        ..print_options(loaded, profile)
+    }
+}
+
+/// What a recovery will do, a sentence per line, then its preamble.
+pub fn recovery_lines(recovery: &Recovery, name: &str) -> Vec<String> {
+    let mut lines = vec![format!(
+        "{name} prints again from line {}, after this preamble:",
+        recovery.line + 1
+    )];
+    if recovery.declares_z {
+        lines.push(
+            "Z is not homed: the nozzle must still be where the print stopped (G92 Z declares it)."
+                .to_string(),
+        );
+    }
+    lines.extend(recovery.preamble.iter().map(|l| format!("  {l}")));
+    lines
 }
 
 /// "2, 5, 10": the layers of `points`.
@@ -1241,6 +1349,91 @@ mod tests {
         );
         let fresh = SettingCommand::parse("M900 K0.05").expect("edit");
         assert_eq!(merged_setting(&settings, &fresh).to_gcode(), "M900 K0.05");
+    }
+
+    fn loaded_from_disk(dir: &Path, text: &str) -> LoadedFile {
+        let path = dir.join("part.gcode");
+        std::fs::write(&path, text).expect("write");
+        let file = sprint_host::sprint_gcode::GcodeFile::load(&path).expect("load");
+        let toolpath = sprint_host::sprint_gcode::analyze_simple(
+            &file,
+            &sprint_host::sprint_gcode::AnalyzeOptions::default(),
+        );
+        LoadedFile::new(path, file, toolpath, Default::default())
+    }
+
+    #[test]
+    fn a_stopped_print_is_recovered_from_its_line() {
+        let dir = std::env::temp_dir().join(format!("sprint-tui-recover-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let loaded = loaded_from_disk(
+            &dir,
+            "M104 S200\nM140 S60\nG28\nG90\nM83\nG1 Z0.2 F600\nG1 X10 Y10 E1\nG1 Z0.4\n\
+             G1 X20 Y20 E1\nG1 X30 Y20 E1\n",
+        );
+        let mut state = PrinterState::default();
+        assert!(
+            recovery(&state, None, None)
+                .unwrap_err()
+                .starts_with("No file loaded")
+        );
+        let none = recovery(&state, Some(&loaded), None).expect_err("nothing stopped");
+        assert!(none.contains("No failed or cancelled print"), "{none}");
+        // The print of this very file failed before line 9 (0-based 8).
+        let mut job = JobInfo::new(JobKind::HostPrint, "part.gcode", 10, 100);
+        job.path = loaded.file.path().map(Path::to_path_buf);
+        job.status = JobStatus::Failed("printer halted".into());
+        job.stopped_at = Some(8);
+        state.job = Some(job.clone());
+        let plan = recovery(&state, Some(&loaded), None).expect("recovery");
+        assert_eq!(plan.line, 8);
+        // Z unknown (a halt, a reset): declared where the print stopped.
+        assert!(plan.declares_z);
+        assert!(
+            plan.preamble.iter().any(|l| l == "G92 Z0.4"),
+            "{:?}",
+            plan.preamble
+        );
+        assert!(
+            plan.preamble.iter().any(|l| l == "G28 X Y"),
+            "{:?}",
+            plan.preamble
+        );
+        let lines = recovery_lines(&plan, loaded.name());
+        assert_eq!(
+            lines[0],
+            "part.gcode prints again from line 9, after this preamble:"
+        );
+        assert!(lines[1].starts_with("Z is not homed"), "{lines:?}");
+        let options = recovery_options(&loaded, &PrinterProfile::default(), &plan);
+        assert_eq!(options.start_line, 8);
+        assert_eq!(options.preamble, plan.preamble);
+        // Z homed: the firmware's Z is trusted.
+        state.homed = Some(sprint_host::Axes::ALL);
+        let plan = recovery(&state, Some(&loaded), None).expect("recovery");
+        assert!(!plan.declares_z);
+        assert!(!plan.preamble.iter().any(|l| l.starts_with("G92 Z")));
+        // A line given; past the end is refused.
+        assert_eq!(
+            recovery(&state, Some(&loaded), Some(3)).map(|r| r.line),
+            Ok(2)
+        );
+        let past = recovery(&state, Some(&loaded), Some(99)).expect_err("past the end");
+        assert!(
+            past.contains("past the end of part.gcode (10 lines)"),
+            "{past}"
+        );
+        // The print that stopped was another file of the same name.
+        job.path = Some(dir.join("elsewhere").join("part.gcode"));
+        state.job = Some(job.clone());
+        let other = recovery(&state, Some(&loaded), None).expect_err("another file");
+        assert!(other.contains("from another file"), "{other}");
+        // A completed print has nothing to recover.
+        job.path = loaded.file.path().map(Path::to_path_buf);
+        job.status = JobStatus::Completed;
+        state.job = Some(job);
+        assert!(recovery(&state, Some(&loaded), None).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

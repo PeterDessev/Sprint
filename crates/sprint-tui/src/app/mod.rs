@@ -466,9 +466,24 @@ impl App {
                     .unwrap_or_default();
                 self.good(format!("Finished {name} in {elapsed}"));
             }
-            JobStatus::Cancelled => self.warn(format!("Cancelled {name}")),
-            JobStatus::Failed(why) => self.error(format!("{name} failed: {why}")),
+            JobStatus::Cancelled => {
+                let hint = self.recover_hint();
+                self.warn(format!("Cancelled {name}{hint}"));
+            }
+            JobStatus::Failed(why) => {
+                let hint = self.recover_hint();
+                self.error(format!("{name} failed: {why}{hint}"));
+            }
             _ => {}
+        }
+    }
+
+    /// " (:recover goes on from line N)" when the job that ended is a host
+    /// print of the loaded file that stopped at a known line.
+    fn recover_hint(&self) -> String {
+        match self.job_of_loaded_file().and_then(|(j, _)| j.stopped_at) {
+            Some(line) => format!(" (:recover goes on from line {})", line + 1),
+            None => String::new(),
         }
     }
 
@@ -912,6 +927,75 @@ impl App {
         )));
     }
 
+    /// `:recover [line]`: ask before printing the loaded file again from
+    /// the line its failed or cancelled print stopped at (or from
+    /// `line`), showing the resume preamble that goes first.
+    fn request_recover(&mut self, line: Option<u64>) {
+        let blocker = self
+            .printer
+            .with_state(|s| actions::print_blocker(s, self.file.as_ref()));
+        if let Some(why) = blocker {
+            self.warn(why);
+            return;
+        }
+        let Some(file) = &self.file else {
+            return;
+        };
+        let recovery = self
+            .printer
+            .with_state(|s| actions::recovery(s, Some(file), line));
+        match recovery {
+            Ok(recovery) => {
+                let message = actions::recovery_lines(&recovery, file.name());
+                self.modal = Some(Modal::Confirm(Confirm::new(
+                    format!("Recover from line {}?", recovery.line + 1),
+                    message,
+                    "Recover",
+                    "Not now",
+                    false,
+                    Action::Recover(file.path.clone(), recovery.line),
+                )));
+            }
+            Err(why) => self.error(why),
+        }
+    }
+
+    /// Recover the loaded file from the 0-based `line` when it is still
+    /// the one at `path` (see [`App::request_recover`]).
+    fn start_recovery(&mut self, path: &Path, line: usize) {
+        let Some(file) = &self.file else {
+            self.warn("No file loaded (F3 opens one)");
+            return;
+        };
+        if file.path != path {
+            self.warn(format!(
+                "{} was loaded meanwhile; :recover asks again",
+                file.name()
+            ));
+            return;
+        }
+        let from = u64::try_from(line + 1).unwrap_or(u64::MAX);
+        let recovery = self
+            .printer
+            .with_state(|s| actions::recovery(s, Some(file), Some(from)));
+        let recovery = match recovery {
+            Ok(recovery) => recovery,
+            Err(why) => {
+                self.error(why);
+                return;
+            }
+        };
+        let options = actions::recovery_options(file, &self.profile, &recovery);
+        let name = file.name().to_string();
+        match self.printer.start_print(file.file.clone(), options) {
+            Ok(()) => {
+                self.layer_view = None;
+                self.good(format!("Recovering {name} from line {from}"));
+            }
+            Err(e) => self.error(format!("Cannot print: {e}")),
+        }
+    }
+
     /// Print the loaded file when it is still the one at `path` (another
     /// file may have finished loading while the question was open),
     /// pausing before `pause_lines`.
@@ -1317,6 +1401,7 @@ impl App {
                 self.set_temps(&actions::safe_targets(&targets));
             }
             Action::StartPrint(path, pause_lines) => self.start_print(&path, &pause_lines),
+            Action::Recover(path, line) => self.start_recovery(&path, line),
             Action::CancelJob => {
                 self.printer.cancel();
                 self.warn("Cancelling");
@@ -2032,6 +2117,7 @@ impl App {
                 None => self.warn("No file loaded (F3 opens one)"),
             },
             Command::Print { pause_at } => self.request_print(&pause_at),
+            Command::Recover(line) => self.request_recover(line),
             Command::Pause => {
                 if self.view.job_active() {
                     self.printer.pause();
@@ -2369,6 +2455,7 @@ impl App {
             | Command::Load(_)
             | Command::Info
             | Command::Print { .. }
+            | Command::Recover(_)
             | Command::Pause
             | Command::Resume
             | Command::Cancel

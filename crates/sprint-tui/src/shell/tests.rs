@@ -1648,3 +1648,66 @@ fn print_pauses_before_the_layers_asked_for() {
         Some(JobStatus::Cancelled)
     );
 }
+
+#[test]
+fn recover_prints_a_cancelled_file_again_from_where_it_stopped() {
+    let scratch = Scratch::new("recover");
+    let (mut shell, buffer) = connected_timed();
+    shell.load(&scratch.slow_file());
+    // Nothing stopped yet.
+    script(&mut shell, &["recover"]);
+    assert!(
+        buffer.text().contains("No failed or cancelled print"),
+        "{}",
+        buffer.text()
+    );
+    let mut input = Script::new(["print"], false);
+    shell.run_lines_until_eof_without_leaving(&mut input);
+    wait_for(&shell, "the print", |s| {
+        s.job.as_ref().is_some_and(|j| j.current_line > 20)
+    });
+    shell.printer.cancel();
+    wait_for(&shell, "the cancel", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Cancelled)
+    });
+    let stopped = shell
+        .printer
+        .with_state(|s| s.job.as_ref().and_then(|j| j.stopped_at))
+        .expect("stopped at a line");
+    received(&shell);
+    buffer.clear();
+    // The preamble is shown, then asked about (here: no).
+    let mut input = Script::new(["recover", "n"], true);
+    shell.run_lines_until_eof_without_leaving(&mut input);
+    let text = buffer.text();
+    assert!(
+        text.contains(&format!(
+            "slow.gcode prints again from line {}, after this preamble:",
+            stopped + 1
+        )),
+        "{text}"
+    );
+    assert!(text.contains("  G28 X Y"), "{text}");
+    assert!(text.contains("Not started"), "{text}");
+    // Yes: it prints from there.
+    let mut input = Script::new(["recover", "y"], true);
+    shell.run_lines_until_eof_without_leaving(&mut input);
+    wait_for(&shell, "the recovery", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status.is_active() && j.current_line > stopped)
+    });
+    assert!(
+        buffer
+            .text()
+            .contains(&format!("Recovering slow.gcode from line {}", stopped + 1)),
+        "{}",
+        buffer.text()
+    );
+    let got = received(&shell);
+    assert!(got.iter().any(|c| c == "G28 X Y"), "{got:?}");
+    shell.printer.cancel();
+    wait_for(&shell, "the cancel", |s| !s.job_active());
+}

@@ -1790,6 +1790,72 @@ fn the_palette_prints_with_pauses_before_layers() {
 }
 
 #[test]
+fn a_cancelled_print_is_recovered_from_the_line_it_stopped_at() {
+    let scratch = Scratch::new("recover");
+    let mut app = timed_app();
+    app.open_file(slow_file(&scratch.0));
+    wait_app(&mut app, "the analysis", |a| a.loader.is_none());
+    app.run_action(dialogs::Action::StartPrint(
+        scratch.0.join("slow.gcode"),
+        Vec::new(),
+    ));
+    wait(&mut app, "the print", |s| {
+        s.job.as_ref().is_some_and(|j| j.current_line > 20)
+    });
+    app.printer.cancel();
+    wait(&mut app, "the cancel", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Cancelled)
+    });
+    app.sync();
+    let stopped = app
+        .view
+        .job
+        .as_ref()
+        .and_then(|j| j.stopped_at)
+        .expect("stopped at a line");
+    // The message at the end says how to go on.
+    let hint = format!(":recover goes on from line {}", stopped + 1);
+    assert!(
+        app.toast.as_ref().is_some_and(|t| t.text.contains(&hint)),
+        "{:?}",
+        app.toast
+    );
+    app.run_line("recover");
+    let Some(Modal::Confirm(confirm)) = &app.modal else {
+        panic!("no question: {:?}", app.toast);
+    };
+    assert_eq!(confirm.title, format!("Recover from line {}?", stopped + 1));
+    assert!(
+        confirm.message.iter().any(|l| l.trim() == "G28 X Y"),
+        "the preamble is shown: {:?}",
+        confirm.message
+    );
+    crate::snapshot::save(&render(&mut app, 120, 40), "tui-recover-120x40");
+    received(&app);
+    press(&mut app, KeyCode::Char('y'));
+    wait(&mut app, "the recovery", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status.is_active() && j.current_line > stopped)
+    });
+    assert!(received(&app).iter().any(|c| c == "G28 X Y"));
+    app.printer.cancel();
+    wait(&mut app, "the cancel", |s| !s.job_active());
+    // A line past the end of the file is refused.
+    app.run_line("recover 99999");
+    assert!(app.modal.is_none());
+    assert!(
+        app.toast
+            .as_ref()
+            .is_some_and(|t| t.text.contains("past the end")),
+        "{:?}",
+        app.toast
+    );
+}
+
+#[test]
 fn the_print_confirmation_starts_the_file_it_named() {
     let mut app = connected_app();
     load(&mut app, "calibration-cube.gcode");
