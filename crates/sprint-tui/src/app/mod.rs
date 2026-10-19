@@ -827,19 +827,13 @@ impl App {
 
     /// F10 / Ctrl+Q: quit, asking first while a job runs.
     fn request_quit(&mut self) {
-        if self.view.job_active() {
-            self.modal = Some(Modal::Confirm(Confirm::new(
-                "Quit Sprint?",
-                vec![
-                    "A print is running and Sprint is streaming it.".to_string(),
-                    "Quitting disconnects and the print stops.".to_string(),
-                ],
-                "Quit anyway",
-                "Stay",
-                true,
-                Action::Quit,
-            )));
-        } else {
+        if !self.job_stops_ask(
+            "Quit Sprint?",
+            "Quitting",
+            "Quit anyway",
+            "Stay",
+            Action::Quit,
+        ) {
             self.quit = true;
         }
     }
@@ -957,28 +951,40 @@ impl App {
         }
     }
 
-    /// While a job runs, ask before `action` (which stops it) and return
-    /// true; otherwise return false.
-    fn job_stops_ask(&mut self, title: &str, action: Action) -> bool {
-        if !self.view.job_active() {
+    /// While a job runs, ask before `action`, which closes the connection,
+    /// and return true; otherwise return false. `doing` ("Quitting") names
+    /// the action in the question, `yes` and `no` are the answers.
+    fn job_stops_ask(
+        &mut self,
+        title: &str,
+        doing: &str,
+        yes: &str,
+        no: &str,
+        action: Action,
+    ) -> bool {
+        let Some(job) = self.view.job.as_ref().filter(|j| j.status.is_active()) else {
             return false;
-        }
-        let name = self
-            .view
-            .job
-            .as_ref()
-            .map(|j| j.name.clone())
-            .unwrap_or_default();
-        self.modal = Some(Modal::Confirm(Confirm::new(
-            title,
-            vec![
+        };
+        let name = &job.name;
+        // Only a print Sprint streams stops with the connection: the
+        // printer goes on with a print from its card, unwatched.
+        let message = match job.kind {
+            JobKind::HostPrint => vec![
                 format!("{name} is printing and Sprint streams it."),
-                "Closing the connection stops the print.".to_string(),
+                format!("{doing} closes the connection and the print stops."),
             ],
-            "Stop the print",
-            "Keep printing",
-            true,
-            action,
+            JobKind::SdPrint => vec![
+                format!("{name} prints from the printer's SD card."),
+                format!("It goes on after {}, unwatched;", doing.to_lowercase()),
+                "cancel it first (F7) to stop it.".to_string(),
+            ],
+            JobKind::SdUpload => vec![
+                format!("{name} is being written to the SD card."),
+                format!("{doing} stops the upload and leaves the file incomplete."),
+            ],
+        };
+        self.modal = Some(Modal::Confirm(Confirm::new(
+            title, message, yes, no, true, action,
         )));
         true
     }
@@ -1015,14 +1021,25 @@ impl App {
     fn run_action(&mut self, action: Action) {
         match action {
             Action::Connect(target) => {
-                if !self.job_stops_ask("Connect elsewhere?", Action::ConnectAnyway(target.clone()))
-                {
+                if !self.job_stops_ask(
+                    "Connect elsewhere?",
+                    "Connecting elsewhere",
+                    "Connect anyway",
+                    "Stay connected",
+                    Action::ConnectAnyway(target.clone()),
+                ) {
                     self.connect(target);
                 }
             }
             Action::ConnectAnyway(target) => self.connect(target),
             Action::Disconnect => {
-                if !self.job_stops_ask("Disconnect?", Action::DisconnectAnyway) {
+                if !self.job_stops_ask(
+                    "Disconnect?",
+                    "Disconnecting",
+                    "Disconnect anyway",
+                    "Stay connected",
+                    Action::DisconnectAnyway,
+                ) {
                     self.disconnect();
                 }
             }

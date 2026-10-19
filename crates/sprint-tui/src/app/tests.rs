@@ -1541,3 +1541,39 @@ fn the_statistics_use_the_bounds_measured_at_load() {
     let text = screen(&mut app, 120, 40);
     assert!(text.contains("123.0 x 45.0 x 6.0 mm"), "{text}");
 }
+
+/// The question F10 asks while the view's job is of `kind`.
+fn quit_question(kind: JobKind) -> Vec<String> {
+    let mut app = printing_app();
+    if let Some(job) = app.view.job.as_mut() {
+        job.kind = kind;
+        job.name = "CUBE.GCO".into();
+    }
+    press(&mut app, KeyCode::F(10));
+    let Some(Modal::Confirm(confirm)) = &app.modal else {
+        panic!("quitting during a job asks first: {:?}", app.toast);
+    };
+    assert_eq!(confirm.action, dialogs::Action::Quit);
+    let mut text = confirm.message.clone();
+    // Disconnecting tells the same story.
+    app.modal = None;
+    app.run_line("disconnect");
+    let Some(Modal::Confirm(confirm)) = &app.modal else {
+        panic!("disconnecting during a job asks first: {:?}", app.toast);
+    };
+    text.extend(confirm.message.iter().cloned());
+    text
+}
+
+#[test]
+fn quitting_says_what_happens_to_the_job() {
+    let host = quit_question(JobKind::HostPrint).join(" ");
+    assert!(host.contains("stops"), "{host}");
+    // The printer prints from its card without Sprint: quitting does not
+    // stop that print, and saying so would leave it running unwatched.
+    let sd = quit_question(JobKind::SdPrint).join(" ");
+    assert!(!sd.contains("stops"), "{sd}");
+    assert!(sd.contains("SD card") && sd.contains("goes on"), "{sd}");
+    let upload = quit_question(JobKind::SdUpload).join(" ");
+    assert!(upload.contains("upload"), "{upload}");
+}
