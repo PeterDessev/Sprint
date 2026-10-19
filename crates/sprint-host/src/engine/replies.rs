@@ -12,7 +12,10 @@ use super::meta::{CmdMeta, Meta, PollKind, Source};
 use super::{Engine, Phase};
 use crate::console::ConsoleKind;
 use crate::event::Event;
-use crate::state::{AutotuneState, Heater, HostPrompt, PrinterState, TEMP_HISTORY_LEN, TempSample};
+use crate::state::{
+    AutotuneState, Heater, HostPrompt, PrinterState, TEMP_HISTORY_LEN, TEMP_HISTORY_SECS,
+    TempSample,
+};
 
 /// One temperature history sample per this interval at most.
 const SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
@@ -686,7 +689,12 @@ fn push_sample(s: &mut PrinterState, t: f64) {
             .collect(),
         bed_power: s.temps.bed.as_ref().and_then(|b| b.power),
     };
-    while s.temp_history.len() >= TEMP_HISTORY_LEN {
+    // At most 30 minutes, whatever the report interval.
+    while s.temp_history.len() >= TEMP_HISTORY_LEN
+        || s.temp_history
+            .front()
+            .is_some_and(|old| t - old.t > TEMP_HISTORY_SECS)
+    {
         s.temp_history.pop_front();
     }
     s.temp_history.push_back(sample);
@@ -748,5 +756,21 @@ mod tests {
         assert_eq!(last.hotends, [(20.0, 0.0)]);
         assert_eq!(last.hotend_power, [0.5]);
         assert_eq!(last.bed, None);
+    }
+
+    #[test]
+    fn history_spans_thirty_minutes_at_any_report_rate() {
+        // Firmware auto-reports every 2 s by default: 1800 samples would
+        // be an hour.
+        let mut s = PrinterState::default();
+        s.temps.hotends = vec![reading(20.0, 0.0)];
+        for i in 0..3000 {
+            push_sample(&mut s, f64::from(i) * 2.0);
+        }
+        let first = s.temp_history.front().unwrap().t;
+        let last = s.temp_history.back().unwrap().t;
+        assert!(last - first <= TEMP_HISTORY_SECS, "{first}..{last}");
+        assert!(last - first >= TEMP_HISTORY_SECS - 2.0, "{first}..{last}");
+        assert_eq!(s.temp_history.len(), 901);
     }
 }

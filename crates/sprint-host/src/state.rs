@@ -13,9 +13,12 @@ use sprint_proto::{
 
 use crate::job::JobInfo;
 
-/// Temperature samples kept in [`PrinterState::temp_history`] (30 minutes
-/// at one sample per second).
+/// Most temperature samples kept in [`PrinterState::temp_history`] (30
+/// minutes at one sample per second).
 pub const TEMP_HISTORY_LEN: usize = 1800;
+/// Time span of [`PrinterState::temp_history`]: older samples are dropped
+/// (seconds).
+pub const TEMP_HISTORY_SECS: f64 = 1800.0;
 /// Firmware messages kept in [`PrinterState::firmware_messages`].
 pub const FIRMWARE_MESSAGES_LEN: usize = 50;
 
