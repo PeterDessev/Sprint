@@ -365,6 +365,8 @@ impl App {
         match status {
             JobStatus::Starting => {
                 self.layer_view = None;
+                // No jogging during a job: the overlay goes too.
+                self.jog = None;
                 self.info(format!("Starting {name}"));
             }
             JobStatus::Paused => self.warn(format!("Paused {name} (F6 resumes)")),

@@ -748,6 +748,25 @@ fn f6_pauses_and_resumes_and_f7_cancels_after_asking() {
 }
 
 #[test]
+fn jog_mode_ends_when_a_print_starts() {
+    let mut app = connected_app();
+    load(&mut app, "calibration-cube.gcode");
+    press(&mut app, KeyCode::Char('j'));
+    assert!(app.jog.is_some());
+    // F5 works from jog mode; the job ends jog mode.
+    press(&mut app, KeyCode::F(5));
+    press(&mut app, KeyCode::Char('y'));
+    wait_app(&mut app, "the job", |a| a.view.job.is_some());
+    assert!(
+        app.jog.is_none(),
+        "jog mode outlived the start of the print"
+    );
+    assert!(!screen(&mut app, 120, 40).contains("step 10 mm"));
+    app.printer.cancel();
+    wait(&mut app, "the cancel", |s| !s.job_active());
+}
+
+#[test]
 fn jog_mode_moves_and_homes() {
     let mut app = connected_app();
     received(&app);
