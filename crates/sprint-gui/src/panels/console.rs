@@ -460,10 +460,9 @@ impl ConsolePanel {
     }
 
     fn input_height(&self, ui: &Ui) -> f32 {
-        let lines = self.input.lines().count().clamp(1, 5) as f32;
-        let row = ui.text_style_height(&egui::TextStyle::Monospace);
+        let lines = input_rows(&self.input).clamp(1, INPUT_ROWS) as f32;
         // chips + field + margins
-        30.0 + lines * row + 34.0
+        30.0 + lines * input_row_height(ui) + 34.0
     }
 
     fn header(&mut self, ui: &mut Ui, ctx: &mut AppCtx<'_>, p: &Palette) {
@@ -776,6 +775,7 @@ impl ConsolePanel {
                 if send.clicked() {
                     submit = true;
                 }
+                let many_rows = input_rows(&self.input) > INPUT_ROWS;
                 let edit = egui::TextEdit::multiline(&mut self.input)
                     .id(id)
                     .font(egui::TextStyle::Monospace)
@@ -786,7 +786,38 @@ impl ConsolePanel {
                         Modifiers::SHIFT,
                         Key::Enter,
                     )));
-                let response = ui.add(edit);
+                let response = if many_rows {
+                    // More rows than the panel reserves (a long paste):
+                    // they scroll (to the cursor) inside the field's frame
+                    // instead of running off the panel.
+                    let height = INPUT_ROWS as f32 * input_row_height(ui) + 4.0;
+                    let visuals = ui.visuals();
+                    let stroke = if focused {
+                        visuals.selection.stroke
+                    } else {
+                        visuals.widgets.inactive.bg_stroke
+                    };
+                    egui::Frame::new()
+                        .fill(visuals.text_edit_bg_color())
+                        .stroke(stroke)
+                        .corner_radius(visuals.widgets.inactive.corner_radius)
+                        .show(ui, |ui| {
+                            egui::ScrollArea::vertical()
+                                .id_salt("sprint-console-input-scroll")
+                                .max_height(height)
+                                .min_scrolled_height(height)
+                                .auto_shrink([false, true])
+                                .show(ui, |ui| {
+                                    ui.add(edit.frame(
+                                        egui::Frame::new().inner_margin(Margin::symmetric(4, 2)),
+                                    ))
+                                })
+                                .inner
+                        })
+                        .inner
+                } else {
+                    ui.add(edit)
+                };
                 field_rect = response.rect;
                 if self.focus_input {
                     response.request_focus();
@@ -930,6 +961,19 @@ impl ConsolePanel {
             Err(crossbeam_channel::TryRecvError::Empty) => {}
         }
     }
+}
+
+/// Rows of the command line shown before it scrolls.
+const INPUT_ROWS: usize = 5;
+
+/// The height of a line of the command line.
+fn input_row_height(ui: &Ui) -> f32 {
+    ui.text_style_height(&egui::TextStyle::Monospace)
+}
+
+/// Rows the command line needs for `text` (a trailing newline starts one).
+fn input_rows(text: &str) -> usize {
+    text.split('\n').count()
 }
 
 fn set_cursor_end(ctx: &egui::Context, id: Id, text: &str) {

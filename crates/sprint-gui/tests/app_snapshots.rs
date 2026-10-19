@@ -292,3 +292,23 @@ fn smallest_window_halted_with_a_hidden_prompt() {
     settle(&mut h);
     snapshot(&mut h, "app_smallest_halted");
 }
+
+#[test]
+fn console_with_a_long_paste() {
+    // Twenty pasted lines: the field shows five and scrolls, inside the
+    // panel.
+    let mut h = app(AppOptions::headless(), WINDOW);
+    h.state_mut().set_side_panels(false, true);
+    let text: String = (0..20)
+        .map(|i| {
+            format!(
+                "G1 X{i} Y{i} F3000
+"
+            )
+        })
+        .collect();
+    h.state_mut().console_mut().set_input(&text);
+    h.state_mut().console_mut().focus_input();
+    settle(&mut h);
+    snapshot(&mut h, "app_console_paste");
+}
