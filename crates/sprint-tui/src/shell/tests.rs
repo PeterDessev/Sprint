@@ -1224,3 +1224,60 @@ fn an_sd_print_started_while_asked_still_blocks_the_delete() {
     shell.printer.cancel();
     wait_for(&shell, "the cancel", |s| !s.job_active());
 }
+
+/// Starts the print, then breaks (a bug somewhere in the shell).
+struct BreaksWhilePrinting {
+    lines: std::collections::VecDeque<String>,
+    printer: Printer,
+}
+
+impl LineSource for BreaksWhilePrinting {
+    fn read(&mut self, _prompt: &str) -> Read {
+        if let Some(line) = self.lines.pop_front() {
+            return Read::Line(line);
+        }
+        let deadline = Instant::now() + PATIENCE;
+        while !self
+            .printer
+            .with_state(|s| s.job.as_ref().is_some_and(|j| j.current_line > 5))
+        {
+            assert!(Instant::now() < deadline, "the print did not start");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("the shell broke");
+    }
+
+    fn interactive(&self) -> bool {
+        false
+    }
+}
+
+#[test]
+fn a_panic_in_the_shell_still_cancels_the_print_before_closing() {
+    let scratch = Scratch::new("panic");
+    let (mut shell, _buffer) = connected_timed();
+    let control = shell.printer.sim_control().expect("simulator");
+    let mut gcode = String::from("M104 S200\nM140 S60\n");
+    gcode.push_str(&std::fs::read_to_string(scratch.slow_file()).expect("read"));
+    let path = scratch.0.join("hot.gcode");
+    std::fs::write(&path, gcode).expect("write");
+    shell.load(&path);
+    let printer = shell.printer.clone();
+    let mut input = BreaksWhilePrinting {
+        lines: ["print".to_string()].into(),
+        printer: printer.clone(),
+    };
+    let ended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        shell.run(&mut input);
+    }));
+    assert!(ended.is_err(), "the panic goes on");
+    assert_eq!(
+        printer.with_state(|s| s.job.as_ref().map(|j| j.status.clone())),
+        Some(JobStatus::Cancelled)
+    );
+    assert!(!printer.with_state(|s| s.status.is_open()));
+    // The cancel script turned the heaters off before the link closed.
+    let got = control.received_commands();
+    assert!(got.iter().any(|c| c == "M104 S0"), "{got:?}");
+    assert!(got.iter().any(|c| c == "M140 S0"), "{got:?}");
+}

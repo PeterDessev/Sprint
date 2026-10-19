@@ -196,8 +196,27 @@ impl Shell {
     }
 
     /// Read and run lines until `exit` or the end of the input, then
-    /// disconnect.
+    /// disconnect. A panic (a bug) goes on only after a print the shell
+    /// streams has been cancelled, so that its cancel script turns the
+    /// heaters off before the link closes, as `exit` does.
     pub(crate) fn run(&mut self, input: &mut dyn LineSource) {
+        let printer = self.printer.clone();
+        let ended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.read_and_run(input);
+        }));
+        if let Err(panic) = ended {
+            let _ = session::cancel_before_closing(&printer, session::CANCEL_WAIT, |name| {
+                eprintln!("Cancelling {name} before closing the connection…");
+            });
+            printer.disconnect();
+            std::panic::resume_unwind(panic);
+        }
+        self.printer.disconnect();
+        self.echo.settle();
+    }
+
+    /// Read and run lines until `exit` or the end of the input.
+    fn read_and_run(&mut self, input: &mut dyn LineSource) {
         loop {
             let prompt = self.prompt();
             match input.read(&prompt) {
@@ -216,8 +235,6 @@ impl Shell {
                 }
             }
         }
-        self.printer.disconnect();
-        self.echo.settle();
     }
 
     /// The prompt: the connection and job state at a glance.
