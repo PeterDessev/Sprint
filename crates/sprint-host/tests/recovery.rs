@@ -172,3 +172,45 @@ fn a_halt_closes_the_host_prompt() {
         .any(|e| matches!(e, sprint_host::Event::Prompt(None)));
     assert!(closed, "an Event::Prompt(None) tells the UIs");
 }
+
+#[test]
+fn homing_cut_short_by_a_halt_leaves_the_axes_unhomed() {
+    // An emergency stop during G28 is common (homing that goes wrong): the
+    // G28 released by the halt was never finished.
+    let homing_takes_time = SimConfig {
+        instant_moves: false,
+        ..fast_sim(1.0)
+    };
+    // Typed commands time out soon (a G28 after six times this).
+    let quick = sprint_host::ConnectOptions {
+        ok_timeout_secs: 0.5,
+        ..options()
+    };
+    let printer = connect(homing_takes_time, quick);
+    let control = printer.sim_control().unwrap();
+    printer.send("G28");
+    wait_for(&printer, "the homing to run", |_| {
+        control.received_commands().iter().any(|c| c == "G28")
+    });
+    wait_for(&printer, "the homing in flight", |s| s.link.in_flight > 0);
+    printer.emergency_stop();
+    wait_for(&printer, "halted", |s| s.halted);
+    wait_for(&printer, "the window to clear", |s| s.link.in_flight == 0);
+    assert_eq!(
+        printer.with_state(|s| s.homed),
+        Some(sprint_host::Axes::NONE)
+    );
+    // Commands typed while halted are ignored by the killed firmware;
+    // released after the ok timeout, they did nothing either.
+    printer.send("G28\nM290 Z0.5");
+    wait_for(&printer, "the typed commands in flight", |s| {
+        s.link.in_flight > 0
+    });
+    wait_for(&printer, "the typed commands to time out", |s| {
+        s.link.in_flight == 0 && s.link.queue_len == 0
+    });
+    assert_eq!(
+        printer.with_state(|s| (s.homed, s.babystep_z)),
+        (Some(sprint_host::Axes::NONE), 0.0)
+    );
+}

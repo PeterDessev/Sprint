@@ -569,7 +569,11 @@ impl Engine {
             .job
             .as_ref()
             .is_some_and(|j| j.kind() == JobKind::SdUpload);
-        if let Some(code) = meta.code.filter(|_| !stored) {
+        // Released without an ok because the firmware halted: a G28 cut
+        // short by M112 (or typed while halted) homed nothing, an M290
+        // moved nothing.
+        let not_run = self.halted && rtt.is_none() && (meta.is('G', 28) || meta.is('M', 290));
+        if let Some(code) = meta.code.filter(|_| !stored && !not_run) {
             self.apply_effects(meta, code, now);
         }
         if let Some(line) = meta.job_line() {
