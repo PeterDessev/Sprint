@@ -1253,6 +1253,60 @@ pub fn run_tui(options: TuiOptions) -> anyhow::Result<()>;     // full-screen ra
 pub fn run_shell(options: TuiOptions) -> anyhow::Result<()>;   // pronsole-style line shell
 ```
 
+### Foundation widgets (implemented; `run_tui`/`run_shell` come with the app)
+
+Modules `theme`, `format`, `widgets` (re-exported at the crate root). Every
+widget takes its own small input types, never sprint-host types, so the app
+maps host state onto them; all take `.theme(&Theme)` (default
+`Theme::dark()`) and most a `.block(Block)`. Untrusted text (file comments,
+printer lines) is sanitized when drawn, NaN/inf values show as `--`, and
+any area size, including zero, is safe.
+
+* `theme`: `Theme::{dark, ansi16, monochrome, detect, for_support}` with
+  semantic colors and styles (`console(kind)`, `heater(kind)`,
+  `heater_state(state)`, `feature(f)`/`feature_dim(f)`, `key`, `selected`,
+  `search_highlight`, ...); `ColorSupport::{detect, from_env}`: `NO_COLOR`
+  or `TERM=dumb` -> attributes only, `COLORTERM`/`WT_SESSION`/known
+  `TERM_PROGRAM` or Windows without `TERM` -> 24-bit, `*256color` -> 256,
+  else 16 hand-picked ANSI colors on the terminal background.
+  `ACCENT_RGB` = `#FF7A1A`.
+* `format`: `duration`, `clock`, `length_mm`, `percent`, `temperature`,
+  `trimmed`, `fixed`, `count`, `bytes`, `relative_difference`.
+* `LayerCanvas::new(&Toolpath, layer, progress_line: Option<u32>, bed_size)`
+  (Braille canvas; `fit(LayerFit::{Bed, Object})`, `origin_center`,
+  `show_previous` (ghost), `show_travel`, `show_tool`, `show_label`,
+  `object_bounds`; segments after the progress line are dimmed);
+  `FeatureLegend`; `object_bounds(&Toolpath)` (extrusions without custom
+  G-code, for view fitting).
+* `TempChart::new(&[TempPoint])`, `TempPoint { t, hotends: Vec<(cur, target)>,
+  bed, chamber }` (`window`, `now`, `show_targets`; target 0 = off).
+* `HeaterGauge::new(HeaterKind::{Hotend(n), Bed, Chamber}, current, target)`
+  (`power`, `label`, `label_width`, `bar_width`); `HeaterState::classify`
+  (within 2 °C = at target).
+* `JobProgress::new(name, progress)` (`elapsed`, `eta`, `layer((index,
+  total))`, `status(text, JobTone)`), 1-, 2- or 3-row layouts.
+* `ConsoleView::new(&[ConsoleLine])`, a `StatefulWidget` over
+  `ConsoleState` (follows the tail; `scroll_up/down`, `page_up/down`,
+  `scroll_to_top`, `follow`, `handle_key`, `handle_mouse`; scrolled back,
+  the view stays on the same lines as new ones arrive, anchored by line
+  count, so a log trimmed at capacity drifts); `show_auto`, `search`,
+  `show_tags`. `ConsoleLine { kind: ConsoleKind, text, auto }` mirrors the
+  host's `ConsoleEntry`.
+* `CommandInput` (state; `handle_key(KeyEvent) -> InputEvent::{Ignored,
+  Handled, Submitted(String)}`, `insert_str` for pastes, history,
+  `with_completer`), `CommandLine` (draws it; `cursor_position(area)` for
+  `Frame::set_cursor_position`), `CompletionPopup` (`area(input_area,
+  bounds)`), `Candidate`, `gcode_candidates` (from `search_gcode`). Key
+  releases are `Ignored`, AltGr (Ctrl+Alt) types characters.
+* `KeyHints::new([(key, action)])`; `HelpOverlay::new(&[HelpSection])`,
+  rendered over the whole screen (it centers and clears its own box).
+* `StatsPanel::{new(&Stats, &SlicerMetadata), from_toolpath}`,
+  `summary_rows`, `feature_rows`, `part_bounds` (extrusions without custom
+  G-code, skirt/brim and wipe tower); `sprint analyze` prints the same rows.
+
+`examples/widgets_demo.rs` shows every widget on a simulated print; its
+tests draw each screen with a `TestBackend`.
+
 ## sprint (binary)
 
 ```
