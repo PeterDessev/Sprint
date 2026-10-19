@@ -230,6 +230,43 @@ fn sd_card_empty_states() {
 }
 
 #[test]
+fn a_cancelled_sd_print_does_not_keep_the_card_busy() {
+    // The host keeps the cancelled print's last progress report.
+    let mut state = printing_state();
+    if let Some(job) = state.job.as_mut() {
+        job.status = JobStatus::Cancelled;
+    }
+    let mut h = tab(Theme::Dark, (1000.0, 760.0), state);
+    let disabled = |h: &H<'_>, label: &str| h.get_by_label(label).accesskit_node().is_disabled();
+    for label in ["Release", "Initialize", "Delete calibration_cube.gcode"] {
+        assert!(!disabled(&h, label), "{label}");
+    }
+    // A later host print does not turn the old report into a print
+    // started on the printer.
+    if let Some(s) = h.state_mut().state.as_mut() {
+        let mut job = JobInfo::new(JobKind::HostPrint, "cube.gcode", 10, 100);
+        job.status = JobStatus::Completed;
+        s.job = Some(job);
+    }
+    h.run_ok();
+    assert!(
+        h.query_by_label_contains("Started on the printer")
+            .is_none()
+    );
+    assert!(!disabled(&h, "Release"));
+    // A new report is a print started on the printer's display.
+    if let Some(s) = h.state_mut().state.as_mut() {
+        s.sd.printing = Some((800_000, 1_843_271));
+    }
+    h.run_ok();
+    assert!(
+        h.query_by_label_contains("Started on the printer")
+            .is_some()
+    );
+    assert!(disabled(&h, "Release"));
+}
+
+#[test]
 fn odd_file_lists_never_panic() {
     let mut state = sd_state();
     state.sd.files = vec![
@@ -301,6 +338,9 @@ fn listing_printing_and_cancelling_on_the_simulator() {
     let status = printer.with_state(|s| s.job.as_ref().map(|j| j.status.clone()));
     assert_eq!(status, Some(JobStatus::Cancelled));
     assert!(received(&printer, "M524"));
+    // The card is free again.
+    h.run_ok();
+    assert!(!h.get_by_label("Release").accesskit_node().is_disabled());
     printer.disconnect();
 }
 

@@ -80,6 +80,11 @@ pub struct SdCardTab {
     auto_requested: bool,
     /// The card was released (M22) from here.
     released: bool,
+    /// The SD progress the host still reports after an SD print ended (a
+    /// cancelled print's last report stays in `sd.printing`): not a print.
+    stale_progress: Option<(u64, u64)>,
+    /// The card's print progress this frame, stale reports left out.
+    card_printing: Option<(u64, u64)>,
 }
 
 /// The SD job in the state, if the last job was one.
@@ -172,8 +177,30 @@ impl SdCardTab {
         self.released = false;
     }
 
+    /// The card's print progress: `sd.printing`, unless it is what an SD
+    /// print that has ended last reported. The host keeps that report when
+    /// the print is cancelled, which would otherwise read as a print
+    /// started on the printer and keep the card busy for good.
+    fn live_card_progress(&mut self, state: &PrinterState) -> Option<(u64, u64)> {
+        let reported = state.sd.printing;
+        if reported.is_none() {
+            self.stale_progress = None;
+            return None;
+        }
+        let ended = state
+            .job
+            .as_ref()
+            .is_some_and(|j| j.kind == JobKind::SdPrint && j.status.is_finished());
+        if ended && self.stale_progress.is_none() {
+            self.stale_progress = reported;
+        }
+        // A new report (a print started on the printer) is live again.
+        reported.filter(|p| Some(*p) != self.stale_progress)
+    }
+
     /// Connection bookkeeping, the automatic listing and print-after-upload.
     fn track(&mut self, ctx: &mut AppCtx<'_>) {
+        self.card_printing = self.live_card_progress(ctx.state);
         if !ctx.connected() {
             self.auto_requested = false;
             self.print_after_upload = None;
@@ -303,7 +330,7 @@ impl SdCardTab {
         }
         // Printing from the card without a host job (started on the
         // printer's display).
-        if let Some((done, total)) = state.sd.printing.filter(|(_, t)| *t > 0) {
+        if let Some((done, total)) = self.card_printing.filter(|(_, t)| *t > 0) {
             let name = state
                 .sd
                 .selected
@@ -446,7 +473,8 @@ impl SdCardTab {
         let sd = &state.sd;
         let connected = ctx.connected();
         let job_active = ctx.job_active();
-        let sd_busy = sd_job(state).is_some_and(|j| j.status.is_active()) || sd.printing.is_some();
+        let sd_busy =
+            sd_job(state).is_some_and(|j| j.status.is_active()) || self.card_printing.is_some();
         // Edited in the header, read by the table.
         let filter = std::cell::RefCell::new(std::mem::take(&mut self.filter));
         Card::new("Files")
