@@ -622,6 +622,40 @@ fn the_menu_bar_runs_commands() {
     assert!(!h.state().ui_prefs().show_console);
 }
 
+/// Type `text` into the console's command line and press Enter.
+fn type_command(h: &mut Harness<'_, SprintApp>, text: &str) {
+    h.state_mut().console_mut().set_input(text);
+    h.state_mut().console_mut().focus_input();
+    settle(h);
+    h.key_press(Key::Enter);
+    settle(h);
+}
+
+#[test]
+fn console_history_steps_through_single_word_commands() {
+    let mut h = app(AppOptions::headless(), WINDOW);
+    // Not connected: the commands are remembered (and given back).
+    for command in ["M503", "G28"] {
+        type_command(&mut h, command);
+    }
+    assert_eq!(h.state().console().history(), ["M503", "G28"]);
+    h.state_mut().console_mut().set_input("");
+    h.state_mut().console_mut().focus_input();
+    settle(&mut h);
+    // A recalled command is also a known G-code: the arrows must keep
+    // walking the history instead of the completion list.
+    for (key, expected) in [
+        (Key::ArrowUp, "G28"),
+        (Key::ArrowUp, "M503"),
+        (Key::ArrowDown, "G28"),
+        (Key::ArrowDown, ""),
+    ] {
+        h.key_press(key);
+        settle(&mut h);
+        assert_eq!(h.state().console().input(), expected, "after {key:?}");
+    }
+}
+
 #[test]
 fn the_console_completes_gcode() {
     let mut h = app(AppOptions::headless(), WINDOW);

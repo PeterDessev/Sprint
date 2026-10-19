@@ -380,6 +380,11 @@ impl ConsolePanel {
             Some(i) => self.history[i].clone(),
             None => std::mem::take(&mut self.draft),
         };
+        // Recalled text is not being typed: no completion list for it, so
+        // the arrows keep walking the history (a recalled "G28" is a known
+        // code and would otherwise capture them). Typing brings it back.
+        self.completion.hidden_for = Some(self.input.clone());
+        self.completion.navigated = false;
     }
 
     /// Draw the panel.
