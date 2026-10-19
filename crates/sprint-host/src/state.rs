@@ -254,7 +254,10 @@ pub struct SdState {
     /// M27 once a report told it about one). `None` once the card reports
     /// it is not printing or done, Sprint's SD print ends, the printer
     /// halts or resets, the connection closes, or no report has confirmed
-    /// it for three report intervals (6 s by default).
+    /// it for three report intervals (6 s by default) while no M27 waits
+    /// for its answer (a heat-up in the card's file holds it back); during
+    /// Sprint's own SD print it stays until the job ends. A print paused
+    /// on the card (M25) still reports its progress.
     pub printing: Option<(u64, u64)>,
     /// File selected with M23.
     pub selected: Option<String>,
