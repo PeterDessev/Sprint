@@ -136,8 +136,12 @@ impl GcodeFile {
     pub fn is_empty(&self) -> bool;
     pub fn line(&self, index: usize) -> &str;   // raw line, no line ending; "" if out of range
     pub fn command(&self, index: usize) -> Option<std::borrow::Cow<'_, str>>; // clean_line(line(index))
-    pub fn byte_len(&self) -> usize;
-    pub fn byte_offset(&self, index: usize) -> usize; // offset of line start
+    pub fn byte_len(&self) -> usize;                  // length of text()
+    pub fn byte_offset(&self, index: usize) -> usize; // offset of line start in text()
+    /// Size as stored (on disk): report this as the file size.
+    pub fn source_len(&self) -> u64;
+    /// Offset of line start in the source bytes (progress through the file).
+    pub fn source_offset(&self, index: usize) -> u64;
     pub fn lines(&self) -> impl Iterator<Item = &str> + '_;
     /// Number of lines that produce a command (precomputed at load).
     pub fn command_count(&self) -> usize;
@@ -273,7 +277,12 @@ pub fn resume_preamble(file: &GcodeFile, line: usize, options: &ResumeOptions) -
   `words`) and pass the LCD message after them through verbatim (in
   `text`): `"m0 s30 Swap filament"` -> `"M0 S30 Swap filament"`.
 * `file`: `GcodeFile::{from_bytes, line_at_offset}`; `Clone + Default`,
-  compact `Debug`; a leading BOM is dropped.
+  compact `Debug`; a leading BOM is dropped. Lossy decoding and the dropped
+  BOM make `text()` differ in length from the source, so `byte_len`,
+  `byte_offset` and `line_at_offset` index the decoded text (for searching
+  it) while `source_len` and `source_offset` count source bytes: file sizes
+  in reports and file info, `JobInfo::bytes_total`/`bytes_done`. The BOM
+  counts as part of line 0 (`source_offset(0) == 0`).
 * `content`: any file loads, so `GcodeFile::content_kind()` says what it
   is, sniffed from the first 64 KiB of the source bytes at load:
   `ContentKind::{Gcode, Empty, AsciiStl, BinaryStl, Zip3mf, Obj, Step,

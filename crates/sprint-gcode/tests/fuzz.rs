@@ -356,7 +356,20 @@ fn analysis_never_panics_on_random_bytes() {
                 }
             })
             .collect();
-        let file = GcodeFile::from_bytes(format!("bytes-{i}"), bytes);
+        let file = GcodeFile::from_bytes(format!("bytes-{i}"), bytes.clone());
+        // Line starts in the source are where the source's lines start.
+        assert_eq!(file.source_len(), bytes.len() as u64);
+        let mut previous = 0;
+        for j in 0..file.len() {
+            let at = file.source_offset(j);
+            assert!(at >= previous && at <= file.source_len(), "{i}/{j}");
+            let before = usize::try_from(at).ok().and_then(|a| a.checked_sub(1));
+            assert!(
+                before.is_none_or(|b| matches!(bytes.get(b), Some(b'\n' | b'\r'))),
+                "{i}/{j}"
+            );
+            previous = at;
+        }
         let mut cancel_after = rng.below(20);
         let result = analyze(&file, &AnalyzeOptions::default(), &mut |_| {
             cancel_after = cancel_after.saturating_sub(1);

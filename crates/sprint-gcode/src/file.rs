@@ -13,7 +13,10 @@ use crate::parse::{clean_line, has_command};
 /// of start offsets built in a single pass at load time. `\n`, `\r\n` and
 /// lone `\r` line endings are all recognised, and a final line without a
 /// newline is kept. Invalid UTF-8 is replaced (lossy decoding) and a leading
-/// byte-order mark is dropped.
+/// byte-order mark is dropped, so the text can be shorter or longer than the
+/// source: [`GcodeFile::byte_len`] and [`GcodeFile::byte_offset`] index the
+/// text, [`GcodeFile::source_len`] and [`GcodeFile::source_offset`] the
+/// source bytes (sizes and progress shown to the user).
 ///
 /// Any file loads, whatever it contains; [`GcodeFile::content_kind`] says
 /// whether it actually is G-code (front ends refuse to stream 3D models,
@@ -28,6 +31,20 @@ pub struct GcodeFile {
     command_count: usize,
     /// Sniffed from the source bytes at load time.
     content: ContentKind,
+    /// Size of the source in bytes (on disk), BOM and invalid bytes included.
+    source_len: u64,
+    /// Maps text offsets to source offsets: from `text_start` on, the source
+    /// offset is `text offset + delta` (until the next entry). Empty when
+    /// both are the same; more than one entry only when lossy decoding
+    /// changed lengths.
+    offset_map: Vec<OffsetShift>,
+}
+
+/// One entry of [`GcodeFile`]'s text-to-source offset map.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct OffsetShift {
+    text_start: usize,
+    delta: i64,
 }
 
 impl Default for GcodeFile {
@@ -39,6 +56,8 @@ impl Default for GcodeFile {
             starts: vec![0],
             command_count: 0,
             content: ContentKind::Empty,
+            source_len: 0,
+            offset_map: Vec::new(),
         }
     }
 }
@@ -49,7 +68,7 @@ impl fmt::Debug for GcodeFile {
             .field("name", &self.name)
             .field("path", &self.path)
             .field("lines", &self.len())
-            .field("bytes", &self.text.len())
+            .field("bytes", &self.source_len)
             .field("commands", &self.command_count)
             .field("content", &self.content)
             .finish()
@@ -71,26 +90,51 @@ impl GcodeFile {
         Ok(file)
     }
 
-    /// Build from text already in memory.
+    /// Build from text already in memory (its UTF-8 bytes are the source).
     pub fn from_text(name: impl Into<String>, text: impl Into<String>) -> GcodeFile {
         let text = text.into();
         let content = sniff_content(text.as_bytes(), text.len() as u64);
-        GcodeFile::build(name.into(), text, content)
+        let source_len = text.len() as u64;
+        GcodeFile::build(name.into(), text, content, source_len, Vec::new())
     }
 
     /// Build from raw bytes (lossy UTF-8).
     pub fn from_bytes(name: impl Into<String>, bytes: Vec<u8>) -> GcodeFile {
         let content = sniff_content(&bytes, bytes.len() as u64);
-        let text = match String::from_utf8(bytes) {
-            Ok(s) => s,
-            Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+        let source_len = bytes.len() as u64;
+        let (text, shifts) = match String::from_utf8(bytes) {
+            Ok(s) => (s, Vec::new()),
+            Err(e) => decode_lossy(e.as_bytes()),
         };
-        GcodeFile::build(name.into(), text, content)
+        GcodeFile::build(name.into(), text, content, source_len, shifts)
     }
 
-    fn build(name: String, mut text: String, content: ContentKind) -> GcodeFile {
+    /// `shifts` maps offsets of `text` (before the BOM is dropped) to source
+    /// offsets where lossy decoding changed lengths.
+    fn build(
+        name: String,
+        mut text: String,
+        content: ContentKind,
+        source_len: u64,
+        shifts: Vec<OffsetShift>,
+    ) -> GcodeFile {
+        let mut bom = 0usize;
         if text.starts_with('\u{FEFF}') {
-            text.drain(..'\u{FEFF}'.len_utf8());
+            bom = '\u{FEFF}'.len_utf8();
+            text.drain(..bom);
+        }
+        // Dropping the BOM moves the text, not the source.
+        let bom_delta = bom as i64;
+        let mut offset_map = Vec::new();
+        if bom > 0 || !shifts.is_empty() {
+            offset_map.push(OffsetShift {
+                text_start: 0,
+                delta: bom_delta,
+            });
+            offset_map.extend(shifts.into_iter().map(|s| OffsetShift {
+                text_start: s.text_start.saturating_sub(bom),
+                delta: s.delta + bom_delta,
+            }));
         }
         let (starts, command_count) = index_lines(&text);
         GcodeFile {
@@ -100,6 +144,8 @@ impl GcodeFile {
             starts,
             command_count,
             content,
+            source_len,
+            offset_map,
         }
     }
 
@@ -157,15 +203,50 @@ impl GcodeFile {
         clean_line(self.line(index))
     }
 
-    /// Size of the text in bytes.
+    /// Size of the decoded text in bytes (what [`GcodeFile::text`] holds).
+    /// For the size of the file as stored, use [`GcodeFile::source_len`].
     pub fn byte_len(&self) -> usize {
         self.text.len()
     }
 
-    /// Byte offset of the start of line `index` (`byte_len()` when out of
-    /// range).
+    /// Offset in [`GcodeFile::text`] of the start of line `index`
+    /// (`byte_len()` when out of range). For progress through the file as
+    /// stored, use [`GcodeFile::source_offset`].
     pub fn byte_offset(&self, index: usize) -> usize {
         self.starts.get(index).copied().unwrap_or(self.text.len())
+    }
+
+    /// Size of the source in bytes: the file on disk (or the bytes or text
+    /// it was built from), including a byte-order mark and invalid UTF-8
+    /// that the text drops or replaces. Report this as the file size.
+    pub fn source_len(&self) -> u64 {
+        self.source_len
+    }
+
+    /// Offset in the source bytes of the start of line `index`
+    /// (`source_len()` when out of range): the bytes done once streaming
+    /// has reached line `index`.
+    /// A byte-order mark counts as part of the first line, so line 0 starts
+    /// at 0.
+    pub fn source_offset(&self, index: usize) -> u64 {
+        if index >= self.len() {
+            return self.source_len;
+        }
+        if index == 0 {
+            return 0;
+        }
+        let text_offset = self.byte_offset(index);
+        let n = self
+            .offset_map
+            .partition_point(|s| s.text_start <= text_offset);
+        let delta = n
+            .checked_sub(1)
+            .and_then(|i| self.offset_map.get(i))
+            .map_or(0, |s| s.delta);
+        let offset = i64::try_from(text_offset)
+            .unwrap_or(i64::MAX)
+            .saturating_add(delta);
+        u64::try_from(offset).unwrap_or(0).min(self.source_len)
     }
 
     /// Index of the line containing byte `offset` (clamped to the last line).
@@ -183,6 +264,29 @@ impl GcodeFile {
     pub fn command_count(&self) -> usize {
         self.command_count
     }
+}
+
+/// Lossy UTF-8 decoding (each maximal invalid sequence becomes one U+FFFD,
+/// as with `String::from_utf8_lossy`) that records where text offsets stop
+/// matching source offsets.
+fn decode_lossy(bytes: &[u8]) -> (String, Vec<OffsetShift>) {
+    let mut text = String::with_capacity(bytes.len() + 16);
+    let mut shifts = Vec::new();
+    let mut source = 0usize;
+    for chunk in bytes.utf8_chunks() {
+        text.push_str(chunk.valid());
+        source += chunk.valid().len();
+        let invalid = chunk.invalid();
+        if !invalid.is_empty() {
+            text.push(char::REPLACEMENT_CHARACTER);
+            source += invalid.len();
+            shifts.push(OffsetShift {
+                text_start: text.len(),
+                delta: source as i64 - text.len() as i64,
+            });
+        }
+    }
+    (text, shifts)
 }
 
 /// Single pass over the text: line starts (plus sentinel) and the number of
@@ -290,6 +394,50 @@ mod tests {
     }
 
     #[test]
+    fn sizes_and_offsets_count_source_bytes() {
+        // Audit A41: a BOM and invalid UTF-8 changed the reported size.
+        let mut bytes = b"\xEF\xBB\xBFG28\n".to_vec();
+        bytes.extend_from_slice(b"M117 caf\xE9 \xFF\xFE!\r\n");
+        bytes.extend_from_slice(b"; \xC3\n\nG1 X1\n");
+        let f = GcodeFile::from_bytes("x", bytes.clone());
+        assert_eq!(f.source_len(), bytes.len() as u64);
+        assert_ne!(f.byte_len(), bytes.len());
+        assert_eq!(f.len(), 5);
+        // Every line starts where it starts on disk.
+        let mut expected = vec![0u64];
+        for (i, &b) in bytes.iter().enumerate() {
+            if b == b'\n' && i + 1 < bytes.len() {
+                expected.push(i as u64 + 1);
+            }
+        }
+        let offsets: Vec<u64> = (0..f.len()).map(|i| f.source_offset(i)).collect();
+        assert_eq!(offsets, expected);
+        assert_eq!(f.source_offset(f.len()), f.source_len());
+        assert_eq!(f.source_offset(usize::MAX), f.source_len());
+        assert!(format!("{f:?}").contains(&format!("bytes: {}", bytes.len())));
+        // Text offsets still index the decoded text.
+        assert_eq!(f.text().get(f.byte_offset(4)..), Some("G1 X1\n"));
+        // Valid UTF-8 without BOM: both the same.
+        let text = "G28\n; caf\u{e9}\nG1 X1";
+        let f = GcodeFile::from_bytes("y", text.as_bytes().to_vec());
+        assert_eq!(f.source_len(), text.len() as u64);
+        assert_eq!(f.source_len(), f.byte_len() as u64);
+        for i in 0..=f.len() {
+            assert_eq!(f.source_offset(i), f.byte_offset(i) as u64);
+        }
+        // A BOM only: the first line starts at 0, the others 3 bytes later.
+        let f = GcodeFile::from_text("z", "\u{FEFF}G28\nG1 X1\n");
+        assert_eq!((f.source_len(), f.byte_len()), (13, 10));
+        assert_eq!((f.source_offset(0), f.source_offset(1)), (0, 7));
+        assert_eq!(f.byte_offset(1), 4);
+        // Only invalid bytes.
+        let f = GcodeFile::from_bytes("w", vec![0xFF; 10]);
+        assert_eq!((f.source_len(), f.len()), (10, 1));
+        assert_eq!(GcodeFile::default().source_len(), 0);
+        assert_eq!(GcodeFile::default().source_offset(0), 0);
+    }
+
+    #[test]
     fn load_from_disk() {
         let dir = std::env::temp_dir().join(format!("sprint-gcode-file-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
@@ -299,6 +447,7 @@ mod tests {
         let f = GcodeFile::load(&path);
         assert!(f.is_ok());
         if let Ok(f) = f {
+            assert_eq!(f.source_len(), 12);
             assert_eq!(f.name(), "load-test.gcode");
             assert_eq!(f.path(), Some(path.as_path()));
             assert_eq!(lines(&f), vec!["G28", "G1 X5"]);
