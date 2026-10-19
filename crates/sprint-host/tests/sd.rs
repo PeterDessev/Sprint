@@ -260,6 +260,27 @@ fn missing_sd_file_fails_the_job() {
 }
 
 #[test]
+fn an_sd_print_without_a_card_fails_instead_of_hanging() {
+    let printer = connect(fast_sim(50.0), options());
+    printer.send("M22"); // release the card: "No media" from now on
+    wait_idle(&printer);
+    printer.start_sd_print("calibration_cube.gcode").unwrap();
+    wait_for_within(
+        &printer,
+        "the job to fail",
+        std::time::Duration::from_secs(5),
+        |s| !s.job_active(),
+    );
+    let s = printer.snapshot();
+    assert!(
+        matches!(s.job.as_ref().map(|j| &j.status), Some(JobStatus::Failed(m)) if m.contains("SD card")),
+        "{:?}",
+        s.job
+    );
+    assert_eq!(s.sd.card_present, Some(false));
+}
+
+#[test]
 fn deleting_a_file_updates_the_listing() {
     let printer = connect(fast_sim(50.0), options());
     printer.request_sd_files();

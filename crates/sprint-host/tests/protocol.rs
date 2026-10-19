@@ -594,6 +594,67 @@ fn an_engine_panic_leaves_a_consistent_state() {
     wait_for(&printer, "connected again", |s| s.is_connected());
 }
 
+/// An SD print on firmware that reports `polls` progress lines and then
+/// "Not SD printing" (its "Done printing file" was lost, or the print was
+/// stopped at the printer).
+fn sd_print_that_stops_reporting(progress: &'static [u64]) -> Option<JobStatus> {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut fw = Mini::new(Arc::clone(&log));
+    let mut polls = 0usize;
+    let (link, _) = fake(
+        |out| out.line("start"),
+        move |line, out| {
+            let Some(cmd) = fw.accept(line, out) else {
+                return;
+            };
+            match cmd.as_str() {
+                "M23 part.gco" => {
+                    out.line("File opened: PART.GCO Size: 1000");
+                    out.line("File selected");
+                }
+                "M27" => {
+                    match progress.get(polls) {
+                        Some(done) => out.line(&format!("SD printing byte {done}/1000")),
+                        None => out.line("Not SD printing"),
+                    }
+                    polls += 1;
+                }
+                _ => {}
+            }
+            out.line("ok");
+        },
+    );
+    let printer = connect_fake(
+        link,
+        ConnectOptions {
+            temp_poll_secs: 0.0,
+            query_on_connect: false,
+            ..options()
+        },
+    );
+    wait_for(&printer, "connected", |s| s.is_connected());
+    printer.start_sd_print("part.gco").unwrap();
+    wait_for_within(&printer, "the job to end", Duration::from_secs(10), |s| {
+        !s.job_active()
+    });
+    printer.with_state(|s| s.job.as_ref().map(|j| j.status.clone()))
+}
+
+#[test]
+fn an_sd_print_that_is_no_longer_running_ends() {
+    // Everything was read: the "Done printing file" line was lost.
+    assert_eq!(
+        sd_print_that_stops_reporting(&[400, 1000]),
+        Some(JobStatus::Completed)
+    );
+    // Stopped halfway (at the printer): not a success.
+    let status = sd_print_that_stops_reporting(&[400]);
+    assert!(
+        matches!(&status, Some(JobStatus::Failed(m)) if m.contains("not printing")),
+        "{status:?}"
+    );
+}
+
 #[test]
 fn sd_status_is_polled_without_auto_reports() {
     let log = Arc::new(Mutex::new(Vec::new()));

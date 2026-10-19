@@ -373,8 +373,13 @@ impl Engine {
                 self.shared.emit(Event::SdFiles(files));
             }
             SdReply::CardOk => self.shared.update(|s| s.sd.card_present = Some(true)),
-            SdReply::CardFailed(_) | SdReply::NoCard => {
+            SdReply::CardFailed(message) => {
                 self.shared.update(|s| s.sd.card_present = Some(false));
+                self.sd_card_missing(&message);
+            }
+            SdReply::NoCard => {
+                self.shared.update(|s| s.sd.card_present = Some(false));
+                self.sd_card_missing("no SD card");
             }
             SdReply::Opened { name, size } => {
                 self.shared.update(|s| s.sd.selected = Some(name));
@@ -389,7 +394,10 @@ impl Engine {
                 self.shared.update(|s| s.sd.printing = Some((done, total)));
                 self.sd_progress(done, total);
             }
-            SdReply::NotPrinting => self.shared.update(|s| s.sd.printing = None),
+            SdReply::NotPrinting => {
+                self.shared.update(|s| s.sd.printing = None);
+                self.sd_not_printing(now);
+            }
             SdReply::DonePrinting => {
                 self.shared.update(|s| s.sd.printing = None);
                 self.sd_done(now);

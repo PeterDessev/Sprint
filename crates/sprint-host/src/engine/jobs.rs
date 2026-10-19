@@ -782,6 +782,37 @@ impl Engine {
         }
     }
 
+    /// "No media" / "SD init fail": an SD print or upload that is starting
+    /// cannot run.
+    pub(super) fn sd_card_missing(&mut self, message: &str) {
+        let starting = self.job.as_ref().is_some_and(|j| {
+            matches!(j.info.kind, JobKind::SdPrint | JobKind::SdUpload)
+                && j.info.status == JobStatus::Starting
+        });
+        if starting {
+            self.fail_job(message);
+        }
+    }
+
+    /// "Not SD printing" while an SD print runs: the printer has no file
+    /// open, so the print is over (or never started) and "Done printing
+    /// file" did not arrive. Complete it if the whole file was reported
+    /// read, fail it otherwise, rather than polling forever.
+    pub(super) fn sd_not_printing(&mut self, now: Instant) {
+        let Some(job) = &self.job else {
+            return;
+        };
+        if job.info.kind != JobKind::SdPrint || job.info.status != JobStatus::Printing {
+            return;
+        }
+        if job.info.bytes_total > 0 && job.info.bytes_done >= job.info.bytes_total {
+            self.set_job_status(JobStatus::Completed, now);
+        } else {
+            let reason = format!("the printer is not printing {}", job.info.name);
+            self.fail_job(&reason);
+        }
+    }
+
     /// M524 was not understood: stop with M25 + M26 S0 instead.
     pub(super) fn sd_abort_unsupported(&mut self) {
         let Some(job) = &mut self.job else {
