@@ -349,6 +349,11 @@ impl SdCardTab {
         let state = ctx.state;
         if ctx.file.is_none() {
             Some("Open a G-code file to upload it")
+        } else if let Some(problem) = ctx
+            .file
+            .and_then(|f| crate::panels::job_bar::content_blocker(&f.file))
+        {
+            Some(problem)
         } else if let Some(reason) = ctx.command_blocker() {
             Some(reason)
         } else if kit::lacks_capability(state, "SDCARD") || kit::lacks_capability(state, "SD_WRITE")

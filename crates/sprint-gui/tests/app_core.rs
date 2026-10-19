@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use app_support::{WINDOW, app, expect, fast_sim, settle, sim_options};
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 use sprint_gui::app::{AppOptions, SprintApp};
 use sprint_gui::context::AppAction;
 use sprint_host::sprint_sim::SimConfig;
@@ -302,6 +302,47 @@ fn a_print_is_matched_to_the_loaded_file_by_path() {
     if let Some(line) = progress_line(h.state()) {
         assert!(line.is_some(), "no progress on the printed file");
     }
+    drop(h);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn files_that_are_not_gcode_are_never_printed() {
+    let dir = temp_dir("content");
+    let mut h = app(sim_options(), WINDOW);
+    connect(&mut h);
+    // A model saved under a G-code name: refused, saying what it is.
+    let stl = dir.join("cube.gcode");
+    std::fs::write(
+        &stl,
+        "solid cube\n facet normal 0 0 1\n  outer loop\n   vertex 0 0 0\n   vertex 1 0 0\n   vertex 0 1 0\n  endloop\n endfacet\nendsolid cube\n",
+    )
+    .expect("write");
+    h.state_mut().push_action(AppAction::LoadFile(stl));
+    expect(&mut h, "the refusal", |app| {
+        app.toasts().iter().any(|t| {
+            t.message_text()
+                .is_some_and(|m| m.contains("slice it first"))
+        })
+    });
+    assert!(h.state().file().is_none());
+    // Notes open with a warning, but nothing prints or uploads them.
+    let notes = dir.join("notes.txt");
+    std::fs::write(&notes, "Shopping list\nmilk\neggs and bread\n").expect("write");
+    h.state_mut().push_action(AppAction::LoadFile(notes));
+    expect(&mut h, "the notes", |app| {
+        app.file().is_some() && !app.is_loading()
+    });
+    settle(&mut h);
+    assert!(toast_titles(h.state()).contains(&"This is not G-code".to_owned()));
+    let start = h.get_by_label("Start print… (Ctrl+P)");
+    assert!(start.accesskit_node().is_disabled());
+    h.state_mut()
+        .push_action(AppAction::StartPrintDialog { start_line: 0 });
+    settle(&mut h);
+    assert_eq!(h.state().dialog(), None);
+    assert!(toast_titles(h.state()).contains(&"Cannot print right now".to_owned()));
+    assert!(h.state().state().job.is_none());
     drop(h);
     let _ = std::fs::remove_dir_all(dir);
 }

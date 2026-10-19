@@ -885,6 +885,20 @@ impl SprintApp {
             self.core.config_dirty = true;
         }
         self.watch.watch(path.clone());
+        // Text that is not G-code (and an empty file) opens for reading,
+        // but every way to print it says why it cannot be (models and
+        // binary data are not opened at all, see loader::refuses).
+        if let Some(problem) = job_bar::content_blocker(&file) {
+            let title = if file.content_kind() == sprint_gcode::ContentKind::Empty {
+                "Empty file"
+            } else {
+                "This is not G-code"
+            };
+            self.core.toasts.warning(title).message(format!(
+                "{} {problem} It is shown, but cannot be printed.",
+                format::sanitize(file.name(), 60)
+            ));
+        }
         let lines = file.len();
         if !(reload
             && self
@@ -1237,7 +1251,7 @@ impl SprintApp {
                 .message("Open a G-code file first.");
             return;
         };
-        if let Some(reason) = print_blocker(&self.core.state, true) {
+        if let Some(reason) = print_blocker(&self.core.state, Some(&file.file)) {
             self.core
                 .toasts
                 .warning("Cannot print right now")
@@ -1513,6 +1527,7 @@ impl SprintApp {
                 let info = MenuInfo {
                     state: &self.core.state,
                     has_file: self.core.file.is_some(),
+                    file: self.core.file.as_ref().map(|f| &*f.file),
                     file_on_disk: self.core.file.as_ref().is_some_and(|f| f.path.is_some()),
                     printing_file: self.core.printing_loaded_file(),
                     loading: self.loader.is_busy(),

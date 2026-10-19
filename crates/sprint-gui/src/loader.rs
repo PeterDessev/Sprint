@@ -11,7 +11,6 @@
 //!      └─► Failed                                  └─► Failed / Cancelled
 //! ```
 
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,7 +18,8 @@ use std::time::{Instant, SystemTime};
 
 use crossbeam_channel::{Receiver, Sender};
 use sprint_gcode::{
-    AnalyzeOptions, GcodeFile, KinematicLimits, SlicerMetadata, ThumbnailFormat, Toolpath,
+    AnalyzeOptions, ContentKind, GcodeFile, KinematicLimits, SlicerMetadata, ThumbnailFormat,
+    Toolpath,
 };
 use sprint_host::{PrinterProfile, PrinterState};
 use sprint_proto::MotionLimits;
@@ -414,21 +414,8 @@ pub fn has_gcode_extension(path: &Path) -> bool {
         .is_some_and(|e| GCODE_EXTENSIONS.iter().any(|g| e.eq_ignore_ascii_case(g)))
 }
 
-/// Whether `bytes` (the start of a file) look like text: no NUL bytes and
-/// few other control characters.
-pub fn looks_like_text(bytes: &[u8]) -> bool {
-    if bytes.contains(&0) {
-        return false;
-    }
-    let control = bytes
-        .iter()
-        .filter(|&&b| b < 0x20 && !matches!(b, b'\n' | b'\r' | b'\t' | 0x0C | 0x1A))
-        .count();
-    control * 100 <= bytes.len().max(1)
-}
-
-/// Read a file for display and printing, refusing directories, huge files
-/// and binary data with a readable message.
+/// Read a file for display and printing, refusing directories, huge files,
+/// 3D models and binary data with a readable message.
 fn read_gcode(path: &Path) -> Result<GcodeFile, String> {
     let meta = std::fs::metadata(path).map_err(|e| io_message(path, &e))?;
     if meta.is_dir() {
@@ -442,31 +429,26 @@ fn read_gcode(path: &Path) -> Result<GcodeFile, String> {
             crate::format::bytes(MAX_FILE_BYTES)
         ));
     }
-    if !has_gcode_extension(path) {
-        let mut head = [0u8; 8192];
-        let mut file = std::fs::File::open(path).map_err(|e| io_message(path, &e))?;
-        let n = read_up_to(&mut file, &mut head).map_err(|e| io_message(path, &e))?;
-        if !looks_like_text(&head[..n]) {
-            return Err(format!(
-                "{} does not look like a G-code or text file",
-                display_name(path)
-            ));
-        }
+    // A model or binary data is refused before it is read (whatever its
+    // extension): it says what it is and what to do instead.
+    let kind = sprint_gcode::sniff_file(path).map_err(|e| io_message(path, &e))?;
+    if refuses(kind) {
+        return Err(format!(
+            "{} is {}. {}",
+            display_name(path),
+            kind.description(),
+            kind.problem().unwrap_or_default()
+        ));
     }
     GcodeFile::load(path).map_err(|e| io_message(path, &e))
 }
 
-fn read_up_to(reader: &mut impl Read, buf: &mut [u8]) -> std::io::Result<usize> {
-    let mut filled = 0;
-    while filled < buf.len() {
-        match reader.read(&mut buf[filled..]) {
-            Ok(0) => break,
-            Ok(n) => filled += n,
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(e) => return Err(e),
-        }
-    }
-    Ok(filled)
+/// Content that is not even opened for viewing: 3D models, binary G-code
+/// and other binary data. Text that is not G-code (and empty files) opens
+/// with a warning, but cannot be printed (see
+/// [`crate::panels::job_bar::content_blocker`]).
+pub fn refuses(kind: ContentKind) -> bool {
+    kind.is_model() || matches!(kind, ContentKind::BinaryGcode | ContentKind::Binary)
 }
 
 fn io_message(path: &Path, e: &std::io::Error) -> String {
@@ -922,16 +904,46 @@ mod tests {
     }
 
     #[test]
-    fn binary_files_without_a_gcode_extension_are_refused() {
+    fn models_and_binary_data_are_refused_whatever_their_name() {
         let dir = temp_dir("binary");
+        let refused = |loader: &mut FileLoader, path: PathBuf| -> String {
+            loader.load(path, AnalyzeOptions::default(), false);
+            let events = drain(loader, finished);
+            events
+                .iter()
+                .find_map(|e| match e {
+                    LoadEvent::Failed { error, .. } => Some(error.clone()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("not refused: {events:?}"))
+        };
+        let mut loader = FileLoader::default();
         let bin = dir.join("picture.bin");
         std::fs::write(&bin, [0u8, 1, 2, 3, 0, 255, 0, 7]).expect("write");
+        let error = refused(&mut loader, bin);
+        assert!(error.contains("binary file"), "{error}");
+        // A model saved with a G-code name.
+        let stl = dir.join("cube.gcode");
+        std::fs::write(
+            &stl,
+            "solid cube\n facet normal 0 0 1\n  outer loop\n   vertex 0 0 0\n   vertex 1 0 0\n   vertex 0 1 0\n  endloop\n endfacet\nendsolid cube\n",
+        )
+        .expect("write");
+        let error = refused(&mut loader, stl);
+        assert!(
+            error.starts_with("cube.gcode is an ASCII STL model.")
+                && error.ends_with("slice it first."),
+            "{error}"
+        );
+        let project = dir.join("plate.3mf");
+        let mut zip = b"PK\x03\x04".to_vec();
+        zip.extend(std::iter::repeat_n(7u8, 200));
+        std::fs::write(&project, zip).expect("write");
+        let error = refused(&mut loader, project);
+        assert!(error.contains("3MF"), "{error}");
+        // G-code under any name, and text that is not G-code, open.
         let text = dir.join("notes.cfg");
         std::fs::write(&text, "G28\nG1 X10 Y10 F3000\n").expect("write");
-        let mut loader = FileLoader::default();
-        loader.load(bin, AnalyzeOptions::default(), false);
-        let events = drain(&mut loader, finished);
-        assert!(events.iter().any(|e| matches!(e, LoadEvent::Failed { .. })));
         loader.load(text, AnalyzeOptions::default(), true);
         let events = drain(&mut loader, finished);
         assert!(
@@ -985,11 +997,29 @@ mod tests {
     }
 
     #[test]
-    fn text_detection() {
-        assert!(looks_like_text(b"G28\r\nG1 X1\t; ok\n"));
-        assert!(looks_like_text(b""));
-        assert!(!looks_like_text(b"G28\0"));
-        assert!(!looks_like_text(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]));
+    fn what_is_refused() {
+        for kind in [
+            ContentKind::AsciiStl,
+            ContentKind::BinaryStl,
+            ContentKind::Zip3mf,
+            ContentKind::Obj,
+            ContentKind::Step,
+            ContentKind::BinaryGcode,
+            ContentKind::Binary,
+        ] {
+            assert!(refuses(kind), "{kind:?}");
+        }
+        for kind in [
+            ContentKind::Gcode,
+            ContentKind::Empty,
+            ContentKind::OtherText,
+        ] {
+            assert!(!refuses(kind), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn names() {
         assert!(has_gcode_extension(Path::new("a/b.GCODE")));
         assert!(has_gcode_extension(Path::new("b.gco")));
         assert!(!has_gcode_extension(Path::new("b.stl")));

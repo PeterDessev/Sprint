@@ -1109,7 +1109,7 @@ impl GcodeTab {
             ui.close();
         }
         ui.separator();
-        let can_print = crate::panels::job_bar::print_blocker(ctx.state, true);
+        let can_print = crate::panels::job_bar::print_blocker(ctx.state, Some(file));
         if ui
             .add_enabled(
                 can_print.is_none(),

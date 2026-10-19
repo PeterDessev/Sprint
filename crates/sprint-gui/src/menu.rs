@@ -6,6 +6,7 @@
 use std::path::PathBuf;
 
 use egui::{Button, RichText, Ui};
+use sprint_gcode::GcodeFile;
 use sprint_host::{JobKind, JobStatus, PrinterState};
 use sprint_viewer::ViewPreset;
 
@@ -51,6 +52,8 @@ pub struct MenuInfo<'a> {
     pub state: &'a PrinterState,
     /// A file is loaded.
     pub has_file: bool,
+    /// The loaded file (to tell whether it can be printed).
+    pub file: Option<&'a GcodeFile>,
     /// The loaded file came from disk (can be reloaded).
     pub file_on_disk: bool,
     /// The loaded file is being printed by the host.
@@ -174,7 +177,7 @@ fn printer_menu(ui: &mut Ui, info: &MenuInfo<'_>, out: &mut Vec<MenuCommand>) {
         out.push(MenuCommand::Action(A::Reconnect));
     }
     ui.separator();
-    let can_print = print_blocker(state, info.has_file).is_none();
+    let can_print = print_blocker(state, info.file).is_none();
     if item(ui, can_print, icons::PLAY, "Start print…", Some("Ctrl+P")) {
         out.push(MenuCommand::Action(A::StartPrintDialog { start_line: 0 }));
     }

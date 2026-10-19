@@ -3,6 +3,7 @@
 //! firmware message and the app version) at the bottom of the window.
 
 use egui::{Align, Layout, RichText, Ui, vec2};
+use sprint_gcode::GcodeFile;
 use sprint_host::{JobInfo, JobKind, JobStatus, PrinterState};
 
 use crate::context::{AppAction, AppCtx};
@@ -11,10 +12,20 @@ use crate::theme::{self, Palette, TextRole, Tone};
 use crate::widgets::{Badge, IconButton, LinearProgress, status_dot};
 use crate::{format, icons};
 
-/// Why printing is not possible right now, if it is not.
-pub fn print_blocker(state: &PrinterState, has_file: bool) -> Option<&'static str> {
-    if !has_file {
-        Some("Open a G-code file first")
+/// Why `file` cannot be printed or uploaded at all: it is not G-code (a 3D
+/// model, binary data, other text) or empty, as sniffed when it loaded
+/// ([`GcodeFile::content_kind`]).
+pub fn content_blocker(file: &GcodeFile) -> Option<&'static str> {
+    file.content_kind().problem()
+}
+
+/// Why printing `file` is not possible right now, if it is not.
+pub fn print_blocker(state: &PrinterState, file: Option<&GcodeFile>) -> Option<&'static str> {
+    let Some(file) = file else {
+        return Some("Open a G-code file first");
+    };
+    if let Some(problem) = content_blocker(file) {
+        Some(problem)
     } else if !state.is_connected() {
         Some("Connect to a printer first")
     } else if state.halted {
@@ -128,7 +139,7 @@ impl JobBar {
         {
             ctx.actions.push(AppAction::OpenFileDialog);
         }
-        let blocker = print_blocker(ctx.state, ctx.file.is_some());
+        let blocker = print_blocker(ctx.state, ctx.file.map(|f| &*f.file));
         let print = ui
             .add_enabled(
                 blocker.is_none(),
@@ -537,23 +548,45 @@ mod tests {
 
     #[test]
     fn print_blockers() {
+        let gcode = GcodeFile::from_text("a.gcode", "G28\nG1 X10 Y10 F3000\n");
+        let file = Some(&gcode);
         let mut state = PrinterState::default();
         assert_eq!(
-            print_blocker(&state, false),
+            print_blocker(&state, None),
             Some("Open a G-code file first")
         );
-        assert!(print_blocker(&state, true).is_some_and(|b| b.contains("Connect")));
+        assert!(print_blocker(&state, file).is_some_and(|b| b.contains("Connect")));
         state.status = ConnectionStatus::Connected;
-        assert_eq!(print_blocker(&state, true), None);
+        assert_eq!(print_blocker(&state, file), None);
         state.halted = true;
-        assert!(print_blocker(&state, true).is_some_and(|b| b.contains("halted")));
+        assert!(print_blocker(&state, file).is_some_and(|b| b.contains("halted")));
         state.halted = false;
         state.job = Some(JobInfo::new(JobKind::HostPrint, "a", 1, 1));
-        assert!(print_blocker(&state, true).is_some_and(|b| b.contains("running")));
+        assert!(print_blocker(&state, file).is_some_and(|b| b.contains("running")));
         // A print started on the printer's display.
         state.job = None;
         state.sd.printing = Some((10, 100));
-        assert!(print_blocker(&state, true).is_some_and(|b| b.contains("card")));
+        assert!(print_blocker(&state, file).is_some_and(|b| b.contains("card")));
+        state.sd.printing = None;
+        // What is not G-code is never streamed, whatever the printer does.
+        let stl = GcodeFile::from_text(
+            "cube.gcode",
+            "solid cube\n facet normal 0 0 1\n  outer loop\n   vertex 0 0 0\n   vertex 1 0 0\n   vertex 0 1 0\n  endloop\n endfacet\nendsolid cube\n",
+        );
+        assert_eq!(
+            print_blocker(&state, Some(&stl)),
+            Some("This is a 3D model, not G-code: slice it first.")
+        );
+        let notes = GcodeFile::from_text("notes.txt", "Shopping list\nmilk\neggs and bread\n");
+        assert!(
+            print_blocker(&state, Some(&notes)).is_some_and(|b| b.contains("not look like G-code"))
+        );
+        let empty = GcodeFile::from_text("empty.gcode", "");
+        assert_eq!(
+            print_blocker(&state, Some(&empty)),
+            Some("The file is empty.")
+        );
+        assert_eq!(content_blocker(&gcode), None);
     }
 
     #[test]

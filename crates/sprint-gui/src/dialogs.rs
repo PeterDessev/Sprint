@@ -243,7 +243,7 @@ impl StartPrintDialog {
 
     /// Try to start the print.
     pub fn start(&mut self, ctx: &mut AppCtx<'_>, file: &LoadedFile) -> bool {
-        if let Some(reason) = print_blocker(ctx.state, true) {
+        if let Some(reason) = print_blocker(ctx.state, Some(&file.file)) {
             self.error = Some(reason.to_owned());
             return false;
         }
@@ -313,7 +313,7 @@ impl StartPrintDialog {
                     .max_height(body_max)
                     .auto_shrink([false, true])
                     .show(ui, |ui| self.body(ui, file, toolpath.as_deref(), &p));
-                let blocker = print_blocker(ctx.state, true).or_else(|| {
+                let blocker = print_blocker(ctx.state, Some(&file.file)).or_else(|| {
                     (self.is_preparing() && self.start_line(toolpath.as_deref()) > 0)
                         .then_some("Preparing the resume preamble…")
                 });
