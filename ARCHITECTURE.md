@@ -1426,7 +1426,10 @@ Every public item is also re-exported at the crate root.
   reset the positioning, extrusion and unit modes the engine tracks over
   the commands it sent (they decide what `extrude` restores and which
   modes the job scripts set first) to the firmware's defaults (G90, M82,
-  G21): a reset must not leave the host thinking an M83 is active.
+  G21): a reset must not leave the host thinking an M83 is active. (Not
+  a halt Marlin restarts with M999, "Printer stopped ... use M999":
+  stop() and M999 keep the modes. A kill is followed by a board reset,
+  Klipper's FIRMWARE_RESTART restarts in the defaults.)
 * Homing (`PrinterState::homed`): unknown after connecting; an
   acknowledged `G28` (any source, the job stream included) adds all or
   the listed axes; `M84`/`M18` without `S` clear all or the listed axes

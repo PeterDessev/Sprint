@@ -1574,10 +1574,26 @@ fn klipper_restarts_its_firmware_only_from_a_shutdown() {
         "{:?}",
         log.lock().unwrap()
     );
+    printer.send("M83");
+    wait_idle(&printer);
     out.line("!! Shutdown due to M112 command");
     wait_for(&printer, "shut down", |s| s.halted && s.restartable);
     printer.firmware_restart();
     wait_for(&printer, "FIRMWARE_RESTART", |_| {
         log.lock().unwrap().iter().any(|c| c == "FIRMWARE_RESTART")
     });
+    // It restarts in its default modes: the M83 sent before is gone, so
+    // extruding restores M82.
+    wait_for(&printer, "running again", |s| !s.halted);
+    printer.extrude(0, 1.0, 100.0);
+    wait_for(&printer, "the extrusion", |_| {
+        log.lock().unwrap().iter().any(|c| c == "G1 E1 F100")
+    });
+    wait_idle(&printer);
+    let log = log.lock().unwrap().clone();
+    assert_eq!(
+        &log[log.len() - 3..],
+        ["M83", "G1 E1 F100", "M82"],
+        "{log:?}"
+    );
 }

@@ -461,7 +461,8 @@ pub(crate) struct Engine {
     /// When the host last sent M108 to end a wait.
     wait_released_at: Option<Instant>,
     /// Modes and positions over every command sent since connecting, the
-    /// last board reset or halt (the firmware's defaults then).
+    /// last board reset or halt (the firmware's defaults then; not after a
+    /// stop Marlin restarts with M999, which keeps its modes).
     printer_modes: MachineState,
     settings_refresh_at: Option<Instant>,
 
@@ -1438,9 +1439,13 @@ impl Engine {
             self.shared.update(|s| s.babystep_z = 0.0);
             // A halted firmware prints nothing, from the card neither.
             self.sd_stopped();
-            // It is reset (kill) or restarted (Klipper) into its default
-            // modes before it takes commands again: forget the ones sent.
-            self.printer_modes = MachineState::new();
+            // A killed firmware is reset, Klipper restarts its host
+            // software: either way it takes commands again in its default
+            // modes, so forget the ones sent. Marlin's stop() keeps them
+            // over M999, which only sets it running again.
+            if !restartable || self.is_klipper() {
+                self.printer_modes = MachineState::new();
+            }
         }
         // Before the M303 is released below: it did not finish, the halt
         // cut it short.

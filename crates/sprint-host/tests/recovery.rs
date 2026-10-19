@@ -224,9 +224,9 @@ fn homing_cut_short_by_a_halt_leaves_the_axes_unhomed() {
 }
 
 #[test]
-fn a_board_reset_or_a_halt_forgets_the_extruder_mode() {
+fn a_board_reset_forgets_the_extruder_mode_a_stop_keeps_it() {
     // After M83 the host restores nothing when it extrudes; after a reset
-    // (or a halt) the firmware is back in M82, which extruding must keep.
+    // the firmware is back in M82, which extruding must keep.
     let printer = connect(sim(), options());
     let control = printer.sim_control().unwrap();
     let extruded = |printer: &Printer| {
@@ -248,7 +248,8 @@ fn a_board_reset_or_a_halt_forgets_the_extruder_mode() {
     });
     assert_eq!(extruded(&printer), ["M83", "G1 E1 F100", "M82"]);
 
-    // A stopped firmware restarted with M999.
+    // A stopped Marlin restarted with M999 keeps its modes (M999 only
+    // sets it running again), M83 included.
     printer.send("M83");
     assert_eq!(extruded(&printer), ["M83", "G1 E1 F100"], "M83 is known");
     control
@@ -256,5 +257,11 @@ fn a_board_reset_or_a_halt_forgets_the_extruder_mode() {
     wait_for(&printer, "halted", |s| s.halted);
     printer.firmware_restart();
     wait_for(&printer, "running again", |s| !s.halted);
-    assert_eq!(extruded(&printer), ["M83", "G1 E1 F100", "M82"]);
+    assert_eq!(extruded(&printer), ["M83", "G1 E1 F100"], "M83 is kept");
+    // The printer still extrudes relatively: the host did not switch it.
+    let e = || control.snapshot().position[3];
+    let before = e();
+    printer.send("G1 E1 F100");
+    wait_idle(&printer);
+    assert!((e() - (before + 1.0)).abs() < 1e-3, "{before} -> {}", e());
 }
