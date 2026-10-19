@@ -144,6 +144,10 @@ pub enum AppAction {
     OpenAbout,
     /// Switch between the dark and light theme.
     SetTheme(crate::theme::Theme),
+    /// Stop loading or analyzing the file.
+    CancelLoading,
+    /// Analyze the loaded file again (current profile and printer limits).
+    Reanalyze,
 }
 
 /// Everything a panel may use during one frame.
