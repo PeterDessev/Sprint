@@ -40,8 +40,10 @@ const TRAVEL_PICK_PX: f32 = 4.0;
 /// it. Travels lie on the beads of their own layer (exactly touching their
 /// crests) and under the beads of the next, a layer height deeper.
 const OCCLUSION_SLACK: f32 = 0.02;
-/// Most travels checked for being hidden behind beads per pick.
-const MAX_TRAVEL_OCCLUSION_CHECKS: usize = 24;
+/// Most travels checked for being hidden behind beads per pick (each check
+/// is a bead pick). Travels on the surface are met before the ones buried
+/// under it, so this only cuts off piles of hidden ones.
+const MAX_TRAVEL_OCCLUSION_CHECKS: usize = 8;
 /// Darkening of the grooves between resolved beads (0..1).
 const CAVITY: f32 = 0.5;
 /// Projected bead thickness (pixels) over which the grooves between beads
@@ -546,9 +548,16 @@ impl GcodeViewer {
         index.pick(tp, ray, &self.pick_filter(), radius)
     }
 
-    /// [`GcodeViewer::pick_travel`] limited to hits nearer than `max_t`
-    /// whose point closest to the ray is not hidden behind a shown bead.
-    fn pick_visible_travel(&self, ray: &Ray, radius: f32, max_t: f32) -> Option<PickHit> {
+    /// The nearest shown travel passing within `radius` mm of the ray whose
+    /// point closest to it is not hidden behind a shown bead. `bead` is the
+    /// bead the ray picks with a pick tolerance of `tolerance` mm, if any.
+    fn pick_visible_travel(
+        &self,
+        ray: &Ray,
+        radius: f32,
+        bead: Option<PickHit>,
+        tolerance: f32,
+    ) -> Option<PickHit> {
         if !self.options.show_travel {
             return None;
         }
@@ -556,6 +565,19 @@ impl GcodeViewer {
         let info = self.info.as_ref()?;
         let index = info.travel_pick.as_ref()?;
         let filter = self.pick_filter();
+        // The search stops a little behind the surface under the cursor: a
+        // travel lying on it a few pixels away comes closest to the ray up
+        // to a few times the pick radius behind it (more at grazing angles),
+        // and anything much deeper is hidden anyway.
+        let surface = match bead {
+            None => f32::INFINITY,
+            Some(b) => info
+                .pick
+                .as_ref()
+                .and_then(|beads| beads.pick(tp, ray, &filter, 0.0))
+                .map_or(b.t + tolerance, |exact| exact.t),
+        };
+        let max_t = surface + 3.0 * radius + 0.05;
         let mut checks = 0;
         index.pick_where(tp, ray, &filter, radius, max_t, |hit| {
             let (Some(beads), Some(seg)) = (info.pick.as_ref(), tp.segments.get(hit.segment))
@@ -595,18 +617,9 @@ impl GcodeViewer {
         let radius = TRAVEL_PICK_PX * world_px;
         let bead = self.pick(&ray, tolerance);
         // Travel lines are drawn over the beads they pass in front of or
-        // lie on. Travels hidden behind beads are skipped; the search stops
-        // a little behind the surface under the cursor, since a travel
-        // lying on it a few pixels away comes closest to the ray up to a
-        // few times the pick radius behind it (more at grazing angles).
-        let surface = match bead {
-            None => f32::INFINITY,
-            Some(b) => self
-                .pick(&ray, 0.0)
-                .map_or(b.t + tolerance, |exact| exact.t),
-        };
-        let max_t = surface + 3.0 * radius + 0.05;
-        self.pick_visible_travel(&ray, radius, max_t).or(bead)
+        // lie on.
+        self.pick_visible_travel(&ray, radius, bead, tolerance)
+            .or(bead)
     }
 
     /// Allocate the remaining space and draw; handles orbit (LMB drag), pan
