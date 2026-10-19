@@ -6,6 +6,7 @@
 
 pub mod console;
 pub mod heater;
+pub mod input;
 pub mod job;
 pub mod layer_canvas;
 pub mod temp_chart;
@@ -15,6 +16,9 @@ pub(crate) mod util;
 
 pub use console::{ConsoleKind, ConsoleLine, ConsoleState, ConsoleView, find_matches};
 pub use heater::{HeaterGauge, HeaterKind, HeaterState};
+pub use input::{
+    Candidate, CommandInput, CommandLine, Completer, CompletionPopup, InputEvent, gcode_candidates,
+};
 pub use job::{JobProgress, JobTone};
 pub use layer_canvas::{FeatureLegend, LayerCanvas, LayerFit, object_bounds};
 pub use temp_chart::{TempChart, TempPoint};
