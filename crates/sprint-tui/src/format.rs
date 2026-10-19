@@ -112,6 +112,32 @@ pub fn trimmed(value: f64, decimals: usize) -> String {
     }
 }
 
+/// A number with exactly `decimals` decimals: `fixed(12.345, 1) == "12.3"`.
+pub fn fixed(value: f64, decimals: usize) -> String {
+    if !value.is_finite() {
+        return MISSING.to_string();
+    }
+    let text = format!("{value:.decimals$}");
+    // "-0.0" reads as a sign error; drop the sign of a rounded zero.
+    match text.strip_prefix('-') {
+        Some(rest) if rest.chars().all(|c| c == '0' || c == '.') => rest.to_string(),
+        _ => text,
+    }
+}
+
+/// A count with thousands separators: `"12,345"`.
+pub fn count(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// A byte count: `"512 B"`, `"12.3 KB"`, `"1.2 MB"`, `"3.4 GB"` (powers of
 /// 1024).
 pub fn bytes(n: u64) -> String {
@@ -190,6 +216,23 @@ mod tests {
         assert_eq!(trimmed(-0.0001, 2), "0");
         assert_eq!(trimmed(12.0, 0), "12");
         assert_eq!(trimmed(f64::NAN, 2), MISSING);
+    }
+
+    #[test]
+    fn fixed_numbers_and_counts() {
+        assert_eq!(fixed(12.345, 1), "12.3");
+        assert_eq!(fixed(2.0, 2), "2.00");
+        assert_eq!(fixed(-0.04, 1), "0.0");
+        assert_eq!(fixed(-1.26, 1), "-1.3");
+        assert_eq!(fixed(f64::NAN, 1), MISSING);
+        assert_eq!(count(0), "0");
+        assert_eq!(count(999), "999");
+        assert_eq!(count(1000), "1,000");
+        assert_eq!(count(1_234_567), "1,234,567");
+        assert_eq!(
+            count(usize::MAX).matches(',').count(),
+            (usize::MAX.to_string().len() - 1) / 3
+        );
     }
 
     #[test]

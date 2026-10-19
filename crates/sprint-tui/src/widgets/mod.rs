@@ -10,6 +10,7 @@ pub mod help;
 pub mod input;
 pub mod job;
 pub mod layer_canvas;
+pub mod stats;
 pub mod temp_chart;
 #[cfg(test)]
 pub(crate) mod testutil;
@@ -23,4 +24,5 @@ pub use input::{
 };
 pub use job::{JobProgress, JobTone};
 pub use layer_canvas::{FeatureLegend, LayerCanvas, LayerFit, object_bounds};
+pub use stats::{FeatureRow, StatRow, StatsPanel, feature_rows, summary_rows};
 pub use temp_chart::{TempChart, TempPoint};
