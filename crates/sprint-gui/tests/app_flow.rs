@@ -701,6 +701,92 @@ fn console_motion_is_guarded_while_a_job_runs() {
 }
 
 #[test]
+fn switching_profiles_analyzes_the_file_again() {
+    let mut options = with_file(sim_options(), sample("calibration-cube.gcode"));
+    let other = sprint_host::PrinterProfile {
+        name: "Big filament printer".into(),
+        filament_diameter: 2.85,
+        ..options.config.profiles[0].clone()
+    };
+    options.config.profiles.push(other);
+    let mut h = app(options, WINDOW);
+    expect(&mut h, "the cube to be analyzed", analyzed);
+    let before = h
+        .state()
+        .file()
+        .and_then(|f| f.toolpath.clone())
+        .expect("toolpath");
+    // Pick the other profile in the connection bar.
+    h.query_all_by_role(Role::ComboBox)
+        .find(|n| n.value().is_some_and(|v| v.contains("Test printer")))
+        .expect("the profile combo")
+        .click();
+    settle(&mut h);
+    h.get_by_label("Big filament printer").click();
+    settle(&mut h);
+    assert_eq!(h.state().config().active_profile, 1);
+    expect(&mut h, "the analysis with the new filament", |app| {
+        analyzed(app)
+            && app
+                .file()
+                .and_then(|f| f.toolpath.as_ref())
+                .is_some_and(|t| !Arc::ptr_eq(t, &before))
+    });
+    // Disconnected, nothing else changed: no further analysis.
+    let after = h
+        .state()
+        .file()
+        .and_then(|f| f.toolpath.clone())
+        .expect("toolpath");
+    settle(&mut h);
+    assert!(!h.state().is_loading());
+    assert!(
+        h.state()
+            .file()
+            .and_then(|f| f.toolpath.as_ref())
+            .is_some_and(|t| Arc::ptr_eq(t, &after))
+    );
+}
+
+#[test]
+fn firmware_limits_analysis_survives_a_disconnect() {
+    let options = with_file(sim_options(), sample("calibration-cube.gcode"));
+    let mut h = app(options, WINDOW);
+    expect(&mut h, "the cube to be analyzed", analyzed);
+    let first = h
+        .state()
+        .file()
+        .and_then(|f| f.toolpath.clone())
+        .expect("toolpath");
+    connect(&mut h);
+    // The virtual printer's M503 limits differ from the defaults.
+    expect(&mut h, "the analysis with the firmware's limits", |app| {
+        analyzed(app)
+            && app
+                .file()
+                .and_then(|f| f.toolpath.as_ref())
+                .is_some_and(|t| !Arc::ptr_eq(t, &first))
+    });
+    let with_firmware = h
+        .state()
+        .file()
+        .and_then(|f| f.toolpath.clone())
+        .expect("toolpath");
+    h.get_by_label("Disconnect").click();
+    expect(&mut h, "the connection to close", |app| {
+        !app.state().status.is_open()
+    });
+    settle(&mut h);
+    assert!(!h.state().is_loading());
+    assert!(
+        h.state()
+            .file()
+            .and_then(|f| f.toolpath.as_ref())
+            .is_some_and(|t| Arc::ptr_eq(t, &with_firmware))
+    );
+}
+
+#[test]
 fn the_console_completes_gcode() {
     let mut h = app(AppOptions::headless(), WINDOW);
     h.state_mut().console_mut().focus_input();

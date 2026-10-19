@@ -27,7 +27,7 @@ use egui::{
     Rect, RichText, Sense, Stroke, StrokeKind, TextureHandle, TextureOptions, Ui, ViewportCommand,
     vec2,
 };
-use sprint_gcode::{AnalyzeOptions, GcodeFile};
+use sprint_gcode::{AnalyzeOptions, GcodeFile, KinematicLimits};
 use sprint_host::sprint_sim::SimConfig;
 use sprint_host::{
     AppConfig, ConnectTarget, Event, HostPrompt, JobKind, JobStatus, Printer, PrinterState,
@@ -160,6 +160,24 @@ impl Modal {
     }
 }
 
+/// What the last analysis of the loaded file was asked for.
+#[derive(Clone, Debug, PartialEq)]
+struct AnalysisRequest {
+    options: AnalyzeOptions,
+    /// The profile settings it was made for (filament diameter and
+    /// kinematics), to notice a switch to another profile.
+    profile: (f32, Option<KinematicLimits>),
+}
+
+impl AnalysisRequest {
+    fn new(profile: &sprint_host::PrinterProfile, state: &PrinterState) -> AnalysisRequest {
+        AnalysisRequest {
+            options: loader::analyze_options(profile, state),
+            profile: (profile.filament_diameter, profile.kinematics),
+        }
+    }
+}
+
 /// What became of the firmware's current host prompt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PromptChoice {
@@ -245,7 +263,7 @@ pub struct SprintApp {
     icon: TextureHandle,
     title: String,
     clock: Instant,
-    requested_analysis: Option<AnalyzeOptions>,
+    requested_analysis: Option<AnalysisRequest>,
     reconnect_pending: bool,
     quit_confirmed: bool,
     file_dialog: Option<Receiver<Option<PathBuf>>>,
@@ -715,16 +733,18 @@ impl SprintApp {
         }
     }
 
-    /// Re-analyze with the firmware's motion limits once they are known
-    /// (only between jobs, and only when the profile has no limits of its
-    /// own).
+    /// Analyze the file again (only between jobs) when the active profile's
+    /// filament or kinematics changed since the last analysis, or with the
+    /// firmware's motion limits once they are known and the profile has no
+    /// limits of its own. A disconnect keeps an analysis made with the
+    /// firmware's limits.
     fn maybe_reanalyze(&mut self) {
         let state = &self.core.state;
+        let Some(requested) = &self.requested_analysis else {
+            return;
+        };
         if self.loader.is_busy()
             || state.job_active()
-            || !state.is_connected()
-            || !state.settings_loaded
-            || self.core.config.active().kinematics.is_some()
             || !self
                 .core
                 .file
@@ -733,8 +753,13 @@ impl SprintApp {
         {
             return;
         }
-        let options = loader::analyze_options(self.core.config.active(), state);
-        if self.requested_analysis.as_ref() != Some(&options) {
+        let profile = self.core.config.active();
+        let wanted = AnalysisRequest::new(profile, state);
+        let firmware_limits =
+            state.is_connected() && state.settings_loaded && profile.kinematics.is_none();
+        if wanted.options != requested.options
+            && (wanted.profile != requested.profile || firmware_limits)
+        {
             self.reanalyze();
         }
     }
@@ -870,8 +895,9 @@ impl SprintApp {
                 .message("Reload it from disk after the print.");
             return;
         }
-        let options = loader::analyze_options(self.core.config.active(), &self.core.state);
-        self.requested_analysis = Some(options.clone());
+        let request = AnalysisRequest::new(self.core.config.active(), &self.core.state);
+        let options = request.options.clone();
+        self.requested_analysis = Some(request);
         self.loader.load(path, options, same);
     }
 
@@ -893,8 +919,9 @@ impl SprintApp {
         let Some(file) = &self.core.file else {
             return;
         };
-        let options = loader::analyze_options(self.core.config.active(), &self.core.state);
-        self.requested_analysis = Some(options.clone());
+        let request = AnalysisRequest::new(self.core.config.active(), &self.core.state);
+        let options = request.options.clone();
+        self.requested_analysis = Some(request);
         self.loader
             .analyze(Arc::clone(&file.file), file.path.clone(), options, true);
     }
@@ -960,7 +987,6 @@ impl SprintApp {
     }
 
     fn apply_settings(&mut self, ctx: &egui::Context, dialog: SettingsDialog) {
-        let before = loader::analyze_options(self.core.config.active(), &self.core.state);
         let theme = dialog.theme;
         self.core.config = dialog.draft;
         self.core.config_dirty = true;
@@ -973,10 +999,8 @@ impl SprintApp {
         if theme != self.prefs.theme {
             self.set_theme(ctx, theme);
         }
-        let after = loader::analyze_options(self.core.config.active(), &self.core.state);
-        if after != before && self.core.file.is_some() && !self.core.printing_loaded_file() {
-            self.reanalyze();
-        }
+        // A changed filament or kinematics re-analyzes the file between
+        // jobs (see maybe_reanalyze).
         self.core.toasts.success("Settings saved");
     }
 
