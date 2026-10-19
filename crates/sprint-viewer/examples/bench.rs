@@ -137,30 +137,35 @@ fn main() {
     viewer.options_mut().view_mode = ViewMode::Perspective;
     viewer.options_mut().layer_range = (0, usize::MAX);
 
-    // Picking latency over a grid of screen positions.
-    let mut worst = Duration::ZERO;
-    let mut total = Duration::ZERO;
-    let mut hits = 0;
-    let n = 40;
-    for i in 0..n {
-        for j in 0..n {
-            let pos = [
-                (i as f32 + 0.5) / n as f32 * W as f32,
-                (j as f32 + 0.5) / n as f32 * H as f32,
-            ];
-            let t = Instant::now();
-            if viewer.pick_screen(pos, [W as f32, H as f32]).is_some() {
-                hits += 1;
+    // Picking latency over a grid of screen positions, beads only and with
+    // travels shown (which also searches the travel index).
+    for travels in [false, true] {
+        viewer.options_mut().show_travel = travels;
+        let mut worst = Duration::ZERO;
+        let mut total = Duration::ZERO;
+        let mut hits = 0;
+        let n = 40;
+        for i in 0..n {
+            for j in 0..n {
+                let pos = [
+                    (i as f32 + 0.5) / n as f32 * W as f32,
+                    (j as f32 + 0.5) / n as f32 * H as f32,
+                ];
+                let t = Instant::now();
+                if viewer.pick_screen(pos, [W as f32, H as f32]).is_some() {
+                    hits += 1;
+                }
+                let d = t.elapsed();
+                worst = worst.max(d);
+                total += d;
             }
-            let d = t.elapsed();
-            worst = worst.max(d);
-            total += d;
         }
+        println!(
+            "pick{}: {} rays, {hits} hits, avg {:.3} ms, worst {:.3} ms",
+            if travels { " (+ travels)" } else { "" },
+            n * n,
+            ms(total / (n * n)),
+            ms(worst)
+        );
     }
-    println!(
-        "pick: {} rays, {hits} hits, avg {:.3} ms, worst {:.3} ms",
-        n * n,
-        ms(total / (n * n)),
-        ms(worst)
-    );
 }

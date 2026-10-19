@@ -16,7 +16,7 @@ use crate::color::{
 use crate::gpu::{self, DrawParams, Globals, Renderer, Slot, flags};
 use crate::instance::{self, CLUSTER_SIZE, Cluster, LayerRanges, MAX_COORD, SceneData};
 use crate::options::{BedSpec, ColorMode, RenderStyle, ViewMode, ViewPreset, ViewerOptions};
-use crate::pick::{PickFilter, PickHit, PickIndex};
+use crate::pick::{PickFilter, PickHit, PickIndex, PickKind};
 
 /// Bytes of instance data uploaded per frame while a toolpath streams in
 /// (a 5M-segment file needs about 15 frames).
@@ -31,6 +31,8 @@ const MARKER_PX: f32 = 3.5;
 pub const DEFAULT_LOD_PIXELS: f32 = 3.0;
 /// Pick tolerance in pixels for thin beads.
 const PICK_TOLERANCE_PX: f32 = 2.5;
+/// Pick tolerance in pixels around travel lines.
+const TRAVEL_PICK_PX: f32 = 4.0;
 /// Darkening of the grooves between resolved beads (0..1).
 const CAVITY: f32 = 0.5;
 /// Projected bead thickness (pixels) over which the grooves between beads
@@ -76,14 +78,16 @@ impl LightRig {
 pub struct ViewerResponse {
     /// The egui response of the viewer area.
     pub response: egui::Response,
-    /// Source line of the bead clicked this frame.
+    /// Source line of the bead (or, while travels are shown, the travel
+    /// move) clicked this frame.
     pub clicked_line: Option<u32>,
-    /// Source line of the bead under the pointer.
+    /// Source line of the bead or shown travel move under the pointer.
     pub hovered_line: Option<u32>,
 }
 
 enum Loaded {
     Scene(Box<SceneData>),
+    /// A pick index over extrusions or travels (see [`PickIndex::kind`]).
     Pick(Box<PickIndex>),
 }
 
@@ -99,6 +103,7 @@ struct SceneInfo {
     legend: LegendData,
     bounds: Option<([f32; 3], [f32; 3])>,
     pick: Option<PickIndex>,
+    travel_pick: Option<PickIndex>,
 }
 
 struct Anim {
@@ -115,6 +120,8 @@ struct HoverQuery {
     camera: Camera,
     filter: PickFilter,
     has_index: bool,
+    /// Travels are shown and indexed.
+    travels: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -231,11 +238,16 @@ impl GcodeViewer {
                 if let Some(ctx) = &ctx {
                     ctx.request_repaint();
                 }
-                if let Some(pick) = PickIndex::build(&tp, &job_cancel) {
-                    let _ = tx.send(Loaded::Pick(Box::new(pick)));
-                }
-                if let Some(ctx) = &ctx {
-                    ctx.request_repaint();
+                for kind in [PickKind::Extrusions, PickKind::Travels] {
+                    let Some(pick) = PickIndex::build_kind(&tp, kind, &job_cancel) else {
+                        return;
+                    };
+                    if tx.send(Loaded::Pick(Box::new(pick))).is_err() {
+                        return;
+                    }
+                    if let Some(ctx) = &ctx {
+                        ctx.request_repaint();
+                    }
                 }
             });
         match spawned {
@@ -246,10 +258,10 @@ impl GcodeViewer {
                 if let Some(scene) = instance::build_scene(&toolpath, &never) {
                     self.accept_scene(scene);
                 }
-                if let (Some(info), Some(pick)) =
-                    (self.info.as_mut(), PickIndex::build(&toolpath, &never))
-                {
-                    info.pick = Some(pick);
+                for kind in [PickKind::Extrusions, PickKind::Travels] {
+                    if let Some(pick) = PickIndex::build_kind(&toolpath, kind, &never) {
+                        self.handle_loaded(Loaded::Pick(Box::new(pick)));
+                    }
                 }
             }
         }
@@ -416,14 +428,41 @@ impl GcodeViewer {
         index.pick(tp, ray, &self.pick_filter(), min_radius)
     }
 
+    /// Pick the nearest shown travel move passing within `radius` mm of a
+    /// world-space ray (respecting layer range and line limit; hidden
+    /// features do not hide travels). `None` while travels are hidden or
+    /// until the travel index has been built.
+    pub fn pick_travel(&self, ray: &Ray, radius: f32) -> Option<PickHit> {
+        self.pick_travel_within(ray, radius, f32::INFINITY)
+    }
+
+    /// [`GcodeViewer::pick_travel`] limited to hits nearer than `max_t`.
+    fn pick_travel_within(&self, ray: &Ray, radius: f32, max_t: f32) -> Option<PickHit> {
+        if !self.options.show_travel {
+            return None;
+        }
+        let tp = self.toolpath.as_ref()?;
+        let index = self.info.as_ref()?.travel_pick.as_ref()?;
+        index.pick_within(tp, ray, &self.pick_filter(), radius, max_t)
+    }
+
     /// Pick at a position inside a view of `size` (same units, origin
-    /// top-left) using the active camera.
+    /// top-left) using the active camera: the bead under the cursor, or a
+    /// shown travel move within a few pixels when it is not hidden behind
+    /// that bead. Use the segment's `kind` to tell them apart.
     pub fn pick_screen(&self, pos: [f32; 2], size: [f32; 2]) -> Option<PickHit> {
         let cam = self.active_camera();
         let view = Vec2::from(size).max(Vec2::ONE);
         let ray = cam.ray_from_screen(Vec2::from(pos), view);
-        let tolerance = PICK_TOLERANCE_PX * cam.world_per_pixel(cam.distance, view.y);
-        self.pick(&ray, tolerance)
+        let world_px = cam.world_per_pixel(cam.distance, view.y);
+        let tolerance = PICK_TOLERANCE_PX * world_px;
+        let bead = self.pick(&ray, tolerance);
+        // Travel lines are drawn over the beads they pass in front of (or
+        // lie on); the bead's hit is up to its pick tolerance early. Travels
+        // hidden behind the bead are not searched.
+        let max_t = bead.map_or(f32::INFINITY, |b| b.t + tolerance + 0.05);
+        self.pick_travel_within(&ray, TRAVEL_PICK_PX * world_px, max_t)
+            .or(bead)
     }
 
     /// Allocate the remaining space and draw; handles orbit (LMB drag), pan
@@ -682,7 +721,10 @@ impl GcodeViewer {
             Loaded::Scene(scene) => self.accept_scene(*scene),
             Loaded::Pick(pick) => {
                 if let Some(info) = self.info.as_mut() {
-                    info.pick = Some(*pick);
+                    match pick.kind() {
+                        PickKind::Extrusions => info.pick = Some(*pick),
+                        PickKind::Travels => info.travel_pick = Some(*pick),
+                    }
                 }
                 self.hover_query = None;
             }
@@ -706,6 +748,7 @@ impl GcodeViewer {
             legend,
             bounds,
             pick: None,
+            travel_pick: None,
         });
         self.last_frame = None;
         // The scene's bounds ignore start/end G-code and so can differ from
@@ -992,6 +1035,8 @@ impl GcodeViewer {
             camera: *self.active_camera(),
             filter: self.pick_filter(),
             has_index: self.info.as_ref().is_some_and(|i| i.pick.is_some()),
+            travels: self.options.show_travel
+                && self.info.as_ref().is_some_and(|i| i.travel_pick.is_some()),
         };
         if self.hover_query.as_ref() != Some(&query) {
             let hit = self.pick_screen(query.pos, query.view);
@@ -1288,6 +1333,12 @@ impl GcodeViewer {
             .fixed_pos(at)
             .interactable(false)
             .show(ctx, |ui| {
+                if !seg.is_extrusion() {
+                    egui::Frame::popup(ui.style()).show(ui, |ui| {
+                        travel_tooltip(ui, id, seg, layer, z);
+                    });
+                    return;
+                }
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
                     ui.horizontal(|ui| {
                         swatch(ui, color::feature_color(seg.feature));
@@ -1461,6 +1512,58 @@ fn select_clusters(
     (prisms, ribbons)
 }
 
+/// Tooltip rows for a hovered travel move.
+fn travel_tooltip(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    seg: &sprint_gcode::Segment,
+    layer: usize,
+    z: f32,
+) {
+    ui.horizontal(|ui| {
+        let [r, g, b, _] = color::TRAVEL_COLOR;
+        swatch(ui, [r, g, b]);
+        ui.label(egui::RichText::new("Travel").strong());
+    });
+    egui::Grid::new(id.with("travel-grid"))
+        .num_columns(2)
+        .spacing([12.0, 2.0])
+        .show(ui, |ui| {
+            ui.label("Speed");
+            ui.label(format_value(ColorMode::Speed, seg.feedrate));
+            ui.end_row();
+            ui.label("Length");
+            ui.label(format!("{:.2} mm", seg.length()));
+            ui.end_row();
+            let dz = seg.end[2] - seg.start[2];
+            if dz.abs() > 1e-3 {
+                ui.label("Z move");
+                ui.label(format!("{dz:+.2} mm"));
+                ui.end_row();
+            }
+            ui.label("Layer");
+            ui.label(format!("{} (Z {:.2} mm)", layer + 1, z));
+            ui.end_row();
+            ui.label("Line");
+            ui.label(format!("{}", seg.line + 1));
+            ui.end_row();
+            if seg.time.is_finite() && seg.time > 0.0 {
+                ui.label("Time");
+                ui.label(format_duration(seg.time));
+                ui.end_row();
+            }
+            if seg.duration.is_finite() && seg.duration > 0.0 {
+                ui.label("Duration");
+                ui.label(if seg.duration < 60.0 {
+                    format!("{:.2} s", seg.duration)
+                } else {
+                    format_duration(seg.duration)
+                });
+                ui.end_row();
+            }
+        });
+}
+
 /// A small color square.
 fn swatch(ui: &mut egui::Ui, rgb: [u8; 3]) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
@@ -1612,6 +1715,7 @@ mod tests {
             legend: s.legend,
             bounds: s.bounds,
             pick: None,
+            travel_pick: None,
         }
     }
 

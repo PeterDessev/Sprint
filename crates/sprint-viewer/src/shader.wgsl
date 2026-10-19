@@ -595,6 +595,9 @@ fn vs_travel(@builtin(vertex_index) vi: u32, s: SegmentIn) -> FlatOut {
     if (is_ghost(s.line, s.layer)) {
         c = vec4<f32>(c.rgb * 0.5, c.a * 0.35);
     }
+    if (has_flag(FLAG_HOVER) && s.line == g.lines.w) {
+        c = vec4<f32>(mix(c.rgb, vec3<f32>(1.0), 0.55), 1.0);
+    }
     if (has_flag(FLAG_HIGHLIGHT) && s.line == g.lines.y) {
         c = vec4<f32>(1.0, 1.0, 1.0, 1.0);
     }

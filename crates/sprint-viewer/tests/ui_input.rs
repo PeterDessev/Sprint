@@ -28,12 +28,16 @@ struct Frame {
 
 impl Harness {
     fn new() -> Option<Harness> {
+        Harness::with_toolpath(block())
+    }
+
+    fn with_toolpath(toolpath: Toolpath) -> Option<Harness> {
         let Some((device, queue)) = headless_device() else {
             eprintln!("skipping UI test: no wgpu adapter available");
             return None;
         };
         let mut viewer = GcodeViewer::new_headless(&device, &queue);
-        viewer.set_toolpath(Arc::new(block()));
+        viewer.set_toolpath(Arc::new(toolpath));
         viewer.wait_until_loaded();
         let mut h = Harness {
             ctx: egui::Context::default(),
@@ -349,4 +353,82 @@ fn resizing_during_a_preset_animation_still_fits_the_new_size() {
             && (got.target - want.target).length() < 0.5,
         "camera {got:?}, expected {want:?}"
     );
+}
+
+/// The block plus a travel from its top layer out over the empty bed and
+/// back.
+fn block_with_travels() -> Toolpath {
+    let mut tp = block();
+    let z = tp.layers.last().map_or(1.2, |l| l.z);
+    let mut line = tp.line_count;
+    let layer = tp.layers.len() as u32 - 1;
+    for (start, end) in [
+        ([120.0, 119.5, z], [150.0, 140.0, z + 0.4]),
+        ([150.0, 140.0, z + 0.4], [100.0, 100.0, z]),
+    ] {
+        tp.segments.push(Segment {
+            start,
+            end,
+            feedrate: 150.0,
+            duration: 0.3,
+            line,
+            layer,
+            kind: MoveKind::Travel,
+            ..Default::default()
+        });
+        line += 1;
+    }
+    if let Some(last) = tp.layers.last_mut() {
+        last.segments.end = tp.segments.len();
+        last.lines.end = line;
+    }
+    tp.line_count = line;
+    tp
+}
+
+#[test]
+fn hovering_and_clicking_a_shown_travel_reports_its_line() {
+    let Some(mut h) = Harness::with_toolpath(block_with_travels()) else {
+        return;
+    };
+    h.viewer.set_view(ViewPreset::Top);
+    h.idle(40);
+    // Room for the travels beside the block.
+    h.viewer.camera_mut().distance *= 3.0;
+    h.idle(2);
+    // Over empty bed, a pixel or two beside the first travel's midpoint.
+    let on_travel = h.screen_of(Vec3::new(135.0, 129.75, 1.4)) + vec2(1.5, 1.0);
+    let hidden = h.frame(vec![Event::PointerMoved(on_travel)]);
+    assert_eq!(hidden.hovered, None, "travels are hidden by default");
+
+    h.viewer.options_mut().show_travel = true;
+    let shown = h.frame(vec![Event::PointerMoved(on_travel)]);
+    assert_eq!(shown.hovered, Some(240), "the first travel's line");
+    h.button(on_travel, PointerButton::Primary, true, Modifiers::NONE);
+    let click = h.button(on_travel, PointerButton::Primary, false, Modifiers::NONE);
+    assert_eq!(click.clicked, Some(240));
+    let hit = h
+        .viewer
+        .pick_screen(
+            [on_travel.x - h.rect.min.x, on_travel.y - h.rect.min.y],
+            [h.rect.width(), h.rect.height()],
+        )
+        .expect("travel hit");
+    let tp = h.viewer.toolpath().expect("loaded");
+    assert_eq!(tp.segments[hit.segment].kind, MoveKind::Travel);
+
+    // Well away from any line: nothing.
+    let far = h.screen_of(Vec3::new(135.0, 110.0, 0.0));
+    assert_eq!(h.frame(vec![Event::PointerMoved(far)]).hovered, None);
+
+    // Over the block, beads win unless the travel is right there: the
+    // block's middle is far from both travels.
+    let bead = h.screen_of(Vec3::new(110.0, 104.0, 1.1));
+    let hovered = h.frame(vec![Event::PointerMoved(bead)]).hovered;
+    assert!(hovered.is_some_and(|l| l < 240), "{hovered:?}");
+
+    // Travels outside the shown layers are not pickable.
+    h.viewer.options_mut().layer_range = (0, 2);
+    let below = h.frame(vec![Event::PointerMoved(on_travel)]);
+    assert_eq!(below.hovered, None);
 }
