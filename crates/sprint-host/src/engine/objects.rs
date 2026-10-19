@@ -8,7 +8,7 @@
 //!    NAME=..`, `EXCLUDE_OBJECT_END`;
 //! 2. Marlin `M486`: `T<count>` declares objects 0..count, `S<id>` starts
 //!    one, `S-1` ends it, `A"name"` (or `Aname`) names the current or
-//!    given one; unnamed objects are called "Object <id>";
+//!    given one; unnamed objects are called `"Object <id>"`;
 //! 3. PrusaSlicer / OrcaSlicer comments: `; printing object NAME` and
 //!    `; stop printing object NAME`;
 //! 4. Cura: `;MESH:NAME` until the next `;MESH:` (`;MESH:NONMESH` ends it)
