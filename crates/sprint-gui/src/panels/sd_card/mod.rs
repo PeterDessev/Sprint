@@ -244,15 +244,21 @@ impl SdCardTab {
     /// Connection bookkeeping, the automatic listing and print-after-upload.
     fn track(&mut self, ui: &Ui, ctx: &mut AppCtx<'_>) {
         self.card_printing = self.live_card_progress(ctx.state);
+        // Questions and the upload prompt belong to the connection they
+        // were opened on: a "Delete …?" must not come back on the next one.
         if self.connection.is_new(ctx.state) {
             self.auto_requested = false;
             self.released = false;
+            self.confirm = None;
+            self.upload = None;
         }
         if !ctx.connected() {
             self.auto_requested = false;
             self.print_after_upload = None;
             self.upload_seen = None;
             self.released = false;
+            self.confirm = None;
+            self.upload = None;
             return;
         }
         let sd = &ctx.state.sd;

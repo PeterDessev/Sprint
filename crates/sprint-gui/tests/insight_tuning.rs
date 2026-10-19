@@ -277,6 +277,33 @@ fn a_category_that_disappears_shows_everything_again() {
 }
 
 #[test]
+fn eeprom_questions_close_when_the_printer_disconnects() {
+    let mut h = harness_state(
+        Theme::Dark,
+        (1180.0, 900.0),
+        Host::<TuningTab>::synthetic(demo_state()),
+        |ui, host| host.frame(ui),
+    );
+    h.run_ok();
+    h.get_by_label("Save to EEPROM").click();
+    h.run_ok();
+    assert!(h.query_by_label("Save settings to EEPROM?").is_some());
+    // The link drops while the question is open (the editor keeps the
+    // settings it had).
+    if let Some(s) = h.state_mut().state.as_mut() {
+        s.status = sprint_host::ConnectionStatus::Disconnected;
+    }
+    h.run_ok();
+    // Confirming would claim a save that never happened.
+    assert!(h.query_by_label("Save settings to EEPROM?").is_none());
+    if let Some(s) = h.state_mut().state.as_mut() {
+        s.status = sprint_host::ConnectionStatus::Connected;
+    }
+    h.run_ok();
+    assert!(h.query_by_label("Save settings to EEPROM?").is_none());
+}
+
+#[test]
 fn tuning_tab_warns_during_a_job() {
     let mut state = demo_state();
     let mut job =

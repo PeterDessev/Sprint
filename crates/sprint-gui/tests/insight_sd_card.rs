@@ -425,6 +425,34 @@ fn firmware_without_sd_support_says_so() {
 }
 
 #[test]
+fn questions_do_not_outlive_the_connection() {
+    let mut h = tab(Theme::Dark, (1000.0, 760.0), sd_state());
+    h.state_mut().file = Some(loaded("cube.gcode", &small_gcode()));
+    h.run_ok();
+    h.get_by_label("Delete calibration_cube.gcode").click();
+    h.run_ok();
+    assert!(h.query_by_label("Delete calibration_cube.gcode?").is_some());
+    let set_status = |h: &mut H<'_>, status: sprint_host::ConnectionStatus| {
+        if let Some(s) = h.state_mut().state.as_mut() {
+            s.status = status;
+        }
+        h.run_ok();
+    };
+    // The printer goes away and comes back (maybe another one).
+    set_status(&mut h, sprint_host::ConnectionStatus::Disconnected);
+    set_status(&mut h, sprint_host::ConnectionStatus::Connected);
+    // The old question must not pop up again on the new connection.
+    assert!(h.query_by_label("Delete calibration_cube.gcode?").is_none());
+    // Nor the upload prompt.
+    h.get_by_label("Upload").click();
+    h.run_ok();
+    assert!(h.state().tab.upload_open());
+    set_status(&mut h, sprint_host::ConnectionStatus::Disconnected);
+    set_status(&mut h, sprint_host::ConnectionStatus::Connected);
+    assert!(!h.state().tab.upload_open());
+}
+
+#[test]
 fn odd_file_lists_never_panic() {
     let mut state = sd_state();
     state.sd.files = vec![

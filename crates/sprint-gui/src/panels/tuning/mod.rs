@@ -209,8 +209,15 @@ impl TuningTab {
     /// rebase the draft on every new report.
     fn sync(&mut self, ctx: &AppCtx<'_>) {
         let state = ctx.state;
+        // An EEPROM question asked of a printer that went away: confirming
+        // would send nothing and still report success (or, on the next
+        // connection, act on a printer it was not asked about).
         if self.connection.is_new(state) {
             self.auto_requested = false;
+            self.confirm = None;
+        }
+        if !state.is_connected() {
+            self.confirm = None;
         }
         if state.is_connected()
             && !state.settings_loaded
