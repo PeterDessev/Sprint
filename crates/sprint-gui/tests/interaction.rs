@@ -862,3 +862,30 @@ fn estop_above_modals_stays_clickable_under_a_dialog() {
     click_at(&mut h, locked.center());
     assert_eq!(*h.state(), (0, 1, false));
 }
+
+#[test]
+fn key_width_widens_only_the_label_column() {
+    let mut h = harness_state(
+        Theme::Dark,
+        (320.0, 200.0),
+        egui::Rect::NOTHING,
+        |ui, grid| {
+            *grid = KeyValueGrid::new("kv")
+                .key_width(180.0)
+                .show(ui, |kv| {
+                    kv.row("Firmware", "2");
+                    kv.row("Port", "COM3");
+                })
+                .response
+                .rect;
+        },
+    );
+    h.run_ok();
+    let grid = *h.state();
+    let value = h.get_by_label("COM3").rect();
+    // The labels get their 180 pt...
+    assert!(value.min.x >= grid.min.x + 180.0, "{value:?} in {grid:?}");
+    // ...but the short values do not, so the grid fits the 320 pt window
+    // (16 + 8 pt margins on each side).
+    assert!(grid.max.x <= 296.5, "grid overflows: {grid:?}");
+}

@@ -78,16 +78,15 @@ impl KeyValueGrid {
         let p = theme::ui_palette(ui);
         // Grid ids derive from the parent's stable id, which sibling Uis
         // share; salt with the unique id so side-by-side grids differ.
-        let mut grid = Grid::new(super::widget_id(ui, self.id))
+        // Not `Grid::min_col_width`: that widens the value column too.
+        let grid = Grid::new(super::widget_id(ui, self.id))
             .num_columns(2)
             .spacing(vec2(16.0, self.row_spacing));
-        if let Some(w) = self.key_width {
-            grid = grid.min_col_width(w);
-        }
         grid.show(ui, |ui| {
             let mut rows = KeyValueRows {
                 ui,
                 p,
+                key_width: self.key_width.unwrap_or(0.0),
                 copyable: self.copyable,
                 copied: None,
             };
@@ -100,6 +99,7 @@ impl KeyValueGrid {
 pub struct KeyValueRows<'u> {
     ui: &'u mut Ui,
     p: Palette,
+    key_width: f32,
     copyable: bool,
     copied: Option<String>,
 }
@@ -137,7 +137,7 @@ impl KeyValueRows<'_> {
     /// A label and custom content in the value column. Everything
     /// `add_value` adds is laid out left to right in that one cell.
     pub fn row_ui<R>(&mut self, key: &str, add_value: impl FnOnce(&mut Ui) -> R) -> R {
-        key_label(self.ui, &self.p, key);
+        key_label(self.ui, &self.p, key, self.key_width);
         // Without a wrapping Ui, every widget would take a grid cell of its
         // own and a second one would spill into a third column.
         let inner = self.ui.horizontal(add_value).inner;
@@ -157,7 +157,7 @@ impl KeyValueRows<'_> {
     }
 
     fn value_row(&mut self, key: &str, value: &str, font: FontId, color: Color32) -> Response {
-        key_label(self.ui, &self.p, key);
+        key_label(self.ui, &self.p, key, self.key_width);
         let response = value_cell(self.ui, &self.p, value, font, color, self.copyable);
         if response.clicked() && self.copyable && !value.is_empty() {
             self.copied = Some(value.to_owned());
@@ -167,8 +167,23 @@ impl KeyValueRows<'_> {
     }
 }
 
-fn key_label(ui: &mut Ui, p: &Palette, key: &str) {
-    ui.label(egui::RichText::new(key).size(13.0).color(p.text_dim));
+/// The dim label cell, at least `min_width` points wide.
+fn key_label(ui: &mut Ui, p: &Palette, key: &str, min_width: f32) {
+    if min_width <= 0.0 {
+        ui.label(egui::RichText::new(key).size(13.0).color(p.text_dim));
+        return;
+    }
+    // One exactly sized cell (like the value cells), so the grid aligns
+    // the label with its value.
+    let galley =
+        ui.painter()
+            .layout_no_wrap(key.to_owned(), FontId::proportional(13.0), p.text_dim);
+    let size = vec2(galley.size().x.max(min_width), galley.size().y);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, key));
+    if ui.is_rect_visible(rect) {
+        ui.painter().galley(rect.min, galley, p.text_dim);
+    }
 }
 
 fn value_cell(
