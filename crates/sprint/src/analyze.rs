@@ -10,6 +10,7 @@ use sprint_gcode::{AnalyzeOptions, Bounds, GcodeFile, SlicerMetadata, Stats, Too
 use sprint_tui::format;
 use sprint_tui::widgets::stats::label_width;
 use sprint_tui::{feature_rows, part_bounds, summary_rows};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::cli::AnalyzeArgs;
 
@@ -66,6 +67,34 @@ pub fn load(path: &Path) -> Result<GcodeFile> {
 
 /// Do not show progress for analyses faster than this.
 const PROGRESS_DELAY: Duration = Duration::from_millis(150);
+/// Widest file name in the progress line, in columns, so the line stays on
+/// one terminal row (`\r` only rewinds the last row of a wrapped line).
+const PROGRESS_NAME_COLS: usize = 48;
+
+/// `name` on one row in at most `max` columns: control characters become
+/// `?`, and a longer name keeps its end behind a `…`.
+fn fit_name(name: &str, max: usize) -> String {
+    let clean: String = name
+        .chars()
+        .map(|c| if c.is_control() { '?' } else { c })
+        .collect();
+    if UnicodeWidthStr::width(clean.as_str()) <= max {
+        return clean;
+    }
+    let mut kept = Vec::new();
+    let mut used = 0;
+    for c in clean.chars().rev() {
+        let w = UnicodeWidthChar::width(c).unwrap_or(0);
+        if used + w > max.saturating_sub(1) {
+            break;
+        }
+        kept.push(c);
+        used += w;
+    }
+    let mut out = String::from("…");
+    out.extend(kept.iter().rev());
+    out
+}
 
 /// "Analyzing name… 42%" on one terminal line, redrawn in place.
 struct Progress<W: Write> {
@@ -81,7 +110,7 @@ impl<W: Write> Progress<W> {
     fn new(out: Option<W>, name: &str) -> Progress<W> {
         Progress {
             out,
-            label: format!("Analyzing {name}"),
+            label: format!("Analyzing {}", fit_name(name, PROGRESS_NAME_COLS)),
             started: Instant::now(),
             last: None,
             drawn: 0,
@@ -113,7 +142,8 @@ impl<W: Write> Progress<W> {
         let text = format!("{}… {percent:>3}%", self.label);
         // Progress is best effort: a closed stderr must not fail the run.
         if write!(out, "\r{text}").and_then(|()| out.flush()).is_ok() {
-            self.drawn = text.chars().count();
+            // Columns, not characters: wide characters take two.
+            self.drawn = UnicodeWidthStr::width(text.as_str());
         }
     }
 
@@ -461,6 +491,46 @@ G1 Z0.4 F600\nG1 X30 Y10 E1 F1200\nG2 X30 Y30 I0 J10 E1\n\
         quick.update(0.5);
         quick.finish();
         assert!(quick.out.take().is_some_and(|o| o.is_empty()));
+    }
+
+    /// The text of the first progress line drawn into `out`.
+    fn drawn_line(out: &[u8]) -> String {
+        let text = String::from_utf8_lossy(out);
+        text.split('\r').nth(1).unwrap_or_default().to_string()
+    }
+
+    #[test]
+    fn progress_fits_one_row_and_erases_by_width() {
+        let long = format!("{}end.gcode", "a-very-long-file-name-".repeat(8));
+        let mut progress = Progress::new(Some(Vec::new()), &long);
+        progress.draw(0.5);
+        progress.finish();
+        let out = progress.out.take().unwrap_or_default();
+        let line = drawn_line(&out);
+        assert!(UnicodeWidthStr::width(line.as_str()) <= 70, "{line}");
+        assert!(line.starts_with("Analyzing …"), "{line}");
+        assert!(
+            line.ends_with("-name-end.gcode…  50%"),
+            "keeps the end: {line}"
+        );
+        // A control character in a file name cannot move the cursor.
+        let mut progress = Progress::new(Some(Vec::new()), "two\nlines\r.gcode");
+        progress.draw(0.5);
+        let out = progress.out.take().unwrap_or_default();
+        assert_eq!(drawn_line(&out), "Analyzing two?lines?.gcode…  50%");
+        // Wide characters take two columns each; all of them are erased.
+        let mut progress = Progress::new(Some(Vec::new()), "日本語.gcode");
+        progress.draw(0.5);
+        progress.finish();
+        let out = progress.out.take().unwrap_or_default();
+        let line = drawn_line(&out);
+        let cols = UnicodeWidthStr::width(line.as_str());
+        assert_eq!(cols, 28, "{line}");
+        let text = String::from_utf8_lossy(&out).into_owned();
+        assert!(
+            text.ends_with(&format!("\r{}\r", " ".repeat(cols))),
+            "{text:?}"
+        );
     }
 
     #[test]

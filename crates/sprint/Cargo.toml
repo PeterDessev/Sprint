@@ -24,6 +24,7 @@ log.workspace = true
 env_logger.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+unicode-width = "0.2"
 
 # Releasing the console of a GUI launch from Explorer (see src/console.rs).
 [target.'cfg(windows)'.dependencies]
