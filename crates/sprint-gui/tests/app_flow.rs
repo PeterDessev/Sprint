@@ -516,6 +516,51 @@ fn settings_apply_to_the_profile_and_are_saved() {
 }
 
 #[test]
+fn saving_keeps_what_others_changed_in_the_file() {
+    let dir = temp_dir("shared-config");
+    let config_path = dir.join("config.toml");
+    let options = sim_options();
+    options.config.save_to(&config_path).expect("initial file");
+    let options = AppOptions {
+        config_path: Some(config_path.clone()),
+        ..options
+    };
+    let mut h = app(options, WINDOW);
+    // While the GUI runs, the TUI opens a file and a hand edit adds a
+    // macro.
+    let mut theirs = sprint_host::AppConfig::load_from(&config_path).expect("file");
+    theirs.push_recent(PathBuf::from("from-the-tui.gcode"));
+    theirs.macros.push(sprint_host::Macro {
+        name: "Added by hand".into(),
+        gcode: "M117 hi".into(),
+        color: None,
+        confirm: false,
+    });
+    theirs.save_to(&config_path).expect("their save");
+    // The GUI opens a file, which it saves to the recent files.
+    let cube = sample("calibration-cube.gcode");
+    h.state_mut().push_action(AppAction::LoadFile(cube.clone()));
+    expect(&mut h, "the cube to be analyzed", analyzed);
+    let saved_recent = |path: &Path| {
+        sprint_host::AppConfig::load_from(path).is_ok_and(|c| {
+            c.recent_files
+                .first()
+                .is_some_and(|f| f.ends_with("calibration-cube.gcode"))
+        })
+    };
+    expect(&mut h, "the save", |_| saved_recent(&config_path));
+    let saved = sprint_host::AppConfig::load_from(&config_path).expect("saved config");
+    assert_eq!(saved.recent_files[1], PathBuf::from("from-the-tui.gcode"));
+    assert!(
+        saved.macros.iter().any(|m| m.name == "Added by hand"),
+        "{:?}",
+        saved.macros
+    );
+    drop(h);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn the_estop_halts_and_the_banner_recovers() {
     let mut h = app(sim_options(), WINDOW);
     connect(&mut h);

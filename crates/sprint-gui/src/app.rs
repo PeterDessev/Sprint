@@ -308,6 +308,9 @@ impl SprintApp {
         let mut config = options.config;
         // At least one profile, and a valid index.
         let _ = config.active_mut();
+        // What the GUI changes is merged into the file when saved (see
+        // config_store).
+        let saver = ConfigSaver::new(options.config_path, &config);
         let printer = Printer::with_console_capacity(config.console_max_lines);
         printer.set_profile(config.active().clone());
         let events = printer.subscribe();
@@ -357,7 +360,7 @@ impl SprintApp {
             connector: Connector::new(Some(ctx.clone())),
             loader: FileLoader::new(Some(ctx.clone())),
             watch: FileWatch::new(Some(ctx.clone())),
-            saver: ConfigSaver::new(options.config_path),
+            saver,
             modal: None,
             prompt: None,
             thumbnail: None,
