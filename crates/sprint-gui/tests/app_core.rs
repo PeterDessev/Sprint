@@ -485,3 +485,39 @@ fn a_cancelled_print_is_recovered_from_the_line_it_stopped_at() {
     drop(h);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn the_settings_edit_print_events_and_m73() {
+    let mut h = app(sim_options(), WINDOW);
+    h.state_mut().push_action(AppAction::OpenSettings);
+    settle(&mut h);
+    let dialog = h.state_mut().settings_dialog_mut().expect("settings");
+    dialog.draft.profiles[0].emit_progress = false;
+    settle(&mut h);
+    // The page lists the commands' environment.
+    assert!(h.query_by_label_contains("SPRINT_REASON").is_some());
+    let field = h.get_by_label("When a print finishes");
+    field.scroll_to_me();
+    settle(&mut h);
+    h.get_by_label("When a print finishes").click();
+    settle(&mut h);
+    h.get_by_label("When a print finishes")
+        .type_text("echo done \"$SPRINT_FILE\"");
+    settle(&mut h);
+    h.get_by_label("Show progress on the printer's display (M73)")
+        .scroll_to_me();
+    settle(&mut h);
+    h.get_by_label("Show progress on the printer's display (M73)")
+        .click();
+    settle(&mut h);
+    h.get_by_label("Save").click();
+    settle(&mut h);
+    let profile = h.state().config().active().clone();
+    assert_eq!(profile.on_finish_command, "echo done \"$SPRINT_FILE\"");
+    assert!(profile.emit_progress);
+    // The printer gets the profile with its commands.
+    assert_eq!(
+        h.state().printer().profile().on_finish_command,
+        profile.on_finish_command
+    );
+}

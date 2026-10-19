@@ -25,7 +25,13 @@ use crate::{format, icons};
 const MAX_REPORT_LINES: usize = 12;
 
 /// Placeholders the pause / resume / cancel scripts understand.
-pub const SCRIPT_PLACEHOLDERS: &str = "{x} {y} {z} {e} {f} — position and feedrate when paused\n{tool} {hotend} {bed} {fan} — tool, targets and fan\n{max_x} {max_y} {max_z} {park_x} {park_y} — from the bed size";
+pub const SCRIPT_PLACEHOLDERS: &str = "{x} {y} {z} {e} {f} — position and feedrate when paused\n{tool} {hotend} {bed} {fan} — tool, targets and fan\n{max_x} {max_y} {max_z} {park_x} {park_y} — from the bed size\n{heaters_off} — every heater off (each hotend, the bed and the chamber)";
+
+/// What the print event commands are and what they get.
+pub const HOOK_HELP: &str = "Shell commands run when a print (from Sprint or from the SD card) starts, finishes, fails or is cancelled, like Printrun's start, final and error commands: on Windows with cmd /C, elsewhere with sh -c, stopped after 2 minutes, their output in the console. Quote the variables (\"%SPRINT_FILE%\" for cmd, \"$SPRINT_FILE\" for sh): a file name may hold characters the shell acts on. Leave one empty to run nothing.";
+
+/// The environment the print event commands get.
+pub const HOOK_ENVIRONMENT: &str = "SPRINT_FILE — the file or SD name\nSPRINT_STATUS — started, completed, failed or cancelled\nSPRINT_ELAPSED_SECS — print time so far\nSPRINT_PRINTER — the printer profile's name\nSPRINT_REASON — why it failed (failures only)";
 
 /// Which page the dialog shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -835,6 +841,59 @@ impl SettingsDialog {
             p,
         );
 
+        section(ui, "Printing", p);
+        ui.add(
+            Toggle::new(&mut profile.emit_progress)
+                .label("Show progress on the printer's display (M73)"),
+        )
+        .on_hover_text(
+            "M73 P<percent> R<minutes> while printing from Sprint; the start dialog starts \
+             with this and can change it for one print",
+        );
+        ui.add(
+            Toggle::new(&mut profile.keep_heaters_on_failure)
+                .label("Keep the heaters on when a print fails"),
+        );
+        if profile.keep_heaters_on_failure {
+            warn(
+                ui,
+                "A print the link gives up on leaves the printer hot with nobody watching it. \
+                 Only for printers you stay with.",
+                p,
+            );
+        } else {
+            note(
+                ui,
+                "When Sprint gives up on a print (a lost link, a firmware that stopped \
+                 answering), it switches every heater and the fan off.",
+                p,
+            );
+        }
+
+        section(ui, "Print event commands", p);
+        note(ui, HOOK_HELP, p);
+        ui.label(
+            RichText::new(HOOK_ENVIRONMENT)
+                .monospace()
+                .size(11.5)
+                .color(p.text_dim),
+        );
+        ui.add_space(4.0);
+        hook_editor(ui, "When a print starts", &mut profile.on_start_command, p);
+        hook_editor(
+            ui,
+            "When a print finishes",
+            &mut profile.on_finish_command,
+            p,
+        );
+        hook_editor(ui, "When a print fails", &mut profile.on_fail_command, p);
+        hook_editor(
+            ui,
+            "When a print is cancelled",
+            &mut profile.on_cancel_command,
+            p,
+        );
+
         section(ui, "Print time estimation", p);
         let mut custom = profile.kinematics.is_some();
         if ui
@@ -1042,6 +1101,23 @@ fn connection_editor(
             );
         }
     }
+}
+
+/// One print event command: a labelled single-line field.
+fn hook_editor(ui: &mut Ui, title: &str, command: &mut String, p: &Palette) {
+    ui.add_space(4.0);
+    let label = ui.label(RichText::new(title).strong().color(p.text));
+    ui.add(
+        egui::TextEdit::singleline(command)
+            .font(egui::TextStyle::Monospace)
+            .hint_text(if cfg!(windows) {
+                "e.g. msg * \"Sprint: %SPRINT_FILE% %SPRINT_STATUS%\""
+            } else {
+                "e.g. notify-send Sprint \"$SPRINT_FILE $SPRINT_STATUS\""
+            })
+            .desired_width(f32::INFINITY),
+    )
+    .labelled_by(label.id);
 }
 
 fn script_editor(ui: &mut Ui, title: &str, script: &mut String, default: &str, p: &Palette) {

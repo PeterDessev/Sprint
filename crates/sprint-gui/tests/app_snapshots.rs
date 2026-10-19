@@ -343,3 +343,17 @@ fn recovering_a_failed_print() {
     settle(&mut h);
     snapshot(&mut h, "app_recover");
 }
+
+#[test]
+fn settings_print_events() {
+    // The profile page's printing options and print event commands.
+    let mut h = app(AppOptions::headless(), WINDOW);
+    h.state_mut().set_side_panels(false, true);
+    h.state_mut().push_action(AppAction::OpenSettings);
+    settle(&mut h);
+    h.get_by_label("When a print is cancelled").scroll_to_me();
+    settle(&mut h);
+    h.remove_cursor();
+    settle(&mut h);
+    snapshot(&mut h, "app_settings_print_events");
+}
