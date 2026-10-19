@@ -613,19 +613,25 @@ impl Shell {
             }
             Command::Resume => {
                 self.pause_asked = None;
-                let release = self.printer.with_state(|s| {
-                    actions::waiting_for_user(s)
-                        && !s.job.as_ref().is_some_and(|j| {
-                            matches!(
-                                j.status,
-                                sprint_host::JobStatus::Paused | sprint_host::JobStatus::Pausing
-                            )
-                        })
+                let (waiting, paused) = self.printer.with_state(|s| {
+                    (
+                        actions::waiting_for_user(s),
+                        s.job
+                            .as_ref()
+                            .is_some_and(|j| j.status == sprint_host::JobStatus::Paused),
+                    )
                 });
-                if release {
-                    // M0/M1 or a filament change without a host prompt; a
-                    // paused job is resumed below (with M108).
-                    self.printer.send("M108");
+                if waiting {
+                    // M0/M1 or a filament change without a host prompt. A
+                    // print the printer paused for it (//action:paused) is
+                    // resumed, and the engine sends M108; at once, since
+                    // the link stays busy while the firmware holds back the
+                    // ok of its M0.
+                    if paused {
+                        self.printer.resume();
+                    } else {
+                        self.printer.send("M108");
+                    }
                     self.out.dim("Continuing (M108)");
                 } else if !self.job_active() {
                     self.out.warn("No job is running");

@@ -4,8 +4,13 @@
 //!
 //! It answers every line with `ok` (M105 with temperatures, M115 with a
 //! firmware name). After `M0`/`M1` it sends `echo:busy: paused for user`
-//! every 200 ms and holds the `ok` until `M108` arrives.
+//! every 200 ms and holds the `ok` (and the commands that follow, as
+//! Marlin's command queue does) until `M108` arrives. Started with
+//! [`FakePrinter::start_announcing_pauses`], it also says
+//! `//action:paused` when the wait begins (Marlin with host action
+//! commands but without host prompts).
 
+use std::collections::VecDeque;
 use std::io::{ErrorKind, Read, Write};
 use std::net::TcpListener;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -29,6 +34,16 @@ pub(crate) struct FakePrinter {
 impl FakePrinter {
     /// Listen on a free loopback port and serve the first client.
     pub(crate) fn start() -> FakePrinter {
+        FakePrinter::serving(false)
+    }
+
+    /// [`FakePrinter::start`], announcing each wait for the user with
+    /// `//action:paused` (the host then pauses its print).
+    pub(crate) fn start_announcing_pauses() -> FakePrinter {
+        FakePrinter::serving(true)
+    }
+
+    fn serving(announce_pauses: bool) -> FakePrinter {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind a loopback port");
         let port = listener.local_addr().expect("local address").port();
         listener
@@ -39,7 +54,7 @@ impl FakePrinter {
         let thread = {
             let stop = Arc::clone(&stop);
             let received = Arc::clone(&received);
-            std::thread::spawn(move || serve(&listener, &stop, &received))
+            std::thread::spawn(move || serve(&listener, &stop, &received, announce_pauses))
         };
         FakePrinter {
             port,
@@ -72,7 +87,12 @@ impl Drop for FakePrinter {
     }
 }
 
-fn serve(listener: &TcpListener, stop: &AtomicBool, received: &Mutex<Vec<String>>) {
+fn serve(
+    listener: &TcpListener,
+    stop: &AtomicBool,
+    received: &Mutex<Vec<String>>,
+    announce_pauses: bool,
+) {
     let mut stream = loop {
         if stop.load(Ordering::Relaxed) {
             return;
@@ -88,6 +108,8 @@ fn serve(listener: &TcpListener, stop: &AtomicBool, received: &Mutex<Vec<String>
     let _ = stream.set_nonblocking(false);
     let _ = stream.set_read_timeout(Some(Duration::from_millis(20)));
     let mut pending = Vec::new();
+    // Commands not run yet: those that came during a wait for the user.
+    let mut queued: VecDeque<String> = VecDeque::new();
     let mut waiting_since: Option<Instant> = None;
     let mut buf = [0u8; 1024];
     while !stop.load(Ordering::Relaxed) {
@@ -107,24 +129,31 @@ fn serve(listener: &TcpListener, stop: &AtomicBool, received: &Mutex<Vec<String>
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .push(command.clone());
-            let word = command
-                .split_whitespace()
-                .next()
-                .unwrap_or_default()
-                .to_ascii_uppercase();
-            let reply = match word.as_str() {
+            queued.push_back(command);
+        }
+        // M108 is handled at once (Marlin's emergency parser); the other
+        // commands wait while the firmware waits for the user.
+        if waiting_since.is_some()
+            && let Some(at) = queued.iter().position(|c| word_of(c) == "M108")
+        {
+            queued.remove(at);
+            waiting_since = None;
+            // The held ok of M0, then M108's own.
+            if stream.write_all(b"ok\nok\n").is_err() {
+                return;
+            }
+        }
+        while waiting_since.is_none()
+            && let Some(command) = queued.pop_front()
+        {
+            let reply = match word_of(&command).as_str() {
                 "M0" | "M1" => {
                     waiting_since = Some(Instant::now());
-                    String::new()
-                }
-                "M108" => {
-                    // The held ok of M0, then M108's own.
-                    let held = if waiting_since.take().is_some() {
-                        "ok\n"
+                    if announce_pauses {
+                        "//action:paused\n".to_string()
                     } else {
-                        ""
-                    };
-                    format!("{held}ok\n")
+                        String::new()
+                    }
                 }
                 "M105" => "ok T:20.0 /0.0 B:20.0 /0.0\n".to_string(),
                 "M115" => "FIRMWARE_NAME:Marlin 2.1.2 (Fake)\nok\n".to_string(),
@@ -143,6 +172,15 @@ fn serve(listener: &TcpListener, stop: &AtomicBool, received: &Mutex<Vec<String>
             }
         }
     }
+}
+
+/// The first word of a command, upper-case.
+fn word_of(command: &str) -> String {
+    command
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase()
 }
 
 /// The command of a line as sent: `N12 M0*34` gives `M0`.

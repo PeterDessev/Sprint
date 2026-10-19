@@ -933,19 +933,27 @@ impl App {
     }
 
     /// When the firmware waits for the user without a host prompt (M0/M1
-    /// or a filament change on firmware without prompt support) and the
-    /// job is not paused: release it with M108 and return true. A paused
-    /// job is resumed instead (the engine sends M108 then).
+    /// or a filament change on firmware without prompt support): let it go
+    /// on and return true. Usually that is M108. A print the printer
+    /// paused for the wait (`//action:paused`) is resumed instead, and the
+    /// engine sends M108 then; it is resumed at once, since the link
+    /// cannot become idle while the firmware holds back the `ok` of its
+    /// M0.
     fn continue_user_wait(&mut self) -> bool {
+        if !self.view.waiting_for_user {
+            return false;
+        }
         let paused = self
             .view
             .job
             .as_ref()
-            .is_some_and(|j| matches!(j.status, JobStatus::Paused | JobStatus::Pausing));
-        if !self.view.waiting_for_user || paused {
-            return false;
+            .is_some_and(|j| j.status == JobStatus::Paused);
+        if paused {
+            self.resume_pending = None;
+            self.printer.resume();
+        } else {
+            self.printer.send("M108");
         }
-        self.printer.send("M108");
         self.info("Continuing (M108)");
         true
     }

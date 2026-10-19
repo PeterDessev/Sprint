@@ -811,17 +811,20 @@ impl App {
                 ("F1", "Help"),
             ],
             _ => {
+                // F6 lets a firmware waiting for the user go on, even when
+                // the printer paused the print for it.
+                let waiting = self.view.waiting_for_user;
                 let pause = match self.view.job.as_ref().map(|j| &j.status) {
+                    _ if waiting => "Continue (M108)",
                     Some(JobStatus::Paused | JobStatus::Pausing) => "Resume",
-                    _ if self.view.waiting_for_user => "Continue (M108)",
                     _ => "Pause",
                 };
                 let mut hints = Vec::new();
                 if self.hidden_prompt.is_some() {
                     hints.push(("p", "Printer asks"));
                 }
-                if self.view.waiting_for_user && !self.view.job_active() {
-                    hints.push(("F6", "Continue (M108)"));
+                if waiting && !self.view.job_active() {
+                    hints.push(("F6", pause));
                 }
                 if self.view.job_active() {
                     // The job's controls first (a narrow terminal shows
@@ -839,21 +842,26 @@ impl App {
                         ("Tab", "Focus"),
                     ]);
                 } else {
-                    hints.extend([
-                        ("F1", "Help"),
-                        ("F2", "Connect"),
-                        ("F3", "Open"),
-                        ("F5", "Print"),
-                        ("F6", pause),
-                        ("F7", "Cancel"),
-                        ("F8", "E-stop"),
-                        ("F10", "Quit"),
-                        (":", "Command"),
-                        ("i", "G-code"),
-                        ("j", "Jog"),
-                        ("t", "Temps"),
-                        ("Tab", "Focus"),
-                    ]);
+                    // (F6 is first already while the firmware waits.)
+                    hints.extend(
+                        [
+                            ("F1", "Help"),
+                            ("F2", "Connect"),
+                            ("F3", "Open"),
+                            ("F5", "Print"),
+                            ("F6", pause),
+                            ("F7", "Cancel"),
+                            ("F8", "E-stop"),
+                            ("F10", "Quit"),
+                            (":", "Command"),
+                            ("i", "G-code"),
+                            ("j", "Jog"),
+                            ("t", "Temps"),
+                            ("Tab", "Focus"),
+                        ]
+                        .into_iter()
+                        .filter(|&(key, _)| !(waiting && key == "F6")),
+                    );
                 }
                 hints
             }

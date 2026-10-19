@@ -1281,3 +1281,52 @@ fn a_panic_in_the_shell_still_cancels_the_print_before_closing() {
     assert!(got.iter().any(|c| c == "M104 S0"), "{got:?}");
     assert!(got.iter().any(|c| c == "M140 S0"), "{got:?}");
 }
+
+#[test]
+fn resume_goes_on_after_a_wait_the_printer_paused_the_print_for() {
+    // Marlin with host action commands but no host prompts: M0 pauses the
+    // host's print (//action:paused) and waits for the user.
+    let fake = crate::fake_printer::FakePrinter::start_announcing_pauses();
+    let scratch = Scratch::new("printer-paused");
+    let path = scratch.0.join("stop.gcode");
+    std::fs::write(&path, "G28\nG1 X10 F3000\nM0\nG1 X20 F3000\nG1 X30 F3000\n").expect("write");
+    let (mut shell, buffer) = shell();
+    shell.connect(fake.target());
+    assert!(shell.printer.is_connected(), "{}", buffer.text());
+    shell.load(&path);
+    let mut input = Script::new(["print"], false);
+    shell.run_lines_until_eof_without_leaving(&mut input);
+    wait_for(&shell, "the printer's pause", |s| {
+        crate::actions::waiting_for_user(s)
+            && s.job
+                .as_ref()
+                .is_some_and(|j| j.status == JobStatus::Paused)
+    });
+    // If resume waited for an idle link (never: M0 is unanswered until
+    // the user goes on), this stops the wait.
+    let watchdog = shell.interrupt.clone();
+    let (done, finished) = crossbeam_channel::bounded::<()>(0);
+    let thread = std::thread::spawn(move || {
+        if finished.recv_timeout(Duration::from_secs(10))
+            == Err(crossbeam_channel::RecvTimeoutError::Timeout)
+        {
+            watchdog.raise();
+        }
+    });
+    let mut input = Script::new(["resume"], false);
+    shell.run_lines_until_eof_without_leaving(&mut input);
+    drop(done);
+    let _ = thread.join();
+    wait_for(&shell, "the end of the print", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Completed)
+    });
+    assert!(
+        fake.received().iter().any(|c| c == "M108"),
+        "{:?}\n{}",
+        fake.received(),
+        buffer.text()
+    );
+    shell.printer.disconnect();
+}

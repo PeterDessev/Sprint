@@ -1970,7 +1970,7 @@ fn f6_releases_a_wait_for_the_user_without_a_prompt() {
     assert!(app.view.waiting_for_user);
     let text = screen(&mut app, 120, 40);
     assert!(text.contains("Waits for the user F6 continues"), "{text}");
-    assert!(text.contains("F6 Continue (M108)"), "{text}");
+    assert_eq!(text.matches("F6 Continue (M108)").count(), 1, "{text}");
     press(&mut app, KeyCode::F(6));
     wait(&mut app, "the release", |s| s.busy.is_none());
     assert!(
@@ -2141,5 +2141,53 @@ fn an_sd_delete_without_an_answer_is_not_reported_as_done_later() {
         app.toast
     );
     assert_eq!(app.pending_sd_delete, None);
+    app.printer.disconnect();
+}
+
+/// A print that stops at M0 on the fake printer.
+fn print_with_a_stop(app: &mut App) {
+    let file = std::sync::Arc::new(sprint_host::sprint_gcode::GcodeFile::from_text(
+        "stop.gcode",
+        "G28\nG1 X10 F3000\nM0\nG1 X20 F3000\nG1 X30 F3000\n",
+    ));
+    app.printer
+        .start_print(file, Default::default())
+        .expect("start the print");
+}
+
+#[test]
+fn f6_goes_on_after_a_wait_the_printer_paused_the_print_for() {
+    // Marlin with host action commands but no host prompts: M0 pauses the
+    // host's print (//action:paused) and waits for the user.
+    let fake = crate::fake_printer::FakePrinter::start_announcing_pauses();
+    let printer = Printer::new();
+    printer
+        .connect(fake.target(), ConnectOptions::default())
+        .expect("connect to the fake printer");
+    let mut app = App::new(printer, AppConfig::default(), None, Theme::dark());
+    wait(&mut app, "the connection", PrinterState::is_connected);
+    wait_idle(&mut app);
+    print_with_a_stop(&mut app);
+    wait(&mut app, "the printer's pause", |s| {
+        crate::actions::waiting_for_user(s)
+            && s.job
+                .as_ref()
+                .is_some_and(|j| j.status == sprint_host::JobStatus::Paused)
+    });
+    app.sync();
+    let text = screen(&mut app, 120, 40);
+    assert!(text.contains("Waits for the user F6 continues"), "{text}");
+    assert_eq!(text.matches("F6 Continue (M108)").count(), 1, "{text}");
+    press(&mut app, KeyCode::F(6));
+    wait(&mut app, "the end of the print", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == sprint_host::JobStatus::Completed)
+    });
+    assert!(
+        fake.received().iter().any(|c| c == "M108"),
+        "{:?}",
+        fake.received()
+    );
     app.printer.disconnect();
 }
