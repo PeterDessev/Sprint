@@ -235,7 +235,11 @@ impl Tuning {
         } else {
             spec.reset.0
         };
-        let mut value = self.shown(spec.knob, reported, now).clamp(lo, hi);
+        let shown = self.shown(spec.knob, reported, now);
+        // The knob stops at the ends of the track; the readout shows the
+        // value as it is (an override set beyond the range elsewhere).
+        let mut value = shown.clamp(lo, hi);
+        let mut readout = shown;
         let mut send = None;
         ui.push_id(spec.knob, |ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
@@ -250,7 +254,7 @@ impl Tuning {
                 },
                 |ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
-                    let modified = (value - spec.reset.0).abs() >= 0.5;
+                    let modified = (readout - spec.reset.0).abs() >= 0.5;
                     if modified {
                         let r = ui.add(
                             IconButton::new(icons::RESET)
@@ -260,12 +264,13 @@ impl Tuning {
                         );
                         if r.clicked() {
                             value = spec.reset.0;
+                            readout = value;
                             send = Some(value);
                         }
                     } else {
                         ui.allocate_exact_size(vec2(24.0, 24.0), Sense::hover());
                     }
-                    value_label(ui, &format!("{}%", value.round()), modified);
+                    value_label(ui, &format!("{}%", readout.round()), modified);
                 },
             );
             let r = slim_slider(ui, &mut value, spec.range, Some(spec.reset.0), &spec.label);

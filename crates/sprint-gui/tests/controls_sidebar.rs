@@ -544,6 +544,22 @@ fn sliders_send_fan_speed_and_overrides_on_release() {
     assert_ne!(got[0], "M220 S100", "the drag changed the value");
 }
 
+/// Overrides set beyond the sliders' ranges (an `M220 S500` typed in the
+/// console, a file's `M221 S20`) read out as they are: the knob stops at
+/// the end of its track, the number does not.
+#[test]
+fn overrides_beyond_the_slider_ranges_read_out_as_reported() {
+    let mut state = controls_common::heating_state();
+    state.feedrate_pct = 500.0;
+    state.flow_pct = vec![20.0];
+    let mut h = sidebar_fixed(Theme::Dark, (420.0, 2600.0), Rig::synthetic(state));
+    controls_common::settle(&mut h);
+    assert!(h.query_by_label("500%").is_some(), "the speed override");
+    assert!(h.query_by_label("20%").is_some(), "the flow override");
+    assert!(h.query_by_label("300%").is_none());
+    assert!(h.query_by_label("50%").is_some(), "the fan, unchanged");
+}
+
 #[test]
 fn cold_hotend_blocks_extrusion_until_heated() {
     let mut h = connected();
