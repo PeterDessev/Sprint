@@ -8,7 +8,9 @@ use std::time::{Duration, Instant};
 use sprint_gcode::{GcodeFile, MachineState, ParsedLine, clean_line, state_at_line};
 
 use super::meta::{CmdMeta, JobLine, Meta, Source};
-use super::scripts::{guarded, in_script_modes, modes_after, render_job_script, resume_script};
+use super::scripts::{
+    ResumeExtras, guarded, in_script_modes, modes_after, render_job_script, resume_script,
+};
 use super::{Engine, PROGRESS_INTERVAL, Phase};
 use crate::console::ConsoleKind;
 use crate::error::HostError;
@@ -401,7 +403,19 @@ impl Engine {
                     .unwrap_or_else(|| self.shared.profile.read().resume_script.clone());
                 let lines = render_job_script(&self.shared, &template, &snapshot);
                 let printer = modes_after(&self.printer_modes, &self.manual);
-                let lines = resume_script(lines, &snapshot, &printer);
+                let extras = {
+                    let s = self.shared.state.read();
+                    ResumeExtras::needed(&snapshot, &s.temps, s.fan_speeds.first().copied())
+                };
+                if !extras.reheat.is_empty() {
+                    self.shared.log(
+                        ConsoleKind::Info,
+                        "Heating back to the job's temperatures before resuming",
+                        false,
+                        None,
+                    );
+                }
+                let lines = resume_script(lines, &snapshot, &printer, extras);
                 job.queue_scripts(lines, Some(JobStatus::Printing));
                 // Commands typed while paused (a purge, the rest of a
                 // filament change) run before the head returns to the part.

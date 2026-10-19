@@ -592,3 +592,68 @@ fn modes_typed_while_paused_do_not_move_the_rest_of_the_print() {
         );
     }
 }
+
+#[test]
+fn resume_heats_back_up_and_restores_the_fan() {
+    // Turning the hotend off (and the fan) during a long pause is common:
+    // resuming must not print with a cold nozzle.
+    let printer = connect(sim(), options());
+    let control = printer.sim_control().unwrap();
+    let mut text = String::from(
+        "M104 S200\nM140 S50\nM109 S200\nM190 S50\nG28\nM106 S200\nM83\nG1 Z0.3 F600\n",
+    );
+    for i in 0..300 {
+        text.push_str(&format!(
+            "G1 X{} Y{} E0.5 F3000\n",
+            20 + i % 100,
+            20 + i / 10
+        ));
+    }
+    let file = Arc::new(GcodeFile::from_text("hot.gcode", text));
+    start(&printer, &file, PrintOptions::default());
+    printer.pause();
+    wait_for(&printer, "paused", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Paused)
+    });
+    printer.set_temperature(sprint_host::Heater::Hotend(0), 0.0);
+    printer.set_fan(0, 0);
+    wait_for(&printer, "the hotend to cool down", |s| {
+        s.temps.hotends.first().is_some_and(|h| h.current < 150.0)
+    });
+    control.clear_received();
+    let seq = last_seq(&printer);
+    printer.resume();
+    wait_for(&printer, "completed", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Completed)
+    });
+    let got = control.received_commands();
+    let heat = got
+        .iter()
+        .position(|c| c == "M109 S200")
+        .expect("M109 S200");
+    let back = got.iter().position(|c| c.starts_with("G1 X")).unwrap();
+    assert!(
+        heat < back,
+        "heats before moving back: {:?}",
+        &got[..back + 1]
+    );
+    assert!(got.iter().any(|c| c == "M104 S200"), "{got:?}");
+    assert!(
+        !got.iter().any(|c| c.starts_with("M190")),
+        "the bed stayed hot"
+    );
+    let fan = got.iter().position(|c| c == "M106 S200").expect("the fan");
+    let printing = got.iter().position(|c| c.ends_with("E0.5 F3000")).unwrap();
+    assert!(fan < printing, "{:?}", &got[..printing + 1]);
+    let cold = printer
+        .console_since(seq, usize::MAX)
+        .iter()
+        .filter(|e| e.text.contains("cold extrusion"))
+        .count();
+    assert_eq!(cold, 0);
+    assert_eq!(control.snapshot().hotend_targets, [200.0]);
+}

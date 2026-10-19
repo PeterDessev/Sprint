@@ -6,11 +6,12 @@
 use std::collections::VecDeque;
 
 use sprint_gcode::{MachineState, parse_line};
+use sprint_proto::{HeaterReading, TempReport};
 
 use super::Shared;
 use super::meta::Meta;
 use crate::console::ConsoleKind;
-use crate::script::render_script_with;
+use crate::script::{format_number, render_script_with};
 use crate::state::Axes;
 
 /// Render a pause, resume or cancel script for `state` with the profile's
@@ -55,28 +56,92 @@ pub(super) fn in_script_modes(lines: Vec<String>, printer: &MachineState) -> Vec
     out
 }
 
+/// How far below its target a heater the job uses may have cooled while
+/// paused before the resume waits for it again (°C).
+const REHEAT_MARGIN: f32 = 5.0;
+
+/// What the printer needs when a paused job resumes, besides the template.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(super) struct ResumeExtras {
+    /// Heaters back to the job's targets (set, then wait).
+    pub reheat: Vec<String>,
+    /// The part fan back to the job's speed.
+    pub fan: Option<String>,
+}
+
+impl ResumeExtras {
+    /// What it takes to continue the job of `snapshot` (the state at pause
+    /// time) on a printer reporting `temps` with its part fan at `fan`:
+    /// every heater the job used whose target was changed, or that cooled
+    /// down more than a few degrees, goes back to the job's target (all
+    /// targets first, then the waits: bed, chamber, hotends), and a part fan
+    /// changed while paused gets its speed back.
+    pub(super) fn needed(snapshot: &MachineState, temps: &TempReport, fan: Option<u8>) -> Self {
+        let cooled = |target: f32, reading: Option<&HeaterReading>| {
+            target > 0.0
+                && reading.is_none_or(|r| {
+                    r.target.is_none_or(|t| (t - target).abs() > 0.5)
+                        || r.current.is_nan()
+                        || r.current < target - REHEAT_MARGIN
+                })
+        };
+        let t = |v: f32| format_number(f64::from(v), 1);
+        let (mut set, mut wait) = (Vec::new(), Vec::new());
+        if cooled(snapshot.bed_target, temps.bed.as_ref()) {
+            set.push(format!("M140 S{}", t(snapshot.bed_target)));
+            wait.push(format!("M190 S{}", t(snapshot.bed_target)));
+        }
+        if cooled(snapshot.chamber_target, temps.chamber.as_ref()) {
+            set.push(format!("M141 S{}", t(snapshot.chamber_target)));
+            wait.push(format!("M191 S{}", t(snapshot.chamber_target)));
+        }
+        let several = snapshot.hotend_targets.len() > 1;
+        for (i, &target) in snapshot.hotend_targets.iter().enumerate() {
+            if cooled(target, temps.hotends.get(i)) {
+                let tool = if several {
+                    format!("T{i} ")
+                } else {
+                    String::new()
+                };
+                set.push(format!("M104 {tool}S{}", t(target)));
+                wait.push(format!("M109 {tool}S{}", t(target)));
+            }
+        }
+        set.extend(wait);
+        let fan = (fan != Some(snapshot.fan)).then(|| match snapshot.fan {
+            0 => "M107".to_string(),
+            speed => format!("M106 S{speed}"),
+        });
+        ResumeExtras { reheat: set, fan }
+    }
+}
+
 /// The resume script: the rendered template between the modes it is
 /// written for and the stream's modes.
 ///
 /// Before: `G21` when the printer is in inches, `G90`, and the stream's
 /// extruder mode (`M82` makes the template's `G92 E{e}` meaningful), so a
 /// `G91` or `G20` typed while paused cannot send the return move and the
-/// rest of the layer elsewhere. After: the stream's positioning and
-/// extruder modes explicitly (on Marlin `G90`/`G91` also switch the
-/// extruder mode) and `G20` for an inch stream.
+/// rest of the layer elsewhere; then the heaters back to the job's
+/// temperatures (while still parked). After: the part fan, the stream's
+/// positioning and extruder modes explicitly (on Marlin `G90`/`G91` also
+/// switch the extruder mode) and `G20` for an inch stream.
 pub(super) fn resume_script(
     template: Vec<String>,
     snapshot: &MachineState,
     printer: &MachineState,
+    extras: ResumeExtras,
 ) -> Vec<String> {
     let e_mode = if snapshot.absolute_e { "M82" } else { "M83" };
-    let mut out = Vec::with_capacity(template.len() + 7);
+    let mut out = Vec::with_capacity(template.len() + extras.reheat.len() + 8);
     if printer.inches || snapshot.inches {
         out.push("G21".to_string());
     }
     out.push("G90".to_string());
     out.push(e_mode.to_string());
+    out.extend(extras.reheat);
     out.extend(template);
+    out.extend(extras.fan);
     out.push(if snapshot.absolute { "G90" } else { "G91" }.to_string());
     out.push(e_mode.to_string());
     if snapshot.inches {
@@ -197,13 +262,24 @@ mod tests {
     fn resume_restores_the_modes_around_the_template() {
         let template = vec!["G1 X1 Y2 F6000".to_string(), "G1 Z3 F600".to_string()];
         // An absolute file; the user left the printer relative.
-        let out = resume_script(template.clone(), &modes(&["G90", "M82"]), &modes(&["G91"]));
+        let none = ResumeExtras::default;
+        let out = resume_script(
+            template.clone(),
+            &modes(&["G90", "M82"]),
+            &modes(&["G91"]),
+            none(),
+        );
         assert_eq!(
             out,
             ["G90", "M82", "G1 X1 Y2 F6000", "G1 Z3 F600", "G90", "M82"]
         );
         // Relative extrusion; the user typed G20.
-        let out = resume_script(template.clone(), &modes(&["M83"]), &modes(&["M83", "G20"]));
+        let out = resume_script(
+            template.clone(),
+            &modes(&["M83"]),
+            &modes(&["M83", "G20"]),
+            none(),
+        );
         assert_eq!(
             out,
             [
@@ -218,9 +294,78 @@ mod tests {
         );
         // A relative inch stream gets both back.
         let stream = modes(&["G20", "G91"]);
-        let out = resume_script(template, &stream, &stream);
+        let out = resume_script(template.clone(), &stream, &stream, none());
         assert_eq!(out.first().map(String::as_str), Some("G21"));
         assert_eq!(&out[out.len() - 3..], ["G91", "M83", "G20"]);
+        // Heating while parked, before the template; the fan after it.
+        let extras = ResumeExtras {
+            reheat: vec!["M109 S200".to_string()],
+            fan: Some("M106 S255".to_string()),
+        };
+        let out = resume_script(template, &modes(&["M83"]), &modes(&["M83"]), extras);
+        assert_eq!(
+            out,
+            [
+                "G90",
+                "M83",
+                "M109 S200",
+                "G1 X1 Y2 F6000",
+                "G1 Z3 F600",
+                "M106 S255",
+                "G90",
+                "M83"
+            ]
+        );
+    }
+
+    fn reading(current: f32, target: f32) -> HeaterReading {
+        HeaterReading {
+            current,
+            target: Some(target),
+            power: None,
+        }
+    }
+
+    #[test]
+    fn heaters_the_job_used_come_back_when_they_changed_or_cooled() {
+        let job = modes(&["M104 S210", "M140 S60", "M106 S128"]);
+        // Unchanged and hot: nothing to do.
+        let temps = TempReport {
+            hotends: vec![reading(209.0, 210.0)],
+            bed: Some(reading(60.0, 60.0)),
+            ..TempReport::default()
+        };
+        assert_eq!(
+            ResumeExtras::needed(&job, &temps, Some(128)),
+            ResumeExtras::default()
+        );
+        // Hotend switched off, bed cooled down, fan changed.
+        let temps = TempReport {
+            hotends: vec![reading(150.0, 0.0)],
+            bed: Some(reading(40.0, 60.0)),
+            ..TempReport::default()
+        };
+        let extras = ResumeExtras::needed(&job, &temps, Some(0));
+        assert_eq!(
+            extras.reheat,
+            ["M140 S60", "M104 S210", "M190 S60", "M109 S210"]
+        );
+        assert_eq!(extras.fan.as_deref(), Some("M106 S128"));
+        // Two hotends: each by number; unknown readings count as cold.
+        let job = modes(&["M104 T0 S200", "M104 T1 S220", "M141 S40", "T1"]);
+        let extras = ResumeExtras::needed(&job, &TempReport::default(), None);
+        assert_eq!(
+            extras.reheat,
+            [
+                "M141 S40",
+                "M104 T0 S200",
+                "M104 T1 S220",
+                "M191 S40",
+                "M109 T0 S200",
+                "M109 T1 S220"
+            ]
+        );
+        assert_eq!(extras.fan.as_deref(), Some("M107"));
     }
 
     #[test]

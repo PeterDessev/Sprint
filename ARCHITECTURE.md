@@ -1188,7 +1188,14 @@ Every public item is also re-exported at the crate root.
   printer is in inches) and ends with the stream's `G90`/`G91`, its
   extruder mode again (Marlin's `G90`/`G91` reset it) and `G20` for an
   inch stream, so a `G91` or `G20` typed while paused cannot shift the
-  rest of the print. `//action:pause|paused` pause
+  rest of the print. Between the leading modes and the template the resume
+  heats every heater the job used (targets of the pause-time
+  `MachineState`) whose target was changed or that cooled more than 5 °C
+  below it back up (all targets, then `M190`/`M191`/`M109`, hotends by
+  `T<n>` when there are several), and after the template a part fan
+  changed while paused gets its speed back (`M106 S<n>`/`M107`), so
+  cooling down during a long pause never resumes with a cold nozzle.
+  `//action:pause|paused` pause
   without scripts and `//action:resume|resumed` continue; `resume()` after
   such a pause sends
   M108 when the firmware waits for the user. `cancel` sends M108 first when
