@@ -716,9 +716,7 @@ impl App {
             self.warn("Already connecting");
             return;
         }
-        if self.view.status.is_open() {
-            self.printer.disconnect();
-        }
+        let reconnect = self.view.status.is_open();
         let printer = self.printer.clone();
         let options = self.profile.options.clone();
         let label = target.label();
@@ -726,6 +724,10 @@ impl App {
         let spawned = std::thread::Builder::new()
             .name("sprint-connect".into())
             .spawn(move || {
+                // Closing a link can take a moment too: off the UI thread.
+                if reconnect {
+                    printer.disconnect();
+                }
                 let result = printer
                     .connect(target, options)
                     .map_err(|e| format!("Cannot connect to {label}: {e}"));
@@ -809,6 +811,18 @@ impl App {
         }
     }
 
+    /// Close the connection on a helper thread (the engine threads get a
+    /// moment to stop, which must not freeze the screen).
+    fn disconnect(&mut self) {
+        let printer = self.printer.clone();
+        let spawned = std::thread::Builder::new()
+            .name("sprint-disconnect".into())
+            .spawn(move || printer.disconnect());
+        if spawned.is_err() {
+            self.printer.disconnect();
+        }
+    }
+
     /// While a job runs, ask before `action` (which stops it) and return
     /// true; otherwise return false.
     fn job_stops_ask(&mut self, title: &str, action: Action) -> bool {
@@ -847,10 +861,10 @@ impl App {
             Action::ConnectAnyway(target) => self.connect(target),
             Action::Disconnect => {
                 if !self.job_stops_ask("Disconnect?", Action::DisconnectAnyway) {
-                    self.printer.disconnect();
+                    self.disconnect();
                 }
             }
-            Action::DisconnectAnyway => self.printer.disconnect(),
+            Action::DisconnectAnyway => self.disconnect(),
             Action::Open(path) => self.open_file(path),
             Action::SetTemps(targets) => {
                 let targets = actions::safe_targets(&targets);
