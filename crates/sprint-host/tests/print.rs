@@ -500,11 +500,18 @@ fn toolpath_progress_eta_layers_and_filament() {
         .filter(|j| j.progress > 0.1 && j.progress < 0.9)
         .collect();
     assert!(midway.len() >= 3, "too few samples: {}", samples.len());
-    assert!(
-        midway
-            .iter()
-            .all(|j| j.eta.is_some() && j.estimated_total.is_some())
-    );
+    // The simulator runs far faster than the estimate, so the speed ratio
+    // is clamped to 0.5: the ETA is half the remaining estimated time.
+    let estimate = f64::from(toolpath.stats.estimated_time);
+    for j in &midway {
+        let eta = j.eta.expect("an ETA").as_secs_f64();
+        let remaining = estimate * (1.0 - f64::from(j.progress));
+        assert!(
+            (eta / remaining - 0.5).abs() < 0.05,
+            "eta {eta} remaining {remaining}"
+        );
+        assert!(j.estimated_total.is_some());
+    }
     let lines: Vec<usize> = events
         .try_iter()
         .filter_map(|e| match e {
