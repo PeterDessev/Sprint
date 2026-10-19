@@ -167,6 +167,23 @@ impl Shared {
         }
     }
 
+    /// Call the waker now if a wake-up is pending, ignoring the rate limit
+    /// (when no engine tick will deliver it later: engine exit, changes
+    /// made by a handle).
+    pub(crate) fn wake_now(&self) {
+        let call = {
+            let mut w = self.wake.lock();
+            let pending = std::mem::take(&mut w.pending);
+            if pending {
+                w.last = Some(Instant::now());
+            }
+            pending
+        };
+        if call {
+            self.call_waker();
+        }
+    }
+
     fn call_waker(&self) {
         let waker = self.waker.lock().clone();
         if let Some(w) = waker {
@@ -277,6 +294,8 @@ pub(crate) fn start(
         .spawn(move || reader::run(reader, line_tx, reader_stop, reader_bytes))?;
 
     let engine_stop = Arc::clone(&stop);
+    let panic_stop = Arc::clone(&stop);
+    let panic_shared = Arc::clone(&shared);
     let engine = Engine::new(
         shared,
         writer,
@@ -290,7 +309,26 @@ pub(crate) fn start(
     );
     let engine = thread::Builder::new()
         .name("sprint-host-engine".to_string())
-        .spawn(move || engine.run());
+        .spawn(move || {
+            let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| engine.run()));
+            if run.is_err() {
+                // Never leave a "connected" state behind a dead engine.
+                panic_stop.store(true, Ordering::Release);
+                let message = "Internal error in the printer engine; disconnected".to_string();
+                panic_shared.log(ConsoleKind::Error, message.clone(), false, None);
+                panic_shared.update(|s| {
+                    s.status = ConnectionStatus::Failed(message.clone());
+                    if let Some(job) = &mut s.job
+                        && job.status.is_active()
+                    {
+                        job.status = crate::job::JobStatus::Failed(message.clone());
+                    }
+                });
+                panic_shared.emit(Event::Status(ConnectionStatus::Failed(message.clone())));
+                panic_shared.emit(Event::Error(message));
+                panic_shared.wake_now();
+            }
+        });
     let engine = match engine {
         Ok(e) => e,
         Err(e) => {
@@ -510,7 +548,8 @@ impl Engine {
         if let Some(status) = self.exit.clone() {
             self.set_status(status);
         }
-        self.shared.flush_wake();
+        // No tick will deliver a postponed wake-up any more.
+        self.shared.wake_now();
     }
 
     /// Leave the loop with `status` (job failed if one is running).

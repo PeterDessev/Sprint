@@ -537,3 +537,47 @@ fn a_reset_during_the_handshake_repeats_m110_at_once() {
         start.elapsed()
     );
 }
+
+/// A writer that fails the way a buggy custom transport might.
+struct PanickingWriter;
+
+impl Write for PanickingWriter {
+    fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+        panic!("transport bug (expected by the test)");
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn an_engine_panic_leaves_a_consistent_state() {
+    let (to_host, from_fake) = unbounded();
+    let _keep = to_host.clone();
+    let link = Link::new(
+        FakeReader {
+            rx: from_fake,
+            buf: Vec::new(),
+        },
+        PanickingWriter,
+    );
+    let printer = connect_fake(link, options());
+    // A line makes the engine send M110, which panics in the writer.
+    let _ = to_host.send(b"start\n".to_vec());
+    wait_for(&printer, "the failure", |s| {
+        matches!(s.status, ConnectionStatus::Failed(_))
+    });
+    let status = printer.with_state(|s| s.status.clone());
+    assert!(
+        matches!(&status, ConnectionStatus::Failed(m) if m.contains("Internal error")),
+        "{status:?}"
+    );
+    // The printer can connect again.
+    printer
+        .connect(
+            sprint_host::ConnectTarget::Simulator(fast_sim(20.0)),
+            options(),
+        )
+        .unwrap();
+    wait_for(&printer, "connected again", |s| s.is_connected());
+}

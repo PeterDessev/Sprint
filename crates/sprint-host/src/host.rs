@@ -48,14 +48,22 @@ pub struct Printer {
 
 struct Inner {
     shared: Arc<Shared>,
-    engine: Mutex<Option<EngineHandle>>,
+    slot: Mutex<Slot>,
+}
+
+/// The engine of the current connection.
+#[derive(Default)]
+struct Slot {
+    engine: Option<EngineHandle>,
+    /// A `connect` is opening the link.
+    connecting: bool,
     /// Incremented by `disconnect` so a connect in progress gives up.
-    generation: Mutex<u64>,
+    generation: u64,
 }
 
 impl Drop for Inner {
     fn drop(&mut self) {
-        if let Some(engine) = self.engine.get_mut().take() {
+        if let Some(engine) = self.slot.get_mut().engine.take() {
             engine.shutdown();
         }
     }
@@ -93,8 +101,7 @@ impl Printer {
         Printer {
             inner: Arc::new(Inner {
                 shared: Arc::new(Shared::new(lines)),
-                engine: Mutex::new(None),
-                generation: Mutex::new(0),
+                slot: Mutex::new(Slot::default()),
             }),
         }
     }
@@ -151,19 +158,23 @@ impl Printer {
         self.finish_connect(link, label.to_string(), options, generation)
     }
 
-    /// Check-and-set the status to `Connecting`; returns the generation.
+    /// Claim the slot for a new connection and set the status to
+    /// `Connecting`; returns the generation to check when the link is open.
     fn begin_connect(&self, label: &str) -> Result<u64, HostError> {
-        let mut engine = self.inner.engine.lock();
-        if let Some(e) = engine.as_ref()
-            && !e.is_finished()
-        {
-            return Err(HostError::AlreadyConnected);
-        }
-        {
-            let mut state = self.shared().state.write();
-            if state.status.is_open() {
+        let (old, generation) = {
+            let mut slot = self.inner.slot.lock();
+            let alive = slot.engine.as_ref().is_some_and(|e| !e.is_finished());
+            if slot.connecting || alive {
                 return Err(HostError::AlreadyConnected);
             }
+            slot.connecting = true;
+            (slot.engine.take(), slot.generation)
+        };
+        // The previous engine has finished (disconnected, failed, lost).
+        if let Some(old) = old {
+            old.shutdown();
+        }
+        self.shared().update(|state| {
             *state = PrinterState {
                 target: Some(label.to_string()),
                 status: ConnectionStatus::Connecting,
@@ -171,14 +182,11 @@ impl Printer {
                 job: state.job.take(),
                 ..PrinterState::default()
             };
-        }
-        if let Some(old) = engine.take() {
-            old.shutdown();
-        }
-        drop(engine);
+        });
         self.shared()
             .emit(Event::Status(ConnectionStatus::Connecting));
-        Ok(*self.inner.generation.lock())
+        self.shared().wake_now();
+        Ok(generation)
     }
 
     fn finish_connect(
@@ -188,9 +196,11 @@ impl Printer {
         options: ConnectOptions,
         generation: u64,
     ) -> Result<(), HostError> {
-        let mut engine = self.inner.engine.lock();
-        if *self.inner.generation.lock() != generation {
+        let mut slot = self.inner.slot.lock();
+        slot.connecting = false;
+        if slot.generation != generation {
             // disconnect() was called while the link was opening.
+            drop(slot);
             let (_, _, handle) = link.split();
             handle.close();
             self.set_status(ConnectionStatus::Disconnected);
@@ -203,11 +213,11 @@ impl Printer {
             options.sanitized(),
         ) {
             Ok(handle) => {
-                *engine = Some(handle);
+                slot.engine = Some(handle);
                 Ok(())
             }
             Err(e) => {
-                drop(engine);
+                drop(slot);
                 self.connect_failed(&e);
                 Err(e)
             }
@@ -215,6 +225,7 @@ impl Printer {
     }
 
     fn connect_failed(&self, e: &HostError) {
+        self.inner.slot.lock().connecting = false;
         let message = format!("Could not connect: {e}");
         self.shared()
             .log(ConsoleKind::Error, message.clone(), false, None);
@@ -232,30 +243,26 @@ impl Printer {
         if changed {
             self.shared().emit(Event::Status(status));
         }
+        self.shared().wake_now();
     }
 
     /// Close the connection (a running job fails with "disconnected").
     /// Never blocks for long: the engine threads are given a moment to stop
     /// and are detached otherwise.
     pub fn disconnect(&self) {
-        *self.inner.generation.lock() += 1;
-        let handle = self.inner.engine.lock().take();
-        match handle {
-            Some(handle) => {
-                handle.shutdown();
-                // The engine reports Disconnected itself; make sure even a
-                // detached engine leaves a consistent state.
-                let open = self.with_state(|s| s.status.is_open());
-                if open {
-                    self.set_status(ConnectionStatus::Disconnected);
-                }
-            }
-            None => {
-                let connecting = self.with_state(|s| s.status == ConnectionStatus::Connecting);
-                if connecting {
-                    self.set_status(ConnectionStatus::Disconnected);
-                }
-            }
+        let handle = {
+            let mut slot = self.inner.slot.lock();
+            slot.generation += 1;
+            slot.engine.take()
+        };
+        if let Some(handle) = handle {
+            handle.shutdown();
+        }
+        // The engine reports Disconnected itself; make sure even a detached
+        // engine or a connect in progress leaves a consistent state.
+        let open = self.with_state(|s| s.status.is_open());
+        if open {
+            self.set_status(ConnectionStatus::Disconnected);
         }
     }
 
@@ -268,8 +275,9 @@ impl Printer {
     /// (tests and demos: fault injection, runout, reset).
     pub fn sim_control(&self) -> Option<SimControl> {
         self.inner
-            .engine
+            .slot
             .lock()
+            .engine
             .as_ref()
             .and_then(|e| e.sim.clone())
     }
@@ -287,13 +295,18 @@ impl Printer {
 
     // ----- sending -----
 
-    fn command(&self, cmd: Command) -> bool {
-        let sent = self
-            .inner
-            .engine
+    /// Send to the engine, if there is one.
+    fn to_engine(&self, cmd: Command) -> bool {
+        self.inner
+            .slot
             .lock()
+            .engine
             .as_ref()
-            .is_some_and(|e| e.tx.send(cmd).is_ok());
+            .is_some_and(|e| e.tx.send(cmd).is_ok())
+    }
+
+    fn command(&self, cmd: Command) -> bool {
+        let sent = self.to_engine(cmd);
         if !sent {
             self.shared().log(
                 ConsoleKind::Warning,
@@ -301,6 +314,7 @@ impl Printer {
                 false,
                 None,
             );
+            self.shared().wake_now();
         }
         sent
     }
@@ -310,12 +324,7 @@ impl Printer {
         make: impl FnOnce(crossbeam_channel::Sender<Result<(), HostError>>) -> Command,
     ) -> Result<(), HostError> {
         let (tx, rx) = crossbeam_channel::bounded(1);
-        let sent = self
-            .inner
-            .engine
-            .lock()
-            .as_ref()
-            .is_some_and(|e| e.tx.send(make(tx)).is_ok());
+        let sent = self.to_engine(make(tx));
         if !sent {
             return Err(HostError::NotConnected);
         }
@@ -445,6 +454,7 @@ impl Printer {
     pub fn clear_console(&self) {
         self.shared().console.lock().clear();
         self.shared().request_wake();
+        self.shared().wake_now();
     }
 
     /// Change how many console lines are kept.
