@@ -6,6 +6,7 @@
 
 pub mod bed_mesh;
 pub mod calibration;
+pub mod connection_bar;
 pub mod controls;
 pub mod printer_info;
 pub mod sd_card;
@@ -14,6 +15,7 @@ pub mod tuning;
 
 pub use bed_mesh::BedMeshTab;
 pub use calibration::CalibrationTab;
+pub use connection_bar::ConnectionBar;
 pub use controls::ControlsSidebar;
 pub use printer_info::PrinterInfoTab;
 pub use sd_card::SdCardTab;
