@@ -191,8 +191,11 @@ pub struct Palette {
     pub success: Color32,
     /// Attention state.
     pub warning: Color32,
-    /// Error / destructive state.
+    /// Error / destructive state (text, icons, outlines).
     pub danger: Color32,
+    /// Solid fill of destructive buttons (deeper than [`danger`](Self::danger)
+    /// so white text stays readable).
+    pub danger_fill: Color32,
     /// Danger fill under the pointer.
     pub danger_hover: Color32,
     /// Danger fill while pressed.
@@ -244,8 +247,9 @@ impl Palette {
             success: hex(0x3FCF8E),
             warning: hex(0xF5B83D),
             danger: hex(0xF2555A),
-            danger_hover: hex(0xF66A6E),
-            danger_pressed: hex(0xD8403F),
+            danger_fill: hex(0xD93A3F),
+            danger_hover: hex(0xE5484D),
+            danger_pressed: hex(0xBF2F34),
             on_danger: Color32::WHITE,
             info: hex(0x4DA3FF),
             hotend: hex(0xFF6242),
@@ -289,8 +293,9 @@ impl Palette {
             success: hex(0x17915A),
             warning: hex(0xB97C06),
             danger: hex(0xD92F35),
-            danger_hover: hex(0xE6454A),
-            danger_pressed: hex(0xBC2329),
+            danger_fill: hex(0xD92F35),
+            danger_hover: hex(0xE5434A),
+            danger_pressed: hex(0xB9252B),
             on_danger: Color32::WHITE,
             info: hex(0x1F72D8),
             hotend: hex(0xE2452A),
@@ -798,7 +803,8 @@ mod tests {
                 assert!(contrast_ratio(p.text_faint, bg) >= 2.8, "faint on {bg:?}");
             }
             assert!(contrast_ratio(p.on_accent, p.accent) >= 3.0);
-            assert!(contrast_ratio(p.on_danger, p.danger) >= 3.0);
+            assert!(contrast_ratio(p.on_danger, p.danger_fill) >= 4.0);
+            assert!(contrast_ratio(p.on_danger, p.danger_hover) >= 3.5);
         }
     }
 
