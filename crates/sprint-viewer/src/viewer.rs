@@ -1395,6 +1395,16 @@ impl GcodeViewer {
             .map_or(0, |i| i as u32 + 1)
     }
 
+    /// Where the world point `point` (mm) is drawn in a view of `size`
+    /// (any units, origin at the top left) by the active camera, or `None`
+    /// behind it: for labels drawn over the view, and tests.
+    pub fn project(&self, point: [f32; 3], size: [f32; 2]) -> Option<[f32; 2]> {
+        let p = self
+            .active_camera()
+            .project_to_screen(Vec3::from(point), Vec2::from(size))?;
+        Some([p.x, p.y])
+    }
+
     /// The layer being printed while a print progress line is set: the
     /// layer of the last move at or before it.
     pub fn current_layer(&self) -> Option<usize> {

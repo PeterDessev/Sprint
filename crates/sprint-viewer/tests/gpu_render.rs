@@ -669,6 +669,34 @@ fn fit_insets_keep_the_part_clear_of_the_cards() {
 }
 
 #[test]
+fn points_project_where_the_active_camera_draws_them() {
+    let Some((device, queue)) = device() else {
+        return;
+    };
+    let mut viewer = loaded_viewer(&device, &queue, block());
+    viewer.render_offscreen(W, H);
+    let size = [W as f32, H as f32];
+    let target = viewer.camera().target;
+    let at = viewer.project(target.into(), size).expect("in front");
+    assert!((at[0] - W as f32 / 2.0).abs() < 0.5 && (at[1] - H as f32 / 2.0).abs() < 0.5);
+    // The layer view's camera, once active.
+    viewer.options_mut().view_mode = ViewMode::LayerTop;
+    viewer.render_offscreen(W, H);
+    let above = viewer.project([110.0, 110.0, 2.0], size).expect("in front");
+    let screen = viewer
+        .camera()
+        .project_to_screen(Vec3::new(110.0, 110.0, 2.0), Vec2::from(size));
+    assert!(above[0].is_finite() && above[1].is_finite());
+    // The 3D camera looks from elsewhere: another position.
+    assert!(screen.is_some_and(|s| (s.x - above[0]).abs() + (s.y - above[1]).abs() > 1.0));
+    // Behind the camera: nothing.
+    viewer.options_mut().view_mode = ViewMode::Perspective;
+    let cam = *viewer.camera();
+    let behind = cam.eye() - cam.forward() * 50.0;
+    assert_eq!(viewer.project(behind.into(), size), None);
+}
+
+#[test]
 fn large_toolpaths_stream_in_over_several_polls() {
     let Some((device, queue)) = device() else {
         return;
