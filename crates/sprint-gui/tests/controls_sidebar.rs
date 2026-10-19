@@ -160,6 +160,55 @@ fn move_to_lifts_first_and_center_moves_to_the_bed_center() {
     wait_for_commands(&p, &["M114"]);
 }
 
+/// Type `value` into the move-to field of `axis` (0 = X, 1 = Y, 2 = Z).
+fn set_move_target(h: &mut Harness<'_, Rig>, axis: usize, value: &str) {
+    let field = h
+        .get_all_by_role(Role::SpinButton)
+        .nth(axis)
+        .expect("move-to field")
+        .rect();
+    click_at(h, field.center());
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.event(egui::Event::Text(value.into()));
+    h.step();
+    h.key_press(egui::Key::Enter);
+    h.run_ok();
+}
+
+/// Absolute moves never travel close to the bed: "Center" and "Move" lift
+/// to 5 mm first when the nozzle is lower.
+#[test]
+fn travel_near_the_bed_lifts_first() {
+    let mut h = connected();
+    let p = printer(&h);
+    // The simulator starts at Z0.
+    click(&mut h, "Center");
+    wait_for_commands(&p, &["G90", "G1 Z5 F600", "G90", "G1 X110 Y110 F3000"]);
+    // Straight down at the same spot: one move.
+    set_move_target(&mut h, 2, "0.3");
+    clear(&h);
+    click(&mut h, "Move");
+    wait_for_commands(&p, &["G90", "G1 X110 Y110 Z0.3 F3000"]);
+    wait_for(&p, "the nozzle at Z0.3", |s| {
+        s.position.as_ref().is_some_and(|pos| pos.z == 0.3)
+    });
+    // To another spot at the same low height: lift, travel, lower.
+    set_move_target(&mut h, 0, "30");
+    clear(&h);
+    click(&mut h, "Move");
+    wait_for_commands(
+        &p,
+        &[
+            "G90",
+            "G1 Z5 F600",
+            "G90",
+            "G1 X30 Y110 F3000",
+            "G90",
+            "G1 Z0.3 F600",
+        ],
+    );
+}
+
 /// Most firmware does not report the position by itself: the sidebar asks
 /// for it after every move it makes (jogs, move-to, macros), so the readout
 /// and the planning of absolute moves use where the nozzle really is.

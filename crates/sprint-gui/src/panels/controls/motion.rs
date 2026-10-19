@@ -26,6 +26,8 @@ const DEFAULT_Z_FEED: f32 = 600.0;
 const KEY_STEPS: [f32; 3] = [0.1, 1.0, 10.0];
 /// The largest keyboard step (Shift × the biggest step).
 const MAX_KEY_STEP: f32 = 100.0;
+/// Absolute moves never travel in XY closer to the bed than this (mm).
+pub(super) const SAFE_TRAVEL_Z: f32 = 5.0;
 
 /// UI state of the motion section.
 #[derive(Debug)]
@@ -135,17 +137,63 @@ pub(super) fn clamp_to_volume(profile: &PrinterProfile, target: [f32; 3]) -> [f3
 /// One absolute move: the axes it sets.
 pub(super) type MoveStep = [Option<f32>; 3];
 
-/// Split an absolute move so the nozzle never travels low: going up, Z
-/// moves first and XY after; going down, XY first and Z last. Without a
-/// known Z (or no Z change) it is one move.
-pub(super) fn plan_move(current_z: Option<f32>, target: [f32; 3]) -> Vec<MoveStep> {
+/// The height XY travel stays at or above: [`SAFE_TRAVEL_Z`], or the top
+/// of a build volume lower than that.
+pub(super) fn travel_clearance(max_z: f32) -> f32 {
+    if max_z.is_finite() && max_z > 0.0 {
+        SAFE_TRAVEL_Z.min(max_z)
+    } else {
+        SAFE_TRAVEL_Z
+    }
+}
+
+/// Split an absolute move so the nozzle never travels low: XY travel
+/// happens at the highest of the current Z, the target Z and `clearance`,
+/// so the move lifts first, travels, then lowers to the target. A move
+/// without an XY change, or from an unknown position, is one move.
+pub(super) fn plan_move(
+    current: Option<[f32; 3]>,
+    target: [f32; 3],
+    clearance: f32,
+) -> Vec<MoveStep> {
+    const EPS: f32 = 1e-3;
     let [x, y, z] = target;
+    let single = vec![[Some(x), Some(y), Some(z)]];
+    let Some([cx, cy, cz]) = current.filter(|c| c[2].is_finite()) else {
+        return single;
+    };
+    let same_xy = (cx - x).abs() < EPS && (cy - y).abs() < EPS;
+    if same_xy {
+        return single;
+    }
+    let travel = cz.max(z).max(clearance);
+    let lift = travel > cz + EPS;
+    let lower = z < travel - EPS;
+    if !lift && !lower {
+        return single;
+    }
+    let mut steps = Vec::with_capacity(3);
+    if lift {
+        steps.push([None, None, Some(travel)]);
+    }
+    steps.push([Some(x), Some(y), None]);
+    if lower {
+        steps.push([None, None, Some(z)]);
+    }
+    steps
+}
+
+/// "Center": travel to the bed center, lifted to `clearance` first when
+/// the nozzle is known to be lower (it stays at its height otherwise).
+pub(super) fn plan_center(
+    current_z: Option<f32>,
+    (x, y): (f32, f32),
+    clearance: f32,
+) -> Vec<MoveStep> {
     let xy: MoveStep = [Some(x), Some(y), None];
-    let only_z: MoveStep = [None, None, Some(z)];
-    match current_z.filter(|c| c.is_finite()) {
-        Some(c) if z > c + 1e-3 => vec![only_z, xy],
-        Some(c) if z < c - 1e-3 => vec![xy, only_z],
-        _ => vec![[Some(x), Some(y), Some(z)]],
+    match current_z.filter(|z| z.is_finite()) {
+        Some(z) if z < clearance - 1e-3 => vec![[None, None, Some(clearance)], xy],
+        _ => vec![xy],
     }
 }
 
@@ -350,28 +398,34 @@ impl Motion {
         });
         let target = clamp_to_volume(profile, self.target);
         let (cx, cy) = bed_center(profile);
-        let current_z = position.map(|p| p.z);
+        let current = position.map(|p| [p.x, p.y, p.z]);
+        let clearance = travel_clearance(max[2]);
+        let send = |steps: Vec<MoveStep>| {
+            for [x, y, z] in steps {
+                let feed = if z.is_some() && x.is_none() {
+                    feeds.1
+                } else {
+                    feeds.0
+                };
+                printer.move_to(x, y, z, feed);
+            }
+        };
+        let lift = format_number(f64::from(clearance), 0);
         ui.columns(2, |cols| {
             let go = cols[0].add(
                 ActionButton::new("Move")
                     .icon(icons::MOVE)
                     .fill_width(true)
                     .tooltip(format!(
-                        "Move to X{} Y{} Z{} (absolute)",
+                        "Move to X{} Y{} Z{} (absolute). Travels at Z{lift} or higher: \
+                         lifts first, lowers last.",
                         format_number(f64::from(target[0]), 1),
                         format_number(f64::from(target[1]), 1),
                         format_number(f64::from(target[2]), 1)
                     )),
             );
             if go.clicked() {
-                for [x, y, z] in plan_move(current_z, target) {
-                    let feed = if z.is_some() && x.is_none() {
-                        feeds.1
-                    } else {
-                        feeds.0
-                    };
-                    printer.move_to(x, y, z, feed);
-                }
+                send(plan_move(current, target, clearance));
                 moved = true;
             }
             let center = cols[1].add(
@@ -379,13 +433,13 @@ impl Motion {
                     .icon(icons::POSITION)
                     .fill_width(true)
                     .tooltip(format!(
-                        "Move to the bed center X{} Y{}",
+                        "Move to the bed center X{} Y{} (lifting to Z{lift} first when lower)",
                         format_number(f64::from(cx), 1),
                         format_number(f64::from(cy), 1)
                     )),
             );
             if center.clicked() {
-                printer.move_to(Some(cx), Some(cy), None, feeds.0);
+                send(plan_center(current.map(|c| c[2]), (cx, cy), clearance));
                 moved = true;
             }
             if let Some(reason) = lock {
@@ -573,23 +627,68 @@ mod tests {
 
     #[test]
     fn moves_never_travel_low() {
+        let at = |z: f32| Some([0.0, 0.0, z]);
+        let c = SAFE_TRAVEL_Z;
         // Going up: lift first.
         assert_eq!(
-            plan_move(Some(1.0), [10.0, 20.0, 30.0]),
+            plan_move(at(1.0), [10.0, 20.0, 30.0], c),
             [[None, None, Some(30.0)], [Some(10.0), Some(20.0), None]]
         );
         // Going down: travel first.
         assert_eq!(
-            plan_move(Some(30.0), [10.0, 20.0, 0.2]),
+            plan_move(at(30.0), [10.0, 20.0, 0.2], c),
             [[Some(10.0), Some(20.0), None], [None, None, Some(0.2)]]
         );
-        // Same height or unknown: one move.
+        // Close to the bed: lift to the clearance, travel, lower.
         assert_eq!(
-            plan_move(Some(5.0), [1.0, 2.0, 5.0]),
+            plan_move(at(0.2), [10.0, 20.0, 0.3], c),
+            [
+                [None, None, Some(c)],
+                [Some(10.0), Some(20.0), None],
+                [None, None, Some(0.3)]
+            ]
+        );
+        assert_eq!(
+            plan_move(at(0.0), [10.0, 20.0, 3.0], 2.0),
+            [[None, None, Some(3.0)], [Some(10.0), Some(20.0), None]]
+        );
+        // At a safe height, no XY change, or unknown: one move.
+        assert_eq!(
+            plan_move(at(5.0), [1.0, 2.0, 5.0], c),
             [[Some(1.0), Some(2.0), Some(5.0)]]
         );
-        assert_eq!(plan_move(None, [1.0, 2.0, 3.0]).len(), 1);
-        assert_eq!(plan_move(Some(f32::NAN), [1.0, 2.0, 3.0]).len(), 1);
+        assert_eq!(
+            plan_move(Some([1.0, 2.0, 0.2]), [1.0, 2.0, 0.1], c),
+            [[Some(1.0), Some(2.0), Some(0.1)]]
+        );
+        assert_eq!(plan_move(None, [1.0, 2.0, 3.0], c).len(), 1);
+        assert_eq!(
+            plan_move(Some([0.0, 0.0, f32::NAN]), [1.0, 2.0, 3.0], c).len(),
+            1
+        );
+        // An unknown XY counts as a change.
+        assert_eq!(
+            plan_move(Some([f32::NAN, 0.0, 0.0]), [1.0, 2.0, 0.2], c).len(),
+            3
+        );
+    }
+
+    #[test]
+    fn centering_lifts_off_the_bed() {
+        let center = (110.0, 110.0);
+        let xy = [Some(110.0), Some(110.0), None];
+        assert_eq!(
+            plan_center(Some(0.0), center, SAFE_TRAVEL_Z),
+            [[None, None, Some(SAFE_TRAVEL_Z)], xy]
+        );
+        assert_eq!(plan_center(Some(12.0), center, SAFE_TRAVEL_Z), [xy]);
+        assert_eq!(plan_center(None, center, SAFE_TRAVEL_Z), [xy]);
+        assert_eq!(plan_center(Some(f32::NAN), center, SAFE_TRAVEL_Z), [xy]);
+        // A short machine keeps the clearance inside its volume.
+        assert_eq!(travel_clearance(3.0), 3.0);
+        assert_eq!(travel_clearance(250.0), SAFE_TRAVEL_Z);
+        assert_eq!(travel_clearance(f32::NAN), SAFE_TRAVEL_Z);
+        assert_eq!(travel_clearance(-1.0), SAFE_TRAVEL_Z);
     }
 
     #[test]
