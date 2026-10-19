@@ -1,7 +1,7 @@
 //! The `sprint` binary run as a child process.
 //!
-//! Nothing here connects to a printer: the printer commands are not
-//! implemented yet and only report that, and `sim` serves the virtual
+//! Nothing here connects to a printer (tests/printer.rs drives the
+//! printer commands against the virtual printer); `sim` serves the virtual
 //! printer on loopback.
 
 use std::path::PathBuf;
@@ -10,9 +10,15 @@ use std::process::{Command, Output};
 use sprint_gcode::{AnalyzeOptions, GcodeFile, analyze_simple};
 
 fn sprint(args: &[&str]) -> Output {
+    // Never the user's configuration (its profile could auto-connect).
+    let config = std::env::temp_dir().join(format!(
+        "sprint-cli-config-{}/config.toml",
+        std::process::id()
+    ));
     Command::new(env!("CARGO_BIN_EXE_sprint"))
         .args(args)
         .env_remove("RUST_LOG")
+        .env("SPRINT_CONFIG", config)
         .output()
         .expect("run sprint")
 }
@@ -259,9 +265,6 @@ fn empty_and_binary_files_still_get_a_report() {
 fn unimplemented_commands_exit_with_2() {
     let cube = sample_arg("calibration-cube.gcode");
     for args in [
-        vec!["tui"],
-        vec!["tui", cube.as_str(), "--connect", "sim"],
-        vec!["shell"],
         vec!["print", cube.as_str(), "--connect", "sim"],
         vec!["send", "--connect", "sim", "M105"],
         vec!["ports"],
@@ -278,12 +281,27 @@ fn unimplemented_commands_exit_with_2() {
 }
 
 #[test]
+fn the_tui_needs_a_terminal() {
+    // Piped output: the TUI refuses before connecting to anything.
+    let output = sprint(&["tui", "--connect", "sim"]);
+    assert_eq!(output.status.code(), Some(1));
+    let text = stderr(&output);
+    assert!(
+        text.contains("the terminal UI needs an interactive terminal"),
+        "{text}"
+    );
+    assert!(output.stdout.is_empty());
+}
+
+#[test]
 fn usage_errors_exit_with_2() {
     for args in [
         vec!["analyze"],
         vec!["analyze", "x.gcode", "--filament-diameter", "0"],
         vec!["print", "x.gcode"],
         vec!["send", "--connect", "sim"],
+        vec!["send", "--connect", "nope://x", "M105"],
+        vec!["shell", "--connect", ""],
         vec!["sim", "--extruders", "9"],
         vec!["sim", "--time-scale", "fast"],
         vec!["a.gcode", "b.gcode"],
