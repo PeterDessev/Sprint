@@ -213,9 +213,25 @@ pub struct PickHit {
     pub point: Vec3,
 }
 
+/// How far along a unit ray it can skip before a shape whose bounding
+/// sphere has the given centre and radius without passing any of it.
+/// Starting the intersection there keeps f32 precision: from far away the
+/// quadratics cancel badly (a bead 3 m from the camera came out about a
+/// millimetre early).
+fn skip_to(ro: Vec3, rd: Vec3, center: Vec3, reach: f32) -> f32 {
+    let skip = (center - ro).dot(rd) - reach - 1.0;
+    if skip.is_finite() { skip.max(0.0) } else { 0.0 }
+}
+
 /// Ray vs capsule (segment `pa..pb`, radius `r`); `rd` must be unit length.
 /// Returns the nearest non-negative ray parameter.
 pub fn ray_capsule(ro: Vec3, rd: Vec3, pa: Vec3, pb: Vec3, r: f32) -> Option<f32> {
+    let skip = skip_to(ro, rd, (pa + pb) * 0.5, (pb - pa).length() * 0.5 + r);
+    ray_capsule_near(ro + rd * skip, rd, pa, pb, r).map(|t| t + skip)
+}
+
+/// [`ray_capsule`] for a ray starting close to the capsule.
+fn ray_capsule_near(ro: Vec3, rd: Vec3, pa: Vec3, pb: Vec3, r: f32) -> Option<f32> {
     let ba = pb - pa;
     let oa = ro - pa;
     let baba = ba.dot(ba);
@@ -237,10 +253,13 @@ pub fn ray_capsule(ro: Vec3, rd: Vec3, pa: Vec3, pb: Vec3, r: f32) -> Option<f32
             return Some(t);
         }
         let center = if y <= 0.0 { pa } else { pb };
-        return ray_sphere(ro, rd, center, r);
+        return ray_sphere_near(ro, rd, center, r);
     }
     // Ray parallel to the axis or degenerate segment: the end spheres decide.
-    match (ray_sphere(ro, rd, pa, r), ray_sphere(ro, rd, pb, r)) {
+    match (
+        ray_sphere_near(ro, rd, pa, r),
+        ray_sphere_near(ro, rd, pb, r),
+    ) {
         (Some(x), Some(y)) => Some(x.min(y)),
         (x, y) => x.or(y),
     }
@@ -248,6 +267,12 @@ pub fn ray_capsule(ro: Vec3, rd: Vec3, pa: Vec3, pb: Vec3, r: f32) -> Option<f32
 
 /// Ray vs sphere; `rd` must be unit length.
 pub fn ray_sphere(ro: Vec3, rd: Vec3, center: Vec3, r: f32) -> Option<f32> {
+    let skip = skip_to(ro, rd, center, r);
+    ray_sphere_near(ro + rd * skip, rd, center, r).map(|t| t + skip)
+}
+
+/// [`ray_sphere`] for a ray starting close to the sphere.
+fn ray_sphere_near(ro: Vec3, rd: Vec3, center: Vec3, r: f32) -> Option<f32> {
     let oc = ro - center;
     let b = oc.dot(rd);
     let c = oc.dot(oc) - r * r;
@@ -826,6 +851,54 @@ mod tests {
         assert!((t - 4.0).abs() < 1e-4);
         // Behind the origin.
         assert!(ray_capsule(Vec3::new(5.0, 0.0, -10.0), -Vec3::Z, a, b, r).is_none());
+    }
+
+    #[test]
+    fn far_rays_hit_beads_where_they_are() {
+        // A bead's top seen from up to 3 m away, straight at its crest and
+        // just inside its edge: the hit lies on the surface, never in front
+        // of it (f32 cancellation used to put it up to 1.4 mm early).
+        let seg = Segment {
+            start: [100.0, 110.0, 1.2],
+            end: [120.0, 110.0, 1.2],
+            width: 0.5,
+            height: 0.2,
+            kind: sprint_gcode::MoveKind::Extrude,
+            ..Default::default()
+        };
+        for dist in [50.0f32, 300.0, 1000.0, 3000.0] {
+            for elev in [0.3f32, 0.6, 1.0, 1.5] {
+                for yaw in [0.0f32, 0.7, 1.4] {
+                    for off in [0.0f32, 0.1, 0.2, 0.24] {
+                        let q = Vec3::new(110.0 + 3.0 * yaw, 110.0 + off, 1.2);
+                        let dir =
+                            -Vec3::new(elev.cos() * yaw.cos(), elev.cos() * yaw.sin(), elev.sin());
+                        let ray = Ray {
+                            origin: q - dir * dist,
+                            dir,
+                        };
+                        if let Some(t) = ray_segment(&ray, &seg, 0.0) {
+                            assert!(
+                                t > dist - 0.005,
+                                "{dist} mm, elevation {elev}, yaw {yaw}, {off} off the \
+                                 crest: hit {} mm early",
+                                dist - t
+                            );
+                        }
+                    }
+                }
+            }
+            // Straight down onto the crest: a hit, on the surface.
+            let ray = Ray {
+                origin: Vec3::new(110.0, 110.0, 1.2 + dist),
+                dir: -Vec3::Z,
+            };
+            let t = ray_segment(&ray, &seg, 0.0).expect("crest");
+            assert!((t - dist).abs() < 0.005, "{dist}: {}", t - dist);
+        }
+        // The same for spheres.
+        let t = ray_sphere(Vec3::new(0.0, 0.0, 3000.0), -Vec3::Z, Vec3::ZERO, 0.1).expect("sphere");
+        assert!((t - 2999.9).abs() < 0.005, "{t}");
     }
 
     #[test]
