@@ -265,6 +265,8 @@ pub struct SprintApp {
     clock: Instant,
     requested_analysis: Option<AnalysisRequest>,
     reconnect_pending: bool,
+    /// The target and options of the last connect, for Reconnect.
+    last_connect: Option<(ConnectTarget, sprint_host::ConnectOptions)>,
     quit_confirmed: bool,
     file_dialog: Option<Receiver<Option<PathBuf>>>,
     file_dialog_requests: usize,
@@ -348,6 +350,7 @@ impl SprintApp {
             clock: Instant::now(),
             requested_analysis: None,
             reconnect_pending: false,
+            last_connect: None,
             quit_confirmed: false,
             file_dialog: None,
             file_dialog_requests: 0,
@@ -361,11 +364,7 @@ impl SprintApp {
         }
         if let Some(sim) = options.simulator {
             let connect_options = app.core.config.active().options.clone();
-            app.connector.connect(
-                &app.core.printer,
-                ConnectTarget::Simulator(sim),
-                connect_options,
-            );
+            app.open_link(ConnectTarget::Simulator(sim), connect_options);
         } else if app.core.config.active().auto_connect {
             app.core.actions.push(AppAction::Connect);
         }
@@ -619,7 +618,7 @@ impl SprintApp {
             }
             ConnectOutcome::Closed => {
                 if std::mem::take(&mut self.reconnect_pending) {
-                    self.connect();
+                    self.connect_again();
                 }
             }
         }
@@ -838,14 +837,33 @@ impl SprintApp {
         }
     }
 
+    /// Connect to the active profile's target.
     fn connect(&mut self) {
         if self.connector.is_connecting() || self.core.printer.with_state(|s| s.status.is_open()) {
             return;
         }
         let profile = self.core.config.active().clone();
         self.core.printer.set_profile(profile.clone());
-        self.connector
-            .connect(&self.core.printer, profile.connection, profile.options);
+        self.open_link(profile.connection, profile.options);
+    }
+
+    /// Open `target` on a worker thread and remember it for Reconnect.
+    fn open_link(&mut self, target: ConnectTarget, options: sprint_host::ConnectOptions) {
+        self.last_connect = Some((target.clone(), options.clone()));
+        self.connector.connect(&self.core.printer, target, options);
+    }
+
+    /// Open the last connection again (the virtual printer of a `--sim`
+    /// start stays the virtual printer, whatever the profile names), or
+    /// the profile's target when nothing was connected yet.
+    fn connect_again(&mut self) {
+        if self.connector.is_connecting() || self.core.printer.with_state(|s| s.status.is_open()) {
+            return;
+        }
+        match self.last_connect.clone() {
+            Some((target, options)) => self.open_link(target, options),
+            None => self.connect(),
+        }
     }
 
     fn reconnect(&mut self) {
@@ -854,7 +872,7 @@ impl SprintApp {
             self.reconnect_pending = true;
             self.connector.disconnect(&self.core.printer);
         } else {
-            self.connect();
+            self.connect_again();
         }
     }
 

@@ -912,3 +912,31 @@ fn a_stray_click_beside_the_settings_keeps_the_edits() {
     assert_eq!(h.state().dialog(), None);
     assert_ne!(h.state().config().active().max_z, 321.0);
 }
+
+#[test]
+fn reconnect_reopens_the_same_connection() {
+    // Started on the virtual printer while the profile names another
+    // target (here an unused TCP port; in real life often a serial port):
+    // Reconnect must come back to the virtual printer, not open the
+    // profile's target.
+    let mut options = sim_options();
+    options.simulator = Some(fast_sim());
+    options.config.profiles[0].connection = ConnectTarget::Tcp {
+        host: "127.0.0.1".into(),
+        port: 1,
+    };
+    let mut h = app(options, WINDOW);
+    expect(&mut h, "the virtual printer to connect", |app| {
+        app.state().is_connected()
+    });
+    assert_eq!(h.state().state().target.as_deref(), Some("Virtual printer"));
+    h.state_mut().push_action(AppAction::Reconnect);
+    expect(&mut h, "the connection to drop", |app| {
+        !app.state().is_connected()
+    });
+    expect(&mut h, "the virtual printer to come back", |app| {
+        app.state().is_connected() || matches!(app.state().status, ConnectionStatus::Failed(_))
+    });
+    assert_eq!(h.state().state().target.as_deref(), Some("Virtual printer"));
+    assert!(h.state().state().is_connected());
+}
