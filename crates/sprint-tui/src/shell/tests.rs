@@ -1168,3 +1168,59 @@ fn a_session_profile_stays_active_after_loading_a_file() {
     // The file keeps its own active profile.
     assert_eq!(AppConfig::load_from(&path).expect("load").active_profile, 0);
 }
+
+/// Answers yes to the first question, but only after starting a print
+/// from the SD card (at the printer, while the question was open).
+struct PrintWhileAsked {
+    printer: Printer,
+    lines: std::collections::VecDeque<String>,
+}
+
+impl LineSource for PrintWhileAsked {
+    fn read(&mut self, prompt: &str) -> Read {
+        if prompt.contains("[y/N]") {
+            self.printer
+                .start_sd_print("big.gcode")
+                .expect("start the SD print");
+            let deadline = Instant::now() + PATIENCE;
+            while !self.printer.with_state(|s| {
+                s.job
+                    .as_ref()
+                    .is_some_and(|j| j.status == JobStatus::Printing)
+            }) {
+                assert!(Instant::now() < deadline, "the SD print did not start");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            return Read::Line("y".into());
+        }
+        self.lines.pop_front().map_or(Read::Eof, Read::Line)
+    }
+
+    fn interactive(&self) -> bool {
+        true
+    }
+}
+
+#[test]
+fn an_sd_print_started_while_asked_still_blocks_the_delete() {
+    let (mut shell, buffer) = connected_to(sd_sim());
+    script(&mut shell, &["sd ls"]);
+    received(&shell);
+    buffer.clear();
+    let mut input = PrintWhileAsked {
+        printer: shell.printer.clone(),
+        lines: ["sd rm big.gcode".to_string()].into(),
+    };
+    shell.run_lines_until_eof_without_leaving(&mut input);
+    let text = buffer.text();
+    assert!(
+        text.contains("big.gcode is printing from the SD card"),
+        "{text}"
+    );
+    assert!(
+        !received(&shell).iter().any(|c| c.starts_with("M30")),
+        "M30 sent while printing from the card"
+    );
+    shell.printer.cancel();
+    wait_for(&shell, "the cancel", |s| !s.job_active());
+}

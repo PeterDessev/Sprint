@@ -1411,7 +1411,12 @@ impl Shell {
                 if let Some(why) = printer.with_state(actions::sd_delete_blocker) {
                     self.out.warn(why);
                 } else if self.confirm(input, &format!("Delete {name} from the SD card?"), true) {
-                    self.delete_sd_file(&name);
+                    // The card may have become busy while the question was
+                    // open (a print started at the printer).
+                    match printer.with_state(actions::sd_delete_blocker) {
+                        Some(why) => self.out.warn(why),
+                        None => self.delete_sd_file(&name),
+                    }
                 }
             }
             Command::Sd(SdCommand::Upload { file, name }) => self.upload(file.as_deref(), name),
