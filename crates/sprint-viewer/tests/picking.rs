@@ -9,7 +9,9 @@ use sprint_gcode::{Feature, Layer, MoveKind, Segment, Toolpath};
 use sprint_viewer::ViewPreset;
 use sprint_viewer::camera::{Camera, Projection, Ray};
 use sprint_viewer::demo;
-use sprint_viewer::pick::{PickFilter, PickIndex, pick_brute_force};
+use sprint_viewer::pick::{
+    PickFilter, PickIndex, PickKind, TRAVEL_SLACK, pick_brute_force, pick_brute_force_kind,
+};
 
 const SIZE: Vec2 = Vec2::new(640.0, 480.0);
 
@@ -488,4 +490,199 @@ fn picking_stays_fast_on_five_million_segments() {
     let (avg, worst, hits) = timed_picks(&tp, &index);
     println!("5M segments: avg {avg:.3} ms, worst {worst:.3} ms, {hits} hits");
     assert!(avg < 5.0 && worst < 20.0);
+}
+
+fn travel(start: [f32; 3], end: [f32; 3], line: u32, layer: u32) -> Segment {
+    Segment {
+        start,
+        end,
+        feedrate: 150.0,
+        line,
+        layer,
+        kind: MoveKind::Travel,
+        ..Default::default()
+    }
+}
+
+fn build_travels(tp: &Toolpath) -> PickIndex {
+    PickIndex::build_travels(tp, &AtomicBool::new(false)).expect("not cancelled")
+}
+
+#[test]
+fn travel_index_matches_brute_force_on_the_demo_print() {
+    let tp = demo::demo_toolpath();
+    let index = build_travels(&tp);
+    assert_eq!(index.kind(), PickKind::Travels);
+    let mid = tp.layers.len() / 2;
+    let filters = [
+        PickFilter::default(),
+        PickFilter {
+            layers: (0, mid),
+            ..Default::default()
+        },
+        PickFilter {
+            layers: (0, 30),
+            line_limit: tp.layers.get(30).map(|l| (l.lines.start + 40, 30)),
+            ..Default::default()
+        },
+    ];
+    let mut hits = 0;
+    for filter in &filters {
+        for radius in [0.4, 1.5] {
+            for ray in rays_for(&tp).iter().step_by(2) {
+                let fast = index.pick(&tp, ray, filter, radius);
+                let slow = pick_brute_force_kind(&tp, PickKind::Travels, ray, filter, radius);
+                match (fast, slow) {
+                    (None, None) => {}
+                    (Some(a), Some(b)) => {
+                        assert!((a.t - b.t).abs() <= 1e-3 * b.t.max(1.0), "{a:?} vs {b:?}");
+                        assert_eq!(tp.segments[a.segment].kind, MoveKind::Travel);
+                        hits += 1;
+                    }
+                    (a, b) => panic!("index {a:?} vs brute force {b:?} for {ray:?}"),
+                }
+            }
+        }
+    }
+    assert!(hits > 20, "only {hits} travel hits");
+}
+
+#[test]
+fn travel_picking_respects_layers_and_line_limits_but_not_hidden_features() {
+    let mut segments = vec![
+        extrude([0.0, 0.0, 0.2], [10.0, 0.0, 0.2], 1, 0, Feature::Perimeter),
+        travel([10.0, 0.0, 0.2], [10.0, 10.0, 0.2], 2, 0),
+        extrude([0.0, 0.0, 0.4], [10.0, 0.0, 0.4], 3, 1, Feature::Perimeter),
+        travel([10.0, 0.0, 0.4], [10.0, 10.0, 0.4], 4, 1),
+    ];
+    segments[1].feature = Feature::Perimeter;
+    let tp = layered(segments);
+    let index = build_travels(&tp);
+    let ray = Ray {
+        origin: Vec3::new(10.3, 5.0, 50.0),
+        dir: -Vec3::Z,
+    };
+    let pick = |filter: &PickFilter| index.pick(&tp, &ray, filter, 0.5).map(|h| h.segment);
+    // The upper travel is nearer.
+    assert_eq!(pick(&PickFilter::default()), Some(3));
+    assert_eq!(
+        pick(&PickFilter {
+            layers: (0, 0),
+            ..Default::default()
+        }),
+        Some(1)
+    );
+    assert_eq!(
+        pick(&PickFilter {
+            line_limit: Some((3, 1)),
+            ..Default::default()
+        }),
+        Some(1),
+        "the top travel is beyond the scrub position"
+    );
+    assert_eq!(
+        pick(&PickFilter {
+            hidden_mask: u32::MAX,
+            ..Default::default()
+        }),
+        Some(3),
+        "hiding features hides beads, not travels"
+    );
+    // Beads are not travels and vice versa.
+    let beads = build(&tp);
+    let on_bead = Ray {
+        origin: Vec3::new(5.0, 0.0, 50.0),
+        dir: -Vec3::Z,
+    };
+    assert!(
+        index
+            .pick(&tp, &on_bead, &PickFilter::default(), 0.5)
+            .is_none()
+    );
+    let hit = beads
+        .pick(&tp, &on_bead, &PickFilter::default(), 0.0)
+        .expect("bead");
+    assert!(tp.segments[hit.segment].is_extrusion());
+    // Only hits nearer than a limit count (e.g. in front of a bead).
+    let upper_t = index
+        .pick(&tp, &ray, &PickFilter::default(), 0.5)
+        .expect("hit")
+        .t;
+    assert_eq!(
+        index
+            .pick_within(&tp, &ray, &PickFilter::default(), 0.5, upper_t + 0.1)
+            .map(|h| h.segment),
+        Some(3)
+    );
+    assert!(
+        index
+            .pick_within(&tp, &ray, &PickFilter::default(), 0.5, upper_t - 0.1)
+            .is_none()
+    );
+    // Too far from every travel.
+    let off = Ray {
+        origin: Vec3::new(10.0 + TRAVEL_SLACK + 0.5, 5.0, 50.0),
+        dir: -Vec3::Z,
+    };
+    assert!(
+        index
+            .pick(&tp, &off, &PickFilter::default(), 100.0)
+            .is_none()
+    );
+}
+
+#[test]
+fn travel_picking_survives_malformed_toolpaths() {
+    let cases = [
+        Toolpath {
+            segments: vec![
+                travel([f32::NAN, 0.0, 0.0], [1.0, 1.0, 0.0], 0, 0),
+                travel([0.0, 0.0, 0.0], [f32::MAX, 0.0, 0.0], 1, 0),
+                travel([0.0, 0.0, 0.0], [0.0, 0.0, 0.0], 2, 0),
+            ],
+            ..Default::default()
+        },
+        Toolpath {
+            segments: vec![travel([0.0, 0.0, 0.2], [5.0, 0.0, 0.2], 0, 0)],
+            layers: vec![Layer {
+                segments: 3..90,
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+        Toolpath::default(),
+    ];
+    let rays = [
+        Ray {
+            origin: Vec3::new(0.0, 0.0, 30.0),
+            dir: -Vec3::Z,
+        },
+        Ray {
+            origin: Vec3::splat(f32::NAN),
+            dir: Vec3::Z,
+        },
+    ];
+    for tp in &cases {
+        let index = build_travels(tp);
+        for ray in &rays {
+            for radius in [0.0, 1.0, f32::NAN, f32::INFINITY] {
+                let _ = index.pick(tp, ray, &PickFilter::default(), radius);
+                let _ = pick_brute_force_kind(
+                    tp,
+                    PickKind::Travels,
+                    ray,
+                    &PickFilter::default(),
+                    radius,
+                );
+            }
+        }
+    }
+    // The zero-length travel of the first case is still a point to hit.
+    let index = build_travels(&cases[0]);
+    assert!(
+        index
+            .pick(&cases[0], &rays[0], &PickFilter::default(), 0.1)
+            .is_some()
+    );
+    assert!(PickIndex::build_travels(&cases[0], &AtomicBool::new(true)).is_none());
 }

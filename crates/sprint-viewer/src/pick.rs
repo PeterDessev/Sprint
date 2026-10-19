@@ -1,8 +1,10 @@
-//! CPU picking: ray versus extrusion beads.
+//! CPU picking: ray versus extrusion beads and travel moves.
 //!
 //! Beads are tested as capsules around their centre line with the vertical
 //! axis scaled so the cross-section matches the rendered flattened profile.
-//! A [`PickIndex`] accelerates queries with one bounding box per layer and a
+//! Travel moves are drawn as one-pixel lines, so they are hit when the ray
+//! passes within a (pixel-derived) radius of the nozzle path. A
+//! [`PickIndex`] accelerates queries with one bounding box per layer and a
 //! uniform XY grid inside layers with many segments, so a pick stays well
 //! below a millisecond even on multi-million-segment toolpaths.
 
@@ -10,7 +12,7 @@ use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use glam::{Vec2, Vec3};
-use sprint_gcode::{Segment, Toolpath};
+use sprint_gcode::{MoveKind, Segment, Toolpath};
 
 use crate::camera::Ray;
 use crate::instance::{layer_segment_ranges, render_height, render_width};
@@ -24,6 +26,62 @@ const MAX_CELLS_PER_AXIS: usize = 768;
 /// Extra radius (mm) baked into the grid and layer boxes so callers may ask
 /// for a pixel-based pick tolerance up to this size.
 pub const PICK_SLACK: f32 = 0.75;
+/// Largest pick radius (mm) around travel moves; baked into the travel
+/// index's grid and layer boxes.
+pub const TRAVEL_SLACK: f32 = 2.0;
+
+/// Which segments a [`PickIndex`] holds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum PickKind {
+    /// Extrusion beads, tested as flattened capsules.
+    #[default]
+    Extrusions,
+    /// Travel moves, tested by their distance to the ray.
+    Travels,
+}
+
+impl PickKind {
+    /// Whether `seg` belongs to this kind.
+    pub fn includes(self, seg: &Segment) -> bool {
+        match self {
+            PickKind::Extrusions => seg.is_extrusion(),
+            PickKind::Travels => seg.kind == MoveKind::Travel,
+        }
+    }
+
+    /// The segment's pick axis and the half extents of the box around it
+    /// that covers every allowed pick radius: `(a, b, radius_xy, radius_z)`.
+    /// `None` for segments of another kind or with non-finite positions.
+    fn footprint(self, seg: &Segment) -> Option<(Vec3, Vec3, f32, f32)> {
+        if !self.includes(seg) {
+            return None;
+        }
+        let (a, b, r, rz) = match self {
+            PickKind::Extrusions => {
+                let (hw, hh) = bead_radii(seg);
+                let (a, b) = bead_axis(seg, hh);
+                // With a pixel tolerance the vertical radius can grow up to
+                // the horizontal one (see `ray_segment`).
+                (a, b, hw + PICK_SLACK, hh.max(hw) + PICK_SLACK)
+            }
+            PickKind::Travels => (
+                Vec3::from(seg.start),
+                Vec3::from(seg.end),
+                TRAVEL_SLACK,
+                TRAVEL_SLACK,
+            ),
+        };
+        (a.is_finite() && b.is_finite()).then_some((a, b, r, rz))
+    }
+
+    /// Ray parameter where `ray` picks `seg` with the given tolerance.
+    fn test(self, ray: &Ray, seg: &Segment, radius: f32) -> Option<f32> {
+        match self {
+            PickKind::Extrusions => ray_segment(ray, seg, radius),
+            PickKind::Travels => ray_travel(ray, seg, radius),
+        }
+    }
+}
 
 /// Axis-aligned box.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -44,6 +102,21 @@ impl Aabb {
     /// True when nothing was included.
     pub fn is_empty(&self) -> bool {
         self.min.cmpgt(self.max).any()
+    }
+
+    /// The box with every side moved inwards by `d` (at most down to its
+    /// centre); boxes built around segments padded by at least `d` still
+    /// contain the segments padded by the remainder.
+    pub fn shrunk(&self, d: f32) -> Aabb {
+        if self.is_empty() || d.is_nan() || d <= 0.0 {
+            return *self;
+        }
+        let half = (self.max - self.min) * 0.5;
+        let d = Vec3::splat(d).min(half);
+        Aabb {
+            min: self.min + d,
+            max: self.max - d,
+        }
     }
 
     /// Grow to include `p`.
@@ -108,11 +181,15 @@ impl Default for PickFilter {
 }
 
 impl PickFilter {
-    fn accepts(&self, seg: &Segment, layer: usize) -> bool {
-        if !seg.is_extrusion() {
+    /// Hidden features only apply to extrusions: travels are drawn whatever
+    /// feature they were annotated with.
+    fn accepts(&self, kind: PickKind, seg: &Segment, layer: usize) -> bool {
+        if !kind.includes(seg) {
             return false;
         }
-        if (self.hidden_mask >> (seg.feature.index() as u32 & 31)) & 1 != 0 {
+        if kind == PickKind::Extrusions
+            && (self.hidden_mask >> (seg.feature.index() as u32 & 31)) & 1 != 0
+        {
             return false;
         }
         if let Some((line, top)) = self.line_limit
@@ -229,6 +306,52 @@ pub fn ray_segment(ray: &Ray, seg: &Segment, min_radius: f32) -> Option<f32> {
     Some(t / len)
 }
 
+/// Ray parameter and distance of the ray's closest approach to the segment
+/// `a..b` (`dir` must be unit length; the ray starts at `t = 0`).
+pub fn ray_segment_closest(origin: Vec3, dir: Vec3, a: Vec3, b: Vec3) -> (f32, f32) {
+    let u = b - a;
+    let r = a - origin;
+    let len2 = u.dot(u);
+    let du = dir.dot(u);
+    let dr = dir.dot(r);
+    let ur = u.dot(r);
+    let mut s = 0.0;
+    if len2 > 1e-12 {
+        let denom = len2 - du * du;
+        if denom > 1e-9 * len2 {
+            s = ((du * dr - ur) / denom).clamp(0.0, 1.0);
+        }
+    }
+    let mut t = du * s + dr;
+    if t < 0.0 {
+        t = 0.0;
+        s = if len2 > 1e-12 {
+            (-ur / len2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+    }
+    let gap = origin + dir * t - (a + u * s);
+    (t, gap.length())
+}
+
+/// Ray vs one travel move: a hit when the ray passes within `radius` mm
+/// (capped at [`TRAVEL_SLACK`]) of the nozzle path. Returns the ray
+/// parameter of the closest approach.
+pub fn ray_travel(ray: &Ray, seg: &Segment, radius: f32) -> Option<f32> {
+    let (a, b) = (Vec3::from(seg.start), Vec3::from(seg.end));
+    if !a.is_finite() || !b.is_finite() || !ray.origin.is_finite() || !ray.dir.is_finite() {
+        return None;
+    }
+    let radius = if radius.is_finite() {
+        radius.clamp(0.0, TRAVEL_SLACK)
+    } else {
+        0.0
+    };
+    let (t, dist) = ray_segment_closest(ray.origin, ray.dir, a, b);
+    (dist <= radius && t.is_finite()).then_some(t)
+}
+
 /// Uniform XY grid over one layer.
 #[derive(Clone, Debug)]
 struct LayerGrid {
@@ -298,9 +421,10 @@ struct LayerEntry {
 /// layer per segment (spiral vase mode).
 const LAYERS_PER_GROUP: usize = 32;
 
-/// Spatial index over the extrusion segments of one toolpath.
+/// Spatial index over the extrusion (or travel) segments of one toolpath.
 #[derive(Clone, Debug, Default)]
 pub struct PickIndex {
+    kind: PickKind,
     layers: Vec<LayerEntry>,
     /// Union box of each run of [`LAYERS_PER_GROUP`] layers.
     groups: Vec<Aabb>,
@@ -310,10 +434,28 @@ pub struct PickIndex {
 }
 
 impl PickIndex {
-    /// Build the index. Returns `None` if `cancel` is set meanwhile.
+    /// Build the index over the extrusions. Returns `None` if `cancel` is
+    /// set meanwhile.
     pub fn build(toolpath: &Toolpath, cancel: &AtomicBool) -> Option<PickIndex> {
+        PickIndex::build_kind(toolpath, PickKind::Extrusions, cancel)
+    }
+
+    /// Build the index over the travel moves. Returns `None` if `cancel` is
+    /// set meanwhile.
+    pub fn build_travels(toolpath: &Toolpath, cancel: &AtomicBool) -> Option<PickIndex> {
+        PickIndex::build_kind(toolpath, PickKind::Travels, cancel)
+    }
+
+    /// Build the index over the segments of `kind`. Returns `None` if
+    /// `cancel` is set meanwhile.
+    pub fn build_kind(
+        toolpath: &Toolpath,
+        kind: PickKind,
+        cancel: &AtomicBool,
+    ) -> Option<PickIndex> {
         let segs = &toolpath.segments;
         let mut index = PickIndex {
+            kind,
             segment_count: segs.len(),
             ..Default::default()
         };
@@ -324,18 +466,10 @@ impl PickIndex {
             let mut aabb = Aabb::EMPTY;
             let mut count = 0usize;
             for seg in &segs[range.clone()] {
-                if !seg.is_extrusion() {
+                let Some((a, b, r, rz)) = kind.footprint(seg) else {
                     continue;
-                }
-                let (hw, hh) = bead_radii(seg);
-                let (a, b) = bead_axis(seg, hh);
-                if !a.is_finite() || !b.is_finite() {
-                    continue;
-                }
-                // With a pixel tolerance the vertical radius can grow up to
-                // the horizontal one (see `ray_segment`).
-                let r = hw + PICK_SLACK;
-                let e = Vec3::new(r, r, hh.max(hw) + PICK_SLACK);
+                };
+                let e = Vec3::new(r, r, rz);
                 aabb.include(a.min(b) - e);
                 aabb.include(a.max(b) + e);
                 count += 1;
@@ -392,13 +526,10 @@ impl PickIndex {
         };
         let ncells = nx * ny;
         let mut counts = vec![0u32; ncells];
+        let kind = self.kind;
         let footprint = |seg: &Segment| -> Option<(Vec2, Vec2, f32)> {
-            if !seg.is_extrusion() {
-                return None;
-            }
-            let (hw, hh) = bead_radii(seg);
-            let (a, b) = bead_axis(seg, hh);
-            (a.is_finite() && b.is_finite()).then(|| (a.truncate(), b.truncate(), hw + PICK_SLACK))
+            let (a, b, r, _) = kind.footprint(seg)?;
+            Some((a.truncate(), b.truncate(), r))
         };
         for seg in &segs[range.clone()] {
             if let Some((a, b, e)) = footprint(seg) {
@@ -427,12 +558,18 @@ impl PickIndex {
         grid
     }
 
+    /// Which segments the index holds.
+    pub fn kind(&self) -> PickKind {
+        self.kind
+    }
+
     /// Number of layers indexed.
     pub fn layer_count(&self) -> usize {
         self.layers.len()
     }
 
-    /// Bounding box of a layer's pickable beads.
+    /// Bounding box of a layer's pickable segments (grown by the largest
+    /// pick tolerance).
     pub fn layer_bounds(&self, layer: usize) -> Option<Aabb> {
         self.layers
             .get(layer)
@@ -440,15 +577,31 @@ impl PickIndex {
             .filter(|b| !b.is_empty())
     }
 
-    /// Nearest visible bead hit by `ray`. `min_radius` widens thin beads
-    /// (pixel tolerance, capped at [`PICK_SLACK`] beyond the bead). Returns
-    /// `None` when the index does not belong to `toolpath`.
+    /// Nearest visible segment hit by `ray`. For extrusions `min_radius`
+    /// widens thin beads (pixel tolerance, capped at [`PICK_SLACK`] beyond
+    /// the bead); for travels it is the distance from the nozzle path that
+    /// still counts as a hit (capped at [`TRAVEL_SLACK`]). Returns `None`
+    /// when the index does not belong to `toolpath`.
     pub fn pick(
         &self,
         toolpath: &Toolpath,
         ray: &Ray,
         filter: &PickFilter,
         min_radius: f32,
+    ) -> Option<PickHit> {
+        self.pick_within(toolpath, ray, filter, min_radius, f32::INFINITY)
+    }
+
+    /// Like [`PickIndex::pick`], but only hits nearer than `max_t` along the
+    /// ray count, e.g. travels in front of an already picked bead. The
+    /// search stops early beyond `max_t`.
+    pub fn pick_within(
+        &self,
+        toolpath: &Toolpath,
+        ray: &Ray,
+        filter: &PickFilter,
+        min_radius: f32,
+        max_t: f32,
     ) -> Option<PickHit> {
         let segs = &toolpath.segments;
         if segs.len() != self.segment_count || self.layers.is_empty() {
@@ -457,25 +610,34 @@ impl PickIndex {
         let last = self.layers.len() - 1;
         let lo = filter.layers.0.min(last);
         let hi = filter.layers.1.min(last).max(lo);
+        // Travel boxes are padded for the largest radius: cull with the
+        // radius actually asked for.
+        let shrink = match self.kind {
+            PickKind::Extrusions => 0.0,
+            PickKind::Travels if min_radius.is_finite() => {
+                TRAVEL_SLACK - min_radius.clamp(0.0, TRAVEL_SLACK)
+            }
+            PickKind::Travels => TRAVEL_SLACK,
+        };
         // Groups hit by the ray, nearest entry first.
         let mut groups: Vec<(f32, usize)> = (lo / LAYERS_PER_GROUP..=hi / LAYERS_PER_GROUP)
             .filter_map(|g| {
-                let aabb = self.groups.get(g)?;
+                let aabb = self.groups.get(g)?.shrunk(shrink);
                 aabb.ray_interval(ray).map(|(t0, _)| (t0, g))
             })
             .collect();
         groups.sort_by(|a, b| a.0.total_cmp(&b.0));
 
         let mut best: Option<PickHit> = None;
-        let mut best_t = f32::INFINITY;
+        let mut best_t = if max_t.is_nan() { f32::INFINITY } else { max_t };
         let mut consider = |seg_index: usize, layer: usize, best_t: &mut f32| {
             let Some(seg) = segs.get(seg_index) else {
                 return;
             };
-            if !filter.accepts(seg, layer) {
+            if !filter.accepts(self.kind, seg, layer) {
                 return;
             }
-            if let Some(t) = ray_segment(ray, seg, min_radius)
+            if let Some(t) = self.kind.test(ray, seg, min_radius)
                 && t < *best_t
             {
                 *best_t = t;
@@ -498,7 +660,11 @@ impl PickIndex {
             candidates.clear();
             candidates.extend((first..end).filter_map(|i| {
                 let entry = self.layers.get(i)?;
-                entry.aabb.ray_interval(ray).map(|(t0, t1)| (t0, t1, i))
+                entry
+                    .aabb
+                    .shrunk(shrink)
+                    .ray_interval(ray)
+                    .map(|(t0, t1)| (t0, t1, i))
             }));
             candidates.sort_by(|a, b| a.0.total_cmp(&b.0));
             for &(t0, t1, layer) in &candidates {
@@ -591,6 +757,17 @@ pub fn pick_brute_force(
     filter: &PickFilter,
     min_radius: f32,
 ) -> Option<PickHit> {
+    pick_brute_force_kind(toolpath, PickKind::Extrusions, ray, filter, min_radius)
+}
+
+/// Reference implementation without acceleration for segments of `kind`.
+pub fn pick_brute_force_kind(
+    toolpath: &Toolpath,
+    kind: PickKind,
+    ray: &Ray,
+    filter: &PickFilter,
+    min_radius: f32,
+) -> Option<PickHit> {
     let ranges = layer_segment_ranges(toolpath);
     if ranges.is_empty() {
         return None;
@@ -602,10 +779,10 @@ pub fn pick_brute_force(
     for (layer, range) in ranges.iter().enumerate().take(hi + 1).skip(lo) {
         for i in range.clone() {
             let seg = &toolpath.segments[i];
-            if !filter.accepts(seg, layer) {
+            if !filter.accepts(kind, seg, layer) {
                 continue;
             }
-            if let Some(t) = ray_segment(ray, seg, min_radius)
+            if let Some(t) = kind.test(ray, seg, min_radius)
                 && best.is_none_or(|b| t < b.t)
             {
                 best = Some(PickHit {
@@ -661,6 +838,67 @@ mod tests {
         assert!((t0 - 99.0).abs() < 1e-4 && (t1 - 100.0).abs() < 1e-4);
         assert!(b.ray_interval(&down_ray(1.5, 0.5)).is_none());
         assert!(Aabb::EMPTY.ray_interval(&down_ray(0.5, 0.5)).is_none());
+    }
+
+    #[test]
+    fn shrinking_boxes_stops_at_the_centre() {
+        let b = Aabb {
+            min: Vec3::ZERO,
+            max: Vec3::new(4.0, 10.0, 1.0),
+        };
+        let s = b.shrunk(1.0);
+        assert_eq!(s.min, Vec3::new(1.0, 1.0, 0.5));
+        assert_eq!(s.max, Vec3::new(3.0, 9.0, 0.5));
+        assert_eq!(b.shrunk(-1.0), b);
+        assert_eq!(b.shrunk(f32::NAN), b);
+        assert!(Aabb::EMPTY.shrunk(1.0).is_empty());
+    }
+
+    #[test]
+    fn closest_approach_of_a_ray_and_a_segment() {
+        let (a, b) = (Vec3::new(0.0, 0.0, 0.0), Vec3::new(10.0, 0.0, 0.0));
+        // Straight down onto the middle: touches at t = 10.
+        let (t, d) = ray_segment_closest(Vec3::new(5.0, 0.0, 10.0), -Vec3::Z, a, b);
+        assert!((t - 10.0).abs() < 1e-4 && d < 1e-4, "{t} {d}");
+        // Passing 0.5 mm beside it.
+        let (t, d) = ray_segment_closest(Vec3::new(5.0, 0.5, 10.0), -Vec3::Z, a, b);
+        assert!((t - 10.0).abs() < 1e-4 && (d - 0.5).abs() < 1e-4);
+        // Beyond the end: the end point is closest.
+        let (t, d) = ray_segment_closest(Vec3::new(12.0, 0.0, 10.0), -Vec3::Z, a, b);
+        assert!((t - 10.0).abs() < 1e-4 && (d - 2.0).abs() < 1e-4);
+        // Segment behind the ray origin: the origin is the closest ray point.
+        let (t, d) = ray_segment_closest(Vec3::new(5.0, 0.0, -1.0), -Vec3::Z, a, b);
+        assert!(t == 0.0 && (d - 1.0).abs() < 1e-4);
+        // Parallel ray above the segment.
+        let (_, d) = ray_segment_closest(Vec3::new(-5.0, 0.0, 1.0), Vec3::X, a, b);
+        assert!((d - 1.0).abs() < 1e-4);
+        // Degenerate segment: a point.
+        let (t, d) = ray_segment_closest(Vec3::new(0.0, 3.0, 4.0), -Vec3::Z, a, a);
+        assert!((t - 4.0).abs() < 1e-4 && (d - 3.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn travels_are_hit_within_the_radius_only() {
+        let seg = Segment {
+            start: [0.0, 0.0, 0.4],
+            end: [20.0, 0.0, 0.4],
+            kind: sprint_gcode::MoveKind::Travel,
+            ..Default::default()
+        };
+        let t = ray_travel(&down_ray(10.0, 0.3), &seg, 0.5).expect("within 0.5 mm");
+        assert!((t - 99.6).abs() < 1e-3);
+        assert!(ray_travel(&down_ray(10.0, 0.7), &seg, 0.5).is_none());
+        // The radius is capped.
+        assert!(ray_travel(&down_ray(10.0, TRAVEL_SLACK + 0.5), &seg, 100.0).is_none());
+        assert!(ray_travel(&down_ray(10.0, 0.1), &seg, f32::NAN).is_none());
+        let broken = Segment {
+            start: [f32::NAN, 0.0, 0.0],
+            ..seg
+        };
+        assert!(ray_travel(&down_ray(10.0, 0.0), &broken, 1.0).is_none());
+        // Kinds pick their own segments only.
+        assert!(PickKind::Travels.includes(&seg));
+        assert!(!PickKind::Extrusions.includes(&seg));
     }
 
     #[test]
