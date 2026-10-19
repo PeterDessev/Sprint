@@ -20,6 +20,8 @@ The other pages cover what they share:
   printer and its fault injection.
 * [Troubleshooting](troubleshooting.md): connection problems, resends,
   timeouts, halts and board resets, Windows consoles.
+* [Sprint and Printrun](printrun-comparison.md): where Sprint differs from
+  Pronterface and pronsole.
 
 ## Installing
 
