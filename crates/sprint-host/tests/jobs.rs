@@ -288,6 +288,70 @@ fn cancel_drops_the_stream_and_runs_the_cancel_script() {
 }
 
 #[test]
+fn cancel_switches_off_every_hotend_and_the_chamber() {
+    // A bare M104 S0 only reaches the active tool: printing with T1 left
+    // T0 (and the chamber) heating after a cancel. The profile says one
+    // extruder; the printer reports two hotends and a chamber.
+    let printer = connect(
+        SimConfig {
+            extruders: 2,
+            heated_chamber: true,
+            ..sim()
+        },
+        options(),
+    );
+    let mut text = String::from("M104 T0 S200\nM104 T1 S200\nM141 S40\nT1\nG28\nM302 P1\nM83\n");
+    for i in 0..400 {
+        text.push_str(&format!(
+            "G1 X{} Y{} E0.5 F3000\n",
+            20 + i % 100,
+            20 + i / 4
+        ));
+    }
+    let file = Arc::new(GcodeFile::from_text("two-tools.gcode", text));
+    start(&printer, &file, PrintOptions::default());
+    let control = printer.sim_control().unwrap();
+    assert_eq!(control.snapshot().hotend_targets, [200.0, 200.0]);
+    printer.cancel();
+    wait_for(&printer, "cancelled", |s| !s.job_active());
+    wait_idle(&printer);
+    let snap = control.snapshot();
+    assert_eq!(snap.hotend_targets, [0.0, 0.0]);
+    assert_eq!(snap.bed_target, 0.0);
+    let got = control.received_commands();
+    let c = got.iter().position(|c| c == "M104 T0 S0").expect("T0 off");
+    assert_eq!(
+        &got[c..c + 5],
+        ["M104 T0 S0", "M104 T1 S0", "M140 S0", "M141 S0", "M107"]
+    );
+}
+
+#[test]
+fn the_cool_down_macro_switches_off_every_hotend() {
+    let printer = connect(
+        SimConfig {
+            extruders: 2,
+            ..fast_sim(60.0)
+        },
+        options(),
+    );
+    printer.send("M104 T0 S180\nM104 T1 S190\nM140 S50");
+    wait_idle(&printer);
+    let control = printer.sim_control().unwrap();
+    assert_eq!(control.snapshot().hotend_targets, [180.0, 190.0]);
+    let cool = sprint_host::AppConfig::default()
+        .macros
+        .into_iter()
+        .find(|m| m.name == "Cool down")
+        .expect("the default macro");
+    printer.run_macro(&cool);
+    wait_idle(&printer);
+    let snap = control.snapshot();
+    assert_eq!(snap.hotend_targets, [0.0, 0.0]);
+    assert_eq!(snap.bed_target, 0.0);
+}
+
+#[test]
 fn cancel_while_paused_and_custom_scripts() {
     let printer = connect(sim(), options());
     printer.set_profile(PrinterProfile {

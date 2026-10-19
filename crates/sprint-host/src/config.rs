@@ -23,7 +23,8 @@ use sprint_gcode::{KinematicLimits, MachineState};
 
 use crate::error::HostError;
 use crate::script::{
-    DEFAULT_CANCEL_SCRIPT, DEFAULT_PAUSE_SCRIPT, DEFAULT_RESUME_SCRIPT, ScriptContext,
+    DEFAULT_CANCEL_SCRIPT, DEFAULT_PAUSE_SCRIPT, DEFAULT_RESUME_SCRIPT, LEGACY_CANCEL_SCRIPTS,
+    ScriptContext,
 };
 use crate::transport::ConnectTarget;
 
@@ -388,7 +389,9 @@ impl PrinterProfile {
         (min[0] + margin_x, max[1] - margin_y)
     }
 
-    /// A script context for `state` with this profile's geometry.
+    /// A script context for `state` with this profile's geometry and
+    /// heaters (`{heaters_off}` switches off `extruders` hotends, the bed
+    /// with `heated_bed` and the chamber with `heated_chamber`).
     pub fn script_context<'a>(&self, state: &'a MachineState) -> ScriptContext<'a> {
         let (_, max) = self.build_volume();
         let (park_x, park_y) = self.park_position();
@@ -399,9 +402,26 @@ impl PrinterProfile {
             max_z: max[2],
             park_x,
             park_y,
+            hotends: self.extruders.max(1),
+            heated_bed: self.heated_bed,
+            heated_chamber: self.heated_chamber,
+        }
+    }
+
+    /// Replace scripts that are still an earlier version's default (never
+    /// edited) with the current default.
+    fn upgrade_default_scripts(&mut self) {
+        if LEGACY_CANCEL_SCRIPTS.contains(&self.cancel_script.as_str()) {
+            self.cancel_script = DEFAULT_CANCEL_SCRIPT.to_string();
         }
     }
 }
+
+/// G-code of the default "Cool down" macro.
+const COOL_DOWN_MACRO: &str = "{heaters_off}\nM107";
+/// What the default "Cool down" macro sent in earlier versions (only the
+/// active hotend).
+const LEGACY_COOL_DOWN_MACRO: &str = "M104 S0\nM140 S0\nM107";
 
 /// The whole configuration file.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -428,7 +448,7 @@ impl Default for AppConfig {
             macros: vec![
                 Macro::new("Home", "G28", false),
                 Macro::new("Bed mesh", "G28\nG29\nM420 V", true),
-                Macro::new("Cool down", "M104 S0\nM140 S0\nM107", false),
+                Macro::new("Cool down", COOL_DOWN_MACRO, false),
                 Macro::new("Motors off", "M84", false),
             ],
             console_max_lines: DEFAULT_CONSOLE_LINES,
@@ -574,6 +594,14 @@ impl AppConfig {
             self.console_max_lines = DEFAULT_CONSOLE_LINES;
         }
         self.console_max_lines = self.console_max_lines.clamp(100, 1_000_000);
+        for profile in &mut self.profiles {
+            profile.upgrade_default_scripts();
+        }
+        for m in &mut self.macros {
+            if m.gcode == LEGACY_COOL_DOWN_MACRO {
+                m.gcode = COOL_DOWN_MACRO.to_string();
+            }
+        }
         self
     }
 }

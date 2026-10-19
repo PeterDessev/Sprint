@@ -82,7 +82,7 @@ pub use host::Printer;
 pub use job::{JobInfo, JobKind, JobStatus, PrintOptions, Progress, ProgressModel};
 pub use script::{
     DEFAULT_CANCEL_SCRIPT, DEFAULT_PAUSE_SCRIPT, DEFAULT_RESUME_SCRIPT, ScriptContext,
-    format_number, render_script, render_script_with,
+    format_number, heaters_off, render_script, render_script_with,
 };
 pub use state::{
     AutotuneState, Axes, Axis, ConnectionStatus, FIRMWARE_MESSAGES_LEN, Heater, HostPrompt,

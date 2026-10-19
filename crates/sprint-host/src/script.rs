@@ -15,6 +15,7 @@
 //! | `{fan}` | part-cooling fan speed (0..=255) |
 //! | `{max_x}` `{max_y}` `{max_z}` | build volume limits from the profile (mm) |
 //! | `{park_x}` `{park_y}` | parking position from the profile (mm) |
+//! | `{heaters_off}` | every heater off, one command per line: `M104 S0` (`M104 T<n> S0` for each hotend of a multi-hotend printer), `M140 S0` with a heated bed, `M141 S0` with a heated chamber |
 //!
 //! Unknown placeholders are kept verbatim. A line that uses `{e}` is
 //! dropped while the extruder is in relative mode (M83 or G91), because
@@ -23,6 +24,7 @@
 //! extrude relatively.
 
 use sprint_gcode::{MachineState, clean_line};
+use sprint_proto::TempReport;
 
 /// Default pause script: retract, lift, park.
 pub const DEFAULT_PAUSE_SCRIPT: &str =
@@ -33,9 +35,16 @@ pub const DEFAULT_PAUSE_SCRIPT: &str =
 pub const DEFAULT_RESUME_SCRIPT: &str =
     "G1 X{x} Y{y} F6000\nG1 Z{z} F600\nG91\nG1 E2 F2700\nG90\nG92 E{e}\nG1 F{f}\n";
 
-/// Default cancel script: heaters and fan off, lift, home X/Y, motors off.
+/// Default cancel script: every heater and the fan off, lift, home X/Y,
+/// motors off.
 pub const DEFAULT_CANCEL_SCRIPT: &str =
-    "M104 S0\nM140 S0\nM107\nG91\nG1 Z10 F600\nG90\nG28 X Y\nM84\n";
+    "{heaters_off}\nM107\nG91\nG1 Z10 F600\nG90\nG28 X Y\nM84\n";
+
+/// Cancel scripts earlier versions used as the default. A profile still
+/// holding one of them (never edited) is upgraded to
+/// [`DEFAULT_CANCEL_SCRIPT`] when the configuration loads.
+pub(crate) const LEGACY_CANCEL_SCRIPTS: &[&str] =
+    &["M104 S0\nM140 S0\nM107\nG91\nG1 Z10 F600\nG90\nG28 X Y\nM84\n"];
 
 /// Values a script template is rendered with: the machine state plus the
 /// profile-derived geometry placeholders.
@@ -53,12 +62,19 @@ pub struct ScriptContext<'a> {
     pub park_x: f32,
     /// `{park_y}`: Y of the parking position (mm).
     pub park_y: f32,
+    /// Hotends `{heaters_off}` switches off (tools `0..hotends`; at least
+    /// one).
+    pub hotends: u8,
+    /// `{heaters_off}` switches the bed off.
+    pub heated_bed: bool,
+    /// `{heaters_off}` switches the chamber off.
+    pub heated_chamber: bool,
 }
 
 impl<'a> ScriptContext<'a> {
     /// A context for a 220 x 220 x 250 mm printer with its origin at the
-    /// front left corner, parking at X10 Y210 (the defaults of
-    /// [`PrinterProfile`](crate::config::PrinterProfile)).
+    /// front left corner, parking at X10 Y210, one hotend and a heated bed
+    /// (the defaults of [`PrinterProfile`](crate::config::PrinterProfile)).
     pub fn new(state: &'a MachineState) -> ScriptContext<'a> {
         ScriptContext {
             state,
@@ -67,8 +83,58 @@ impl<'a> ScriptContext<'a> {
             max_z: 250.0,
             park_x: 10.0,
             park_y: 210.0,
+            hotends: 1,
+            heated_bed: true,
+            heated_chamber: false,
         }
     }
+
+    /// The commands `{heaters_off}` expands to (see [`heaters_off`]).
+    pub fn heaters_off(&self) -> Vec<String> {
+        heaters_off(self.hotends, self.heated_bed, self.heated_chamber)
+    }
+
+    /// Make `{heaters_off}` also cover the heaters the printer reports
+    /// (`temps`) and the hotends `state` set a target for, so a profile
+    /// that understates the machine never leaves a heater on.
+    pub(crate) fn covering(mut self, temps: &TempReport) -> ScriptContext<'a> {
+        let known = temps.hotends.len().max(self.state.hotend_targets.len());
+        self.hotends = self
+            .hotends
+            .max(u8::try_from(known).unwrap_or(u8::MAX))
+            .max(1);
+        self.heated_bed |= temps.bed.is_some() || self.state.bed_target > 0.0;
+        self.heated_chamber |= temps.chamber.is_some() || self.state.chamber_target > 0.0;
+        self
+    }
+}
+
+/// Commands that switch every heater off: `M104 S0` for a single hotend
+/// (`M104 T<n> S0` for each of several: a bare `M104 S0` only reaches the
+/// active tool), `M140 S0` with `bed`, `M141 S0` with `chamber`.
+///
+/// ```
+/// use sprint_host::script::heaters_off;
+///
+/// assert_eq!(heaters_off(1, true, false), ["M104 S0", "M140 S0"]);
+/// assert_eq!(
+///     heaters_off(2, true, true),
+///     ["M104 T0 S0", "M104 T1 S0", "M140 S0", "M141 S0"]
+/// );
+/// ```
+pub fn heaters_off(hotends: u8, bed: bool, chamber: bool) -> Vec<String> {
+    let mut out = if hotends <= 1 {
+        vec!["M104 S0".to_string()]
+    } else {
+        (0..hotends).map(|t| format!("M104 T{t} S0")).collect()
+    };
+    if bed {
+        out.push("M140 S0".to_string());
+    }
+    if chamber {
+        out.push("M141 S0".to_string());
+    }
+    out
 }
 
 /// Expand the placeholders of `template` with values from `state` (and the
@@ -104,10 +170,13 @@ pub fn render_script_with(template: &str, ctx: &ScriptContext<'_>) -> Vec<String
         if relative_e && code.contains("{e}") {
             continue;
         }
+        // A placeholder may expand to several commands ({heaters_off}).
         let rendered = expand(code, ctx);
-        if let Some(cmd) = clean_line(&rendered) {
-            out.push(cmd.into_owned());
-        }
+        out.extend(
+            rendered
+                .split('\n')
+                .filter_map(|l| clean_line(l).map(|c| c.into_owned())),
+        );
     }
     out
 }
@@ -165,6 +234,7 @@ fn value(name: &str, ctx: &ScriptContext<'_>) -> Option<String> {
         "max_z" => format_number(f64::from(ctx.max_z), 3),
         "park_x" => format_number(f64::from(ctx.park_x), 3),
         "park_y" => format_number(f64::from(ctx.park_y), 3),
+        "heaters_off" => ctx.heaters_off().join("\n"),
         _ => return None,
     })
 }
@@ -216,9 +286,12 @@ mod tests {
             max_z: 220.5,
             park_x: 5.0,
             park_y: 200.0,
+            hotends: 2,
+            heated_bed: false,
+            heated_chamber: true,
         };
         let lines = render_script_with(
-            "G1 X{x} Y{y} Z{z} F{f}\nG92 E{e}\nT{tool}\nM104 S{hotend}\nM140 S{bed}\nM106 S{fan}\nG1 X{max_x} Y{max_y} Z{max_z}\nG1 X{park_x} Y{park_y}",
+            "G1 X{x} Y{y} Z{z} F{f}\nG92 E{e}\nT{tool}\nM104 S{hotend}\nM140 S{bed}\nM106 S{fan}\nG1 X{max_x} Y{max_y} Z{max_z}\nG1 X{park_x} Y{park_y}\n{heaters_off} ; all of them",
             &ctx,
         );
         assert_eq!(
@@ -232,6 +305,9 @@ mod tests {
                 "M106 S128",
                 "G1 X250 Y210 Z220.5",
                 "G1 X5 Y200",
+                "M104 T0 S0",
+                "M104 T1 S0",
+                "M141 S0",
             ]
         );
     }

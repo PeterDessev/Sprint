@@ -978,10 +978,14 @@ pub struct Macro { pub name: String, pub gcode: String, pub color: Option<[u8; 3
 /// Expand `{x} {y} {z} {e} {f} {tool} {hotend} {bed} {fan}` placeholders
 /// with values from a MachineState (position at pause time etc.).
 pub fn render_script(template: &str, state: &MachineState) -> Vec<String>;
-/// Plus the profile-derived {max_x} {max_y} {max_z} {park_x} {park_y}
-/// (`PrinterProfile::script_context(&state)` builds one).
-pub struct ScriptContext<'a> { pub state: &'a MachineState, pub max_x: f32, pub max_y: f32, pub max_z: f32, pub park_x: f32, pub park_y: f32 }
+/// Plus the profile-derived {max_x} {max_y} {max_z} {park_x} {park_y} and
+/// {heaters_off} (`PrinterProfile::script_context(&state)` builds one).
+pub struct ScriptContext<'a> { pub state: &'a MachineState, pub max_x: f32, pub max_y: f32, pub max_z: f32, pub park_x: f32, pub park_y: f32,
+                               pub hotends: u8, pub heated_bed: bool, pub heated_chamber: bool }
+impl ScriptContext<'_> { pub fn new(state: &MachineState) -> ScriptContext<'_>; pub fn heaters_off(&self) -> Vec<String>; }
 pub fn render_script_with(template: &str, ctx: &ScriptContext<'_>) -> Vec<String>;
+/// "M104 S0" (one "M104 T<n> S0" per hotend when there are several), "M140 S0" with `bed`, "M141 S0" with `chamber`.
+pub fn heaters_off(hotends: u8, bed: bool, chamber: bool) -> Vec<String>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum HostError { /* NotConnected, AlreadyConnected, Busy(String), Io(std::io::Error), InvalidTarget(String), Config(String), ... */ }
@@ -1052,7 +1056,15 @@ Every public item is also re-exported at the crate root.
   (classic jerk), which TOML cannot write as a missing key.
 * `script`: `DEFAULT_PAUSE_SCRIPT`, `DEFAULT_RESUME_SCRIPT`,
   `DEFAULT_CANCEL_SCRIPT`, `format_number`. `render_script` uses
-  `ScriptContext::new` (the default 220 x 220 x 250 profile). Unknown
+  `ScriptContext::new` (the default 220 x 220 x 250 profile with one
+  hotend and a heated bed). `{heaters_off}` expands to several lines
+  (`heaters_off`): a bare `M104 S0` only reaches the active tool, so the
+  default cancel script and the default "Cool down" macro
+  (`{heaters_off}` + `M107`) use it. The engine (job scripts) and
+  `run_macro` widen it to every hotend, bed and chamber the printer
+  reports or the job heated, whatever the profile says. Profiles and
+  macros still holding an earlier default (never edited) get the current
+  one when the configuration loads. Unknown
   placeholders stay verbatim; comments and blank lines are dropped; a line
   using `{e}` is dropped while extrusion is relative (that is how the
   resume script's `G92 E{e}` disappears for M83 files).

@@ -684,10 +684,10 @@ impl Printer {
     /// Send a macro, its placeholders expanded with the current state (see
     /// [`script`](crate::script)).
     pub fn run_macro(&self, m: &Macro) {
-        let state = self.with_state(machine_state);
+        let (state, temps) = self.with_state(|s| (machine_state(s), s.temps.clone()));
         let lines = {
             let profile = self.shared().profile.read();
-            render_script_with(&m.gcode, &profile.script_context(&state))
+            render_script_with(&m.gcode, &profile.script_context(&state).covering(&temps))
         };
         self.send(&lines.join("\n"));
     }

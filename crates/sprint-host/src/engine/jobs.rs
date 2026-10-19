@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use sprint_gcode::{GcodeFile, MachineState, ParsedLine, clean_line, state_at_line};
 
 use super::meta::{CmdMeta, JobLine, Meta, Source};
-use super::{Engine, PROGRESS_INTERVAL, Phase};
+use super::{Engine, PROGRESS_INTERVAL, Phase, Shared};
 use crate::console::ConsoleKind;
 use crate::error::HostError;
 use crate::event::Event;
@@ -398,10 +398,7 @@ impl Engine {
                     .resume_script
                     .clone()
                     .unwrap_or_else(|| self.shared.profile.read().resume_script.clone());
-                let mut lines = {
-                    let profile = self.shared.profile.read();
-                    render_script_with(&template, &profile.script_context(&snapshot))
-                };
+                let mut lines = render_job_script(&self.shared, &template, &snapshot);
                 // Restore the stream's modes (the scripts switch to G91/G90).
                 if !snapshot.absolute {
                     lines.push("G91".to_string());
@@ -455,10 +452,7 @@ impl Engine {
                     .cancel_script
                     .clone()
                     .unwrap_or_else(|| self.shared.profile.read().cancel_script.clone());
-                let lines = {
-                    let profile = self.shared.profile.read();
-                    render_script_with(&template, &profile.script_context(&job.machine))
-                };
+                let lines = render_job_script(&self.shared, &template, &job.machine);
                 let lines = in_millimetres(lines, &job.machine, false);
                 job.queue_scripts(lines, Some(JobStatus::Cancelled));
                 if waiting {
@@ -615,10 +609,7 @@ impl Engine {
                 .pause_script
                 .clone()
                 .unwrap_or_else(|| self.shared.profile.read().pause_script.clone());
-            let lines = {
-                let profile = self.shared.profile.read();
-                render_script_with(&template, &profile.script_context(&snapshot))
-            };
+            let lines = render_job_script(&self.shared, &template, &snapshot);
             let lines = in_millimetres(lines, &snapshot, false);
             job.pause_snapshot = Some(snapshot);
             job.queue_scripts(lines, Some(JobStatus::Paused));
@@ -927,6 +918,14 @@ impl Engine {
         let list = if extended { "M20 L" } else { "M20" };
         self.internal.push_back(CmdMeta::new(list, Source::User));
     }
+}
+
+/// Render a pause, resume or cancel script for `state` with the profile's
+/// geometry; `{heaters_off}` also covers every heater the printer reports.
+fn render_job_script(shared: &Shared, template: &str, state: &MachineState) -> Vec<String> {
+    let temps = shared.state.read().temps.clone();
+    let profile = shared.profile.read();
+    render_script_with(template, &profile.script_context(state).covering(&temps))
 }
 
 /// Scripts are written in millimetres (and their placeholders are mm): for

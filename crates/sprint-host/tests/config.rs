@@ -119,6 +119,46 @@ fn wrong_types_and_out_of_range_values_are_repaired_or_rejected() {
 }
 
 #[test]
+fn unedited_old_defaults_are_upgraded() {
+    // Earlier defaults switched off only the active hotend; profiles and
+    // macros that still hold them exactly get the new defaults, edited
+    // ones are kept.
+    let dir = TempDir::new("config-upgrade");
+    let path = dir.path().join("config.toml");
+    let old_cancel = "M104 S0\nM140 S0\nM107\nG91\nG1 Z10 F600\nG90\nG28 X Y\nM84\n";
+    let mut config = AppConfig::default();
+    config.profiles[0].cancel_script = old_cancel.into();
+    config.profiles.push(PrinterProfile {
+        name: "Edited".into(),
+        cancel_script: format!("{old_cancel}M117 bye\n"),
+        ..PrinterProfile::default()
+    });
+    for m in &mut config.macros {
+        if m.name == "Cool down" {
+            m.gcode = "M104 S0\nM140 S0\nM107".into();
+        }
+    }
+    config.save_to(&path).unwrap();
+    let loaded = AppConfig::load_from(&path).unwrap();
+    assert_eq!(
+        loaded.profiles[0].cancel_script,
+        sprint_host::DEFAULT_CANCEL_SCRIPT
+    );
+    assert!(loaded.profiles[0].cancel_script.contains("{heaters_off}"));
+    assert_eq!(
+        loaded.profiles[1].cancel_script,
+        format!("{old_cancel}M117 bye\n")
+    );
+    let cool = loaded
+        .macros
+        .iter()
+        .find(|m| m.name == "Cool down")
+        .unwrap();
+    assert_eq!(cool.gcode, "{heaters_off}\nM107");
+    assert_eq!(loaded.macros, AppConfig::default().macros);
+}
+
+#[test]
 fn default_path_is_under_a_sprint_directory() {
     let path = AppConfig::default_path();
     let fallback = path.as_os_str() == "sprint-config.toml";
