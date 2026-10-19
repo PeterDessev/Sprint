@@ -1107,12 +1107,52 @@ impl App {
             Some(Modal::Connect(d)) => d.paste(text),
             Some(_) => {}
             None => {
+                let to_gcode = self.focus != Focus::Input || self.input_mode == InputMode::Gcode;
+                let commands = pasted_commands(text);
+                if to_gcode && commands.len() > 1 {
+                    // On one line the commands would run as one garbled
+                    // command ("G28 G1 X10" homes X).
+                    self.confirm_pasted(&commands);
+                    return;
+                }
                 if self.focus != Focus::Input {
                     self.focus_input(InputMode::Gcode);
                 }
-                self.active_input().insert_str(text);
+                match commands.as_slice() {
+                    [one] if to_gcode => self.active_input().insert_str(one),
+                    _ => self
+                        .active_input()
+                        .insert_str(text.trim_end_matches(['\r', '\n'])),
+                }
             }
         }
+    }
+
+    /// Ask before sending a pasted block, one command per line.
+    fn confirm_pasted(&mut self, commands: &[&str]) {
+        if !self.connected_or_warn() {
+            return;
+        }
+        let dangerous: Vec<String> = commands
+            .iter()
+            .filter_map(|c| actions::dangerous_gcode(c))
+            .map(|doc| format!("{} ({}) is among them.", doc.code, doc.name))
+            .collect();
+        let job_active = self.view.job_active();
+        let mut message = Vec::new();
+        if job_active {
+            message.push("A job is running: these commands go between the print's lines.".into());
+        }
+        message.extend(macro_preview(&commands.join("\n")));
+        message.extend(dangerous.iter().cloned());
+        self.modal = Some(Modal::Confirm(Confirm::new(
+            format!("Send {} pasted lines?", commands.len()),
+            message,
+            "Send",
+            "Don't send",
+            job_active || !dangerous.is_empty(),
+            Action::Send(commands.join("\n")),
+        )));
     }
 
     fn on_mouse(&mut self, mouse: MouseEvent) {
@@ -1860,6 +1900,15 @@ impl App {
             true
         }
     }
+}
+
+/// The command lines of pasted text: trimmed, without blank and
+/// comment-only lines.
+fn pasted_commands(text: &str) -> Vec<&str> {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.split(';').next().unwrap_or_default().trim().is_empty())
+        .collect()
 }
 
 /// Lines of macro G-code shown when asking to run it.

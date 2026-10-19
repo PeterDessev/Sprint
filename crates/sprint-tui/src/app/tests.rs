@@ -1485,3 +1485,42 @@ fn the_print_confirmation_starts_the_file_it_named() {
         app.toast
     );
 }
+
+#[test]
+fn a_pasted_block_sends_one_command_per_line_after_asking() {
+    let mut app = connected_app();
+    received(&app);
+    // Several lines (as copied from a file or a web page): asked first,
+    // then each line is its own command, never "G28 X M105".
+    app.handle_event(TermEvent::Paste("G28 X\r\n; a comment\nM105\n".into()));
+    let Some(Modal::Confirm(confirm)) = &app.modal else {
+        panic!("a pasted block asks first: {:?}", app.toast);
+    };
+    assert_eq!(confirm.title, "Send 2 pasted lines?");
+    assert!(!confirm.danger);
+    crate::snapshot::save(&render(&mut app, 120, 40), "tui-confirm-paste-120x40");
+    press(&mut app, KeyCode::Char('y'));
+    wait_idle(&mut app);
+    let got = received(&app);
+    assert!(got.iter().any(|c| c == "G28 X"), "{got:?}");
+    assert!(got.iter().any(|c| c == "M105"), "{got:?}");
+    assert!(
+        !got.iter().any(|c| c.contains("M105") && c.contains("G28")),
+        "{got:?}"
+    );
+    assert!(app.gcode_input.is_empty(), "nothing was left on the line");
+    // A block with a dangerous line starts on "Don't send".
+    app.handle_event(TermEvent::Paste("G28\nM502\n".into()));
+    assert!(matches!(&app.modal, Some(Modal::Confirm(c)) if c.danger));
+    press(&mut app, KeyCode::Enter);
+    wait_idle(&mut app);
+    let got = received(&app);
+    assert!(
+        !got.iter().any(|c| c.starts_with("G28") || c == "M502"),
+        "nothing was sent: {got:?}"
+    );
+    // One line with its line break still lands on the G-code line.
+    app.handle_event(TermEvent::Paste("; header\nM115\r\n".into()));
+    assert!(app.modal.is_none());
+    assert_eq!(app.gcode_input.text(), "M115");
+}
