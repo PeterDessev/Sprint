@@ -24,3 +24,5 @@ pub mod format;
 pub mod mesh;
 pub mod sdname;
 pub mod thermal;
+
+pub(crate) mod ui;
