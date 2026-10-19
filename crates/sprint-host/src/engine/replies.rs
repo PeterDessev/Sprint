@@ -8,12 +8,13 @@ use sprint_proto::{
 };
 
 use super::flow::{OkOutcome, ResendAction, classify_line_error};
-use super::meta::{CmdMeta, Meta, PollKind, Source};
+use super::meta::{CmdMeta, JobLine, Meta, PollKind, Source};
 use super::{Engine, Phase};
 use crate::console::ConsoleKind;
 use crate::event::Event;
+use crate::job::JobKind;
 use crate::state::{
-    AutotuneState, Heater, HostPrompt, PrinterState, TEMP_HISTORY_LEN, TEMP_HISTORY_SECS,
+    AutotuneState, Axes, Heater, HostPrompt, PrinterState, TEMP_HISTORY_LEN, TEMP_HISTORY_SECS,
     TempSample,
 };
 
@@ -527,7 +528,16 @@ impl Engine {
             Source::Setup if meta.is('M', 115) => self.continue_setup(),
             _ => {}
         }
-        if let Some(code) = meta.code {
+        // Lines written to the SD card are stored, not executed: an
+        // uploaded G28 homes nothing.
+        let stored = matches!(
+            meta.job_line(),
+            Some(JobLine::Stream(_) | JobLine::Preamble)
+        ) && self
+            .job
+            .as_ref()
+            .is_some_and(|j| j.kind() == JobKind::SdUpload);
+        if let Some(code) = meta.code.filter(|_| !stored) {
             self.apply_effects(meta, code, now);
         }
         if let Some(line) = meta.job_line() {
@@ -624,15 +634,28 @@ impl Engine {
                 }
             }
             (b'G', 28) => {
-                let all = ['X', 'Y', 'Z'].iter().all(|a| parsed.has(*a))
-                    || !['X', 'Y', 'Z'].iter().any(|a| parsed.has(*a));
-                if all {
-                    self.homed = true;
-                }
+                let listed = Axes {
+                    x: parsed.has('X'),
+                    y: parsed.has('Y'),
+                    z: parsed.has('Z'),
+                };
+                let axes = if listed.is_empty() { Axes::ALL } else { listed };
+                let homed = self.homed.unwrap_or(Axes::NONE).union(axes);
+                self.set_homed(Some(homed));
             }
-            (b'M', 18) | (b'M', 84) => {
-                if !parsed.has('S') {
-                    self.homed = false;
+            // Steppers off: the head can be moved by hand. `S` only sets
+            // the idle timeout; `E` alone leaves the axes alone.
+            (b'M', 18) | (b'M', 84) if !parsed.has('S') => {
+                let listed = Axes {
+                    x: parsed.has('X'),
+                    y: parsed.has('Y'),
+                    z: parsed.has('Z'),
+                };
+                if !listed.is_empty() {
+                    let homed = self.homed.unwrap_or(Axes::NONE).without(listed);
+                    self.set_homed(Some(homed));
+                } else if !parsed.has('E') {
+                    self.set_homed(Some(Axes::NONE));
                 }
             }
             (b'M', 28) => self.upload_open_acknowledged(),

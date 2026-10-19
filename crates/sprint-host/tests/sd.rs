@@ -77,6 +77,8 @@ fn upload(mode: ChecksumMode) {
     let job = printer.with_state(|s| s.job.clone()).unwrap();
     assert_eq!(job.kind, JobKind::SdUpload);
     assert_eq!(job.status, JobStatus::Completed, "{:?}", tail(&printer, 20));
+    // The file's G28 was stored on the card, not run.
+    assert_eq!(printer.with_state(|s| s.homed), None);
     // The file's own M28/M29 are not sent; everything else is, in order.
     let mut want = vec!["M28 upload.gco".to_string()];
     want.extend(

@@ -719,7 +719,8 @@ impl Printer {
         self.send(if klipper { "BED_MESH_OUTPUT" } else { "M420 V" });
     }
 
-    /// Probe the bed: `G28` (unless homed since connecting), `G29`, then
+    /// Probe the bed: `G28` (unless every axis is known to be homed, see
+    /// [`PrinterState::homed`](crate::PrinterState::homed)), `G29`, then
     /// report the mesh.
     pub fn probe_bed_mesh(&self) {
         self.command(Command::ProbeBedMesh);

@@ -474,3 +474,39 @@ fn emergency_commands_bypass_the_queue() {
         .collect();
     assert!(sent.iter().all(|e| e.line.is_none()), "{sent:?}");
 }
+
+#[test]
+fn homed_axes_follow_homing_motors_off_and_halts() {
+    let printer = connect(fast_sim(50.0), options());
+    let homed = |p: &Printer| p.with_state(|s| s.homed);
+    assert_eq!(homed(&printer), None, "unknown after connecting");
+    let step = |gcode: &str| {
+        printer.send(gcode);
+        wait_idle(&printer);
+        homed(&printer)
+    };
+    assert_eq!(step("G28 X"), Some(Axes::X));
+    assert_eq!(step("G28 Y"), Some(Axes::XY));
+    assert_eq!(step("G28"), Some(Axes::ALL));
+    assert_eq!(step("M84 S60"), Some(Axes::ALL), "S only sets the timeout");
+    assert_eq!(step("M84 E"), Some(Axes::ALL));
+    assert_eq!(step("M18 X"), Some(Axes::ALL.without(Axes::X)));
+    assert_eq!(step("M84"), Some(Axes::NONE));
+    assert_eq!(step("G28"), Some(Axes::ALL));
+    printer.emergency_stop();
+    wait_for(&printer, "halted", |s| s.halted);
+    assert_eq!(homed(&printer), Some(Axes::NONE));
+    printer.reset_board().unwrap();
+    wait_for(&printer, "connected again", |s| {
+        s.is_connected() && !s.halted
+    });
+    wait_idle(&printer);
+    assert_eq!(
+        homed(&printer),
+        Some(Axes::NONE),
+        "a reset board is not homed"
+    );
+    assert_eq!(step("G28 Z"), Some(Axes::Z));
+    printer.disconnect();
+    assert_eq!(homed(&printer), None);
+}

@@ -56,6 +56,15 @@ pub struct PrinterState {
     pub mesh: Option<BedMesh>,
     /// Last M78 report.
     pub stats: Option<StatsReport>,
+    /// Axes known to be homed. `None`: unknown, nothing since connecting
+    /// says (the printer may have been homed from its display). `Some`:
+    /// the axes homed by an acknowledged `G28` (all, or the listed ones;
+    /// from any source, the job stream included) since homing was last
+    /// lost; the others count as not homed. `M84`/`M18` (all or the listed
+    /// axes), halts and board resets clear it to `Some` of no axes, a
+    /// disconnect to `None`. The pause and cancel scripts never move an
+    /// axis that is not known to be homed.
+    pub homed: Option<Axes>,
     /// Active tool (`T<n>` / "Active Extruder").
     pub active_tool: u8,
     /// Feedrate override, last set via M220 (100 default).
@@ -108,6 +117,7 @@ impl Default for PrinterState {
             endstops: Vec::new(),
             mesh: None,
             stats: None,
+            homed: None,
             active_tool: 0,
             feedrate_pct: 100.0,
             flow_pct: vec![100.0],
@@ -398,6 +408,56 @@ impl Axes {
         z: true,
     };
 
+    /// No axis.
+    pub const NONE: Axes = Axes {
+        x: false,
+        y: false,
+        z: false,
+    };
+
+    /// Whether `axis` is in the set (never for [`Axis::E`]).
+    pub fn has(&self, axis: Axis) -> bool {
+        match axis {
+            Axis::X => self.x,
+            Axis::Y => self.y,
+            Axis::Z => self.z,
+            Axis::E => false,
+        }
+    }
+
+    /// The axes in either set.
+    pub fn union(self, other: Axes) -> Axes {
+        Axes {
+            x: self.x || other.x,
+            y: self.y || other.y,
+            z: self.z || other.z,
+        }
+    }
+
+    /// The axes of `self` that are not in `other`.
+    pub fn without(self, other: Axes) -> Axes {
+        Axes {
+            x: self.x && !other.x,
+            y: self.y && !other.y,
+            z: self.z && !other.z,
+        }
+    }
+
+    /// No axis in the set.
+    pub fn is_empty(&self) -> bool {
+        *self == Axes::NONE
+    }
+
+    /// The axis letters, space separated ("X Y"; "" for none).
+    pub fn letters(&self) -> String {
+        [(self.x, "X"), (self.y, "Y"), (self.z, "Z")]
+            .iter()
+            .filter(|(on, _)| *on)
+            .map(|(_, l)| *l)
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
     /// The G28 command homing these axes (`G28` for all or none).
     pub fn home_command(&self) -> String {
         if *self == Axes::ALL || *self == Axes::default() {
@@ -441,6 +501,21 @@ mod tests {
             .home_command(),
             "G28 X Z"
         );
+    }
+
+    #[test]
+    fn axis_sets() {
+        let xz = Axes {
+            x: true,
+            y: false,
+            z: true,
+        };
+        assert!(xz.has(Axis::X) && !xz.has(Axis::Y) && !xz.has(Axis::E));
+        assert_eq!(xz.union(Axes::Y), Axes::ALL);
+        assert_eq!(Axes::ALL.without(xz), Axes::Y);
+        assert!(Axes::NONE.is_empty() && !Axes::Z.is_empty());
+        assert_eq!(xz.letters(), "X Z");
+        assert_eq!(Axes::NONE.letters(), "");
     }
 
     #[test]

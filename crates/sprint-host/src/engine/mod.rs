@@ -8,6 +8,7 @@ mod jobs;
 mod meta;
 mod reader;
 mod replies;
+mod scripts;
 
 use std::collections::VecDeque;
 use std::io::Write;
@@ -28,7 +29,9 @@ use crate::error::HostError;
 use crate::event::{Event, EventBus};
 use crate::job::{JobKind, PrintOptions};
 use crate::script::format_number;
-use crate::state::{AutotuneState, ConnectionStatus, Heater, HostPrompt, LinkStats, PrinterState};
+use crate::state::{
+    AutotuneState, Axes, ConnectionStatus, Heater, HostPrompt, LinkStats, PrinterState,
+};
 use crate::transport::{Link, LinkHandle};
 
 use flow::{Flow, LINE_NUMBER_LIMIT, Wire};
@@ -422,7 +425,8 @@ pub(crate) struct Engine {
     next_sd_poll: Instant,
     sd_poll_outstanding: bool,
     last_temp_sample: Option<Instant>,
-    homed: bool,
+    /// Axes known to be homed (mirrors `PrinterState::homed`).
+    homed: Option<Axes>,
     /// Modes and positions over every command sent.
     printer_modes: MachineState,
     settings_refresh_at: Option<Instant>,
@@ -481,7 +485,7 @@ impl Engine {
             next_sd_poll: now,
             sd_poll_outstanding: false,
             last_temp_sample: None,
-            homed: false,
+            homed: None,
             printer_modes: MachineState::new(),
             settings_refresh_at: None,
             pending_settings: None,
@@ -584,7 +588,15 @@ impl Engine {
                 self.info(message);
             }
         }
+        // Whatever happens to the printer now goes unseen.
+        self.set_homed(None);
         self.exit = Some(status);
+    }
+
+    /// Record which axes are known to be homed.
+    pub(super) fn set_homed(&mut self, homed: Option<Axes>) {
+        self.homed = homed;
+        self.shared.update(|s| s.homed = homed);
     }
 
     /// Write the queued [`Source::SafeStop`] commands now, unnumbered and
@@ -784,6 +796,9 @@ impl Engine {
     /// The board reset itself (`start` while connected).
     fn board_reset(&mut self, now: Instant) {
         self.warn("The printer reset (\"start\" received); reconnecting");
+        // Not connected any more before anything looks recovered (a UI
+        // must never see "connected, not halted" until the handshake).
+        self.set_status(ConnectionStatus::Handshaking);
         if self.job.is_some() {
             self.fail_job("printer reset");
         }
@@ -803,7 +818,7 @@ impl Engine {
         self.sd_autoreport = false;
         self.temp_poll_outstanding = false;
         self.sd_poll_outstanding = false;
-        self.homed = false;
+        self.set_homed(Some(Axes::NONE));
         self.pending_settings = None;
         self.pending_endstops.clear();
         self.pending_stats = None;
@@ -826,7 +841,6 @@ impl Engine {
             self.shared.emit(Event::Prompt(None));
         }
         self.phase = Phase::handshake(now, true);
-        self.set_status(ConnectionStatus::Handshaking);
     }
 
     // ----- sending -----
@@ -1239,6 +1253,8 @@ impl Engine {
         if first {
             // Queued before the halt: they must not run after a restart.
             self.drop_queued_commands("the printer halted");
+            // Steppers off (kill) or position untrusted: home again.
+            self.set_homed(Some(Axes::NONE));
         }
         self.halted = true;
         self.restarting = false;
@@ -1334,7 +1350,7 @@ impl Engine {
             .firmware
             .as_ref()
             .is_some_and(|f| f.flavor == FirmwareFlavor::Klipper);
-        if !self.homed {
+        if self.homed != Some(Axes::ALL) {
             self.queue_user("G28".to_string());
         }
         if klipper {

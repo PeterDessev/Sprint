@@ -9,7 +9,7 @@ use common::*;
 use sprint_host::sprint_gcode::{GcodeFile, state_at_line};
 use sprint_host::sprint_sim::SimConfig;
 use sprint_host::{
-    Axis, Event, HostPrompt, JobStatus, PrintOptions, Printer, PrinterProfile, render_script,
+    Axes, Axis, Event, HostPrompt, JobStatus, PrintOptions, Printer, PrinterProfile, render_script,
 };
 
 /// A file whose moves take (scaled) time, so jobs can be paused midway.
@@ -503,4 +503,52 @@ fn resume_after_a_firmware_pause_releases_a_waiting_printer() {
             .as_ref()
             .is_some_and(|j| j.status == JobStatus::Completed)
     });
+}
+
+#[test]
+fn a_pause_before_homing_does_not_park_or_lift() {
+    // Start G-code that heats before G28: a pause during the heat-up must
+    // not move axes that have no known position (no soft endstops).
+    let printer = connect(sim(), options());
+    let control = printer.sim_control().unwrap();
+    let mut text =
+        String::from("M140 S60\nM104 S200\nM190 S60\nM109 S200\nG28\nG1 Z0.3 F600\nM83\n");
+    for i in 0..100 {
+        text.push_str(&format!("G1 X{} Y20 E0.5 F3000\n", 20 + i));
+    }
+    let file = Arc::new(GcodeFile::from_text("heat-first.gcode", text));
+    control.clear_received();
+    printer
+        .start_print(Arc::clone(&file), PrintOptions::default())
+        .unwrap();
+    wait_for(&printer, "the bed heat-up", |_| {
+        control.received_commands().iter().any(|c| c == "M190 S60")
+    });
+    assert_eq!(printer.with_state(|s| s.homed), None);
+    printer.pause();
+    wait_for(&printer, "paused", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Paused)
+    });
+    let got = control.received_commands();
+    assert!(
+        !got.iter()
+            .any(|c| c.starts_with("G1 Z") || c.starts_with("G1 X")),
+        "{got:?}"
+    );
+    assert!(
+        console(&printer)
+            .iter()
+            .any(|e| e.text.starts_with("X Y Z not homed: the pause script")),
+        "{:?}",
+        tail(&printer, 20)
+    );
+    printer.resume();
+    wait_for(&printer, "completed", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Completed)
+    });
+    assert_eq!(printer.with_state(|s| s.homed), Some(Axes::ALL));
 }

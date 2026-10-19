@@ -824,7 +824,9 @@ pub enum Heater { Hotend(u8), Bed, Chamber }
 pub enum Axis { X, Y, Z, E }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Axes { pub x: bool, pub y: bool, pub z: bool }
-impl Axes { pub const ALL: Axes; pub const XY: Axes; pub const X: Axes; pub const Y: Axes; pub const Z: Axes; }
+impl Axes { pub const ALL: Axes; pub const XY: Axes; pub const X: Axes; pub const Y: Axes; pub const Z: Axes; pub const NONE: Axes;
+            pub fn has(&self, Axis) -> bool; pub fn union(self, Axes) -> Axes; pub fn without(self, Axes) -> Axes;
+            pub fn is_empty(&self) -> bool; pub fn letters(&self) -> String /* "X Y" */; }
 
 // ---- jobs ----
 #[derive(Clone, Debug, Default)]
@@ -855,6 +857,7 @@ pub struct PrinterState {
     pub endstops: Vec<(String, bool)>,
     pub mesh: Option<BedMesh>,
     pub stats: Option<StatsReport>,
+    pub homed: Option<Axes>,                    // None = unknown (since connecting); Some(axes homed by acked G28s; others count as not homed)
     pub active_tool: u8,
     pub feedrate_pct: f32,                      // last set via M220 (100 default)
     pub flow_pct: Vec<f32>,                     // per tool (100 default)
@@ -1158,6 +1161,17 @@ Every public item is also re-exported at the crate root.
   commands still queued (with a console warning): they were meant for a
   printer that has since lost its position. Both also close an open host
   prompt (`Event::Prompt(None)`): a halted firmware ignores M876.
+* Homing (`PrinterState::homed`): unknown after connecting; an
+  acknowledged `G28` (any source, the job stream included) adds all or
+  the listed axes; `M84`/`M18` without `S` clear all or the listed axes
+  (`E` alone none); halts and board resets clear it to `Some(NONE)`, a
+  disconnect to `None`. The pause and cancel scripts never move an axis
+  that is not known to be homed (Marlin has no soft endstops for it): its
+  words are left out of G0/G1 moves (a move left without axes is dropped,
+  arcs entirely; a `G28` in the script counts for the lines after it),
+  with a console warning. So a pause during a heat-up before the file's
+  G28 retracts but neither lifts nor parks. `probe_bed_mesh` homes first
+  unless all axes are homed.
 * Jobs: preamble lines are cleaned and sent first; with `start_line` the
   tracked `MachineState` starts from `state_at_line`. Pause: `Pausing` until
   in-flight stream lines are acknowledged and the pause script is
