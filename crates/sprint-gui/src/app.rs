@@ -988,7 +988,12 @@ impl SprintApp {
 
     fn apply_settings(&mut self, ctx: &egui::Context, dialog: SettingsDialog) {
         let theme = dialog.theme;
-        self.core.config = dialog.draft;
+        // Only what the dialog edits: recent files and macros may have
+        // changed while it was open (a file dropped meanwhile).
+        let draft = dialog.draft;
+        self.core.config.profiles = draft.profiles;
+        self.core.config.active_profile = draft.active_profile;
+        self.core.config.console_max_lines = draft.console_max_lines;
         self.core.config_dirty = true;
         let lines = self.core.config.console_max_lines;
         self.core.printer.set_console_capacity(lines);

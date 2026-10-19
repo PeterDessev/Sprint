@@ -787,6 +787,31 @@ fn firmware_limits_analysis_survives_a_disconnect() {
 }
 
 #[test]
+fn saving_settings_keeps_files_opened_meanwhile() {
+    let mut h = app(AppOptions::headless(), WINDOW);
+    h.state_mut().push_action(AppAction::OpenSettings);
+    settle(&mut h);
+    // A file dropped while the dialog is open loads and is remembered...
+    let cube = sample("calibration-cube.gcode");
+    h.input_mut()
+        .dropped_files
+        .push(Arc::new(Dropped(cube.clone())));
+    expect(&mut h, "the dropped file to load", analyzed);
+    assert_eq!(h.state().config().recent_files.first(), Some(&cube));
+    // ...and saving the settings does not forget it.
+    h.state_mut()
+        .settings_dialog_mut()
+        .expect("settings")
+        .draft
+        .profiles[0]
+        .max_z = 300.0;
+    h.get_by_label("Save").click();
+    settle(&mut h);
+    assert_eq!(h.state().config().active().max_z, 300.0);
+    assert_eq!(h.state().config().recent_files.first(), Some(&cube));
+}
+
+#[test]
 fn the_console_completes_gcode() {
     let mut h = app(AppOptions::headless(), WINDOW);
     h.state_mut().console_mut().focus_input();
