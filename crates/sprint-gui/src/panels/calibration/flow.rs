@@ -177,9 +177,11 @@ impl FlowWizard {
                         ui.add_space(4.0);
                         kit::caption(ui, &permanent_fix(r.new_flow));
                         ui.add_space(6.0);
+                        // Marlin takes M221 S as a whole percentage.
+                        let percent = r.new_flow.round();
                         let label = format!(
                             "Set flow to {} % (M221)",
-                            format::fixed(f64::from(r.new_flow), 0)
+                            format::fixed(f64::from(percent), 0)
                         );
                         if ui
                             .add_enabled(
@@ -188,9 +190,12 @@ impl FlowWizard {
                             )
                             .clicked()
                         {
-                            ctx.printer.set_flow(tool, r.new_flow);
-                            ctx.toasts
-                                .success(format!("Flow set to {:.0}%", r.new_flow));
+                            ctx.printer.set_flow(tool, percent);
+                            // The walls were printed with the old flow: keep
+                            // computing from it, not from the new one the
+                            // printer reports from now on.
+                            self.current = Some(current);
+                            ctx.toasts.success(format!("Flow set to {percent:.0}%"));
                         }
                     }
                     Err(err) => {

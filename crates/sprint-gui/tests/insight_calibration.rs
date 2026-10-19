@@ -232,6 +232,25 @@ fn esteps_extrudes_once_per_mark() {
 }
 
 #[test]
+fn flow_result_stays_put_after_setting_it() {
+    let mut h = tab(Theme::Dark, (1100.0, 900.0), Some(demo_state()), None);
+    h.get_by_label("Flow").click();
+    h.run_ok();
+    for (i, wall) in ["0.48", "0.47", "0.49", "0.48"].iter().enumerate() {
+        type_number(&mut h, 2 + i, wall);
+    }
+    h.get_by_label("Set flow to 94 % (M221)").click();
+    h.run_ok();
+    // The printer reports the new flow; the walls were printed at 100%.
+    if let Some(s) = h.state_mut().state.as_mut() {
+        s.flow_pct = vec![94.0];
+    }
+    h.run_ok();
+    assert!(h.query_by_label("New flow: 93.7 %").is_some());
+    assert!(h.query_by_label("Set flow to 94 % (M221)").is_some());
+}
+
+#[test]
 fn zoffset_and_flow_snapshots() {
     let mut h = tab(Theme::Light, (1100.0, 900.0), Some(demo_state()), None);
     h.get_by_label("Z offset").click();
@@ -369,6 +388,6 @@ fn esteps_zoffset_and_flow_reach_the_simulator() {
     clear_received(&printer);
     h.get_by_label("Set flow to 94 % (M221)").click();
     h.run_ok();
-    assert_eq!(wait_for_command(&printer, "M221"), "M221 T0 S93.8");
+    assert_eq!(wait_for_command(&printer, "M221"), "M221 T0 S94");
     printer.disconnect();
 }
