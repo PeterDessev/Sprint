@@ -966,3 +966,38 @@ fn the_start_dialog_closes_when_another_file_loads() {
     assert_eq!(h.state().dialog(), None);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn the_3d_view_ignores_keys_and_wheel_behind_a_dialog() {
+    let options = with_file(AppOptions::headless(), sample("calibration-cube.gcode"));
+    let mut h = app(options, WINDOW);
+    expect(&mut h, "the cube to be analyzed", analyzed);
+    if h.state().viewer_tab().viewer().is_none() {
+        eprintln!("no GPU viewer on this machine: not tested");
+        return;
+    }
+    h.state_mut().set_side_panels(false, true);
+    settle(&mut h);
+    h.state_mut().viewer_tab_mut().set_layer_range(10, 50);
+    h.state_mut().push_action(AppAction::OpenSettings);
+    settle(&mut h);
+    // Over the dialog, which covers the view and its layer slider.
+    for pos in [egui::pos2(500.0, 400.0), egui::pos2(875.0, 400.0)] {
+        h.hover_at(pos);
+        settle(&mut h);
+        h.key_press(Key::ArrowDown);
+        h.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: egui::vec2(0.0, -3.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: Modifiers::NONE,
+        });
+        settle(&mut h);
+        assert_eq!(
+            h.state().viewer_tab().layer_range(),
+            Some((10, 50)),
+            "at {pos:?}"
+        );
+    }
+    assert_eq!(h.state().dialog(), Some(DialogKind::Settings));
+}

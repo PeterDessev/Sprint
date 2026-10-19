@@ -293,7 +293,13 @@ impl ViewerTab {
             Pos2::new(view.left() + EDGE, view.bottom() - EDGE - SCRUB_H),
             Pos2::new(slider_rect.left() - EDGE, view.bottom() - EDGE),
         );
-        let pointer = ui.input(|i| i.pointer.hover_pos());
+        // The pointer counts only where nothing (a dialog, a popup, a toast)
+        // covers the view: the wheel and the keys belong to that instead.
+        let layer = ui.layer_id();
+        let pointer = ui
+            .input(|i| i.pointer.hover_pos())
+            .filter(|&pos| ui.ctx().layer_id_at(pos) == Some(layer));
+        let modal_open = ui.ctx().memory(|m| m.top_modal_layer().is_some());
         let over_slider = pointer.is_some_and(|pos| slider_rect.contains(pos));
         let over_scrub = pointer.is_some_and(|pos| scrub_rect.contains(pos));
         let over_view = pointer.is_some_and(|pos| view.contains(pos));
@@ -315,7 +321,8 @@ impl ViewerTab {
         }
 
         // Layer keys while the view has focus or the pointer.
-        let keys_active = (self.ov.focused || over_view) && !ui.ctx().egui_wants_keyboard_input();
+        let keys_active =
+            (self.ov.focused || over_view) && !modal_open && !ui.ctx().egui_wants_keyboard_input();
         if keys_active && layer_count > 0 {
             let moves = ui.input_mut(|i| {
                 let mut moves: Vec<(bool, i64)> = Vec::new();
