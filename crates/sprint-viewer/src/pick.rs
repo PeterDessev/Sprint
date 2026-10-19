@@ -628,6 +628,22 @@ impl PickIndex {
         min_radius: f32,
         max_t: f32,
     ) -> Option<PickHit> {
+        self.pick_where(toolpath, ray, filter, min_radius, max_t, |_| true)
+    }
+
+    /// Like [`PickIndex::pick_within`], but a hit only counts when `accept`
+    /// approves it (e.g. a travel whose nearest point is not hidden behind
+    /// a bead). `accept` sees each hit nearer than every accepted one so
+    /// far, in no particular order, so it may run several times per pick.
+    pub fn pick_where(
+        &self,
+        toolpath: &Toolpath,
+        ray: &Ray,
+        filter: &PickFilter,
+        min_radius: f32,
+        max_t: f32,
+        mut accept: impl FnMut(&PickHit) -> bool,
+    ) -> Option<PickHit> {
         let segs = &toolpath.segments;
         if segs.len() != self.segment_count || self.layers.is_empty() {
             return None;
@@ -665,12 +681,15 @@ impl PickIndex {
             if let Some(t) = self.kind.test(ray, seg, min_radius)
                 && t < *best_t
             {
-                *best_t = t;
-                best = Some(PickHit {
+                let hit = PickHit {
                     segment: seg_index,
                     t,
                     point: ray.at(t),
-                });
+                };
+                if accept(&hit) {
+                    *best_t = t;
+                    best = Some(hit);
+                }
             }
         };
         let mut candidates: Vec<(f32, f32, usize)> = Vec::with_capacity(LAYERS_PER_GROUP);

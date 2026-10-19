@@ -36,6 +36,12 @@ pub const DEFAULT_LOD_PIXELS: f32 = 3.0;
 const PICK_TOLERANCE_PX: f32 = 2.5;
 /// Pick tolerance in pixels around travel lines.
 const TRAVEL_PICK_PX: f32 = 4.0;
+/// How far (mm) in front of a travel's point a bead must be hit to hide
+/// it. Travels lie on the beads of their own layer (exactly touching their
+/// crests) and under the beads of the next, a layer height deeper.
+const OCCLUSION_SLACK: f32 = 0.02;
+/// Most travels checked for being hidden behind beads per pick.
+const MAX_TRAVEL_OCCLUSION_CHECKS: usize = 24;
 /// Darkening of the grooves between resolved beads (0..1).
 const CAVITY: f32 = 0.5;
 /// Projected bead thickness (pixels) over which the grooves between beads
@@ -528,39 +534,79 @@ impl GcodeViewer {
 
     /// Pick the nearest shown travel move passing within `radius` mm of a
     /// world-space ray (respecting layer range and line limit; hidden
-    /// features do not hide travels). `None` while travels are hidden or
+    /// features do not hide travels). Beads do not hide travels here (see
+    /// [`GcodeViewer::pick_screen`]). `None` while travels are hidden or
     /// until the travel index has been built.
     pub fn pick_travel(&self, ray: &Ray, radius: f32) -> Option<PickHit> {
-        self.pick_travel_within(ray, radius, f32::INFINITY)
-    }
-
-    /// [`GcodeViewer::pick_travel`] limited to hits nearer than `max_t`.
-    fn pick_travel_within(&self, ray: &Ray, radius: f32, max_t: f32) -> Option<PickHit> {
         if !self.options.show_travel {
             return None;
         }
         let tp = self.toolpath.as_ref()?;
         let index = self.info.as_ref()?.travel_pick.as_ref()?;
-        index.pick_within(tp, ray, &self.pick_filter(), radius, max_t)
+        index.pick(tp, ray, &self.pick_filter(), radius)
+    }
+
+    /// [`GcodeViewer::pick_travel`] limited to hits nearer than `max_t`
+    /// whose point closest to the ray is not hidden behind a shown bead.
+    fn pick_visible_travel(&self, ray: &Ray, radius: f32, max_t: f32) -> Option<PickHit> {
+        if !self.options.show_travel {
+            return None;
+        }
+        let tp = self.toolpath.as_ref()?;
+        let info = self.info.as_ref()?;
+        let index = info.travel_pick.as_ref()?;
+        let filter = self.pick_filter();
+        let mut checks = 0;
+        index.pick_where(tp, ray, &filter, radius, max_t, |hit| {
+            let (Some(beads), Some(seg)) = (info.pick.as_ref(), tp.segments.get(hit.segment))
+            else {
+                return true;
+            };
+            // Each check is a bead pick: give up on travels in a pile of
+            // hidden ones rather than stall the frame.
+            checks += 1;
+            if checks > MAX_TRAVEL_OCCLUSION_CHECKS {
+                return false;
+            }
+            // The ray through the travel's nearest point reaches that point
+            // at the same parameter; a bead hit clearly before it hides it.
+            let near = closest_on_segment(hit.point, Vec3::from(seg.start), Vec3::from(seg.end));
+            let to_travel = Ray {
+                origin: ray.origin + (near - hit.point),
+                dir: ray.dir,
+            };
+            let slack = OCCLUSION_SLACK + hit.t.abs() * 1e-5;
+            beads
+                .pick_within(tp, &to_travel, &filter, 0.0, hit.t - slack)
+                .is_none()
+        })
     }
 
     /// Pick at a position inside a view of `size` (same units, origin
     /// top-left) using the active camera: the bead under the cursor, or a
     /// shown travel move within a few pixels when it is not hidden behind
-    /// that bead. Use the segment's `kind` to tell them apart.
+    /// a bead. Use the segment's `kind` to tell them apart.
     pub fn pick_screen(&self, pos: [f32; 2], size: [f32; 2]) -> Option<PickHit> {
         let cam = self.active_camera();
         let view = Vec2::from(size).max(Vec2::ONE);
         let ray = cam.ray_from_screen(Vec2::from(pos), view);
         let world_px = cam.world_per_pixel(cam.distance, view.y);
         let tolerance = PICK_TOLERANCE_PX * world_px;
+        let radius = TRAVEL_PICK_PX * world_px;
         let bead = self.pick(&ray, tolerance);
-        // Travel lines are drawn over the beads they pass in front of (or
-        // lie on); the bead's hit is up to its pick tolerance early. Travels
-        // hidden behind the bead are not searched.
-        let max_t = bead.map_or(f32::INFINITY, |b| b.t + tolerance + 0.05);
-        self.pick_travel_within(&ray, TRAVEL_PICK_PX * world_px, max_t)
-            .or(bead)
+        // Travel lines are drawn over the beads they pass in front of or
+        // lie on. Travels hidden behind beads are skipped; the search stops
+        // a little behind the surface under the cursor, since a travel
+        // lying on it a few pixels away comes closest to the ray up to a
+        // few times the pick radius behind it (more at grazing angles).
+        let surface = match bead {
+            None => f32::INFINITY,
+            Some(b) => self
+                .pick(&ray, 0.0)
+                .map_or(b.t + tolerance, |exact| exact.t),
+        };
+        let max_t = surface + 3.0 * radius + 0.05;
+        self.pick_visible_travel(&ray, radius, max_t).or(bead)
     }
 
     /// Allocate the remaining space and draw; handles orbit (LMB drag), pan
@@ -1678,6 +1724,17 @@ fn select_clusters(
         clusters.iter().for_each(&mut visit);
     }
     (prisms, ribbons)
+}
+
+/// The point of the segment `a..b` closest to `p`.
+fn closest_on_segment(p: Vec3, a: Vec3, b: Vec3) -> Vec3 {
+    let ab = b - a;
+    let len2 = ab.length_squared();
+    if len2 <= 1e-12 || !len2.is_finite() {
+        return a;
+    }
+    let s = ((p - a).dot(ab) / len2).clamp(0.0, 1.0);
+    if s.is_nan() { a } else { a + ab * s }
 }
 
 /// Tooltip rows for a hovered travel move.

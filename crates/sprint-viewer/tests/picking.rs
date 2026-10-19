@@ -686,3 +686,40 @@ fn travel_picking_survives_malformed_toolpaths() {
     );
     assert!(PickIndex::build_travels(&cases[0], &AtomicBool::new(true)).is_none());
 }
+
+#[test]
+fn rejected_hits_give_way_to_the_next_nearest() {
+    // Three travels stacked under a straight-down ray, one per layer.
+    let segments: Vec<Segment> = (0..3u32)
+        .map(|layer| {
+            let z = 0.2 + layer as f32 * 0.2;
+            travel([0.0, 0.0, z], [10.0, 0.0, z], layer, layer)
+        })
+        .collect();
+    let tp = layered(segments);
+    let index = build_travels(&tp);
+    let ray = Ray {
+        origin: Vec3::new(5.0, 0.1, 50.0),
+        dir: -Vec3::Z,
+    };
+    let filter = PickFilter::default();
+    let top = index.pick(&tp, &ray, &filter, 0.5).expect("top travel");
+    assert_eq!(top.segment, 2);
+    // Turning down the top one yields the middle one, and so on.
+    let mut seen = Vec::new();
+    let next = index.pick_where(&tp, &ray, &filter, 0.5, f32::INFINITY, |hit| {
+        seen.push(hit.segment);
+        hit.segment != 2
+    });
+    assert_eq!(next.map(|h| h.segment), Some(1));
+    assert!(seen.contains(&2) && seen.contains(&1), "{seen:?}");
+    let none = index.pick_where(&tp, &ray, &filter, 0.5, f32::INFINITY, |_| false);
+    assert_eq!(none, None);
+    // The depth limit still applies.
+    let limited = index.pick_where(&tp, &ray, &filter, 0.5, top.t + 0.1, |h| h.segment != 2);
+    assert_eq!(limited, None);
+    assert_eq!(
+        index.pick_within(&tp, &ray, &filter, 0.5, f32::INFINITY),
+        Some(top)
+    );
+}

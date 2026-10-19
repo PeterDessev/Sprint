@@ -432,3 +432,106 @@ fn hovering_and_clicking_a_shown_travel_reports_its_line() {
     let below = h.frame(vec![Event::PointerMoved(on_travel)]);
     assert_eq!(below.hovered, None);
 }
+
+/// The block plus two travels in the layer under the top one, buried under
+/// its beads, and two in the top layer: one along a bead's crest and one
+/// over the groove between two beads.
+fn block_with_buried_travels() -> (Toolpath, [u32; 2]) {
+    let mut tp = block();
+    let mut line = tp.line_count;
+    let mut buried = [0; 2];
+    let top = tp.layers.len() - 1;
+    for (layer, y) in [
+        (top - 1, 110.25),
+        (top - 1, 110.0),
+        (top, 105.0),
+        (top, 114.75),
+    ] {
+        let z = tp.layers[layer].z;
+        let at = tp.layers[layer].segments.end;
+        tp.segments.insert(
+            at,
+            Segment {
+                start: [102.0, y, z],
+                end: [118.0, y, z],
+                feedrate: 150.0,
+                line: tp.layers[layer].lines.end,
+                layer: layer as u32,
+                kind: MoveKind::Travel,
+                ..Default::default()
+            },
+        );
+        if layer < top {
+            buried[(y == 110.0) as usize] = tp.layers[layer].lines.end;
+        }
+        // Keep lines and segment ranges consistent after the insertion.
+        for (i, l) in tp.layers.iter_mut().enumerate() {
+            if i == layer {
+                l.segments.end += 1;
+                l.lines.end += 1;
+            } else if i > layer {
+                l.segments.start += 1;
+                l.segments.end += 1;
+                l.lines.start += 1;
+                l.lines.end += 1;
+            }
+        }
+        for s in &mut tp.segments[at + 1..] {
+            s.line += 1;
+        }
+        line += 1;
+    }
+    tp.line_count = line;
+    (tp, buried)
+}
+
+#[test]
+fn travels_hidden_under_beads_are_not_picked() {
+    let (tp, buried) = block_with_buried_travels();
+    let Some(mut h) = Harness::with_toolpath(tp.clone()) else {
+        return;
+    };
+    h.viewer.options_mut().show_travel = true;
+    let size = Vec2::new(800.0, 600.0);
+    let top = tp.layers.len() - 1;
+    let z = tp.layers[top].z;
+    for distance in [200.0f32, 600.0, 1500.0] {
+        for pitch in [0.3f32, 0.6, 1.0, 1.4] {
+            let cam = h.viewer.camera_mut();
+            cam.target = Vec3::new(110.0, 110.0, z);
+            cam.distance = distance;
+            cam.yaw = 0.7;
+            cam.pitch = pitch;
+            let world_px = h.viewer.camera().world_per_pixel(distance, size.y);
+            let pick = |y: f32| {
+                let p = Vec3::new(110.0, y, z);
+                let s = h
+                    .viewer
+                    .camera()
+                    .project_to_screen(p, size)
+                    .expect("visible");
+                let hit = h.viewer.pick_screen([s.x, s.y], size.to_array())?;
+                Some(tp.segments[hit.segment])
+            };
+            for dy in [-1.0f32, -0.5, 0.0, 0.25, 0.5, 1.0] {
+                let dy = dy * world_px;
+                // Over the buried travels: the top layer's beads (or, seen
+                // at a grazing angle from afar, a top travel a few pixels
+                // away on screen).
+                let hit = pick(110.25 + dy).expect("the block");
+                assert!(
+                    hit.layer as usize == top && !buried.contains(&hit.line),
+                    "{distance} mm, pitch {pitch}, {dy} mm off: picked {hit:?}"
+                );
+                // Travels lying on the top layer are drawn over it.
+                for y in [105.0, 114.75] {
+                    let hit = pick(y + dy).expect("the block");
+                    assert!(
+                        hit.kind == MoveKind::Travel && hit.layer as usize == top,
+                        "{distance} mm, pitch {pitch}, {dy} mm off {y}: picked {hit:?}"
+                    );
+                }
+            }
+        }
+    }
+}
