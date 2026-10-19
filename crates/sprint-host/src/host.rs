@@ -403,7 +403,9 @@ impl Printer {
     /// sent before pending print-stream lines, and before a pause, resume
     /// or cancel script requested after them (a purge typed while paused
     /// runs before the resume script moves back onto the part). Emergency
-    /// commands (M112, M108, M410, M876) bypass the queue automatically.
+    /// commands (M112, M108, M410, M876) bypass the queue automatically;
+    /// M410 during a host print also stops the print (the firmware threw
+    /// its planned moves away).
     pub fn send(&self, gcode: &str) {
         let mut queued = Vec::new();
         for line in command_lines(gcode) {

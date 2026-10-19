@@ -27,7 +27,7 @@ use crate::config::{ChecksumMode, ConnectOptions, PrinterProfile};
 use crate::console::{Console, ConsoleKind};
 use crate::error::HostError;
 use crate::event::{Event, EventBus};
-use crate::job::{JobKind, PrintOptions};
+use crate::job::{JobKind, JobStatus, PrintOptions};
 use crate::script::format_number;
 use crate::state::{
     AutotuneState, Axes, ConnectionStatus, Heater, HostPrompt, LinkStats, PrinterState,
@@ -1120,7 +1120,12 @@ impl Engine {
                     self.queue_user(line);
                 }
             }
-            Command::Immediate(text) => self.send_immediate(&text, Source::User),
+            Command::Immediate(text) => {
+                self.send_immediate(&text, Source::User);
+                if CmdMeta::new(text, Source::User).is('M', 410) {
+                    self.quick_stop();
+                }
+            }
             Command::EmergencyStop => self.emergency_stop(),
             Command::StartPrint {
                 file,
@@ -1228,6 +1233,29 @@ impl Engine {
             .firmware
             .as_ref()
             .is_some_and(|f| f.flavor == FirmwareFlavor::Klipper)
+    }
+
+    /// M410 went out: the firmware threw away every move it had planned,
+    /// so a streaming host print has lost segments and cannot go on. It
+    /// fails (heaters off, see [`Engine::abandon_job`]) and the position is
+    /// read back.
+    fn quick_stop(&mut self) {
+        let streaming = self.job.as_ref().is_some_and(|j| {
+            j.kind() == JobKind::HostPrint
+                && matches!(
+                    j.info.status,
+                    JobStatus::Starting
+                        | JobStatus::Printing
+                        | JobStatus::Pausing
+                        | JobStatus::Resuming
+                )
+        });
+        if streaming {
+            self.abandon_job(
+                "quick stop (M410): the printer discarded its planned moves, so the print cannot continue",
+            );
+        }
+        self.internal.push_back(CmdMeta::new("M114", Source::Setup));
     }
 
     fn emergency_stop(&mut self) {

@@ -1116,7 +1116,10 @@ Every public item is also re-exported at the crate root.
   `start_*` wait up to 5 s for the engine's answer and fail with
   `NotConnected`, `Halted`, `Busy` (a job is active) or `InvalidArgument`.
   `send("M112")` is `emergency_stop()`, `send("M999")` is
-  `firmware_restart()`.
+  `firmware_restart()`. An `M410` (quick stop) sent while a host print
+  streams fails the job the way a protocol failure does (heaters off): the
+  firmware discarded its planned moves, so the print has lost segments;
+  `M114` then reads the position back.
 * Handshake: the first `M110 N0` goes out on the first received line or
   after 1 s of silence, again every 2 s and at once after a `start`; after a
   handshake that needed retries stray `ok`s are ignored for 300 ms. The

@@ -890,3 +890,37 @@ fn pause_points_pause_before_their_line() {
         .collect();
     assert!(got.len() >= want.len(), "nothing was skipped");
 }
+
+#[test]
+fn a_quick_stop_during_a_print_stops_the_print() {
+    // M410 throws away the planned moves: streaming on would print with
+    // segments missing.
+    let printer = connect(sim(), options());
+    let file = file();
+    start(&printer, &file, PrintOptions::default());
+    let control = printer.sim_control().unwrap();
+    printer.send("M410");
+    wait_for(&printer, "the job to stop", |s| !s.job_active());
+    let status = job_status(&printer).unwrap();
+    assert!(
+        matches!(&status, JobStatus::Failed(m) if m.contains("M410")),
+        "{status:?}"
+    );
+    wait_idle(&printer);
+    let got = control.received_commands();
+    let m410 = got.iter().position(|c| c == "M410").expect("M410");
+    let streamed_after = got[m410..]
+        .iter()
+        .filter(|c| c.ends_with("E0.5 F3000"))
+        .count();
+    assert!(
+        streamed_after <= 1,
+        "the stream stopped: {:?}",
+        &got[m410..]
+    );
+    assert!(
+        got[m410..].iter().any(|c| c == "M114"),
+        "position read back"
+    );
+    assert!(got[m410..].iter().any(|c| c == "M104 S0"), "heaters off");
+}
