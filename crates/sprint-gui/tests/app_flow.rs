@@ -977,6 +977,20 @@ fn an_upload_of_the_file_is_not_shown_as_a_print() {
 }
 
 #[test]
+fn the_empty_console_does_not_ask_to_connect_when_connected() {
+    let mut h = app(AppOptions::headless(), WINDOW);
+    settle(&mut h);
+    assert!(h.query_by_label_contains("Connect to a printer").is_some());
+    h.state_mut().set_state_override(Some(PrinterState {
+        status: ConnectionStatus::Connected,
+        ..PrinterState::default()
+    }));
+    settle(&mut h);
+    assert!(h.query_by_label_contains("Connect to a printer").is_none());
+    assert!(h.query_by_label_contains("replies show up here").is_some());
+}
+
+#[test]
 fn shortcuts_wait_while_the_console_asks() {
     let mut h = app(AppOptions::headless(), WINDOW);
     h.state_mut()

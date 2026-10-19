@@ -450,7 +450,7 @@ impl ConsolePanel {
             egui::Rect::from_min_max(body.min, egui::pos2(body.max.x, body.max.y - input_h));
         let input_rect = egui::Rect::from_min_max(egui::pos2(body.min.x, log_rect.max.y), body.max);
         ui.scope_builder(egui::UiBuilder::new().max_rect(log_rect), |ui| {
-            self.log(ui, &p);
+            self.log(ui, ctx.state.status.is_open(), &p);
         });
         ui.scope_builder(egui::UiBuilder::new().max_rect(input_rect), |ui| {
             self.input_area(ui, ctx, &p);
@@ -574,7 +574,8 @@ impl ConsolePanel {
         });
     }
 
-    fn log(&mut self, ui: &mut Ui, p: &Palette) {
+    /// The log; `open`: a connection is open (for the empty state).
+    fn log(&mut self, ui: &mut Ui, open: bool, p: &Palette) {
         let rect = ui.max_rect();
         ui.painter().rect_filled(rect, 0.0, p.bg);
         let font = theme::builtin_font(ui, egui::TextStyle::Monospace);
@@ -583,10 +584,12 @@ impl ConsolePanel {
         if n == 0 {
             ui.add_space(rect.height() * 0.3);
             ui.vertical_centered(|ui| {
-                let text = if self.entries.is_empty() {
-                    "Nothing here yet.\nConnect to a printer to see its traffic."
-                } else {
+                let text = if !self.entries.is_empty() {
                     "No lines match the filters."
+                } else if open {
+                    "Nothing here yet.\nCommands and the printer's replies show up here."
+                } else {
+                    "Nothing here yet.\nConnect to a printer to see its traffic."
                 };
                 ui.label(RichText::new(text).color(p.text_faint));
             });
