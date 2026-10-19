@@ -2191,3 +2191,33 @@ fn f6_goes_on_after_a_wait_the_printer_paused_the_print_for() {
     );
     app.printer.disconnect();
 }
+
+#[test]
+fn a_held_f6_releases_a_wait_for_the_user_once() {
+    let fake = crate::fake_printer::FakePrinter::start();
+    let printer = Printer::new();
+    printer
+        .connect(fake.target(), ConnectOptions::default())
+        .expect("connect to the fake printer");
+    let mut app = App::new(printer, AppConfig::default(), None, Theme::dark());
+    wait(&mut app, "the connection", PrinterState::is_connected);
+    wait_idle(&mut app);
+    app.printer.send("M0");
+    wait(
+        &mut app,
+        "the wait for the user",
+        crate::actions::waiting_for_user,
+    );
+    app.sync();
+    // The wait still shows until the printer's next busy message (on
+    // Marlin up to two seconds after M108): a second press, or the key's
+    // repeat, must not send M108 again (it would break a heat wait that
+    // comes next).
+    press(&mut app, KeyCode::F(6));
+    press(&mut app, KeyCode::F(6));
+    wait(&mut app, "the release", |s| s.busy.is_none());
+    wait_idle(&mut app);
+    let sent = fake.received().iter().filter(|c| *c == "M108").count();
+    assert_eq!(sent, 1, "{:?}", fake.received());
+    app.printer.disconnect();
+}

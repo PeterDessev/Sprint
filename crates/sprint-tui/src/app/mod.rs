@@ -58,6 +58,11 @@ const TOAST_TIME: Duration = Duration::from_secs(5);
 const ESTOP_WINDOW: Duration = Duration::from_secs(3);
 /// How long a report waits for the printer.
 const REPORT_TIMEOUT: Duration = Duration::from_secs(8);
+/// How long after letting a firmware waiting for the user go on F6 does
+/// not do it again: the wait shows until the printer's next busy message
+/// (every two seconds on Marlin), and a second M108 could break the heat
+/// wait that follows.
+const CONTINUE_SETTLE: Duration = Duration::from_secs(3);
 /// How long probing the bed may take.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(600);
 /// A report whose answer may carry no news ends when the link has been
@@ -187,6 +192,9 @@ pub(crate) struct App {
     /// An SD file being deleted: its name and when M30 was sent, until
     /// the printer answers (or [`REPORT_TIMEOUT`] passes).
     pending_sd_delete: Option<(String, Instant)>,
+    /// When F6 (or `resume`) last let a firmware waiting for the user go
+    /// on.
+    continued_at: Option<Instant>,
     /// A `source` file being read: its name and lines.
     sourcing: Option<Receiver<SourceRead>>,
 }
@@ -276,6 +284,7 @@ impl App {
             last_load_progress: 0,
             last_target: None,
             pending_sd_delete: None,
+            continued_at: None,
             sourcing: None,
         };
         app.sync();
@@ -943,6 +952,15 @@ impl App {
         if !self.view.waiting_for_user {
             return false;
         }
+        // Pressed again (or held) while the wait still shows.
+        if self
+            .continued_at
+            .is_some_and(|t| t.elapsed() < CONTINUE_SETTLE)
+        {
+            self.info("Continuing (M108 sent a moment ago)");
+            return true;
+        }
+        self.continued_at = Some(Instant::now());
         let paused = self
             .view
             .job
