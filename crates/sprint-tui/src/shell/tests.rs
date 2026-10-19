@@ -587,7 +587,13 @@ fn pause_resume_cancel_and_the_prompt() {
             .is_some_and(|j| j.status == JobStatus::Printing)
     });
     let got = received(&shell);
-    assert!(got.iter().any(|c| c == "G1 Z1 F600"), "{got:?}");
+    // The move typed while paused ran before the resume script (whose
+    // unretract is G1 E2) took the nozzle back to the print.
+    let at = |want: &str| got.iter().position(|c| c == want);
+    assert!(
+        at("G1 Z1 F600").is_some_and(|m| at("G1 E2 F2700").is_some_and(|r| m < r)),
+        "{got:?}"
+    );
     assert!(got.iter().any(|c| c == "G28 X Y"), "{got:?}");
     assert!(
         !got.iter().any(|c| c == "G28" || c == "G28 Z" || c == "G29"),

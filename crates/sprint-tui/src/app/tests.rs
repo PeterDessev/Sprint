@@ -683,12 +683,25 @@ fn f6_pauses_and_resumes_and_f7_cancels_after_asking() {
     let text = screen(&mut app, 120, 40);
     assert!(text.contains("‖ Paused"), "{text}");
     assert!(text.contains("F6 Resume"), "{text}");
+    // A move typed while paused, still running when F6 is pressed: the
+    // resume waits for it (the resume script would go first otherwise).
+    wait_idle(&mut app);
+    received(&app);
+    app.send_gcode("G1 X60 F300");
     press(&mut app, KeyCode::F(6));
+    assert!(app.resume_pending.is_some(), "{:?}", app.toast);
     wait(&mut app, "the resume", |s| {
         s.job
             .as_ref()
             .is_some_and(|j| j.status == JobStatus::Printing)
     });
+    assert!(app.resume_pending.is_none());
+    let got = received(&app);
+    let at = |want: &str| got.iter().position(|c| c == want);
+    assert!(
+        at("G1 X60 F300").is_some_and(|m| at("G1 E2 F2700").is_some_and(|r| m < r)),
+        "{got:?}"
+    );
     // F7 asks, defaulting to "keep printing".
     press(&mut app, KeyCode::F(7));
     assert!(matches!(app.modal, Some(Modal::Confirm(_))));

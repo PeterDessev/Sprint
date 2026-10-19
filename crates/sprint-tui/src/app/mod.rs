@@ -105,6 +105,13 @@ pub(crate) enum Modal {
     Prompt(PromptDialog),
 }
 
+/// A resume waiting for the link to settle (see [`App::resume`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PendingResume {
+    /// Since when nothing has been queued or unanswered.
+    idle_since: Option<Instant>,
+}
+
 /// A transient status message in the hint bar.
 #[derive(Clone, Debug)]
 pub(crate) struct Toast {
@@ -153,6 +160,8 @@ pub(crate) struct App {
     /// Jog mode with this step index.
     pub jog: Option<usize>,
     pub estop_armed: Option<Instant>,
+    /// A resume waiting for the commands typed while paused.
+    pub resume_pending: Option<PendingResume>,
     pub toast: Option<Toast>,
     /// A host prompt the user closed without answering.
     hidden_prompt: Option<HostPrompt>,
@@ -238,6 +247,7 @@ impl App {
             modal: None,
             jog: None,
             estop_armed: None,
+            resume_pending: None,
             toast: None,
             hidden_prompt: None,
             quit: false,
@@ -440,7 +450,65 @@ impl App {
             }
         }
         self.poll_background();
+        self.tick_resume(now);
         self.tick_report(now);
+    }
+
+    /// Whether the job is paused, and whether nothing is queued or
+    /// unanswered.
+    fn paused_and_idle(&self) -> (bool, bool) {
+        self.printer.with_state(|s| {
+            let paused = s
+                .job
+                .as_ref()
+                .is_some_and(|j| j.status == JobStatus::Paused);
+            (paused, crate::session::link_idle(s))
+        })
+    }
+
+    /// Resume once the link has been idle for a moment.
+    fn tick_resume(&mut self, now: Instant) {
+        if self.resume_pending.is_none() {
+            return;
+        }
+        let (paused, idle) = self.paused_and_idle();
+        let Some(pending) = &mut self.resume_pending else {
+            return;
+        };
+        if !paused {
+            self.resume_pending = None;
+            return;
+        }
+        if !idle {
+            pending.idle_since = None;
+            return;
+        }
+        let since = *pending.idle_since.get_or_insert(now);
+        if now.saturating_duration_since(since) >= crate::session::IDLE_SETTLE {
+            self.resume_pending = None;
+            self.printer.resume();
+            self.info("Resuming");
+        }
+    }
+
+    /// Resume the job after the commands typed while it was paused (a
+    /// purge, a move): the printer would run the resume script (back to
+    /// the print) before them otherwise, and they would land on the part.
+    /// A command sent a moment ago may not show as queued yet, so the link
+    /// must stay idle for a moment first.
+    fn resume(&mut self) {
+        let (paused, idle) = self.paused_and_idle();
+        if paused {
+            self.resume_pending = Some(PendingResume::default());
+            self.info(if idle {
+                "Resuming"
+            } else {
+                "Resuming once the queued commands are done"
+            });
+        } else {
+            self.printer.resume();
+            self.info("Resuming");
+        }
     }
 
     /// Run `work` on a helper thread named `name`; its message shows when
@@ -697,10 +765,7 @@ impl App {
     /// F6: pause or resume.
     fn toggle_pause(&mut self) {
         match self.view.job.as_ref().map(|j| j.status.clone()) {
-            Some(JobStatus::Paused | JobStatus::Pausing) => {
-                self.printer.resume();
-                self.info("Resuming");
-            }
+            Some(JobStatus::Paused | JobStatus::Pausing) => self.resume(),
             Some(status) if status.is_active() => {
                 self.printer.pause();
                 self.info("Pausing");
@@ -1492,7 +1557,7 @@ impl App {
             }
             Command::Resume => {
                 if self.view.job_active() {
-                    self.printer.resume();
+                    self.resume();
                 } else {
                     self.warn("No job is running");
                 }
