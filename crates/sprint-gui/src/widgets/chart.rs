@@ -620,16 +620,23 @@ impl<'a> MiniChart<'a> {
     }
 }
 
-/// Decimals needed to tell ticks apart, at least `min`.
+/// Decimals that print every tick exactly: those of the step (2.5 needs
+/// one, 0.25 two, 50 none), at most 6. A single tick uses `min`.
 fn tick_decimals(ticks: &[f64], min: usize) -> usize {
     match ticks {
         [a, b, ..] => {
             let step = (b - a).abs();
-            if step >= 1.0 || step <= 0.0 {
-                0
-            } else {
-                ((-step.log10()).ceil() as usize).min(min.max(1) + 2)
+            if !step.is_finite() || step <= 0.0 {
+                return 0;
             }
+            // Ticks are whole multiples of the step (see `nice_ticks`), so
+            // the step's own decimals are enough for all of them.
+            (0..=6)
+                .find(|&d| {
+                    let scaled = step * 10f64.powi(d);
+                    (scaled - scaled.round()).abs() <= 1e-6 * scaled.max(1.0)
+                })
+                .map_or(6, |d| d as usize)
         }
         _ => min,
     }
@@ -881,5 +888,19 @@ mod tests {
         assert_eq!(tick_decimals(&[0.0, 0.1], 1), 1);
         assert_eq!(tick_decimals(&[0.0, 0.05], 1), 2);
         assert_eq!(tick_decimals(&[1.0], 2), 2);
+    }
+
+    #[test]
+    fn quarter_step_ticks_keep_their_decimals() {
+        // A hotend hovering around 210 °C gets 2.5 °C ticks; rounding them
+        // to whole degrees would print "208" for 207.5.
+        let ticks = nice_ticks(204.0, 216.0, 4);
+        assert_eq!(ticks, vec![205.0, 207.5, 210.0, 212.5, 215.0]);
+        let d = tick_decimals(&ticks, 1);
+        let labels: Vec<String> = ticks.iter().map(|t| format!("{t:.d$}")).collect();
+        assert_eq!(labels, ["205.0", "207.5", "210.0", "212.5", "215.0"]);
+        assert_eq!(tick_decimals(&[0.0, 0.25], 1), 2);
+        assert_eq!(tick_decimals(&[0.0, 25.0], 1), 0);
+        assert_eq!(tick_decimals(&[0.0, f64::INFINITY], 1), 0);
     }
 }
