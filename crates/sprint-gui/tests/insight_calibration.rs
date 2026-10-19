@@ -204,6 +204,34 @@ fn esteps_result_stays_put_after_applying() {
 }
 
 #[test]
+fn esteps_extrudes_once_per_mark() {
+    let mut h = tab(Theme::Dark, (1100.0, 900.0), Some(demo_state()), None);
+    h.get_by_label("Extruder E-steps").click();
+    h.run_ok();
+    h.get_by_label("Next").click();
+    h.run_ok();
+    h.get_by_label("Marked").click();
+    h.run_ok();
+    let extrude = |h: &H<'_>| {
+        h.get_by_label("Extrude 100 mm")
+            .accesskit_node()
+            .is_disabled()
+    };
+    assert!(!extrude(&h));
+    h.get_by_label("Extrude 100 mm").click();
+    h.run_ok();
+    // A second click would extrude another 100 mm past the mark.
+    assert!(extrude(&h), "one extrusion per mark");
+    // Marking the filament again starts a new test.
+    h.get_by_label("Back").click();
+    h.run_ok();
+    h.get_by_label("Marked").click();
+    h.run_ok();
+    assert!(!extrude(&h));
+    assert!(h.get_by_label("Measure").accesskit_node().is_disabled());
+}
+
+#[test]
 fn zoffset_and_flow_snapshots() {
     let mut h = tab(Theme::Light, (1100.0, 900.0), Some(demo_state()), None);
     h.get_by_label("Z offset").click();

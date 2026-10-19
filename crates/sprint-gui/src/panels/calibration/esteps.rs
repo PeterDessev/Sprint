@@ -106,7 +106,9 @@ impl EstepsWizard {
             });
     }
 
-    fn nav(&mut self, ui: &mut Ui, next: Option<(&str, bool)>) {
+    /// Back / next buttons; returns whether "next" was clicked.
+    fn nav(&mut self, ui: &mut Ui, next: Option<(&str, bool)>) -> bool {
+        let mut advanced = false;
         ui.add_space(10.0);
         ui.horizontal(|ui| {
             if self.step > 0
@@ -126,9 +128,11 @@ impl EstepsWizard {
                         .clicked()
                 {
                     self.step += 1;
+                    advanced = true;
                 }
             });
         });
+        advanced
     }
 
     fn heat(&mut self, ui: &mut Ui, ctx: &mut AppCtx<'_>) {
@@ -217,7 +221,11 @@ impl EstepsWizard {
         ui.add_space(6.0);
         diagram(ui, self.mark, None);
         let valid = self.mark.is_finite() && self.mark > ESTEPS_EXTRUDE_MM && self.mark <= max_mark;
-        self.nav(ui, Some(("Marked", valid)));
+        if self.nav(ui, Some(("Marked", valid))) {
+            // A fresh mark: a new test extrusion.
+            self.extrude_started = None;
+            self.tested_steps = None;
+        }
     }
 
     fn extrude(&mut self, ui: &mut Ui, ctx: &mut AppCtx<'_>) {
@@ -239,10 +247,15 @@ impl EstepsWizard {
         );
         ui.add_space(8.0);
         let now = ui.input(|i| i.time);
-        let can = ctx.connected() && !ctx.job_active() && hot;
+        // One extrusion per mark: a second one would push the mark past
+        // what the measurement assumes (or into the extruder).
+        let extruded = self.extrude_started.is_some();
+        let can = ctx.connected() && !ctx.job_active() && hot && !extruded;
         ui.horizontal(|ui| {
             let label = format!("Extrude {:.0} mm", ESTEPS_EXTRUDE_MM);
-            let tip = if !hot {
+            let tip = if extruded {
+                "Already extruded. To repeat the test, go back and mark the filament again."
+            } else if !hot {
                 "The hotend is not at temperature"
             } else if ctx.job_active() {
                 "Not while a job runs"
@@ -264,7 +277,7 @@ impl EstepsWizard {
                 self.extrude_started = Some(now);
                 self.tested_steps = current_esteps(&ctx.state.settings, self.tool);
             }
-            if !hot {
+            if !hot && !extruded {
                 ui.add(StatusPill::new("Hotend not hot", Tone::Warning));
             }
         });
@@ -287,7 +300,7 @@ impl EstepsWizard {
                     .request_repaint_after(std::time::Duration::from_millis(250));
             }
         }
-        self.nav(ui, Some(("Measure", self.extrude_started.is_some())));
+        self.nav(ui, Some(("Measure", extruded)));
     }
 
     fn measure(&mut self, ui: &mut Ui, ctx: &mut AppCtx<'_>) {
