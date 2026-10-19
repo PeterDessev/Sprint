@@ -1669,12 +1669,22 @@ impl App {
                     self.error(format!("No help for '{topic}'"));
                 }
             }
-            Command::Connect { target, baud } => {
+            Command::Connect { target, baud, save } => {
                 match actions::resolve_target(target.as_deref(), baud, &self.profile) {
-                    Ok(target) => self.run_action(Action::Connect(target)),
+                    Ok(target) => {
+                        if save {
+                            self.save_connection(&target);
+                        }
+                        self.run_action(Action::Connect(target));
+                    }
                     Err(why) => self.error(why),
                 }
             }
+            Command::Profile(None) => {
+                let lines = report::profile_lines(&self.config);
+                self.show_report("Printer profiles", lines);
+            }
+            Command::Profile(Some(name)) => self.switch_profile(&name),
             Command::Disconnect => self.run_action(Action::Disconnect),
             Command::Ports => self.show_report("Serial ports", report::ports_lines(&list_ports())),
             Command::Load(path) => {
@@ -1968,6 +1978,7 @@ impl App {
             // Handled before a connection is needed.
             Command::Help(_)
             | Command::Connect { .. }
+            | Command::Profile(_)
             | Command::Disconnect
             | Command::Ports
             | Command::Load(_)
@@ -1983,6 +1994,83 @@ impl App {
             | Command::Log(_)
             | Command::Exit => {}
         }
+    }
+
+    /// `profile <name>`: use another printer profile from now on, saved
+    /// as the active one.
+    fn switch_profile(&mut self, name: &str) {
+        if self.view.job_active() {
+            self.warn("Not while a job runs (the job uses the profile's scripts)");
+            return;
+        }
+        let index = match actions::find_profile(&self.config.profiles, name) {
+            Ok(index) => index,
+            Err(why) => {
+                self.error(why);
+                return;
+            }
+        };
+        let wanted = self.config.profiles[index].name.clone();
+        let saved = crate::config::edit_profile(
+            self.config_path.as_deref(),
+            &self.config,
+            &wanted,
+            |config, i| config.active_profile = i,
+        );
+        let session_only = match saved {
+            Ok((config, i)) => {
+                self.use_config(config, i);
+                None
+            }
+            Err(why) => {
+                let config = self.config.clone();
+                self.use_config(config, index);
+                Some(why)
+            }
+        };
+        let target = self.profile.connection.to_string();
+        let name = self.profile.name.clone();
+        match session_only {
+            Some(why) => self.warn(format!("Using {name} ({target}) for this session: {why}")),
+            None if self.view.status.is_open() => self.good(format!(
+                "Using the profile {name}; still connected (F2 connects to {target})"
+            )),
+            None => self.good(format!("Using the profile {name} ({target})")),
+        }
+    }
+
+    /// `connect <target> --save`: make `target` the active profile's
+    /// printer in the configuration file.
+    fn save_connection(&mut self, target: &ConnectTarget) {
+        let name = self.profile.name.clone();
+        let saved = target.clone();
+        match crate::config::edit_profile(
+            self.config_path.as_deref(),
+            &self.config,
+            &name,
+            |config, i| {
+                if let Some(profile) = config.profiles.get_mut(i) {
+                    profile.connection = saved;
+                }
+            },
+        ) {
+            Ok((config, i)) => {
+                self.use_config(config, i);
+                self.info(format!("Saved {target} as the printer of {name}"));
+            }
+            Err(why) => self.error(format!("Not saved: {why}")),
+        }
+    }
+
+    /// Use `config` with its profile `index` active (in this session).
+    fn use_config(&mut self, mut config: AppConfig, index: usize) {
+        let Some(profile) = config.profiles.get(index).cloned() else {
+            return;
+        };
+        config.active_profile = index;
+        self.printer.set_profile(profile.clone());
+        self.profile = profile;
+        self.config = config;
     }
 
     /// Manual moves are refused while a job runs.

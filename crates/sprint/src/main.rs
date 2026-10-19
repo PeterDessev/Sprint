@@ -71,11 +71,13 @@ fn run(command: Command) -> Result<ExitCode> {
         Command::Tui(args) => sprint_tui::run_tui(sprint_tui::TuiOptions {
             file: args.file,
             connect: args.connect,
+            profile: None,
         })
         .map(|()| ExitCode::SUCCESS),
         Command::Shell(args) => sprint_tui::run_shell(sprint_tui::TuiOptions {
             file: None,
             connect: args.connect,
+            profile: None,
         })
         .map(|()| ExitCode::SUCCESS),
         Command::Print(args) => print::run(&args),

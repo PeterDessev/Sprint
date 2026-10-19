@@ -145,7 +145,9 @@ pub fn run_tui(options: TuiOptions) -> Result<()> {
              (sprint shell reads commands from a pipe, sprint print prints without a UI)"
         );
     }
-    let (config, config_path) = crate::config::load_config();
+    let (mut config, config_path) = crate::config::load_config();
+    crate::config::select_profile(&mut config, options.profile.as_deref())
+        .map_err(anyhow::Error::msg)?;
     let profile = config.active().clone();
     let printer = Printer::with_console_capacity(config.console_max_lines);
     let wake = Arc::new(AtomicBool::new(true));

@@ -76,8 +76,15 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "connect",
         aliases: &[],
-        usage: "connect [target] [baud]",
-        summary: "Connect (sim, COM3, /dev/ttyUSB0@250000, tcp://host:port; default: the profile's printer)",
+        usage: "connect [target] [baud] [--save]",
+        summary: "Connect (sim, COM3, /dev/ttyUSB0@250000, tcp://host:port; default: the profile's printer); --save makes the target the profile's printer",
+        group: Group::Connection,
+    },
+    CommandSpec {
+        name: "profile",
+        aliases: &["profiles"],
+        usage: "profile [name|number]",
+        summary: "List the printer profiles, or switch to one (saved as the active profile)",
         group: Group::Connection,
     },
     CommandSpec {
@@ -410,13 +417,17 @@ pub enum SdCommand {
 pub enum Command {
     /// `help [topic]`.
     Help(Option<String>),
-    /// `connect [target] [baud]` (`baud` 0 = auto-detect).
+    /// `connect [target] [baud] [--save]` (`baud` 0 = auto-detect).
     Connect {
         /// Target text (parsed when connecting); `None` = the profile's.
         target: Option<String>,
         /// Serial baud rate override.
         baud: Option<u32>,
+        /// Store the target as the active profile's printer.
+        save: bool,
     },
+    /// `profile [name]`: list the profiles, or switch to one.
+    Profile(Option<String>),
     /// `disconnect`.
     Disconnect,
     /// `ports`.
@@ -788,9 +799,15 @@ fn parse_command(spec: &'static CommandSpec, rest: &str) -> Result<Command, Pars
     let none = |cmd: Command| at_most(spec, &args, 0).map(|()| cmd);
     match spec.name {
         "connect" => {
+            let save = args.iter().any(|a| a.eq_ignore_ascii_case("--save"));
+            let args: Vec<String> = args
+                .iter()
+                .filter(|a| !a.eq_ignore_ascii_case("--save"))
+                .cloned()
+                .collect();
             at_most(spec, &args, 2)?;
             let baud =
-                match arg(1) {
+                match args.get(1) {
                     None => None,
                     Some(b) if b.eq_ignore_ascii_case("auto") => Some(0),
                     Some(b) => Some(b.parse::<u32>().map_err(|_| {
@@ -798,10 +815,14 @@ fn parse_command(spec: &'static CommandSpec, rest: &str) -> Result<Command, Pars
                     })?),
                 };
             Ok(Command::Connect {
-                target: arg(0).cloned(),
+                target: args.first().cloned(),
                 baud,
+                save,
             })
         }
+        "profile" => Ok(Command::Profile(
+            path_arg(rest).map(|p| p.to_string_lossy().into_owned()),
+        )),
         "disconnect" => none(Command::Disconnect),
         "ports" => none(Command::Ports),
         "info" => none(Command::Info),
@@ -1154,6 +1175,7 @@ mod tests {
                 Command::Connect {
                     target: None,
                     baud: None,
+                    save: false,
                 },
             ),
             (
@@ -1161,6 +1183,7 @@ mod tests {
                 Command::Connect {
                     target: Some("sim".into()),
                     baud: None,
+                    save: false,
                 },
             ),
             (
@@ -1168,6 +1191,7 @@ mod tests {
                 Command::Connect {
                     target: Some("COM3".into()),
                     baud: Some(250_000),
+                    save: false,
                 },
             ),
             (
@@ -1175,7 +1199,31 @@ mod tests {
                 Command::Connect {
                     target: Some("/dev/ttyUSB0".into()),
                     baud: Some(0),
+                    save: false,
                 },
+            ),
+            (
+                "connect COM5 --save 250000",
+                Command::Connect {
+                    target: Some("COM5".into()),
+                    baud: Some(250_000),
+                    save: true,
+                },
+            ),
+            (
+                "connect --SAVE",
+                Command::Connect {
+                    target: None,
+                    baud: None,
+                    save: true,
+                },
+            ),
+            ("profile", Command::Profile(None)),
+            ("profiles", Command::Profile(None)),
+            ("profile Ender 3", Command::Profile(Some("Ender 3".into()))),
+            (
+                "profile \"My MK3\"",
+                Command::Profile(Some("My MK3".into())),
             ),
             ("disconnect", Command::Disconnect),
             ("ports", Command::Ports),
@@ -1565,7 +1613,7 @@ mod tests {
             (
                 "connect COM3 fast",
                 "'fast' is not a baud rate",
-                Some("connect [target] [baud]"),
+                Some("connect [target] [baud] [--save]"),
             ),
             ("status now", "unexpected argument 'now'", Some("status")),
             (

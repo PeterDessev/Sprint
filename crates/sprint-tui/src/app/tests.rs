@@ -1795,3 +1795,57 @@ fn a_held_f8_is_not_a_second_press() {
     app.handle_event(key(KeyEventKind::Press));
     wait(&mut app, "the halt", |s| s.halted);
 }
+
+#[test]
+fn the_palette_lists_and_switches_profiles() {
+    let dir = std::env::temp_dir().join(format!("sprint-tui-profiles-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let path = dir.join("config.toml");
+    let mut config = AppConfig::default();
+    // Loopback with nothing listening: never a serial port.
+    config.profiles.push(sprint_host::PrinterProfile {
+        name: "Bench".into(),
+        connection: ConnectTarget::parse("tcp://127.0.0.1:1").expect("target"),
+        ..sprint_host::PrinterProfile::default()
+    });
+    config.save_to(&path).expect("save");
+    let mut app = App::new(Printer::new(), config, Some(path.clone()), Theme::dark());
+    app.run_line("profile");
+    let Some(Modal::Report(report)) = &app.modal else {
+        panic!("no list: {:?}", app.toast);
+    };
+    assert_eq!(report.title, "Printer profiles");
+    let text: Vec<String> = report.lines.iter().map(ReportLine::text).collect();
+    assert!(
+        text[1].contains("Bench") && text[1].contains("tcp://127.0.0.1:1"),
+        "{text:?}"
+    );
+    app.modal = None;
+    app.run_line("profile bench");
+    assert_eq!(app.profile.name, "Bench");
+    assert_eq!(app.printer.profile().name, "Bench");
+    assert!(
+        app.toast
+            .as_ref()
+            .is_some_and(|t| t.text.contains("Using the profile Bench")),
+        "{:?}",
+        app.toast
+    );
+    assert_eq!(AppConfig::load_from(&path).expect("load").active_profile, 1);
+    // --save stores the target in the profile before connecting.
+    app.run_line("connect sim://?boot_delay_ms=20&time_scale=100&instant_moves=true --save");
+    let on_disk = AppConfig::load_from(&path).expect("load");
+    assert!(on_disk.profiles[1].connection.is_simulator());
+    wait(&mut app, "the connection", PrinterState::is_connected);
+    app.run_line("profile nobody");
+    assert!(
+        app.toast
+            .as_ref()
+            .is_some_and(|t| t.text.contains("no profile 'nobody'")),
+        "{:?}",
+        app.toast
+    );
+    app.printer.disconnect();
+    let _ = std::fs::remove_dir_all(&dir);
+}

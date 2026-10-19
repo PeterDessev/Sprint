@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 
 use sprint_host::{AppConfig, HostError};
 
+use crate::actions::find_profile;
+
 /// Environment variable that overrides the configuration file.
 pub const CONFIG_ENV: &str = "SPRINT_CONFIG";
 
@@ -48,14 +50,71 @@ pub fn save_recent(
     file: PathBuf,
     current: &AppConfig,
 ) -> Result<AppConfig, HostError> {
+    update(path, current, |config| config.push_recent(file))
+}
+
+/// Change the configuration at `path` with `edit` and save it, starting
+/// from what the file holds now (see [`save_recent`]); without a file,
+/// `current` is edited and written. A file that cannot be read or parsed
+/// is left alone (an error). Returns the configuration saved.
+pub fn update(
+    path: &Path,
+    current: &AppConfig,
+    edit: impl FnOnce(&mut AppConfig),
+) -> Result<AppConfig, HostError> {
     let mut config = match AppConfig::load_from(path) {
         Ok(on_disk) => on_disk,
         Err(HostError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => current.clone(),
         Err(e) => return Err(e),
     };
-    config.push_recent(file);
+    edit(&mut config);
     config.save_to(path)?;
     Ok(config)
+}
+
+/// Use the profile called `name` (see [`find_profile`]) for this session
+/// instead of the active one; the file is not changed. Nothing happens
+/// without a name.
+pub fn select_profile(config: &mut AppConfig, name: Option<&str>) -> Result<(), String> {
+    if let Some(name) = name {
+        config.active_profile = find_profile(&config.profiles, name)?;
+    }
+    Ok(())
+}
+
+/// Change the profile called `name` with `edit` (which gets the
+/// configuration and the profile's index) in the configuration file at
+/// `path` as it is now, and save it; without a path (tests) `current` is
+/// changed in memory. The file's own active profile is kept unless `edit`
+/// changes it. Returns the configuration saved and the profile's index in
+/// it, or why it could not be saved (the file cannot be read or written,
+/// or no longer has the profile).
+pub fn edit_profile(
+    path: Option<&Path>,
+    current: &AppConfig,
+    name: &str,
+    edit: impl FnOnce(&mut AppConfig, usize),
+) -> Result<(AppConfig, usize), String> {
+    let mut config = match path {
+        Some(path) => match AppConfig::load_from(path) {
+            Ok(on_disk) => on_disk,
+            Err(HostError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => current.clone(),
+            Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
+        },
+        None => current.clone(),
+    };
+    let Some(index) = config.profiles.iter().position(|p| p.name == name) else {
+        return Err(format!(
+            "the configuration file has no profile called {name} any more"
+        ));
+    };
+    edit(&mut config, index);
+    if let Some(path) = path {
+        config
+            .save_to(path)
+            .map_err(|e| format!("cannot save {}: {e}", path.display()))?;
+    }
+    Ok((config, index))
 }
 
 /// The shell history file for a configuration file.
@@ -126,6 +185,48 @@ mod tests {
             std::fs::read_to_string(&path).expect("read"),
             "not = [valid"
         );
+    }
+
+    #[test]
+    fn profiles_are_edited_in_the_file_as_it_is_now() {
+        let scratch = Scratch::new("profiles");
+        let path = scratch.file();
+        let mut loaded = AppConfig::default();
+        loaded.profiles.push(sprint_host::PrinterProfile {
+            name: "Bench".into(),
+            ..sprint_host::PrinterProfile::default()
+        });
+        // Changed elsewhere since it was loaded.
+        let mut edited = loaded.clone();
+        edited.console_max_lines = 777;
+        edited.save_to(&path).expect("save");
+        let (saved, index) = edit_profile(Some(&path), &loaded, "Bench", |config, i| {
+            config.active_profile = i;
+        })
+        .expect("saved");
+        assert_eq!(index, 1);
+        let on_disk = AppConfig::load_from(&path).expect("load");
+        assert_eq!(on_disk, saved);
+        assert_eq!(on_disk.active_profile, 1);
+        assert_eq!(on_disk.console_max_lines, 777);
+        // A profile the file no longer has is an error; nothing is saved.
+        let why = edit_profile(Some(&path), &loaded, "Gone", |config, _| {
+            config.console_max_lines = 100;
+        })
+        .expect_err("missing");
+        assert!(why.contains("no profile called Gone"), "{why}");
+        assert_eq!(AppConfig::load_from(&path).expect("load"), on_disk);
+        // Without a file: in memory only.
+        let (memory, _) =
+            edit_profile(None, &loaded, "Bench", |c, i| c.active_profile = i).expect("memory");
+        assert_eq!(memory.active_profile, 1);
+        // A session's profile by name; the file is not touched.
+        let mut session = loaded.clone();
+        select_profile(&mut session, Some("bench")).expect("found");
+        assert_eq!(session.active_profile, 1);
+        select_profile(&mut session, None).expect("nothing to do");
+        assert_eq!(session.active_profile, 1);
+        assert!(select_profile(&mut session, Some("nope")).is_err());
     }
 
     #[test]

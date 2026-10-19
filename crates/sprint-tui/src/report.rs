@@ -14,8 +14,8 @@ use sprint_host::sprint_proto::{
     setting_def,
 };
 use sprint_host::{
-    ConnectionStatus, JobInfo, JobKind, JobStatus, LinkStats, Macro, PortInfo, PrinterState,
-    SdState, TempPreset,
+    AppConfig, ConnectionStatus, JobInfo, JobKind, JobStatus, LinkStats, Macro, PortInfo,
+    PrinterState, SdState, TempPreset,
 };
 
 use crate::commands::{COMMANDS, CommandSpec, Group};
@@ -1122,6 +1122,50 @@ pub fn macro_lines(macros: &[Macro]) -> Vec<ReportLine> {
             line
         })
         .collect()
+}
+
+/// The `profile` list: number, name and printer of each profile, the
+/// active one marked.
+pub fn profile_lines(config: &AppConfig) -> Vec<ReportLine> {
+    let active = config
+        .active_profile
+        .min(config.profiles.len().saturating_sub(1));
+    let width = config
+        .profiles
+        .iter()
+        .map(|p| p.name.chars().count())
+        .max()
+        .unwrap_or(0)
+        .min(24)
+        + 2;
+    let mut lines: Vec<ReportLine> = config
+        .profiles
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let mark = if i == active { "*" } else { " " };
+            let mut line = ReportLine::new()
+                .with(format!("{mark} {:>2}  ", i + 1), Tone::Dim)
+                .with(
+                    format!("{:<width$}", sanitize(&p.name)),
+                    if i == active {
+                        Tone::Accent
+                    } else {
+                        Tone::Plain
+                    },
+                )
+                .with(sanitize(&p.connection.to_string()), Tone::Plain);
+            if p.auto_connect {
+                line.push("  connects at startup", Tone::Dim);
+            }
+            line
+        })
+        .collect();
+    lines.push(ReportLine::toned(
+        "* the active profile; profile <name|number> switches, connect <target> --save sets its printer",
+        Tone::Dim,
+    ));
+    lines
 }
 
 /// The preset list (`preheat` without a name).

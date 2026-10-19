@@ -99,6 +99,46 @@ pub fn find_macro<'a>(macros: &'a [Macro], name: &str) -> Result<&'a Macro, Stri
     }
 }
 
+/// The index of the printer profile called `name` (case-insensitive; a
+/// unique prefix works) or numbered `name` (1 is the first, as `profile`
+/// lists them).
+pub fn find_profile(profiles: &[PrinterProfile], name: &str) -> Result<usize, String> {
+    let name = name.trim();
+    if let Some(i) = profiles
+        .iter()
+        .position(|p| p.name.eq_ignore_ascii_case(name))
+    {
+        return Ok(i);
+    }
+    if let Ok(n) = name.parse::<usize>() {
+        return match n.checked_sub(1).filter(|&i| i < profiles.len()) {
+            Some(i) => Ok(i),
+            None => Err(format!(
+                "there is no profile {n} (1 to {}; profile lists them)",
+                profiles.len()
+            )),
+        };
+    }
+    let lower = name.to_lowercase();
+    let matches: Vec<usize> = profiles
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| !lower.is_empty() && p.name.to_lowercase().starts_with(&lower))
+        .map(|(i, _)| i)
+        .collect();
+    match matches.as_slice() {
+        [one] => Ok(*one),
+        [] => {
+            let names: Vec<&str> = profiles.iter().map(|p| p.name.as_str()).collect();
+            Err(format!(
+                "no profile '{name}' (profiles: {})",
+                names.join(", ")
+            ))
+        }
+        _ => Err(format!("'{name}' matches several profiles")),
+    }
+}
+
 /// Every heater the printer has: the hotends it reports (or the profile's
 /// extruder count), the bed and the chamber when present.
 pub fn heaters(state: &PrinterState, profile: &PrinterProfile) -> Vec<Heater> {
@@ -414,6 +454,26 @@ mod tests {
                 Heater::Chamber
             ]
         );
+    }
+
+    #[test]
+    fn profiles_are_found_by_name_prefix_or_number() {
+        let named = |name: &str| PrinterProfile {
+            name: name.into(),
+            ..PrinterProfile::default()
+        };
+        let profiles = [named("Prusa MK3"), named("Ender 3"), named("Ender 5")];
+        assert_eq!(find_profile(&profiles, "ender 3"), Ok(1));
+        assert_eq!(find_profile(&profiles, " prusa "), Ok(0));
+        assert_eq!(find_profile(&profiles, "3"), Ok(2));
+        let several = find_profile(&profiles, "end").expect_err("ambiguous");
+        assert!(several.contains("several"), "{several}");
+        let none = find_profile(&profiles, "voron").expect_err("missing");
+        assert!(none.contains("Prusa MK3, Ender 3, Ender 5"), "{none}");
+        assert!(find_profile(&profiles, "4").is_err());
+        assert!(find_profile(&profiles, "0").is_err());
+        assert!(find_profile(&profiles, "").is_err());
+        assert!(find_profile(&[], "x").is_err());
     }
 
     #[test]

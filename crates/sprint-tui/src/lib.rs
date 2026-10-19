@@ -65,4 +65,8 @@ pub struct TuiOptions {
     /// Printer to connect to at startup. Without one, only a profile with
     /// `auto_connect` connects by itself.
     pub connect: Option<ConnectTarget>,
+    /// Printer profile to use instead of the active one (a name, a unique
+    /// prefix of one, or its number in the `profile` list); the
+    /// configuration file is not changed.
+    pub profile: Option<String>,
 }

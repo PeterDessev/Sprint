@@ -715,3 +715,73 @@ fn disconnecting_during_a_print_cancels_it_first() {
         buffer.text()
     );
 }
+
+/// A disconnected shell with `config`, saving to `path`.
+fn shell_with(config: AppConfig, path: Option<PathBuf>) -> (Shell, Buffer) {
+    let buffer = Buffer::default();
+    let out = Out::new(
+        Box::new(WriterSink(buffer.clone())),
+        ColorSupport::None,
+        false,
+    );
+    let shell = Shell::new(Printer::new(), config, path, out, Interrupt::new());
+    (shell, buffer)
+}
+
+#[test]
+fn profiles_are_listed_switched_and_saved() {
+    let scratch = Scratch::new("profiles");
+    let path = scratch.0.join("config.toml");
+    let mut config = AppConfig::default();
+    // Loopback with nothing listening: never a serial port.
+    config.profiles.push(sprint_host::PrinterProfile {
+        name: "Bench".into(),
+        connection: ConnectTarget::parse("tcp://127.0.0.1:1").expect("target"),
+        ..sprint_host::PrinterProfile::default()
+    });
+    config.save_to(&path).expect("save");
+    let (mut shell, buffer) = shell_with(config, Some(path.clone()));
+    script(&mut shell, &["profile"]);
+    let text = buffer.text();
+    assert!(text.contains("*  1  Virtual printer"), "{text}");
+    assert!(text.contains("   2  Bench"), "{text}");
+    assert!(text.contains("tcp://127.0.0.1:1"), "{text}");
+    buffer.clear();
+    script(&mut shell, &["profile ben"]);
+    assert!(
+        buffer.text().contains("Using the profile Bench"),
+        "{}",
+        buffer.text()
+    );
+    assert_eq!(shell.profile.name, "Bench");
+    assert_eq!(shell.printer.profile().name, "Bench");
+    let on_disk = AppConfig::load_from(&path).expect("load");
+    assert_eq!(on_disk.active_profile, 1);
+    // connect --save stores the target in the active profile.
+    buffer.clear();
+    script(
+        &mut shell,
+        &["connect sim://?boot_delay_ms=20&time_scale=100&instant_moves=true --save"],
+    );
+    assert!(shell.printer.is_connected(), "{}", buffer.text());
+    assert!(
+        buffer.text().contains("as the printer of Bench"),
+        "{}",
+        buffer.text()
+    );
+    let on_disk = AppConfig::load_from(&path).expect("load");
+    assert!(on_disk.profiles[1].connection.is_simulator());
+    assert_eq!(on_disk.profiles[0], AppConfig::default().profiles[0]);
+    assert!(shell.profile.connection.is_simulator());
+    // Still connected: switching says so; an unknown name is an error.
+    buffer.clear();
+    script(&mut shell, &["profile 1", "profile nothing"]);
+    let text = buffer.text();
+    assert!(
+        text.contains("Still connected to Virtual printer"),
+        "{text}"
+    );
+    assert!(text.contains("no profile 'nothing'"), "{text}");
+    assert_eq!(AppConfig::load_from(&path).expect("load").active_profile, 0);
+    shell.printer.disconnect();
+}
