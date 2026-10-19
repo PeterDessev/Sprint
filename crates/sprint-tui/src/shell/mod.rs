@@ -281,6 +281,18 @@ impl Shell {
         !printing
     }
 
+    /// Homing Z and probing lower the nozzle to the bed: never while a job,
+    /// even a paused one, has a part there.
+    fn bed_motion_allowed(&self, what: &str) -> bool {
+        if self.job_active() {
+            self.out.warn(format!(
+                "Not while a job runs: {what} would lower the nozzle onto the print"
+            ));
+            return false;
+        }
+        true
+    }
+
     /// Wait for an expected answer: Ok when it arrived, or why not.
     fn wait_answer(&self, rx: &Receiver<()>, timeout: Duration) -> Result<(), WaitError> {
         let deadline = Instant::now().checked_add(timeout);
@@ -673,7 +685,12 @@ impl Shell {
                 self.set_temps(&targets);
             }
             Command::Home(axes) => {
-                if self.motion_allowed() {
+                let allowed = if axes.z {
+                    self.bed_motion_allowed("homing Z (home x y works while paused)")
+                } else {
+                    self.motion_allowed()
+                };
+                if allowed {
                     printer.home(axes);
                 }
             }
@@ -798,7 +815,7 @@ impl Shell {
             }
             Command::Mesh { probe } => {
                 let shown = if probe {
-                    if !self.motion_allowed() {
+                    if !self.bed_motion_allowed("probing the bed") {
                         return;
                     }
                     self.out.dim("Probing the bed (G29); Ctrl+C stops waiting");
