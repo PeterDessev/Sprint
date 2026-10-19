@@ -190,6 +190,7 @@ fn printer_tab_queries_the_simulator() {
     clear_received(&printer);
     h.get_by_label("Live").click();
     h.run_ok();
-    wait_for_command(&printer, "M119");
+    // The poll goes out from the next frames.
+    step_until_command(&mut h, "M119");
     printer.disconnect();
 }

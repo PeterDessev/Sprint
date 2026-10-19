@@ -187,6 +187,29 @@ pub fn wait_for_command(printer: &Printer, prefix: &str) -> String {
     }
 }
 
+/// Run harness frames until the simulator received a command starting
+/// with `prefix` (for commands a tab sends from a later frame, like a
+/// poll); 30 s at most.
+pub fn step_until_command<T: Panel>(h: &mut Harness<'_, Host<T>>, prefix: &str) -> String {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        h.step();
+        let found = h.state().printer.sim_control().and_then(|sim| {
+            sim.received_commands()
+                .into_iter()
+                .find(|c| c.starts_with(prefix))
+        });
+        if let Some(cmd) = found {
+            return cmd;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the simulator never received {prefix:?}"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 /// Whether the simulator received a command starting with `prefix`.
 pub fn received(printer: &Printer, prefix: &str) -> bool {
     printer.sim_control().is_some_and(|sim| {
