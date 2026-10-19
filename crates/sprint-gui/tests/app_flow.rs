@@ -647,6 +647,50 @@ fn closing_during_a_print_asks_first() {
     );
 }
 
+#[test]
+fn disconnecting_or_reconnecting_during_a_print_asks_first() {
+    let options = with_file(slow_sim_options(5.0), sample("calibration-cube.gcode"));
+    let mut h = app(options, WINDOW);
+    expect(&mut h, "the cube to be analyzed", analyzed);
+    connect(&mut h);
+    h.state_mut()
+        .push_action(AppAction::StartPrintDialog { start_line: 0 });
+    settle(&mut h);
+    h.get_by_role_and_label(Role::Button, "Start print").click();
+    let printing = |app: &SprintApp| {
+        app.state()
+            .job
+            .as_ref()
+            .is_some_and(|j| j.status.is_active())
+    };
+    expect(&mut h, "the print to start", printing);
+
+    // Disconnect: "Keep printing" keeps it.
+    h.get_by_label("Disconnect").click();
+    settle(&mut h);
+    assert_eq!(h.state().dialog(), Some(DialogKind::ConfirmDisconnect));
+    h.get_by_label("Keep printing").click();
+    settle(&mut h);
+    assert_eq!(h.state().dialog(), None);
+    assert!(printing(h.state()) && h.state().state().is_connected());
+
+    // Reconnect from the menu asks too; confirmed, it comes back idle.
+    h.state_mut().push_action(AppAction::Reconnect);
+    settle(&mut h);
+    assert_eq!(h.state().dialog(), Some(DialogKind::ConfirmDisconnect));
+    h.get_by_role_and_label(Role::Button, "Reconnect").click();
+    expect(&mut h, "the reconnect", |app| {
+        app.state().is_connected() && !app.connection_busy() && !printing(app)
+    });
+
+    // Disconnecting without a job does not ask.
+    h.get_by_label("Disconnect").click();
+    expect(&mut h, "the connection to close", |app| {
+        !app.state().status.is_open()
+    });
+    assert_eq!(h.state().dialog(), None);
+}
+
 /// An in-memory eframe store.
 #[derive(Default)]
 struct MemoryStore(std::collections::HashMap<String, String>);
