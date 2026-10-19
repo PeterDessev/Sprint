@@ -176,7 +176,7 @@ fn load(app: &mut App, name: &str) {
 fn files_that_are_not_gcode_are_not_opened() {
     let scratch = Scratch::new("not-gcode");
     let zip = scratch.0.join("plate.3mf");
-    std::fs::write(&zip, b"PK the rest of a 3MF archive").expect("write");
+    std::fs::write(&zip, b"PK\x03\x04 the rest of a 3MF archive").expect("write");
     let mut app = app();
     app.open_file(zip);
     wait_app(&mut app, "the load", |a| a.loader.is_none());

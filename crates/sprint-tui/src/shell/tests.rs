@@ -1521,16 +1521,8 @@ fn files_that_are_not_gcode_are_not_loaded() {
     let stl = scratch.0.join("cube.stl");
     std::fs::write(
         &stl,
-        "solid cube
- facet normal 0 0 1
-  outer loop
-   vertex 0 0 0
-   vertex 1 0 0
-            vertex 0 1 0
-  endloop
- endfacet
-endsolid cube
-",
+        "solid cube\n facet normal 0 0 1\n  outer loop\n   vertex 0 0 0\n   vertex 1 0 0\n   \
+         vertex 0 1 0\n  endloop\n endfacet\nendsolid cube\n",
     )
     .expect("write");
     let (mut shell, buffer) = connected();

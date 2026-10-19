@@ -273,16 +273,8 @@ mod tests {
         let stl = dir.join("cube.stl");
         std::fs::write(
             &stl,
-            "solid cube
- facet normal 0 0 1
-  outer loop
-   vertex 0 0 0
-                vertex 1 0 0
-   vertex 0 1 0
-  endloop
- endfacet
-endsolid cube
-",
+            "solid cube\n facet normal 0 0 1\n  outer loop\n   vertex 0 0 0\n   vertex 1 0 0\n   \
+             vertex 0 1 0\n  endloop\n endfacet\nendsolid cube\n",
         )
         .expect("write");
         let err = read_file(&stl).map(|_| ()).expect_err("a model");
@@ -294,34 +286,19 @@ endsolid cube
         let job = LoadJob::spawn(stl.clone(), AnalyzeOptions::default());
         assert_eq!(wait(&job).map(|_| ()), Err(err));
         let zip = dir.join("plate.3mf");
-        std::fs::write(&zip, b"PK rest of a 3MF archive").expect("write");
+        std::fs::write(&zip, b"PK\x03\x04 rest of a 3MF archive").expect("write");
         let err = read_file(&zip).map(|_| ()).expect_err("an archive");
         assert!(err.contains("plate.3mf: This is a 3D model"), "{err}");
         let empty = dir.join("empty.gcode");
-        std::fs::write(
-            &empty, "  
-",
-        )
-        .expect("write");
+        std::fs::write(&empty, "  \n").expect("write");
         let err = read_file(&empty).map(|_| ()).expect_err("empty");
         assert!(err.ends_with("The file is empty."), "{err}");
         // Comments only is G-code (nothing to send, but nothing wrong).
         let notes = dir.join("notes.gcode");
-        std::fs::write(
-            &notes,
-            "; just a comment
-",
-        )
-        .expect("write");
+        std::fs::write(&notes, "; just a comment\n").expect("write");
         assert!(read_file(&notes).is_ok());
         assert_eq!(
-            check_content(
-                &notes,
-                &GcodeFile::from_text(
-                    "x", "G28
-"
-                )
-            ),
+            check_content(&notes, &GcodeFile::from_text("x", "G28\n")),
             Ok(())
         );
         let _ = std::fs::remove_dir_all(&dir);
