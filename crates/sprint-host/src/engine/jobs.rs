@@ -2,6 +2,7 @@
 //! pauses, progress), SD prints and SD uploads.
 
 use std::collections::VecDeque;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -354,6 +355,7 @@ impl Engine {
         }
         let bytes_total = file.byte_len() as u64;
         let mut info = JobInfo::new(JobKind::HostPrint, file.name(), file.len(), bytes_total);
+        info.path = file.path().map(Path::to_path_buf);
         info.current_line = start;
         info.bytes_done = if start >= file.len() {
             bytes_total
@@ -401,12 +403,13 @@ impl Engine {
     ) -> Result<(), HostError> {
         self.check_can_start()?;
         let name = valid_sd_name(name)?;
-        let info = JobInfo::new(
+        let mut info = JobInfo::new(
             JobKind::SdUpload,
             name.clone(),
             file.len(),
             file.byte_len() as u64,
         );
+        info.path = file.path().map(Path::to_path_buf);
         let mut job = JobRuntime::new(info, Some(file), PrintOptions::default(), now);
         job.queue_scripts(vec![format!("M28 {name}")], None);
         self.begin_job(job);

@@ -125,6 +125,11 @@ pub struct JobInfo {
     pub kind: JobKind,
     /// File name.
     pub name: String,
+    /// Host prints and uploads: the file on disk
+    /// ([`GcodeFile::path`](sprint_gcode::GcodeFile::path)), so a UI can
+    /// tell exactly which loaded file the job is; `None` for files not
+    /// loaded from disk and for SD prints.
+    pub path: Option<std::path::PathBuf>,
     /// Status.
     pub status: JobStatus,
     /// Lines in the file (0 for SD prints).
@@ -175,6 +180,7 @@ impl JobInfo {
         JobInfo {
             kind,
             name: name.into(),
+            path: None,
             status: JobStatus::Starting,
             total_lines,
             current_line: 0,

@@ -883,6 +883,7 @@ pub struct TempSample { pub t: f64 /* secs since connect */, pub hotends: Vec<(f
 pub struct JobInfo {
     pub kind: JobKind,                 // HostPrint | SdPrint | SdUpload
     pub name: String,
+    pub path: Option<std::path::PathBuf>, // GcodeFile::path of a host print or upload (match the job to the loaded file)
     pub status: JobStatus,
     pub total_lines: usize, pub current_line: usize, // last line acknowledged by the printer
     pub bytes_total: u64, pub bytes_done: u64,

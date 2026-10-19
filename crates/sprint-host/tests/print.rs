@@ -571,3 +571,27 @@ fn throughput() {
         );
     }
 }
+
+#[test]
+fn the_job_names_the_file_it_streams() {
+    let printer = connect(fast_sim(100.0), options());
+    let file = cube();
+    let path = file.path().map(|p| p.to_path_buf());
+    assert!(path.is_some());
+    printer.start_print(file, PrintOptions::default()).unwrap();
+    assert_eq!(
+        printer.with_state(|s| s.job.as_ref().unwrap().path.clone()),
+        path
+    );
+    printer.cancel();
+    wait_for(&printer, "cancelled", |s| !s.job_active());
+    // Files not loaded from disk have no path.
+    printer
+        .start_print(generated(5), PrintOptions::default())
+        .unwrap();
+    assert_eq!(
+        printer.with_state(|s| s.job.as_ref().unwrap().path.clone()),
+        None
+    );
+    wait_for(&printer, "completed", |s| !s.job_active());
+}
