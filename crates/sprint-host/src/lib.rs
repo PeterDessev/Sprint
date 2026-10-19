@@ -9,7 +9,9 @@ pub use sprint_proto;
 pub use sprint_sim;
 
 mod error;
+pub mod script;
 pub mod transport;
 
 pub use error::HostError;
+pub use script::{ScriptContext, render_script, render_script_with};
 pub use transport::{BAUD_RATES, ConnectTarget, DEFAULT_BAUD, PortInfo, list_ports};
