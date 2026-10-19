@@ -407,6 +407,31 @@ fn keyboard_jogging_needs_the_toggle_and_a_free_keyboard() {
 }
 
 #[test]
+fn keyboard_jogging_leaves_the_arrows_to_an_open_menu() {
+    let mut h = connected();
+    let p = printer(&h);
+    h.get_by_label("Keyboard jog").click();
+    h.run_ok();
+    // The context menu of the "Home" macro (the lowest "Home" on screen).
+    h.get_all_by_label("Home")
+        .max_by(|a, b| a.rect().min.y.total_cmp(&b.rect().min.y))
+        .expect("the Home macro")
+        .click_secondary();
+    h.run_ok();
+    assert!(egui::Popup::is_any_open(&h.ctx), "the menu opened");
+    h.key_press(egui::Key::ArrowDown);
+    h.run_ok();
+    assert_nothing_sent(&mut h, "arrows in an open menu");
+    // Closed again, the arrows jog.
+    h.key_press(egui::Key::Escape);
+    h.run_ok();
+    assert!(!egui::Popup::is_any_open(&h.ctx), "the menu closed");
+    h.key_press(egui::Key::ArrowDown);
+    h.run_ok();
+    wait_for_commands(&p, &["G91", "G1 Y-1 F3000", "G90"]);
+}
+
+#[test]
 fn keyboard_jogging_pauses_while_the_motion_card_is_collapsed() {
     let mut h = connected();
     let p = printer(&h);

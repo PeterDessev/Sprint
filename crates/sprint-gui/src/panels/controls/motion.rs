@@ -372,8 +372,8 @@ impl Motion {
                 ui.add(Toggle::new(&mut self.keyboard).label("Keyboard jog"))
                     .on_hover_text(
                         "Jog with the keyboard: arrows move X/Y, Page Up/Down move Z, \
-                         Shift moves ten times as far. Ignored while typing in a field \
-                         and while this card is collapsed.",
+                         Shift moves ten times as far. Ignored while typing in a field, \
+                         while a menu or dialog is open and while this card is collapsed.",
                     );
             },
             |ui| {
@@ -394,10 +394,12 @@ impl Motion {
 }
 
 /// Keys may be taken: no widget (text field, slider, ...) has keyboard
-/// focus and no modal dialog is open.
+/// focus and no modal dialog, menu or drop-down is open (their arrow keys
+/// navigate, they must not move the machine).
 fn keyboard_free(ui: &Ui) -> bool {
-    ui.ctx()
-        .memory(|m| m.focused().is_none() && m.top_modal_layer().is_none())
+    let ctx = ui.ctx();
+    ctx.memory(|m| m.focused().is_none() && m.top_modal_layer().is_none())
+        && !egui::Popup::is_any_open(ctx)
 }
 
 /// Axis readout: four cells with the axis letter and its position.
