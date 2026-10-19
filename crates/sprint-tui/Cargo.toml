@@ -17,6 +17,8 @@ crossbeam-channel.workspace = true
 anyhow.workspace = true
 log.workspace = true
 unicode-width = "0.2"
+# The line shell: editing, history and printing above the prompt.
+rustyline = { version = "19.0.0", default-features = false, features = ["with-file-history"] }
 # Ctrl+C as a request (see src/interrupt.rs).
 ctrlc = "3.5"
 

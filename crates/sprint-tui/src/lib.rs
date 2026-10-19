@@ -4,6 +4,8 @@
 //! * [`run_tui`]: the full-screen terminal UI (temperatures, position,
 //!   job, a Braille layer view following the print, the console and a
 //!   G-code line), driven by function keys and a command palette;
+//! * [`run_shell`]: the pronsole-style line shell (history, completion,
+//!   printer output above the prompt, scripts from standard input);
 //! * [`theme`]: the Sprint palette for true-color, 256-color, 16-color and
 //!   colorless (`NO_COLOR`) terminals;
 //! * [`widgets`]: ratatui widgets for the layer view, temperatures, job
@@ -40,6 +42,7 @@ pub mod loader;
 pub mod paths;
 pub mod report;
 pub mod session;
+mod shell;
 #[cfg(test)]
 mod snapshot;
 pub mod theme;
@@ -50,6 +53,7 @@ use std::path::PathBuf;
 use sprint_host::ConnectTarget;
 
 pub use app::terminal::run_tui;
+pub use shell::run_shell;
 pub use theme::{ColorSupport, Theme};
 pub use widgets::*;
 

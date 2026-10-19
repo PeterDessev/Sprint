@@ -4002,6 +4002,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
+name = "rustyline"
+version = "19.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "56e1d6bd81c2d5feafd2419138df9183c45a10a492c4e873b8b0acb8eb2b549e"
+dependencies = [
+ "bitflags 2.13.2",
+ "clipboard-win",
+ "libc",
+ "log",
+ "memchr",
+ "nix 0.31.3",
+ "unicode-segmentation",
+ "unicode-width",
+ "utf8parse",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "ryu"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4430,6 +4448,7 @@ dependencies = [
  "image",
  "log",
  "ratatui",
+ "rustyline",
  "skrifa",
  "sprint-gcode",
  "sprint-host",
