@@ -1,13 +1,31 @@
 //! Serial port links and baud rate auto-detection.
 //!
 //! **The functions that open ports talk to real hardware and are never run
-//! by the test suite.** Auto-detection is generic over a link factory so
-//! its logic is tested with in-memory fakes.
+//! by the test suite.** The port I/O loop and auto-detection are generic
+//! over the port and the link factory, so their logic is tested with
+//! in-memory fakes.
+//!
+//! # One thread per port
+//!
+//! A port is driven by a single I/O thread that both writes and reads; the
+//! reader and writer halves of the [`Link`] talk to it through channels.
+//! Two threads sharing the port (a reader on a `try_clone` and the engine
+//! writing) do not work on Windows: serialport opens ports for synchronous
+//! I/O, and Windows serialises synchronous I/O on a handle and on handles
+//! cloned from it, so a read waiting for data holds back every write until
+//! its timeout. In ping-pong the printer waits for the next command while
+//! the reader waits for the printer, so every command would be delayed by
+//! the read timeout. The I/O thread writes what is queued between reads,
+//! and when data arrives it waits a moment for the engine's answer (usually
+//! the next command) before it reads again.
 
 use std::io::{self, Read, Write};
-use std::thread;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use serialport::{ClearBuffer, DataBits, FlowControl, Parity, SerialPort, StopBits};
 
 use super::link::{Link, LinkControl, READ_TIMEOUT, is_no_data};
@@ -19,66 +37,233 @@ pub(crate) const AUTO_BAUD_WAIT: Duration = Duration::from_millis(2500);
 const DTR_PULSE: Duration = Duration::from_millis(100);
 /// The probe sent at each baud rate.
 const PROBE: &[u8] = b"M110 N0\nM105\n";
-/// How long a write may keep timing out (the port timeout also applies to
+/// How long a write may make no progress (the port timeout also applies to
 /// writes) before the link counts as broken.
 const WRITE_PATIENCE: Duration = Duration::from_secs(5);
+/// The port's read timeout: the longest a write queued while the I/O
+/// thread waits for data is held back.
+const PORT_TIMEOUT: Duration = Duration::from_millis(20);
+/// After data arrived, how long the I/O thread waits for the engine's
+/// answer before it reads again.
+const ANSWER_WAIT: Duration = Duration::from_millis(5);
+/// How long dropping a link waits for its I/O thread to close the port
+/// (so it can be opened again at once, e.g. at the next baud rate).
+const CLOSE_WAIT: Duration = Duration::from_secs(1);
 
-/// Open `port` at `baud`, 8N1, no flow control, ~100 ms read timeout;
-/// optionally pulse DTR to reset the board.
+/// Open `port` at `baud`, 8N1, no flow control; optionally pulse DTR to
+/// reset the board. The port is then driven by its own I/O thread.
 pub(crate) fn open(port: &str, baud: u32, reset: bool) -> Result<Link, HostError> {
-    let mut writer = serialport::new(port, baud)
+    let mut port = serialport::new(port, baud)
         .data_bits(DataBits::Eight)
         .parity(Parity::None)
         .stop_bits(StopBits::One)
         .flow_control(FlowControl::None)
-        .timeout(READ_TIMEOUT)
+        .timeout(PORT_TIMEOUT)
         .open()?;
     if reset {
-        pulse_dtr(writer.as_mut())?;
+        pulse_dtr(port.as_mut())?;
     }
     // Drop whatever a previous session left in the buffers.
-    let _ = writer.clear(ClearBuffer::All);
-    let reader = writer.try_clone()?;
+    let _ = port.clear(ClearBuffer::All);
+    spawn_io(port, PORT_TIMEOUT, WRITE_PATIENCE)
+}
+
+/// Bytes read from the port (empty: end of input), or the error that
+/// ended the I/O thread.
+type Chunk = io::Result<Vec<u8>>;
+
+/// Start the I/O thread for `port` (whose reads return within about
+/// `port_timeout` when no data arrives) and return a link to it.
+pub(crate) fn spawn_io<P>(
+    port: P,
+    port_timeout: Duration,
+    patience: Duration,
+) -> Result<Link, HostError>
+where
+    P: Read + Write + Send + 'static,
+{
+    let (to_port, outgoing) = crossbeam_channel::unbounded::<Vec<u8>>();
+    let (incoming, from_port) = crossbeam_channel::unbounded::<Chunk>();
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread_stop = Arc::clone(&stop);
+    let thread = thread::Builder::new()
+        .name("sprint-host-serial".to_string())
+        .spawn(move || io_loop(port, &outgoing, &incoming, &thread_stop, patience))?;
     Ok(Link {
-        reader: Box::new(reader),
-        writer: Box::new(RetryWriter::new(writer, WRITE_PATIENCE)),
-        control: LinkControl::None,
+        reader: Box::new(PortReader {
+            rx: from_port,
+            pending: Vec::new(),
+            offset: 0,
+            stop: Arc::clone(&stop),
+            thread: Some(thread),
+            close_wait: CLOSE_WAIT.max(port_timeout.saturating_mul(4)),
+        }),
+        writer: Box::new(PortWriter { tx: to_port }),
+        control: LinkControl::Serial(stop),
     })
 }
 
-/// A writer that retries writes that time out (a serial port's timeout
-/// also applies to writes, and a large batch at a low baud rate can take
-/// longer than it) until `patience` has passed without progress.
-pub(crate) struct RetryWriter<W> {
-    inner: W,
+/// The I/O thread: write what is queued, read what arrives, until told to
+/// stop, the reader half is gone or the port fails.
+fn io_loop<P: Read + Write>(
+    mut port: P,
+    outgoing: &Receiver<Vec<u8>>,
+    incoming: &Sender<Chunk>,
+    stop: &AtomicBool,
     patience: Duration,
-}
-
-impl<W: Write> RetryWriter<W> {
-    pub(crate) fn new(inner: W, patience: Duration) -> RetryWriter<W> {
-        RetryWriter { inner, patience }
+) {
+    let mut buf = [0u8; 4096];
+    loop {
+        // Checked before writing: what was queued before the link was
+        // closed (an M112 right before disconnecting) still goes out.
+        let stopping = stop.load(Ordering::Acquire);
+        while let Ok(bytes) = outgoing.try_recv() {
+            if let Err(e) = write_patiently(&mut port, &bytes, patience) {
+                let _ = incoming.send(Err(e));
+                return;
+            }
+        }
+        if stopping {
+            return;
+        }
+        match port.read(&mut buf) {
+            Ok(0) => {
+                let _ = incoming.send(Ok(Vec::new()));
+                return;
+            }
+            Ok(n) => {
+                if incoming.send(Ok(buf[..n].to_vec())).is_err() {
+                    return;
+                }
+                // The engine usually answers at once (the next command):
+                // write it now rather than after another read.
+                if let Ok(bytes) = outgoing.recv_timeout(ANSWER_WAIT)
+                    && let Err(e) = write_patiently(&mut port, &bytes, patience)
+                {
+                    let _ = incoming.send(Err(e));
+                    return;
+                }
+            }
+            Err(e) if is_no_data(&e) => {}
+            Err(e) => {
+                let _ = incoming.send(Err(e));
+                return;
+            }
+        }
     }
 }
 
-impl<W: Write> Write for RetryWriter<W> {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let start = Instant::now();
-        loop {
-            match self.inner.write(buf) {
-                Err(e) if is_no_data(&e) && start.elapsed() < self.patience => {}
-                other => return other,
+/// Write all of `data`, retrying writes that time out until `patience`
+/// passes without progress. A serial port's timeout also applies to
+/// writes; on Windows a write that timed out returns `Ok(0)` (or a short
+/// count) rather than an error.
+pub(crate) fn write_patiently(
+    port: &mut impl Write,
+    mut data: &[u8],
+    patience: Duration,
+) -> io::Result<()> {
+    let mut progress = Instant::now();
+    while !data.is_empty() {
+        match port.write(data) {
+            Ok(n) if n > 0 => {
+                data = &data[n.min(data.len())..];
+                progress = Instant::now();
+                continue;
+            }
+            Ok(_) => {}
+            Err(e) if is_no_data(&e) => {}
+            Err(e) => return Err(e),
+        }
+        if progress.elapsed() >= patience {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!(
+                    "the serial port accepted no data for {} s",
+                    patience.as_secs_f32()
+                ),
+            ));
+        }
+        // Not a hot loop if a port reports no progress without waiting.
+        thread::sleep(Duration::from_millis(1));
+    }
+    Ok(())
+}
+
+/// The reader half of a serial link. Dropping it stops the I/O thread and
+/// waits (briefly) until the port is closed.
+struct PortReader {
+    rx: Receiver<Chunk>,
+    pending: Vec<u8>,
+    offset: usize,
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+    close_wait: Duration,
+}
+
+impl Read for PortReader {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        if out.is_empty() {
+            return Ok(0);
+        }
+        if self.offset >= self.pending.len() {
+            match self.rx.recv_timeout(READ_TIMEOUT) {
+                Ok(Ok(bytes)) if bytes.is_empty() => return Ok(0),
+                Ok(Ok(bytes)) => {
+                    self.pending = bytes;
+                    self.offset = 0;
+                }
+                Ok(Err(e)) => return Err(e),
+                Err(RecvTimeoutError::Timeout) => {
+                    return Err(io::Error::new(io::ErrorKind::TimedOut, "no data"));
+                }
+                Err(RecvTimeoutError::Disconnected) => return Ok(0),
             }
         }
+        let available = &self.pending[self.offset..];
+        let n = out.len().min(available.len());
+        out[..n].copy_from_slice(&available[..n]);
+        self.offset += n;
+        Ok(n)
+    }
+}
+
+impl Drop for PortReader {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        let Some(thread) = self.thread.take() else {
+            return;
+        };
+        let deadline = Instant::now() + self.close_wait;
+        while !thread.is_finished() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(1));
+        }
+        if thread.is_finished() {
+            let _ = thread.join();
+        } else {
+            log::warn!("the serial I/O thread did not stop in time; detaching it");
+        }
+    }
+}
+
+/// The writer half of a serial link: queues bytes for the I/O thread.
+/// Write failures end the link through the reader half.
+struct PortWriter {
+    tx: Sender<Vec<u8>>,
+}
+
+impl Write for PortWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        self.tx
+            .send(buf.to_vec())
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "the serial port is closed"))?;
+        Ok(buf.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        let start = Instant::now();
-        loop {
-            match self.inner.flush() {
-                Err(e) if is_no_data(&e) && start.elapsed() < self.patience => {}
-                other => return other,
-            }
-        }
+        Ok(())
     }
 }
 
@@ -328,11 +513,25 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// Times out `timeouts` times, then accepts everything.
+    /// A writer that stalls: `timeouts` TimedOut errors, then `zeros`
+    /// writes of nothing (Windows' timed-out WriteFile), then one byte per
+    /// write.
     struct Slow {
         timeouts: usize,
+        zeros: usize,
         written: Vec<u8>,
         fail_with: Option<io::ErrorKind>,
+    }
+
+    impl Slow {
+        fn new(timeouts: usize, zeros: usize) -> Slow {
+            Slow {
+                timeouts,
+                zeros,
+                written: Vec::new(),
+                fail_with: None,
+            }
+        }
     }
 
     impl Write for Slow {
@@ -344,8 +543,12 @@ mod tests {
                 self.timeouts -= 1;
                 return Err(io::Error::new(io::ErrorKind::TimedOut, "busy"));
             }
-            self.written.extend_from_slice(buf);
-            Ok(buf.len())
+            if self.zeros > 0 {
+                self.zeros -= 1;
+                return Ok(0);
+            }
+            self.written.extend_from_slice(&buf[..1]);
+            Ok(1)
         }
         fn flush(&mut self) -> io::Result<()> {
             Ok(())
@@ -353,39 +556,275 @@ mod tests {
     }
 
     #[test]
-    fn write_timeouts_are_retried() {
-        let mut w = RetryWriter::new(
-            Slow {
-                timeouts: 3,
-                written: Vec::new(),
-                fail_with: None,
-            },
-            Duration::from_secs(5),
-        );
-        w.write_all(b"N1 G28*18\n").unwrap();
-        w.flush().unwrap();
-        assert_eq!(w.inner.written, b"N1 G28*18\n");
+    fn stalled_and_short_writes_are_retried() {
+        let mut w = Slow::new(3, 4);
+        write_patiently(&mut w, b"N1 G28*18\n", Duration::from_secs(5)).unwrap();
+        assert_eq!(w.written, b"N1 G28*18\n");
     }
 
     #[test]
-    fn real_errors_and_endless_timeouts_fail() {
-        let mut w = RetryWriter::new(
-            Slow {
-                timeouts: 0,
-                written: Vec::new(),
-                fail_with: Some(io::ErrorKind::BrokenPipe),
-            },
-            Duration::from_secs(5),
+    fn real_errors_and_endless_stalls_fail() {
+        let mut w = Slow::new(0, 0);
+        w.fail_with = Some(io::ErrorKind::BrokenPipe);
+        let e = write_patiently(&mut w, b"x", Duration::from_secs(5)).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::BrokenPipe);
+        for mut w in [Slow::new(usize::MAX, 0), Slow::new(0, usize::MAX)] {
+            let e = write_patiently(&mut w, b"x", Duration::from_millis(20)).unwrap_err();
+            assert_eq!(e.kind(), io::ErrorKind::TimedOut);
+        }
+    }
+
+    /// State shared by a [`SyncPort`] and the test.
+    #[derive(Default)]
+    struct PortState {
+        /// Bytes for the host.
+        to_host: Vec<u8>,
+        /// Partial line from the host.
+        line: Vec<u8>,
+        /// Complete lines from the host.
+        lines: Vec<String>,
+        /// Answer "ok" to every line.
+        answer: bool,
+        /// Fail reads with this error.
+        fail: Option<io::ErrorKind>,
+        /// Ports currently open (the port is exclusive, as on Windows).
+        open: usize,
+    }
+
+    /// A fake serial port with the semantics of a synchronous Windows
+    /// handle: one lock covers reads and writes, and a read without data
+    /// holds it until its timeout.
+    struct SyncPort {
+        state: Arc<(Mutex<PortState>, std::sync::Condvar)>,
+        io: Arc<Mutex<()>>,
+        timeout: Duration,
+    }
+
+    impl SyncPort {
+        fn new(state: &Arc<(Mutex<PortState>, std::sync::Condvar)>, timeout: Duration) -> SyncPort {
+            let mut s = state.0.lock().unwrap();
+            assert_eq!(s.open, 0, "the port is still open elsewhere");
+            s.open += 1;
+            drop(s);
+            SyncPort {
+                state: Arc::clone(state),
+                io: Arc::new(Mutex::new(())),
+                timeout,
+            }
+        }
+    }
+
+    impl Drop for SyncPort {
+        fn drop(&mut self) {
+            self.state.0.lock().unwrap().open -= 1;
+        }
+    }
+
+    impl Read for SyncPort {
+        fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+            let _io = self.io.lock().unwrap();
+            let (lock, data) = &*self.state;
+            let deadline = Instant::now() + self.timeout;
+            let mut s = lock.lock().unwrap();
+            loop {
+                if let Some(kind) = s.fail {
+                    return Err(io::Error::new(kind, "device removed"));
+                }
+                if !s.to_host.is_empty() {
+                    let n = out.len().min(s.to_host.len());
+                    out[..n].copy_from_slice(&s.to_host[..n]);
+                    s.to_host.drain(..n);
+                    return Ok(n);
+                }
+                let now = Instant::now();
+                if now >= deadline {
+                    return Err(io::Error::new(io::ErrorKind::TimedOut, "no data"));
+                }
+                s = data.wait_timeout(s, deadline - now).unwrap().0;
+            }
+        }
+    }
+
+    impl Write for SyncPort {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            let _io = self.io.lock().unwrap();
+            let (lock, data) = &*self.state;
+            let mut s = lock.lock().unwrap();
+            for &b in buf {
+                if b == b'\n' {
+                    let line = String::from_utf8_lossy(&std::mem::take(&mut s.line)).into_owned();
+                    s.lines.push(line);
+                    if s.answer {
+                        s.to_host.extend_from_slice(b"ok\n");
+                    }
+                } else {
+                    s.line.push(b);
+                }
+            }
+            data.notify_all();
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn port_state(answer: bool) -> Arc<(Mutex<PortState>, std::sync::Condvar)> {
+        Arc::new((
+            Mutex::new(PortState {
+                answer,
+                ..PortState::default()
+            }),
+            std::sync::Condvar::new(),
+        ))
+    }
+
+    /// Read from a link until `want` arrived.
+    fn read_until(link: &mut Link, want: &[u8], patience: Duration) -> Vec<u8> {
+        let deadline = Instant::now() + patience;
+        let mut got = Vec::new();
+        let mut buf = [0u8; 64];
+        while !got.ends_with(want) {
+            assert!(Instant::now() < deadline, "no {want:?}, got {got:?}");
+            match link.reader.read(&mut buf) {
+                Ok(0) => panic!("the link closed"),
+                Ok(n) => got.extend_from_slice(&buf[..n]),
+                Err(e) => assert!(is_no_data(&e), "{e}"),
+            }
+        }
+        got
+    }
+
+    #[test]
+    fn ping_pong_is_not_held_back_by_reads() {
+        // Every read without data blocks the port for 50 ms. With a
+        // reader thread and a writer sharing the port, each command would
+        // wait for that; the I/O thread answers within its answer window.
+        let state = port_state(true);
+        let timeout = Duration::from_millis(50);
+        let mut link = spawn_io(SyncPort::new(&state, timeout), timeout, WRITE_PATIENCE).unwrap();
+        let start = Instant::now();
+        let rounds = 100u32;
+        for i in 0..rounds {
+            link.writer
+                .write_all(format!("N{i} G1 X1\n").as_bytes())
+                .unwrap();
+            link.writer.flush().unwrap();
+            read_until(&mut link, b"ok\n", Duration::from_secs(5));
+        }
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < timeout * rounds / 4,
+            "{rounds} round trips took {elapsed:?}"
         );
-        assert_eq!(w.write(b"x").unwrap_err().kind(), io::ErrorKind::BrokenPipe);
-        let mut w = RetryWriter::new(
-            Slow {
-                timeouts: usize::MAX,
-                written: Vec::new(),
-                fail_with: None,
-            },
-            Duration::from_millis(20),
+        let lines = state.0.lock().unwrap().lines.clone();
+        assert_eq!(lines.len(), 100);
+        assert_eq!(lines[99], "N99 G1 X1");
+    }
+
+    #[test]
+    fn port_errors_end_the_link_and_closing_releases_the_port() {
+        let state = port_state(false);
+        let timeout = Duration::from_millis(10);
+        let mut link = spawn_io(SyncPort::new(&state, timeout), timeout, WRITE_PATIENCE).unwrap();
+        state
+            .0
+            .lock()
+            .unwrap()
+            .to_host
+            .extend_from_slice(b"start\n");
+        read_until(&mut link, b"start\n", Duration::from_secs(5));
+        // The device goes away: the error reaches the reader, then the
+        // link reads as closed and writes fail.
+        state.0.lock().unwrap().fail = Some(io::ErrorKind::PermissionDenied);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut buf = [0u8; 16];
+        let error = loop {
+            assert!(Instant::now() < deadline, "the error never arrived");
+            match link.reader.read(&mut buf) {
+                Err(e) if is_no_data(&e) => {}
+                other => break other,
+            }
+        };
+        assert_eq!(error.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+        loop {
+            assert!(Instant::now() < deadline, "the link did not close");
+            match link.reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(_) => panic!("data after the error"),
+                Err(e) => assert!(is_no_data(&e), "{e}"),
+            }
+        }
+        assert_eq!(
+            state.0.lock().unwrap().open,
+            0,
+            "the thread closed the port"
         );
-        assert_eq!(w.write(b"x").unwrap_err().kind(), io::ErrorKind::TimedOut);
+        assert_eq!(
+            link.writer.write(b"M105\n").unwrap_err().kind(),
+            io::ErrorKind::BrokenPipe
+        );
+
+        // A healthy link: closing it through the handle stops the thread;
+        // dropping it releases the port at once, so it can be reopened.
+        let state = port_state(true);
+        let link = spawn_io(SyncPort::new(&state, timeout), timeout, WRITE_PATIENCE).unwrap();
+        let (mut reader, _writer, handle) = link.split();
+        handle.close();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            assert!(Instant::now() < deadline, "the link did not close");
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(_) => {}
+                Err(e) => assert!(is_no_data(&e), "{e}"),
+            }
+        }
+        drop(reader);
+        assert_eq!(state.0.lock().unwrap().open, 0);
+        let again = spawn_io(SyncPort::new(&state, timeout), timeout, WRITE_PATIENCE).unwrap();
+        drop(again);
+        assert_eq!(state.0.lock().unwrap().open, 0);
+    }
+
+    #[test]
+    fn what_was_written_before_closing_still_goes_out() {
+        let state = port_state(false);
+        let timeout = Duration::from_millis(30);
+        let link = spawn_io(SyncPort::new(&state, timeout), timeout, WRITE_PATIENCE).unwrap();
+        let (reader, mut writer, handle) = link.split();
+        // Emergency stop, then disconnect at once.
+        writer.write_all(b"M112\n").unwrap();
+        handle.close();
+        drop(reader);
+        assert_eq!(state.0.lock().unwrap().lines, ["M112"]);
+        assert_eq!(state.0.lock().unwrap().open, 0);
+    }
+
+    #[test]
+    fn auto_baud_releases_each_port_before_the_next_rate() {
+        // Like a Windows COM port, the fake can be open only once: the
+        // link of a rate that did not answer must be closed before the
+        // next rate opens the port again.
+        let state = port_state(false);
+        let timeout = Duration::from_millis(10);
+        let mut opened = Vec::new();
+        let result = detect_baud(
+            &[250_000, 115_200, 57_600],
+            |baud| {
+                opened.push(baud);
+                state.0.lock().unwrap().answer = baud == 115_200;
+                spawn_io(SyncPort::new(&state, timeout), timeout, WRITE_PATIENCE)
+            },
+            Duration::from_millis(150),
+            &mut |_| {},
+        );
+        let (baud, link) = result.unwrap();
+        assert_eq!(baud, 115_200);
+        assert_eq!(opened, [250_000, 115_200]);
+        let lines = state.0.lock().unwrap().lines.clone();
+        assert_eq!(lines, ["M110 N0", "M105", "M110 N0", "M105"]);
+        drop(link);
+        assert_eq!(state.0.lock().unwrap().open, 0);
     }
 }

@@ -2,6 +2,8 @@
 
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpStream};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use sprint_sim::{SimConfig, SimControl};
@@ -37,6 +39,9 @@ pub(crate) enum LinkControl {
     Sim(SimControl),
     /// A TCP socket: shut it down on close so blocked reads return.
     Tcp(TcpStream),
+    /// A serial port driven by an I/O thread: tell the thread to stop (it
+    /// closes the port).
+    Serial(Arc<AtomicBool>),
 }
 
 impl Link {
@@ -131,8 +136,8 @@ pub struct LinkHandle {
 
 impl LinkHandle {
     /// Close the link so a blocked reader sees the end of input soon (shuts
-    /// a simulator or TCP socket down; serial ports close when both halves
-    /// are dropped).
+    /// a simulator or TCP socket down, stops a serial port's I/O thread,
+    /// which closes the port).
     pub fn close(&self) {
         match &self.control {
             LinkControl::None => {}
@@ -140,6 +145,7 @@ impl LinkHandle {
             LinkControl::Tcp(s) => {
                 let _ = s.shutdown(Shutdown::Both);
             }
+            LinkControl::Serial(stop) => stop.store(true, Ordering::Release),
         }
     }
 

@@ -1028,8 +1028,14 @@ Every public item is also re-exported at the crate root.
   `LinkHandle::{close, sim_control}`, `READ_TIMEOUT` (100 ms),
   `is_no_data(&io::Error)`, `PRINTER_USB_VENDORS`, `is_printer_vendor`.
   Auto-baud probes each rate with `M110 N0` + `M105` for 2.5 s and stops at
-  the first open error. Serial writes that hit the port timeout are retried
-  for up to 5 s before the link counts as lost.
+  the first open error. A serial port is driven by one I/O thread that both
+  reads and writes (not a reader on `try_clone`): Windows serialises
+  synchronous I/O on a handle and its clones, so a read waiting for data
+  would hold every write back for the read timeout. After data arrives the
+  thread waits up to 5 ms for the engine's answer before reading again
+  (20 ms port timeout). Writes that make no progress (on Windows a
+  timed-out write returns `Ok(0)`) are retried for up to 5 s before the
+  link counts as lost; what was written before a close still goes out.
 * `config`: `ConnectOptions` is `#[serde(default)]`; `sanitized()` clamps
   every value (`max_in_flight` 1..=32, `MAX_IN_FLIGHT_LIMIT`).
   `AppConfig::load_or_default(path)` (what `load()` uses: a corrupt file is
