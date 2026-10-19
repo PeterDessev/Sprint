@@ -22,7 +22,7 @@ use crate::context::AppCtx;
 use crate::prefs::{ConsolePrefs, HISTORY_LEN};
 use crate::theme::{self, Palette, TextRole};
 use crate::widgets::{Chip, ConfirmDialog, DialogResult, IconButton};
-use crate::{format, icons};
+use crate::{format, icons, native_dialog};
 
 /// Commands offered as one-click chips.
 pub const QUICK_COMMANDS: &[&str] = &["M105", "M114", "M115", "M503", "M119", "G28"];
@@ -459,7 +459,7 @@ impl ConsolePanel {
                     )
                     .clicked()
                 {
-                    self.start_export();
+                    self.start_export(ui.ctx());
                 }
                 if ui
                     .add_enabled(
@@ -825,28 +825,16 @@ impl ConsolePanel {
         text
     }
 
-    fn start_export(&mut self) {
+    fn start_export(&mut self, repaint: &egui::Context) {
         let text = self.export_text();
-        let (tx, rx) = crossbeam_channel::bounded(1);
-        let spawned = std::thread::Builder::new()
-            .name("sprint-gui-export".to_owned())
-            .spawn(move || {
-                let picked = rfd::FileDialog::new()
-                    .set_title("Export console")
-                    .set_file_name("sprint-console.txt")
-                    .add_filter("Text", &["txt", "log"])
-                    .save_file();
-                let result = match picked {
-                    Some(path) => std::fs::write(&path, text)
-                        .map(|()| Some(path))
-                        .map_err(|e| e.to_string()),
-                    None => Ok(None),
-                };
-                let _ = tx.send(result);
-            });
-        if spawned.is_ok() {
-            self.export = Some(rx);
-        }
+        self.export = Some(native_dialog::spawn(Some(repaint.clone()), move || {
+            match native_dialog::save_text_file("Export console", "sprint-console.txt") {
+                Some(path) => std::fs::write(&path, text)
+                    .map(|()| Some(path))
+                    .map_err(|e| e.to_string()),
+                None => Ok(None),
+            }
+        }));
     }
 
     fn poll_export(&mut self, ctx: &mut AppCtx<'_>) {

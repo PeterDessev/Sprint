@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 
 pub mod app_icon;
+pub mod config_store;
 pub mod connection;
 pub mod context;
 pub mod dialogs;
@@ -11,6 +12,7 @@ pub mod fonts;
 pub mod format;
 pub mod icons;
 pub mod loader;
+pub mod native_dialog;
 pub mod notify;
 pub mod panels;
 pub mod prefs;
