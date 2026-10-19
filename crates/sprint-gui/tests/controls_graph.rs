@@ -229,6 +229,37 @@ fn power_plot_can_be_hidden() {
     assert!(h.query_by_label("Heater power").is_none());
 }
 
+/// Firmware that reports no heater power (no `@:` in its reports): the host
+/// records 0 for its hotends, which must not be drawn or read out as "0%"
+/// while the heater is in fact heating.
+#[test]
+fn unreported_power_is_not_shown_as_zero() {
+    let mut state = graph_state(false, false);
+    for s in &mut state.temp_history {
+        s.hotend_power = vec![0.0; s.hotends.len()];
+        s.bed_power = None;
+    }
+    for h in &mut state.temps.hotends {
+        h.power = None;
+    }
+    if let Some(bed) = &mut state.temps.bed {
+        bed.power = None;
+    }
+    let mut h = graph(Theme::Dark, (1000.0, 760.0), Rig::synthetic(state.clone()));
+    settle(&mut h);
+    assert!(h.query_by_label("Heater power").is_none(), "no power plot");
+    assert!(h.query_by_label("Power").is_none(), "no power toggle");
+    hover(&mut h, egui::pos2(500.0, 250.0));
+    assert!(h.query_by_label("→ 215").is_some(), "the readout is shown");
+    assert!(h.query_by_label("0%").is_none(), "no made-up power");
+
+    // A heater that reports power keeps its plot, even while it is off.
+    state.temps.hotends[0].power = Some(0.0);
+    let mut h = graph(Theme::Dark, (1000.0, 760.0), Rig::synthetic(state));
+    settle(&mut h);
+    assert!(h.query_by_label("Heater power").is_some());
+}
+
 #[test]
 fn empty_states_explain_what_is_missing() {
     let mut h = graph(Theme::Dark, (800.0, 480.0), Rig::offline());

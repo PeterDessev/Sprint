@@ -20,7 +20,7 @@ use egui_plot::{
     AxisHints, ColorConflictHandling, Corner, Legend, Line, LineStyle, Plot, PlotPoints,
     PlotResponse, uniform_grid_spacer,
 };
-use sprint_host::TempSample;
+use sprint_host::{PrinterState, TempSample};
 
 use crate::context::AppCtx;
 use crate::icons;
@@ -105,6 +105,8 @@ struct Series {
     channel: Channel,
     name: String,
     color: Color32,
+    /// The firmware reports this heater's power (`points` carry it).
+    powered: bool,
     points: Vec<Point>,
 }
 
@@ -118,6 +120,17 @@ fn channel_color(p: &Palette, channel: Channel) -> Color32 {
         Channel::Bed => p.bed,
         Channel::Chamber => p.chamber,
     }
+}
+
+/// Whether the latest temperature report carries `channel`'s power (it
+/// keeps the last value of every heater, also after disconnecting).
+fn reports_power(state: &PrinterState, channel: Channel) -> bool {
+    let reading = match channel {
+        Channel::Hotend(i) => state.temps.hotends.get(i),
+        Channel::Bed => state.temps.bed.as_ref(),
+        Channel::Chamber => state.temps.chamber.as_ref(),
+    };
+    reading.is_some_and(|r| r.power.is_some())
 }
 
 /// A value-axis label: "50°", "52.5°".
@@ -152,13 +165,30 @@ impl TemperatureGraphTab {
             .iter()
             .filter(|c| matches!(c, Channel::Hotend(_)))
             .count();
+        // Heaters whose firmware reports their power: for the others the
+        // history holds placeholder zeros.
+        let powered: Vec<Channel> = channels
+            .iter()
+            .copied()
+            .filter(|&c| data::power_reported(history, c, reports_power(ctx.state, c)))
+            .collect();
         let series: Vec<Series> = channels
             .iter()
-            .map(|&channel| Series {
-                channel,
-                name: channel.name(hotends),
-                color: channel_color(&p, channel),
-                points: data::points(history, channel),
+            .map(|&channel| {
+                let powered = powered.contains(&channel);
+                let mut points = data::points(history, channel);
+                if !powered {
+                    for pt in &mut points {
+                        pt.power = None;
+                    }
+                }
+                Series {
+                    channel,
+                    name: channel.name(hotends),
+                    color: channel_color(&p, channel),
+                    powered,
+                    points,
+                }
             })
             .collect();
         let first = history.first().map_or(0.0, |s| s.t);
@@ -174,7 +204,7 @@ impl TemperatureGraphTab {
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = theme::GAP;
                 let top = ui.cursor().top();
-                self.toolbar(ui, history, connected, has_power, last - first);
+                self.toolbar(ui, history, &powered, connected, has_power, last - first);
                 let toolbar_height = ui.cursor().top() - top;
                 let show_power = self.show_power && has_power;
                 let stats_height = 92.0 + 31.0 * series.len() as f32;
@@ -228,6 +258,7 @@ impl TemperatureGraphTab {
         &mut self,
         ui: &mut Ui,
         history: &[&TempSample],
+        powered: &[Channel],
         connected: bool,
         has_power: bool,
         span: f64,
@@ -236,7 +267,7 @@ impl TemperatureGraphTab {
             ui.horizontal(|ui| {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 8.0;
-                    self.export_button(ui, history);
+                    self.export_button(ui, history, powered);
                     // Right to left: the controls appear in reverse.
                     self.power_toggle(ui, has_power);
                     self.follow_button(ui);
@@ -250,7 +281,7 @@ impl TemperatureGraphTab {
             ui.horizontal(|ui| {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 8.0;
-                    self.export_button(ui, history);
+                    self.export_button(ui, history, powered);
                     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                         title(ui, connected, span);
                     });
@@ -266,7 +297,7 @@ impl TemperatureGraphTab {
     }
 
     /// "Export CSV" (or the running export).
-    fn export_button(&mut self, ui: &mut Ui, history: &[&TempSample]) {
+    fn export_button(&mut self, ui: &mut Ui, history: &[&TempSample], powered: &[Channel]) {
         let exporting = self.export.is_some();
         let export = ui.add_enabled(
             !exporting,
@@ -281,7 +312,7 @@ impl TemperatureGraphTab {
         if export.clicked() {
             self.export = Some(Export::start(
                 ui.ctx(),
-                data::history_csv(history),
+                data::history_csv(history, powered),
                 CSV_NAME.to_owned(),
             ));
         }
@@ -598,7 +629,7 @@ fn hover_readout(ui: &Ui, history: &[&TempSample], series: &[Series], hover: Hov
                         "off".to_owned()
                     };
                     ui.label(RichText::new(target).color(p.text_dim));
-                    match s.channel.power(sample) {
+                    match s.channel.power(sample).filter(|_| s.powered) {
                         Some(power) => ui.label(
                             RichText::new(format!("{:.0}%", power.clamp(0.0, 1.0) * 100.0))
                                 .color(p.text_dim),

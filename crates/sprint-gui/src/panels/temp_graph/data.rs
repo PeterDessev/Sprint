@@ -127,6 +127,21 @@ impl Channel {
     }
 }
 
+/// Whether `channel`'s heater power is known: its latest report carries
+/// one (`reported_now`) or some sample shows it heating. Firmware without
+/// power reports (no `@:`) leaves the host's history with placeholder
+/// zeros for its hotends, which are not readings.
+pub(crate) fn power_reported(
+    samples: &[&TempSample],
+    channel: Channel,
+    reported_now: bool,
+) -> bool {
+    reported_now
+        || samples
+            .iter()
+            .any(|s| channel.power(s).is_some_and(|p| p > 0.0))
+}
+
 /// Every heater that appears anywhere in `samples`, in display order.
 pub(crate) fn channels(samples: &[&TempSample]) -> Vec<Channel> {
     let hotends = samples
@@ -460,11 +475,13 @@ pub(crate) fn nearest_within<'a>(
 }
 
 /// `samples` as CSV: a header and one row per sample with the time, each
-/// heater's temperature and target and (where reported) its power in
-/// percent. Missing values are empty cells.
-pub(crate) fn history_csv(samples: &[&TempSample]) -> String {
+/// heater's temperature and target and, for the `powered` heaters (see
+/// [`power_reported`]), its power in percent. Missing values are empty
+/// cells.
+pub(crate) fn history_csv(samples: &[&TempSample], powered: &[Channel]) -> String {
     let channels = channels(samples);
-    let has_power = |c: Channel| samples.iter().any(|s| c.power(s).is_some());
+    let has_power =
+        |c: Channel| powered.contains(&c) && samples.iter().any(|s| c.power(s).is_some());
     let mut out = String::from("time_s");
     for c in &channels {
         let key = c.key();
@@ -588,6 +605,31 @@ mod tests {
             .collect();
         assert_eq!(times(&h), [1.0, 1.0, 2.0]);
         assert!(usable(&VecDeque::new()).is_empty());
+    }
+
+    #[test]
+    fn placeholder_power_is_not_a_reading() {
+        let mut h = VecDeque::new();
+        for i in 0..5 {
+            h.push_back(TempSample {
+                t: f64::from(i),
+                hotends: vec![(20.0, 200.0), (20.0, 0.0)],
+                hotend_power: vec![0.0, 0.0],
+                bed: Some((20.0, 60.0)),
+                bed_power: (i == 3).then_some(0.0),
+                ..TempSample::default()
+            });
+        }
+        let s = usable(&h);
+        // Zeros only: reported now, or not at all.
+        assert!(!power_reported(&s, Channel::Hotend(0), false));
+        assert!(power_reported(&s, Channel::Hotend(0), true));
+        assert!(!power_reported(&s, Channel::Bed, false));
+        // Any real power counts.
+        h[2].hotend_power[1] = 0.4;
+        let s = usable(&h);
+        assert!(power_reported(&s, Channel::Hotend(1), false));
+        assert!(!power_reported(&s, Channel::Chamber, false));
     }
 
     #[test]
@@ -832,7 +874,8 @@ mod tests {
             bed_power: None,
             ..TempSample::default()
         });
-        let csv = history_csv(&usable(&h));
+        let all = [Channel::Hotend(0), Channel::Bed];
+        let csv = history_csv(&usable(&h), &all);
         let lines: Vec<_> = csv.lines().collect();
         assert_eq!(
             lines[0],
@@ -841,6 +884,13 @@ mod tests {
         assert_eq!(lines[1], "0.0,24.50,0.0,0.0,22.00,60.0,100.0");
         assert_eq!(lines[2], "1.0,,215.0,64.6,,,");
         assert_eq!(lines.len(), 3);
-        assert_eq!(history_csv(&[]), "time_s\n");
+        assert_eq!(history_csv(&[], &all), "time_s\n");
+        // Heaters without power reports get no power column.
+        let csv = history_csv(&usable(&h), &[Channel::Bed]);
+        assert_eq!(
+            csv.lines().next(),
+            Some("time_s,T0_temp_c,T0_target_c,bed_temp_c,bed_target_c,bed_power_pct")
+        );
+        assert_eq!(csv.lines().nth(2), Some("1.0,,215.0,,,"));
     }
 }
