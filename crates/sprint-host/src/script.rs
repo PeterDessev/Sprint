@@ -287,7 +287,14 @@ mod tests {
         assert_eq!(
             render_script(DEFAULT_CANCEL_SCRIPT, &s),
             [
-                "M104 S0", "M140 S0", "M107", "G91", "G1 Z10 F600", "G90", "G28 X Y", "M84"
+                "M104 S0",
+                "M140 S0",
+                "M107",
+                "G91",
+                "G1 Z10 F600",
+                "G90",
+                "G28 X Y",
+                "M84"
             ]
         );
     }
@@ -307,7 +314,16 @@ mod tests {
     #[test]
     fn garbage_templates_do_not_panic() {
         let s = state();
-        for t in ["{", "}", "{{x}}", "{\u{e9}}", "G1 X{x}{", "\u{1F600}{x}", ";{e}", "{e}"] {
+        for t in [
+            "{",
+            "}",
+            "{{x}}",
+            "{\u{e9}}",
+            "G1 X{x}{",
+            "\u{1F600}{x}",
+            ";{e}",
+            "{e}",
+        ] {
             let _ = render_script(t, &s);
         }
         assert_eq!(render_script("{{x}}", &s), ["{101.25}"]);
