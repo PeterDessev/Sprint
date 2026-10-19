@@ -361,9 +361,19 @@ impl ConsolePanel {
 
     /// Fetch what the printer logged since the last call.
     pub fn sync(&mut self, printer: &Printer) {
+        self.sync_with(printer, |_| {});
+    }
+
+    /// [`ConsolePanel::sync`], showing each new entry to `inspect` first
+    /// (the shell notes the M117 texts it sent, see
+    /// [`Notifier::note_sent`](crate::notify::Notifier::note_sent)).
+    pub fn sync_with(&mut self, printer: &Printer, mut inspect: impl FnMut(&ConsoleEntry)) {
         loop {
             let batch = printer.console_since(self.last_seq, FETCH_BATCH);
             let n = batch.len();
+            for entry in batch.iter().filter(|e| e.seq > self.last_seq) {
+                inspect(entry);
+            }
             self.push_entries(batch);
             if n < FETCH_BATCH {
                 break;

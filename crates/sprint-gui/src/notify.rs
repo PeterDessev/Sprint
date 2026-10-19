@@ -1,5 +1,10 @@
 //! Turns printer [`Event`]s into toasts: job results, errors, autotune
 //! results, connection changes and (rate-limited) firmware messages.
+//! Messages that only echo the text of an M117 Sprint sent itself (a
+//! print's per-layer status lines) are not toasted: the status bar shows
+//! them.
+
+use std::collections::VecDeque;
 
 use sprint_host::{ConnectionStatus, Event, Heater, JobStatus};
 
@@ -10,6 +15,8 @@ use crate::widgets::{ToastKind, Toasts};
 pub const MESSAGE_INTERVAL: f64 = 4.0;
 /// Minimum seconds between two identical error toasts.
 pub const ERROR_INTERVAL: f64 = 3.0;
+/// M117 texts remembered to recognise their echoes.
+const SENT_MESSAGES: usize = 32;
 
 /// A toast to show.
 #[derive(Clone, Debug, PartialEq)]
@@ -47,9 +54,36 @@ pub struct Notifier {
     last_error: Option<(f64, String)>,
     was_connected: bool,
     last_job: Option<String>,
+    /// The texts of the last M117 commands sent, normalised.
+    sent_messages: VecDeque<String>,
+}
+
+/// A message text as compared with the echoes of M117.
+fn message_key(text: &str) -> String {
+    format::sanitize(text.trim(), 160).to_lowercase()
 }
 
 impl Notifier {
+    /// Note a command Sprint sent (a console "sent" line): the firmware's
+    /// echo of an M117 text is then not toasted.
+    pub fn note_sent(&mut self, command: &str) {
+        let command = command.trim();
+        let Some(code) = command.get(..4) else {
+            return;
+        };
+        if !code.eq_ignore_ascii_case("M117") {
+            return;
+        }
+        let text = message_key(&command[4..]);
+        if text.is_empty() || self.sent_messages.contains(&text) {
+            return;
+        }
+        if self.sent_messages.len() >= SENT_MESSAGES {
+            self.sent_messages.pop_front();
+        }
+        self.sent_messages.push_back(text);
+    }
+
     /// The toast for `event` at time `now` (seconds, monotonic), if any.
     /// `job_name` is the name of the current or last job.
     pub fn notice(&mut self, event: &Event, now: f64, job_name: Option<&str>) -> Option<Notice> {
@@ -91,7 +125,7 @@ impl Notifier {
             )),
             Event::FirmwareMessage(message) => {
                 let message = format::sanitize(message.trim(), 160);
-                if message.is_empty() {
+                if message.is_empty() || self.sent_messages.contains(&message.to_lowercase()) {
                     return None;
                 }
                 let recent = self.last_message.as_ref().is_some_and(|(t, m)| {
@@ -142,6 +176,24 @@ fn heater_name(heater: Heater) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn echoes_of_sent_m117_texts_are_not_toasted() {
+        let mut n = Notifier::default();
+        let message = |text: &str| Event::FirmwareMessage(text.to_owned());
+        n.note_sent("M117 Layer 3/100");
+        n.note_sent("G1 X10");
+        n.note_sent("m117   ");
+        assert_eq!(n.notice(&message("Layer 3/100"), 0.0, None), None);
+        assert_eq!(n.notice(&message("  layer 3/100 "), 10.0, None), None);
+        // What the printer says by itself still shows.
+        assert!(n.notice(&message("Filament runout"), 20.0, None).is_some());
+        // Only the last texts are remembered.
+        for i in 0..SENT_MESSAGES {
+            n.note_sent(&format!("M117 Layer {i}"));
+        }
+        assert!(n.notice(&message("Layer 3/100"), 40.0, None).is_some());
+    }
 
     #[test]
     fn job_results() {

@@ -602,6 +602,14 @@ impl SprintApp {
             cancelled |= matches!(outcome, ConnectOutcome::Cancelled { .. });
             self.connect_outcome(outcome);
         }
+        // The console first: the notifier learns the M117 texts sent before
+        // their echoes arrive as events.
+        let notifier = &mut self.notifier;
+        self.panels.console.sync_with(&self.core.printer, |entry| {
+            if entry.kind == sprint_host::ConsoleKind::Sent {
+                notifier.note_sent(&entry.text);
+            }
+        });
         self.poll_events(secs, cancelled);
         if self.reconnect_pending && self.connector.is_idle() {
             self.reconnect_pending = false;
@@ -618,7 +626,6 @@ impl SprintApp {
         }
         self.poll_file_dialog();
         self.poll_loader(ctx);
-        self.panels.console.sync(&self.core.printer);
         {
             let c = self.core.ctx();
             self.panels.connection.tick(&c, secs);

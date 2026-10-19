@@ -184,6 +184,37 @@ fn starting_from_a_layer_sends_the_preamble() {
 }
 
 #[test]
+fn echoes_of_sent_status_messages_are_not_toasted() {
+    let mut h = app(sim_options(), WINDOW);
+    connect(&mut h);
+    settle(&mut h);
+    // What a print sends per layer, typed here, and the notification a
+    // Marlin with HOST_STATUS_NOTIFICATIONS answers it with (the virtual
+    // printer does not, M118 makes it).
+    type_command(&mut h, "M117 Layer 12 of 100");
+    type_command(&mut h, "M118 A1 action:notification Layer 12 of 100");
+    expect(&mut h, "the firmware's echo", |app| {
+        app.state()
+            .firmware_messages
+            .iter()
+            .any(|m| m.contains("Layer 12 of 100"))
+    });
+    settle(&mut h);
+    assert!(
+        !toast_titles(h.state()).contains(&"Printer says".to_owned()),
+        "{:?}",
+        toast_titles(h.state())
+    );
+    // The status bar shows it.
+    assert!(h.query_by_label_contains("Layer 12 of 100").is_some());
+    // What the printer says by itself is toasted.
+    type_command(&mut h, "M118 A1 action:notification Nozzle clogged?");
+    expect(&mut h, "the firmware's own message", |app| {
+        toast_titles(app).contains(&"Printer says".to_owned())
+    });
+}
+
+#[test]
 fn a_printer_waiting_for_the_user_can_be_continued() {
     let mut h = app(sim_options(), WINDOW);
     connect(&mut h);
