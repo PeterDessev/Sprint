@@ -320,7 +320,7 @@ impl ZOffsetWizard {
                 let one_row = avail >= 70.0 + width_of(ui, &options) + 220.0;
                 let mut home = false;
                 let mut reset = false;
-                let job = ctx.job_active();
+                let job = ctx.printer_busy();
                 let mut buttons = |ui: &mut Ui| {
                     reset = ui
                         .add_enabled(

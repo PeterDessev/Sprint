@@ -262,4 +262,32 @@ mod tests {
         assert_eq!(icons.len(), Tab::ALL.len());
         assert_eq!(Tab::default(), Tab::View3D);
     }
+
+    #[test]
+    fn blockers_cover_offline_halted_jobs_and_card_prints() {
+        use sprint_host::{ConnectionStatus, JobInfo, JobKind, JobStatus};
+        let mut state = PrinterState::default();
+        assert!(command_blocker(&state).is_some());
+        state.status = ConnectionStatus::Connected;
+        assert_eq!(command_blocker(&state), None);
+        assert_eq!(motion_blocker(&state), None);
+        state.halted = true;
+        assert!(command_blocker(&state).is_some_and(|r| r.contains("halted")));
+        state.halted = false;
+        // A print started on the printer: only its SD progress tells.
+        state.sd.printing = Some((10, 100));
+        assert!(printer_busy(&state));
+        assert!(motion_blocker(&state).is_some_and(|r| r.contains("card")));
+        assert_eq!(command_blocker(&state), None);
+        // The last report of an SD print Sprint ran that has ended is not.
+        let mut job = JobInfo::new(JobKind::SdPrint, "A.GCO", 0, 100);
+        job.status = JobStatus::Cancelled;
+        state.job = Some(job.clone());
+        assert!(!printer_busy(&state));
+        job.status = JobStatus::Printing;
+        state.job = Some(job);
+        state.sd.printing = None;
+        assert!(printer_busy(&state));
+        assert!(motion_blocker(&state).is_some_and(|r| r.contains("job")));
+    }
 }

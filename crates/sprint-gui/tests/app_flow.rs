@@ -1284,6 +1284,44 @@ fn printing_state(status: JobStatus) -> PrinterState {
 }
 
 #[test]
+fn a_print_from_the_card_locks_motion_and_probing() {
+    let mut h = app(AppOptions::headless(), egui::vec2(1600.0, 1000.0));
+    // Started on the printer's display: no job, only its SD progress.
+    let mut state = printing_state(JobStatus::Printing);
+    state.job = None;
+    state.sd.printing = Some((1_000, 50_000));
+    h.state_mut().set_state_override(Some(state));
+    settle(&mut h);
+    assert!(h.get_by_label("XY jog").accesskit_node().is_disabled());
+    assert!(h.get_by_label("G28").accesskit_node().is_disabled());
+    for (tab, label) in [
+        (Tab::Calibration, "Start autotune at 210 °C"),
+        (Tab::BedMesh, "Probe bed"),
+    ] {
+        h.state_mut().push_action(AppAction::ShowTab(tab));
+        settle(&mut h);
+        assert!(
+            h.get_by_label(label).accesskit_node().is_disabled(),
+            "{tab:?}: {label}"
+        );
+    }
+    assert!(
+        h.query_by_label("The printer prints from its card")
+            .is_none()
+    );
+    h.state_mut()
+        .push_action(AppAction::ShowTab(Tab::Calibration));
+    settle(&mut h);
+    assert!(
+        h.query_by_label("The printer prints from its card")
+            .is_some()
+    );
+    // A move typed in the console asks first.
+    type_command(&mut h, "G1 X10");
+    assert!(h.state().console().is_confirming());
+}
+
+#[test]
 fn console_motion_is_guarded_while_a_job_runs() {
     let mut h = app(AppOptions::headless(), WINDOW);
     h.state_mut()

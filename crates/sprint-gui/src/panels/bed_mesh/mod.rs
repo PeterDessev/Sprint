@@ -303,15 +303,14 @@ impl BedMeshTab {
         };
         let blocker = ctx.command_blocker();
         let connected = blocker.is_none();
-        let job = ctx.job_active();
+        let busy = ctx.motion_blocker();
+        let job = busy.is_some();
         let probing = self.probing.is_some();
         let printer = ctx.printer;
         let mut probe = false;
         kit::page_header(ui, icons::MESH, "Bed mesh", Some(&subtitle), |ui| {
-            let tip = if let Some(reason) = blocker {
+            let tip = if let Some(reason) = busy {
                 reason
-            } else if job {
-                "Not while a job runs"
             } else if probing {
                 "Probing…"
             } else {
@@ -377,8 +376,7 @@ impl BedMeshTab {
             NO_MESH_HELP
         };
         // Offered only when the printer can probe now.
-        let can_probe =
-            ctx.command_blocker().is_none() && !ctx.job_active() && self.probing.is_none();
+        let can_probe = ctx.motion_blocker().is_none() && self.probing.is_none();
         let mut empty = EmptyState::new(icons::MESH, "No bed mesh").message(message);
         if can_probe {
             empty = empty.action("Probe bed").action_icon(icons::MESH);
@@ -510,7 +508,9 @@ impl BedMeshTab {
         let enabled = leveling_enabled(state);
         let reported_fade = fade_height(state);
         let connected = ctx.command_blocker().is_none();
-        let job = ctx.job_active();
+        // Marlin switches leveling off and on again for M420, which shifts Z
+        // under a print (also one the printer runs from its card).
+        let job = ctx.printer_busy();
         Card::new("Leveling")
             .icon(icons::LAYERS)
             .subtitle("M420")
@@ -521,7 +521,7 @@ impl BedMeshTab {
                     Toggle::new(&mut on).label("Apply the mesh while printing"),
                 );
                 let toggle = if job {
-                    toggle.on_disabled_hover_text("Not while a job runs")
+                    toggle.on_disabled_hover_text("Not while a print runs")
                 } else {
                     toggle
                 };
@@ -572,7 +572,7 @@ impl BedMeshTab {
                             .tooltip(format!("M420 Z{}", format::trimmed(f64::from(fade), 1))),
                     );
                     let set = if job {
-                        set.on_disabled_hover_text("Not while a job runs")
+                        set.on_disabled_hover_text("Not while a print runs")
                     } else {
                         set
                     };
@@ -635,7 +635,7 @@ impl BedMeshTab {
         match answer {
             Some(DialogResult::Confirmed) => {
                 self.confirm_probe = false;
-                if ctx.command_blocker().is_none() && !ctx.job_active() {
+                if ctx.motion_blocker().is_none() {
                     ctx.printer.probe_bed_mesh();
                     self.probing = Some(Probing {
                         started: ui.input(|i| i.time),

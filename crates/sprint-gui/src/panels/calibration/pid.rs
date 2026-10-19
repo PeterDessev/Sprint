@@ -193,9 +193,7 @@ impl PidWizard {
                 }
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
-                    let blocker = ctx
-                        .command_blocker()
-                        .or_else(|| ctx.job_active().then_some("Not while a job runs"));
+                    let blocker = ctx.motion_blocker();
                     let can_start = blocker.is_none() && !running;
                     let target = *self.target_mut();
                     let label = format!("Start autotune at {target:.0} °C");

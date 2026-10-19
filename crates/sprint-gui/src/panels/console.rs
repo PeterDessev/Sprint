@@ -185,13 +185,16 @@ pub fn interferes_with_job(doc: &GcodeDoc) -> bool {
     }
 }
 
-/// What among `lines` would ruin the job `state` runs (see
-/// [`job_conflict`]), as "code: why" sentences; empty without a job.
+/// What among `lines` would ruin the job `state` runs, or a print from the
+/// card (see [`job_conflict`]), as "code: why" sentences; empty while the
+/// printer is idle.
 pub fn job_conflicts(lines: &[String], state: &sprint_host::PrinterState) -> Vec<String> {
-    let Some(job) = state.job.as_ref().filter(|j| j.status.is_active()) else {
-        return Vec::new();
+    // A print the printer runs from its card counts as printing.
+    let paused = match state.job.as_ref().filter(|j| j.status.is_active()) {
+        Some(job) => job.status.is_paused(),
+        None if crate::context::printer_busy(state) => false,
+        None => return Vec::new(),
     };
-    let paused = job.status.is_paused();
     let mut out: Vec<String> = Vec::new();
     for line in lines {
         if let Some((doc, why)) = job_conflict(line, paused) {
@@ -736,7 +739,7 @@ impl ConsolePanel {
         ui.painter()
             .hline(rect.x_range(), rect.top(), egui::Stroke::new(1.0, p.border));
         let open = ctx.state.status.is_open();
-        let job = ctx.job_active();
+        let job = ctx.printer_busy();
         egui::Frame::new()
             .inner_margin(Margin {
                 left: 10,
@@ -756,7 +759,7 @@ impl ConsolePanel {
                             .add_enabled(open && !(moves && job), Chip::new(cmd))
                             .on_hover_text(tip)
                             .on_disabled_hover_text(if open {
-                                "Not while a job is running"
+                                "Not while a print runs"
                             } else {
                                 "Connect to a printer first"
                             });

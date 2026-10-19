@@ -250,15 +250,16 @@ impl EstepsWizard {
         // One extrusion per mark: a second one would push the mark past
         // what the measurement assumes (or into the extruder).
         let extruded = self.extrude_started.is_some();
-        let can = ctx.command_blocker().is_none() && !ctx.job_active() && hot && !extruded;
+        let blocker = ctx.motion_blocker();
+        let can = blocker.is_none() && hot && !extruded;
         ui.horizontal(|ui| {
             let label = format!("Extrude {:.0} mm", ESTEPS_EXTRUDE_MM);
             let tip = if extruded {
                 "Already extruded. To repeat the test, go back and mark the filament again."
+            } else if let Some(reason) = blocker {
+                reason
             } else if !hot {
                 "The hotend is not at temperature"
-            } else if ctx.job_active() {
-                "Not while a job runs"
             } else {
                 "M83, G1 E100 F50"
             };

@@ -144,12 +144,16 @@ impl CalibrationTab {
                 None,
             );
             ui.add_space(theme::GAP);
-        } else if ctx.job_active() {
+        } else if ctx.printer_busy() {
             kit::notice(
                 ui,
                 Tone::Warning,
                 icons::WARNING,
-                "A job is running",
+                if ctx.job_active() {
+                    "A job is running"
+                } else {
+                    "The printer prints from its card"
+                },
                 Some(JOB_NOTE),
                 None,
             );

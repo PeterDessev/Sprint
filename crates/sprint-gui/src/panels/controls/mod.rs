@@ -97,10 +97,11 @@ fn motion_lock(ctx: &AppCtx<'_>) -> Option<&'static str> {
             "The printer is halted and ignores commands until its firmware restarts \
              (M999).",
         )
-    } else if ctx.job_active() {
+    } else if ctx.printer_busy() {
         Some(
-            "Locked while a job runs: moves and extrusion would be interleaved \
-             with the print. Live tuning, fans and temperatures stay available.",
+            "Locked while a print runs (also one the printer runs from its card): \
+             moves and extrusion would be interleaved with it. Live tuning, fans and \
+             temperatures stay available.",
         )
     } else {
         None
@@ -116,6 +117,8 @@ fn lock_title(ctx: &AppCtx<'_>) -> Option<&'static str> {
         Some("Locked while the printer is halted")
     } else if ctx.job_active() {
         Some("Locked while a job runs")
+    } else if ctx.printer_busy() {
+        Some("Locked while the printer prints from its card")
     } else {
         None
     }
