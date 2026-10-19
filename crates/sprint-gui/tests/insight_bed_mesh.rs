@@ -253,6 +253,25 @@ fn a_probe_without_a_new_mesh_ends() {
 }
 
 #[test]
+fn the_probe_question_does_not_outlive_the_connection() {
+    let mut h = tab(Theme::Dark, (1180.0, 1060.0), demo_state());
+    h.get_by_label("Probe bed").click();
+    h.run_ok();
+    assert!(h.query_by_label("Probe the bed?").is_some());
+    for status in [
+        sprint_host::ConnectionStatus::Disconnected,
+        sprint_host::ConnectionStatus::Connected,
+    ] {
+        if let Some(s) = h.state_mut().state.as_mut() {
+            s.status = status;
+        }
+        h.run_ok();
+    }
+    // "Home and probe" must not wait for the next printer.
+    assert!(h.query_by_label("Probe the bed?").is_none());
+}
+
+#[test]
 fn leveling_stays_put_during_a_job() {
     let mut state = demo_state();
     let mut job = sprint_host::JobInfo::new(sprint_host::JobKind::HostPrint, "cube.gcode", 10, 100);

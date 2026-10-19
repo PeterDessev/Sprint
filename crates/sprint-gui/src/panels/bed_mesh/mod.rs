@@ -223,13 +223,16 @@ impl BedMeshTab {
 
     /// Connection bookkeeping, the automatic load and probe completion.
     fn track(&mut self, ui: &Ui, ctx: &mut AppCtx<'_>) {
+        // The probe question belongs to the connection it was asked on.
         if self.connection.is_new(ctx.state) {
             self.auto_requested = false;
             self.probing = None;
+            self.confirm_probe = false;
         }
         if !ctx.connected() {
             self.auto_requested = false;
             self.probing = None;
+            self.confirm_probe = false;
             return;
         }
         if !self.auto_requested && ctx.state.mesh.is_none() && !ctx.job_active() {
