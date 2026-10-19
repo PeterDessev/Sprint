@@ -321,6 +321,8 @@ pub struct SprintApp {
     autotune_halted: bool,
     /// What loading the configuration had to leave out.
     config_report: Option<ConfigReport>,
+    /// How often the window asked for the user's attention.
+    attention_requests: usize,
     egui_ctx: egui::Context,
 }
 
@@ -419,6 +421,7 @@ impl SprintApp {
             pressed_in_sidebar: false,
             autotune_halted: false,
             config_report: options.config_report,
+            attention_requests: 0,
             egui_ctx: ctx,
         };
         if let Some(report) = &app.config_report {
@@ -591,6 +594,12 @@ impl SprintApp {
         self.config_report.as_ref()
     }
 
+    /// How often the window asked for the user's attention (a print
+    /// finished or failed), besides the toasts.
+    pub fn attention_requests(&self) -> usize {
+        self.attention_requests
+    }
+
     /// Queue an action; it runs at the end of the next frame.
     pub fn push_action(&mut self, action: AppAction) {
         self.core.actions.push(action);
@@ -670,7 +679,7 @@ impl SprintApp {
             &mut self.autotune_halted,
             autotune_sent,
         );
-        self.poll_events(secs, cancelled);
+        self.poll_events(ctx, secs, cancelled);
         if self.reconnect_pending && self.connector.is_idle() {
             self.reconnect_pending = false;
             self.connect_again();
@@ -934,8 +943,9 @@ impl SprintApp {
 
     /// Toast what the printer reported. `cancelled`: a connect the user
     /// cancelled is ending, its failure is not news.
-    fn poll_events(&mut self, secs: f64, cancelled: bool) {
+    fn poll_events(&mut self, ctx: &egui::Context, secs: f64, cancelled: bool) {
         let job_name = self.core.state.job.as_ref().map(|j| j.name.clone());
+        let job_kind = self.core.state.job.as_ref().map(|j| j.kind);
         for event in self.events.try_iter().take(EVENTS_PER_FRAME) {
             if cancelled
                 && matches!(
@@ -950,6 +960,14 @@ impl SprintApp {
             }
             if let Some(notice) = self.notifier.notice(&event, secs, job_name.as_deref()) {
                 notice.show(&mut self.core.toasts);
+            }
+            if let Event::Job(status) = &event
+                && let Some(kind) = print_attention(status, job_kind)
+            {
+                // Flash the taskbar entry (or bounce the dock icon) of a
+                // window in the background: the print needs the user.
+                ctx.send_viewport_cmd(ViewportCommand::RequestUserAttention(kind));
+                self.attention_requests += 1;
             }
         }
     }
@@ -2101,6 +2119,23 @@ impl Drop for SprintApp {
     }
 }
 
+/// Whether a job's `status` asks for the user's attention (a print, from
+/// the host or the card, that finished or failed; not an upload, not a
+/// cancel the user made), and how urgently.
+pub fn print_attention(
+    status: &JobStatus,
+    kind: Option<JobKind>,
+) -> Option<egui::UserAttentionType> {
+    if kind == Some(JobKind::SdUpload) {
+        return None;
+    }
+    match status {
+        JobStatus::Completed => Some(egui::UserAttentionType::Informational),
+        JobStatus::Failed(_) => Some(egui::UserAttentionType::Critical),
+        _ => None,
+    }
+}
+
 /// The toast text for a configuration that loaded with problems: how many
 /// lines or values were left out, where the file as it was is kept, and
 /// where the details are.
@@ -2280,6 +2315,26 @@ fn notice_strip(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finished_and_failed_prints_ask_for_attention() {
+        use egui::UserAttentionType as A;
+        let print = Some(JobKind::HostPrint);
+        assert_eq!(
+            print_attention(&JobStatus::Completed, print),
+            Some(A::Informational)
+        );
+        assert_eq!(
+            print_attention(&JobStatus::Failed("x".into()), Some(JobKind::SdPrint)),
+            Some(A::Critical)
+        );
+        assert_eq!(print_attention(&JobStatus::Cancelled, print), None);
+        assert_eq!(print_attention(&JobStatus::Printing, print), None);
+        assert_eq!(
+            print_attention(&JobStatus::Completed, Some(JobKind::SdUpload)),
+            None
+        );
+    }
 
     #[test]
     fn config_reports_are_summed_up() {

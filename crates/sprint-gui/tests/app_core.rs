@@ -521,3 +521,33 @@ fn the_settings_edit_print_events_and_m73() {
         profile.on_finish_command
     );
 }
+
+#[test]
+fn a_finished_print_asks_for_the_users_attention() {
+    let dir = temp_dir("attention");
+    let path = dir.join("short.gcode");
+    std::fs::write(&path, "G28\nG1 Z5 F600\nG1 X50 Y50 F3000\nG1 X60 Y60\n").expect("write");
+    let mut options = sim_options();
+    options.file = Some(path);
+    let mut h = app(options, WINDOW);
+    expect(&mut h, "the file to be analyzed", analyzed);
+    connect(&mut h);
+    assert_eq!(h.state().attention_requests(), 0);
+    h.state_mut()
+        .push_action(AppAction::StartPrintDialog { start_line: 0 });
+    settle(&mut h);
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Start print")
+        .click();
+    expect(&mut h, "the print to finish", |app| {
+        app.state()
+            .job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Completed)
+    });
+    expect(&mut h, "the attention request", |app| {
+        app.attention_requests() == 1
+    });
+    assert!(toast_titles(h.state()).contains(&"Print finished".to_owned()));
+    drop(h);
+    let _ = std::fs::remove_dir_all(dir);
+}
