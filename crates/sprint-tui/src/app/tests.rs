@@ -778,6 +778,49 @@ fn f5_prints_the_loaded_file_to_completion() {
 }
 
 #[test]
+fn the_prints_own_lines_are_hidden_from_the_console_by_default() {
+    let mut app = connected_app();
+    load(&mut app, "calibration-cube.gcode");
+    press(&mut app, KeyCode::F(5));
+    press(&mut app, KeyCode::Char('y'));
+    wait(&mut app, "some of the print", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.layer.is_some_and(|(i, _)| i >= 2) || !j.status.is_active())
+    });
+    app.printer.cancel();
+    wait(&mut app, "the cancel", |s| !s.job_active());
+    app.sync();
+    let streamed = app.console.iter().filter(|l| l.stream).count();
+    assert!(
+        streamed > 100,
+        "the file's lines are marked: {streamed}; {:?}",
+        app.view.job.as_ref().map(|j| (&j.status, j.current_line))
+    );
+    let shown = |app: &App| {
+        crate::widgets::ConsoleView::new(&app.console)
+            .show_auto(app.show_auto)
+            .show_stream(app.show_stream)
+            .visible_count()
+    };
+    let hidden = shown(&app);
+    // What the job said is still there (it is not part of the stream).
+    assert!(
+        app.console
+            .iter()
+            .any(|l| !l.stream && l.text.contains("cancel"))
+    );
+    press(&mut app, KeyCode::Char('l'));
+    assert!(shown(&app) >= hidden + streamed);
+    // :log off hides it again (with the polling); :log on shows it all.
+    app.run_line("log off");
+    assert!(!app.show_stream && !app.show_auto);
+    app.run_line("log on");
+    assert!(app.show_stream && app.show_auto);
+    assert_eq!(shown(&app), app.console.len());
+}
+
+#[test]
 fn f6_pauses_and_resumes_and_f7_cancels_after_asking() {
     let scratch = Scratch::new("pause");
     let mut app = timed_app();
@@ -1431,8 +1474,12 @@ fn console_keys_scroll_filter_and_search() {
     assert!(!app.console_state.is_following());
     press(&mut app, KeyCode::End);
     assert!(app.console_state.is_following());
+    assert!(screen(&mut app, 120, 40).contains("auto, print hidden"));
     press(&mut app, KeyCode::Char('a'));
     assert!(app.show_auto);
+    assert!(screen(&mut app, 120, 40).contains("print hidden"));
+    press(&mut app, KeyCode::Char('l'));
+    assert!(app.show_stream);
     assert!(screen(&mut app, 120, 40).contains("all traffic"));
     press(&mut app, KeyCode::Char('/'));
     type_text(&mut app, "line 19");

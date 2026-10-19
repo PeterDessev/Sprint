@@ -177,6 +177,9 @@ pub(crate) struct App {
     console_capacity: usize,
     pub console_state: ConsoleState,
     pub show_auto: bool,
+    /// Show the lines of a streamed print (hidden by default: thousands
+    /// of file lines and their `ok`s would bury everything else).
+    pub show_stream: bool,
     pub modal: Option<Modal>,
     /// Jog mode with this step index.
     pub jog: Option<usize>,
@@ -275,6 +278,7 @@ impl App {
             console_capacity,
             console_state: ConsoleState::new(),
             show_auto: false,
+            show_stream: false,
             modal: None,
             jog: None,
             estop_armed: None,
@@ -364,6 +368,7 @@ impl App {
                     kind: console_kind(entry.kind),
                     text: entry.text,
                     auto: entry.auto,
+                    stream: entry.stream,
                 });
             }
             if count < CONSOLE_FETCH {
@@ -1703,6 +1708,14 @@ impl App {
                     "Hiding automatic traffic"
                 });
             }
+            KeyCode::Char('l') => {
+                self.show_stream = !self.show_stream;
+                self.info(if self.show_stream {
+                    "Showing the print's lines (the file streamed and its oks)"
+                } else {
+                    "Hiding the print's lines"
+                });
+            }
             KeyCode::Char('s') => {
                 self.center = match self.center {
                     Center::Layers => Center::Stats,
@@ -2021,14 +2034,17 @@ impl App {
                 self.show_report("Status", lines);
             }
             Command::Monitor(_) => self.info("This screen is the live monitor"),
+            // `log on` shows all traffic: polling and the print's lines.
             Command::Log(on) => {
                 if let Some(on) = on {
                     self.show_auto = on;
+                    self.show_stream = on;
                 }
-                self.info(if self.show_auto {
-                    "Console shows all traffic"
-                } else {
-                    "Console hides automatic traffic"
+                self.info(match (self.show_auto, self.show_stream) {
+                    (true, true) => "Console shows all traffic",
+                    (false, false) => "Console hides automatic traffic and the print's lines",
+                    (true, false) => "Console hides the print's lines",
+                    (false, true) => "Console hides automatic traffic",
                 });
             }
             Command::Exit => self.request_quit(),

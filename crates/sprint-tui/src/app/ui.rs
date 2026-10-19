@@ -695,6 +695,7 @@ impl App {
         let focused = self.focus == Focus::Console && self.jog.is_none();
         let view = ConsoleView::new(&self.console)
             .show_auto(self.show_auto)
+            .show_stream(self.show_stream)
             .search(self.search.as_deref())
             .theme(&theme);
         let mut flags = Vec::new();
@@ -710,11 +711,15 @@ impl App {
                 format::fixed(f64::from(self.view.link.lines_per_sec), 0)
             ));
         }
-        flags.push(if self.show_auto {
-            "all traffic".to_string()
-        } else {
-            "auto hidden".to_string()
-        });
+        flags.push(
+            match (self.show_auto, self.show_stream) {
+                (true, true) => "all traffic",
+                (false, false) => "auto, print hidden",
+                (true, false) => "print hidden",
+                (false, true) => "auto hidden",
+            }
+            .to_string(),
+        );
         let block = self.panel("Console", focused).title(
             Line::from(Span::styled(
                 format!(" {} ", flags.join(" · ")),
@@ -1103,6 +1108,10 @@ pub(crate) fn help_sections() -> Vec<HelpSection<'static>> {
                 ("↑ ↓ PgUp PgDn", "Scroll (mouse wheel too)"),
                 ("Home / End", "Oldest line / follow new output"),
                 ("a", "Show automatic traffic (temperature polling)"),
+                (
+                    "l",
+                    "Show the print's lines (the file streamed and its oks)",
+                ),
                 ("/", "Search; n clears it"),
                 ("c", "Clear the console"),
             ],

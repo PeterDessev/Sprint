@@ -55,6 +55,9 @@ pub struct ConsoleLine {
     /// Automatic traffic (temperature polling, auto-reports and their
     /// `ok`s), hidden unless the view shows it.
     pub auto: bool,
+    /// A line of a streamed print (the file's lines sent and the `ok`s
+    /// answering them), hidden unless the view shows it.
+    pub stream: bool,
 }
 
 impl ConsoleLine {
@@ -64,6 +67,7 @@ impl ConsoleLine {
             kind,
             text: text.into(),
             auto: false,
+            stream: false,
         }
     }
 
@@ -96,6 +100,13 @@ impl ConsoleLine {
     #[must_use]
     pub fn with_auto(mut self, auto: bool) -> ConsoleLine {
         self.auto = auto;
+        self
+    }
+
+    /// The same line marked as part of a streamed print (or not).
+    #[must_use]
+    pub fn with_stream(mut self, stream: bool) -> ConsoleLine {
+        self.stream = stream;
         self
     }
 }
@@ -326,7 +337,9 @@ pub fn find_matches(text: &str, query: &str) -> Vec<Range<usize>> {
 ///
 /// * Automatic traffic (`auto` lines: temperature polling and its `ok`s)
 ///   is hidden unless [`show_auto`](ConsoleView::show_auto) is set; shown
-///   automatic lines are dimmed.
+///   automatic lines are dimmed. So are the lines of a streamed print
+///   (`stream`: thousands of file lines and their `ok`s), unless
+///   [`show_stream`](ConsoleView::show_stream) is set.
 /// * Lines are colored by kind; without colors (or with
 ///   [`show_tags`](ConsoleView::show_tags)) a two-character tag (`> `,
 ///   `< `, `* `, `! `, `!!`) marks the kind.
@@ -342,6 +355,7 @@ pub fn find_matches(text: &str, query: &str) -> Vec<Range<usize>> {
 pub struct ConsoleView<'a> {
     lines: &'a [ConsoleLine],
     show_auto: bool,
+    show_stream: bool,
     search: Option<&'a str>,
     show_tags: bool,
     block: Option<Block<'a>>,
@@ -354,6 +368,7 @@ impl<'a> ConsoleView<'a> {
         ConsoleView {
             lines,
             show_auto: false,
+            show_stream: false,
             search: None,
             show_tags: false,
             block: None,
@@ -365,6 +380,13 @@ impl<'a> ConsoleView<'a> {
     #[must_use]
     pub fn show_auto(mut self, show: bool) -> Self {
         self.show_auto = show;
+        self
+    }
+
+    /// Show the lines of a streamed print (default false).
+    #[must_use]
+    pub fn show_stream(mut self, show: bool) -> Self {
+        self.show_stream = show;
         self
     }
 
@@ -398,9 +420,9 @@ impl<'a> ConsoleView<'a> {
         self
     }
 
-    /// True when `line` passes the automatic-traffic filter.
+    /// True when `line` passes the automatic-traffic and stream filters.
     fn shows(&self, line: &ConsoleLine) -> bool {
-        self.show_auto || !line.auto
+        (self.show_auto || !line.auto) && (self.show_stream || !line.stream)
     }
 
     /// Number of lines that pass the filter.
@@ -421,7 +443,7 @@ impl<'a> ConsoleView<'a> {
     fn line_spans(&self, line: &ConsoleLine) -> (Vec<Span<'static>>, usize) {
         let theme = self.theme;
         let mut style = theme.console(line.kind);
-        if line.auto {
+        if line.auto || line.stream {
             style = style.patch(theme.dim());
         }
         let mut spans = Vec::new();
@@ -488,8 +510,12 @@ impl StatefulWidget for ConsoleView<'_> {
         if shown.is_empty() {
             let message = if self.lines.is_empty() {
                 "No console output yet"
-            } else {
+            } else if self.lines.iter().all(|l| l.auto) {
                 "Only automatic traffic (hidden)"
+            } else if self.lines.iter().all(|l| l.stream) {
+                "Only the print's lines (hidden)"
+            } else {
+                "Only hidden traffic"
             };
             self.render_message(inner, buf, message);
             return;
@@ -581,6 +607,41 @@ mod tests {
         // Shown automatic lines are dimmed.
         assert_eq!(buf[(0, 0)].fg, theme.text_dim);
         assert_eq!(buf[(0, 2)].fg, theme.sent);
+    }
+
+    #[test]
+    fn stream_lines_are_filtered() {
+        let log = vec![
+            ConsoleLine::sent("G1 X10 E0.2").with_stream(true),
+            ConsoleLine::received("ok").with_stream(true),
+            ConsoleLine::sent("M220 S110"),
+            ConsoleLine::received("ok"),
+            ConsoleLine::sent("M105").with_auto(true),
+        ];
+        let view = ConsoleView::new(&log);
+        assert_eq!(view.visible_count(), 2);
+        let buf = render(view, 20, 4);
+        assert_eq!(lines(&buf)[0].trim_end(), "M220 S110");
+        let theme = Theme::dark();
+        let view = ConsoleView::new(&log).show_stream(true).theme(&theme);
+        assert_eq!(view.visible_count(), 4);
+        let buf = render(view, 20, 4);
+        assert_eq!(lines(&buf)[0].trim_end(), "G1 X10 E0.2");
+        // Shown stream lines are dimmed, like automatic traffic.
+        assert_eq!(buf[(0, 0)].fg, theme.text_dim);
+        assert_eq!(buf[(0, 2)].fg, theme.sent);
+        // Both filters are independent.
+        let all = ConsoleView::new(&log).show_stream(true).show_auto(true);
+        assert_eq!(all.visible_count(), 5);
+        let only_stream = vec![ConsoleLine::sent("G1 X1").with_stream(true)];
+        let buf = render(ConsoleView::new(&only_stream), 34, 3);
+        assert!(lines(&buf)[1].contains("Only the print's lines"));
+        let mixed = vec![
+            ConsoleLine::sent("G1 X1").with_stream(true),
+            ConsoleLine::sent("M105").with_auto(true),
+        ];
+        let buf = render(ConsoleView::new(&mixed), 34, 3);
+        assert!(lines(&buf)[1].contains("Only hidden traffic"));
     }
 
     #[test]
