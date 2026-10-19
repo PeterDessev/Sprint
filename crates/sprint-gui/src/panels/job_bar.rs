@@ -26,6 +26,50 @@ pub fn print_blocker(state: &PrinterState, has_file: bool) -> Option<&'static st
     }
 }
 
+/// The printer waits for the user (M0 / M1, a filament change) and no host
+/// prompt offers a way on: its busy reports say "paused for user" (or
+/// "for input"). Firmware without host prompt support then waits until
+/// it receives M108, which [`continue_button`] sends.
+pub fn waiting_for_user(state: &PrinterState) -> bool {
+    state.is_connected()
+        && !state.halted
+        && state.prompt.is_none()
+        && state.busy.as_deref().is_some_and(|busy| {
+            let busy = busy.to_ascii_lowercase();
+            [
+                "paused for user",
+                "paused for input",
+                "wait for user",
+                "waiting for user",
+            ]
+            .iter()
+            .any(|w| busy.contains(w))
+        })
+}
+
+/// What the Continue button says on hover.
+pub const CONTINUE_TIP: &str =
+    "The printer waits for you (M0, M1 or a filament change): continue (M108)";
+
+/// "Continue" while the printer waits for the user (see
+/// [`waiting_for_user`]): sends M108 at once. Returns whether it was
+/// clicked.
+pub fn continue_button(ui: &mut Ui, ctx: &AppCtx<'_>, label: &str) -> bool {
+    let clicked = ui
+        .add(
+            crate::widgets::ActionButton::new(label)
+                .icon(icons::PLAY)
+                .primary()
+                .small()
+                .tooltip(CONTINUE_TIP),
+        )
+        .clicked();
+    if clicked {
+        ctx.printer.send_immediate("M108");
+    }
+    clicked
+}
+
 /// Badge text and tone of a job status.
 pub fn job_badge(job: &JobInfo) -> (String, Tone) {
     let tone = match &job.status {
@@ -127,6 +171,9 @@ impl JobBar {
             .on_disabled_hover_text("No running job");
         if cancel.clicked() {
             ctx.actions.push(AppAction::CancelJob);
+        }
+        if waiting_for_user(ctx.state) {
+            continue_button(ui, ctx, "Continue");
         }
     }
 

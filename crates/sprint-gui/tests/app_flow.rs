@@ -184,6 +184,34 @@ fn starting_from_a_layer_sends_the_preamble() {
 }
 
 #[test]
+fn a_printer_waiting_for_the_user_can_be_continued() {
+    let mut h = app(sim_options(), WINDOW);
+    connect(&mut h);
+    // M0 on a firmware without host prompts: only its busy reports tell.
+    let mut waiting = printing_state(JobStatus::Printing);
+    waiting.busy = Some("paused for user".into());
+    h.state_mut().set_state_override(Some(waiting.clone()));
+    settle(&mut h);
+    assert!(
+        h.query_by_label_contains("The printer is waiting for you")
+            .is_some()
+    );
+    assert!(h.query_by_label("Continue").is_some(), "the job bar's");
+    h.get_by_label("Continue (M108)").click();
+    expect(&mut h, "M108", |app| {
+        received(app).iter().any(|c| c == "M108")
+    });
+    // A host prompt offers its own buttons.
+    waiting.prompt = Some(sprint_host::HostPrompt {
+        message: "Paused".into(),
+        buttons: vec!["Continue".into()],
+    });
+    h.state_mut().set_state_override(Some(waiting));
+    settle(&mut h);
+    assert!(h.query_by_label("Continue (M108)").is_none());
+}
+
+#[test]
 fn the_console_export_opens_no_dialog_without_native_dialogs() {
     let mut h = app(sim_options(), WINDOW);
     connect(&mut h);

@@ -1567,6 +1567,27 @@ impl SprintApp {
                 None => {}
             }
         }
+        // M0 / M1 or a filament change on a firmware without host prompts:
+        // nothing else would tell the user what the printer waits for.
+        if job_bar::waiting_for_user(&self.core.state) {
+            let busy = self.core.state.busy.as_deref().unwrap_or_default();
+            let text = format!(
+                "The printer is waiting for you ({}). Continue when it is ready.",
+                format::sanitize(busy, 60)
+            );
+            if notice_strip(
+                ui,
+                p,
+                Tone::Warning,
+                icons::BELL,
+                &text,
+                &[("Continue (M108)", true)],
+            )
+            .is_some()
+            {
+                self.core.printer.send_immediate("M108");
+            }
+        }
         if let (Some(prompt), Some((_, PromptChoice::Hidden))) =
             (&self.core.state.prompt, &self.prompt)
         {
