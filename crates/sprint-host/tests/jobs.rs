@@ -924,3 +924,24 @@ fn a_quick_stop_during_a_print_stops_the_print() {
     );
     assert!(got[m410..].iter().any(|c| c == "M104 S0"), "heaters off");
 }
+
+#[test]
+fn a_cancelled_print_records_where_it_stopped() {
+    let printer = connect(sim(), options());
+    let file = file();
+    start(
+        &printer,
+        &file,
+        PrintOptions {
+            start_line: 10,
+            ..PrintOptions::default()
+        },
+    );
+    printer.cancel();
+    wait_for(&printer, "cancelled", |s| !s.job_active());
+    let job = printer.with_state(|s| s.job.clone()).unwrap();
+    assert_eq!(job.status, JobStatus::Cancelled);
+    let stopped = job.stopped_at.expect("a resume point");
+    assert_eq!(stopped, job.current_line, "the first line not acknowledged");
+    assert!(stopped > 40 && stopped < file.len(), "{stopped}");
+}

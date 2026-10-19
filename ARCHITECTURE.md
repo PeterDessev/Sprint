@@ -893,6 +893,7 @@ pub struct JobInfo {
     pub layer: Option<(usize, usize)>, // (current index, total)
     pub filament_used_mm: f32,
     pub pause_at: Vec<usize>,          // host prints: pause points still ahead (0-based lines, ascending)
+    pub stopped_at: Option<usize>,     // failed/cancelled host print: first 0-based line not acknowledged (the recovery start_line); kept until the next job
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)] pub enum JobKind { HostPrint, SdPrint, SdUpload }
 #[derive(Clone, Debug, PartialEq)]

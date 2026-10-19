@@ -1036,3 +1036,24 @@ fn homing_and_probing_do_not_inflate_the_eta() {
     );
     printer.cancel();
 }
+
+#[test]
+fn a_failed_print_records_where_to_recover_from() {
+    let printer = connect(fast_sim(50.0), options());
+    let status = print_with_an_unsendable_line(&printer);
+    assert!(matches!(status, JobStatus::Failed(_)), "{status:?}");
+    let job = printer.with_state(|s| s.job.clone()).unwrap();
+    // Lines 0..53 went through; line 53 (the long M117) never did.
+    assert_eq!(job.stopped_at, Some(53), "{job:?}");
+    assert_eq!(job.current_line, 53);
+    // The next job starts without it.
+    printer
+        .start_print(
+            Arc::new(GcodeFile::from_text("next.gcode", "G28\nG1 X5\n")),
+            PrintOptions::default(),
+        )
+        .unwrap();
+    wait_for(&printer, "the next job", |s| !s.job_active());
+    let job = printer.with_state(|s| s.job.clone()).unwrap();
+    assert_eq!((job.status, job.stopped_at), (JobStatus::Completed, None));
+}

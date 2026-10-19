@@ -156,6 +156,12 @@ pub struct JobInfo {
     /// pause script), still ahead of the stream, ascending
     /// ([`Printer::pause_at_lines`](crate::Printer::pause_at_lines)).
     pub pause_at: Vec<usize>,
+    /// A failed or cancelled host print: the 0-based index of the first
+    /// file line the printer did not acknowledge, where a recovery resumes
+    /// ([`PrintOptions::start_line`] with
+    /// [`resume_preamble`](sprint_gcode::resume_preamble)). Kept with the
+    /// job record until the next job starts; `None` otherwise.
+    pub stopped_at: Option<usize>,
 }
 
 impl JobInfo {
@@ -181,6 +187,7 @@ impl JobInfo {
             layer: None,
             filament_used_mm: 0.0,
             pause_at: Vec::new(),
+            stopped_at: None,
         }
     }
 }

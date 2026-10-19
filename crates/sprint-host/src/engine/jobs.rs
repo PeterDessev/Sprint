@@ -899,7 +899,16 @@ impl Engine {
                 }
             }
         }
+        if job.info.kind == JobKind::HostPrint
+            && matches!(status, JobStatus::Failed(_) | JobStatus::Cancelled)
+        {
+            // Where a recovery resumes: lines in flight may have run, but
+            // only acknowledged ones are known to have.
+            job.info.stopped_at = Some(job.last_acked.map_or(job.options.start_line, |l| l + 1));
+            job.info.pause_at.clear();
+        }
         if status == JobStatus::Completed {
+            job.info.pause_at.clear();
             if job.info.kind != JobKind::SdPrint {
                 job.info.current_line = job.info.total_lines;
                 job.info.bytes_done = job.info.bytes_total;
