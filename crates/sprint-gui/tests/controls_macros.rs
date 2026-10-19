@@ -142,6 +142,46 @@ fn ctrl_enter_saves_with_color_and_confirmation() {
     assert!(saved.confirm);
 }
 
+#[test]
+fn a_click_outside_keeps_unsaved_edits() {
+    let mut h = harness(Rig::synthetic(controls_common::heating_state()));
+    let outside = egui::pos2(6.0, 6.0);
+    // Nothing typed yet: a click outside closes the editor.
+    click(&mut h, "New macro");
+    controls_common::click_at(&mut h, outside);
+    settle(&mut h);
+    assert!(
+        h.query(by_label("Save")).is_none(),
+        "an untouched editor closes"
+    );
+    // With edits the click is ignored ...
+    new_macro(&mut h, "Purge", "G1 X5\nG1 X10");
+    controls_common::click_at(&mut h, outside);
+    settle(&mut h);
+    assert!(
+        h.query(by_label("Save")).is_some(),
+        "the edits were thrown away"
+    );
+    click(&mut h, "Save");
+    assert_eq!(names(&h).last().map(String::as_str), Some("Purge"));
+    // ... and so is editing a macro back to what it was.
+    menu(&mut h, "Purge", "Edit");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+    h.event(Event::Text("Prime".into()));
+    settle(&mut h);
+    controls_common::click_at(&mut h, outside);
+    settle(&mut h);
+    assert!(
+        h.query(by_label("Save")).is_some(),
+        "the edit was thrown away"
+    );
+    // Escape still discards on purpose.
+    h.key_press(Key::Escape);
+    settle(&mut h);
+    assert!(h.query(by_label("Save")).is_none());
+    assert_eq!(names(&h).last().map(String::as_str), Some("Purge"));
+}
+
 /// A long macro scrolls inside the G-code field: the dialog, its title and
 /// its buttons stay on screen.
 #[test]

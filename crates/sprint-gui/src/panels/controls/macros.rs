@@ -188,6 +188,8 @@ struct Editor {
     /// Index of the edited macro; `None` for a new one.
     index: Option<usize>,
     draft: Macro,
+    /// The macro as it was when the editor opened.
+    original: Macro,
     /// The custom color picker's value.
     custom: [u8; 3],
     /// Focus the name field on the first frame.
@@ -199,10 +201,16 @@ impl Editor {
         let custom = draft.color.unwrap_or([0x8A, 0x93, 0xA0]);
         Editor {
             index,
+            original: draft.clone(),
             draft,
             custom,
             focus_name: true,
         }
+    }
+
+    /// Whether the draft differs from what the editor opened with.
+    fn is_modified(&self) -> bool {
+        self.draft != self.original
     }
 }
 
@@ -680,7 +688,13 @@ fn editor_dialog(ctx: &egui::Context, editor: &mut Editor, app: &mut AppCtx<'_>)
                 });
             });
         });
-    if outcome == EditorOutcome::Open && modal.should_close() {
+    // Escape and Cancel discard the edits; a click outside the dialog only
+    // closes it while nothing was changed (a stray click must not throw
+    // away a macro being written).
+    if outcome == EditorOutcome::Open
+        && modal.should_close()
+        && !(modal.backdrop_response.clicked() && editor.is_modified())
+    {
         outcome = EditorOutcome::Cancel;
     }
     // Ctrl+Enter saves from anywhere in the dialog.
