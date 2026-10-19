@@ -261,6 +261,60 @@ fn charts(ui: &mut egui::Ui) {
     ui.add(LinearProgress::new(f32::NAN).tone(Tone::Warning));
 }
 
+fn forms(ui: &mut egui::Ui) {
+    section_header(ui, "Numeric fields");
+    let w = 120.0;
+    ui.add(
+        NumericField::new(&mut 80.0)
+            .label("X steps")
+            .unit("steps/mm")
+            .range(1.0..=10_000.0)
+            .original(80.0)
+            .label_width(w),
+    );
+    ui.add(
+        NumericField::new(&mut 415.5)
+            .label("Z steps")
+            .unit("steps/mm")
+            .range(1.0..=10_000.0)
+            .original(400.0)
+            .label_width(w),
+    );
+    ui.add(
+        NumericField::new(&mut 1500.0)
+            .label("Max feedrate X")
+            .unit("mm/s")
+            .range(1.0..=1000.0)
+            .decimals(0)
+            .original(1500.0)
+            .label_width(w),
+    );
+    ui.add(
+        NumericField::new(&mut { f64::NAN })
+            .label("Probe Z offset")
+            .unit("mm")
+            .label_width(w),
+    );
+    ui.add(
+        NumericField::new(&mut 3_u8)
+            .label("Fan index")
+            .label_width(w),
+    );
+    ui.add_space(6.0);
+    section_header(ui, "Key / value");
+    KeyValueGrid::new("kv").key_width(110.0).show(ui, |kv| {
+        kv.row("Firmware", "Marlin 2.1.2.4 (Sep 25 2024)");
+        kv.row("Machine", "Prusa i3 MK3S+");
+        kv.row_mono("UUID", "cede2a2f-41a2-4748-9b12-c55c62f367ff");
+        kv.row_tone("Thermal", "Stable ±0.3 °C", Tone::Success);
+        kv.row_tone("Endstop Z", "TRIGGERED", Tone::Warning);
+        kv.row("Serial", "");
+        kv.row_ui("Extruders", |ui| {
+            ui.add(Badge::new("2").tone(Tone::Info));
+        });
+    });
+}
+
 #[test]
 fn buttons_snapshot() {
     for theme in Theme::ALL {
@@ -298,5 +352,13 @@ fn charts_snapshot() {
     for theme in Theme::ALL {
         let mut h = fit(theme, 460.0, charts);
         snapshot(&mut h, &name("charts", theme));
+    }
+}
+
+#[test]
+fn forms_snapshot() {
+    for theme in Theme::ALL {
+        let mut h = fit(theme, 460.0, forms);
+        snapshot(&mut h, &name("forms", theme));
     }
 }
