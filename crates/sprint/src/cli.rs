@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use sprint_host::ConnectTarget;
+use sprint_host::{ConnectTarget, PrinterProfile};
 
 /// Sprint: a fast, modern 3D printer host.
 ///
@@ -20,9 +20,12 @@ use sprint_host::ConnectTarget;
     after_help = "Connection targets (T): a serial port such as COM3 (115200 baud) or \
                   COM3@250000 (COM3@auto detects the rate), /dev/ttyUSB0@115200, \
                   tcp://host:port, or sim for the built-in virtual printer \
-                  (sim://?time_scale=50&instant_moves=true sets its options).\n\
+                  (sim://?time_scale=50&instant_moves=true sets its options); print and send \
+                  also take profile for the profile's printer.\n\
                   Sprint connects only to the target given, or at startup (GUI, TUI and shell) \
                   to the active profile's printer when the profile turns auto_connect on.\n\
+                  Profiles: --profile NAME picks another printer profile for tui, shell, print \
+                  and send; the shell's profile command lists, switches and saves them.\n\
                   Configuration: SPRINT_CONFIG names another configuration file; every front \
                   end uses it, the GUI included.\n\
                   Logging: set RUST_LOG (for example RUST_LOG=debug)."
@@ -85,6 +88,10 @@ pub struct TuiArgs {
     /// Printer to connect to at startup.
     #[arg(long, short = 'c', value_name = "T", value_parser = parse_target)]
     pub connect: Option<ConnectTarget>,
+    /// Printer profile to use instead of the active one (its name, a
+    /// unique prefix of it, or its number in the shell's profile list).
+    #[arg(long, short = 'p', value_name = "NAME")]
+    pub profile: Option<String>,
 }
 
 /// Options of the line shell.
@@ -93,6 +100,31 @@ pub struct ShellArgs {
     /// Printer to connect to at startup.
     #[arg(long, short = 'c', value_name = "T", value_parser = parse_target)]
     pub connect: Option<ConnectTarget>,
+    /// Printer profile to use instead of the active one (its name, a
+    /// unique prefix of it, or its number in the shell's profile list).
+    #[arg(long, short = 'p', value_name = "NAME")]
+    pub profile: Option<String>,
+}
+
+/// The printer of `print` and `send`: a connection target, or `profile`
+/// for the profile's printer (named, so that no serial port is opened
+/// by surprise).
+#[derive(Clone, Debug, PartialEq)]
+pub enum TargetArg {
+    /// This target.
+    Target(ConnectTarget),
+    /// The printer stored in the profile.
+    Profile,
+}
+
+impl TargetArg {
+    /// The target to connect to with `profile`.
+    pub fn resolve(&self, profile: &PrinterProfile) -> ConnectTarget {
+        match self {
+            TargetArg::Target(target) => target.clone(),
+            TargetArg::Profile => profile.connection.clone(),
+        }
+    }
 }
 
 /// Options of a headless print.
@@ -101,9 +133,14 @@ pub struct PrintArgs {
     /// G-code file to print.
     #[arg(value_name = "FILE")]
     pub file: PathBuf,
-    /// Printer to print on.
-    #[arg(long, short = 'c', value_name = "T", value_parser = parse_target)]
-    pub connect: ConnectTarget,
+    /// Printer to print on, or "profile" for the profile's printer.
+    #[arg(long, short = 'c', value_name = "T", value_parser = parse_target_arg)]
+    pub connect: TargetArg,
+    /// Printer profile to use instead of the active one (its name, a
+    /// unique prefix of it, or its number in the shell's profile list):
+    /// its scripts, options and, with --connect profile, its printer.
+    #[arg(long, short = 'p', value_name = "NAME")]
+    pub profile: Option<String>,
     /// Resume an interrupted print from line N of the file (1 = the first
     /// line): heat, home X and Y, and move back to where line N starts.
     #[arg(long, value_name = "N", value_parser = clap::value_parser!(u64).range(1..))]
@@ -150,9 +187,14 @@ pub struct AnalyzeArgs {
 /// Options of `send`.
 #[derive(Clone, Debug, Args)]
 pub struct SendArgs {
-    /// Printer to send to.
-    #[arg(long, short = 'c', value_name = "T", value_parser = parse_target)]
-    pub connect: ConnectTarget,
+    /// Printer to send to, or "profile" for the profile's printer.
+    #[arg(long, short = 'c', value_name = "T", value_parser = parse_target_arg)]
+    pub connect: TargetArg,
+    /// Printer profile to use instead of the active one (its name, a
+    /// unique prefix of it, or its number in the shell's profile list):
+    /// its options and, with --connect profile, its printer.
+    #[arg(long, short = 'p', value_name = "NAME")]
+    pub profile: Option<String>,
     /// Seconds to wait for each command's "ok" (homing and heating take a
     /// while).
     #[arg(long, value_name = "SECS", default_value_t = 30.0, value_parser = parse_timeout)]
@@ -214,6 +256,14 @@ fn parse_target(text: &str) -> Result<ConnectTarget, String> {
         return Err("the connection target is empty (try COM3, tcp://host:port or sim)".into());
     }
     ConnectTarget::parse(trimmed).map_err(|e| e.to_string())
+}
+
+/// A target, or `profile` ([`TargetArg`]).
+fn parse_target_arg(text: &str) -> Result<TargetArg, String> {
+    if text.trim().eq_ignore_ascii_case("profile") {
+        return Ok(TargetArg::Profile);
+    }
+    parse_target(text).map(TargetArg::Target)
 }
 
 fn parse_timeout(text: &str) -> Result<f32, String> {
@@ -302,11 +352,12 @@ mod tests {
         };
         assert_eq!(
             p.connect,
-            ConnectTarget::Tcp {
+            TargetArg::Target(ConnectTarget::Tcp {
                 host: "h".into(),
                 port: 1
-            }
+            })
         );
+        assert_eq!(p.profile, None);
         assert_eq!(p.start_line, None);
         assert!(!p.no_progress);
         assert_eq!(p.answer_prompts, AnswerPrompts::Ask);
@@ -323,7 +374,7 @@ mod tests {
         ]) else {
             panic!("print");
         };
-        assert!(p.connect.is_simulator());
+        assert!(matches!(&p.connect, TargetArg::Target(t) if t.is_simulator()));
         assert_eq!(p.start_line, Some(120));
         assert!(p.no_progress);
         assert_eq!(p.answer_prompts, AnswerPrompts::Continue);
@@ -338,6 +389,27 @@ mod tests {
         };
         assert_eq!(s.commands, ["G1 X10"]);
         assert_eq!(s.timeout, 2.5);
+        // The profile's printer only when asked for by name.
+        let Ok(Command::Send(s)) = parse(&["send", "-c", "Profile", "-p", "Ender 3", "M115"])
+        else {
+            panic!("send");
+        };
+        assert_eq!(s.connect, TargetArg::Profile);
+        assert_eq!(s.profile.as_deref(), Some("Ender 3"));
+        let Ok(Command::Print(p)) = parse(&["print", "a.gcode", "--connect", "profile"]) else {
+            panic!("print");
+        };
+        assert_eq!(p.connect, TargetArg::Profile);
+        let profile = PrinterProfile::default();
+        assert_eq!(p.connect.resolve(&profile), profile.connection);
+        let Ok(Command::Tui(t)) = parse(&["tui", "--profile", "2"]) else {
+            panic!("tui");
+        };
+        assert_eq!(t.profile.as_deref(), Some("2"));
+        let Ok(Command::Shell(s)) = parse(&["shell", "-p", "MK3"]) else {
+            panic!("shell");
+        };
+        assert_eq!(s.profile.as_deref(), Some("MK3"));
         assert!(matches!(parse(&["ports"]), Ok(Command::Ports)));
         let Ok(Command::Analyze(a)) = parse(&["analyze", "a.gcode", "--json"]) else {
             panic!("analyze");

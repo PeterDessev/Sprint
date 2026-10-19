@@ -45,8 +45,8 @@ const PAUSE_GRACE: Duration = Duration::from_secs(3);
 
 /// Run `sprint print`.
 pub fn run(args: &PrintArgs) -> Result<ExitCode> {
-    let (config, _) = sprint_tui::config::load_config();
-    let profile = config.active().clone();
+    let (config, profile) = headless::load_profile(args.profile.as_deref())?;
+    let target = args.connect.resolve(&profile);
     let interrupt = interrupt::global();
     let stderr_tty = io::stderr().is_terminal();
     let show_progress = !args.no_progress;
@@ -81,16 +81,11 @@ pub fn run(args: &PrintArgs) -> Result<ExitCode> {
 
     let printer = Printer::with_console_capacity(config.console_max_lines);
     printer.set_profile(profile.clone());
-    let label = args.connect.label();
+    let label = target.label();
     if show_progress {
         eprintln!("Connecting to {label}…");
     }
-    let connected = headless::connect(
-        &printer,
-        args.connect.clone(),
-        profile.options.clone(),
-        &interrupt,
-    )?;
+    let connected = headless::connect(&printer, target, profile.options.clone(), &interrupt)?;
     if connected == Connected::Interrupted {
         eprintln!("Interrupted");
         return Ok(ExitCode::from(EXIT_INTERRUPTED));

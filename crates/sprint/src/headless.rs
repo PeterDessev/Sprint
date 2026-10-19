@@ -4,7 +4,7 @@
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
-use sprint_host::{ConnectOptions, ConnectTarget, Printer};
+use sprint_host::{AppConfig, ConnectOptions, ConnectTarget, Printer, PrinterProfile};
 use sprint_tui::interrupt::Interrupt;
 use sprint_tui::session::{self, ConnectError, WaitError};
 
@@ -13,6 +13,15 @@ pub const EXIT_INTERRUPTED: u8 = 130;
 
 /// How long the setup queries after connecting may take.
 const SETUP_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// The configuration and the printer profile to use: the one `--profile`
+/// names, else the active one.
+pub fn load_profile(name: Option<&str>) -> Result<(AppConfig, PrinterProfile)> {
+    let (mut config, _) = sprint_tui::config::load_config();
+    sprint_tui::config::select_profile(&mut config, name).map_err(|e| anyhow!("--profile: {e}"))?;
+    let profile = config.active().clone();
+    Ok((config, profile))
+}
 
 /// How connecting ended, when it did not fail.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

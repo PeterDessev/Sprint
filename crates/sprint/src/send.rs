@@ -29,20 +29,15 @@ const IDLE_GIVE_UP: Duration = Duration::from_secs(1);
 
 /// Run `sprint send`.
 pub fn run(args: &SendArgs) -> Result<ExitCode> {
-    let (config, _) = sprint_tui::config::load_config();
-    let profile = config.active().clone();
+    let (config, profile) = headless::load_profile(args.profile.as_deref())?;
+    let target = args.connect.resolve(&profile);
     let printer = Printer::with_console_capacity(config.console_max_lines);
     printer.set_profile(profile.clone());
     let interrupt = interrupt::global();
-    let label = args.connect.label();
+    let label = target.label();
     // The replies to the setup queries are not ours: they are over once
     // this returns.
-    let connected = headless::connect(
-        &printer,
-        args.connect.clone(),
-        profile.options.clone(),
-        &interrupt,
-    )?;
+    let connected = headless::connect(&printer, target, profile.options.clone(), &interrupt)?;
     if connected == Connected::Interrupted {
         return Ok(ExitCode::from(EXIT_INTERRUPTED));
     }

@@ -329,3 +329,63 @@ fn print_fails_when_the_printer_is_unreachable() {
     );
     assert!(output.stdout.is_empty());
 }
+
+#[test]
+fn send_and_print_use_the_profile_named() {
+    use sprint_host::{AppConfig, ConnectTarget, PrinterProfile};
+    let scratch = Scratch::new("profiles");
+    let config = AppConfig {
+        profiles: vec![
+            // The active one: loopback with nothing listening (never a serial
+            // port), so using it by mistake fails.
+            PrinterProfile {
+                name: "Loopback".into(),
+                connection: ConnectTarget::parse("tcp://127.0.0.1:1").expect("target"),
+                ..PrinterProfile::default()
+            },
+            PrinterProfile {
+                name: "Bench sim".into(),
+                connection: ConnectTarget::parse(FAST_SIM).expect("target"),
+                ..PrinterProfile::default()
+            },
+        ],
+        ..AppConfig::default()
+    };
+    config
+        .save_to(&scratch.0.join("config.toml"))
+        .expect("save the configuration");
+    let output = scratch.run(&["send", "-c", "profile", "--profile", "bench", "M115"]);
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        stdout(&output),
+        stderr(&output)
+    );
+    assert!(stdout(&output).contains("FIRMWARE_NAME:Marlin"));
+    // Without --profile, the active profile's printer.
+    let output = scratch.run(&["send", "-c", "profile", "M115"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr(&output).contains("cannot connect to tcp://127.0.0.1:1"),
+        "{}",
+        stderr(&output)
+    );
+    let output = scratch.run(&[
+        "print",
+        &sample("calibration-cube.gcode"),
+        "-c",
+        "profile",
+        "-p",
+        "2",
+        "--no-progress",
+    ]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(stdout(&output).contains("Completed calibration-cube.gcode"));
+    let output = scratch.run(&["send", "-c", "sim", "-p", "voron", "M105"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr(&output).contains("--profile: no profile 'voron' (profiles: Loopback, Bench sim)"),
+        "{}",
+        stderr(&output)
+    );
+}
