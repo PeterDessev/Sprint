@@ -12,7 +12,7 @@ mod tests;
 mod ui;
 mod view;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::Receiver;
@@ -742,15 +742,24 @@ impl App {
             "Print",
             "Not now",
             false,
-            Action::StartPrint,
+            Action::StartPrint(file.path.clone()),
         )));
     }
 
-    fn start_print(&mut self) {
+    /// Print the loaded file when it is still the one at `path`: another
+    /// file may have finished loading while the question was open.
+    fn start_print(&mut self, path: &Path) {
         let Some(file) = &self.file else {
             self.warn("No file loaded (F3 opens one)");
             return;
         };
+        if file.path != path {
+            let name = file.name().to_string();
+            self.warn(format!(
+                "{name} was loaded meanwhile; press F5 again to print it"
+            ));
+            return;
+        }
         let options = actions::print_options(file);
         let name = file.name().to_string();
         match self.printer.start_print(file.file.clone(), options) {
@@ -1048,7 +1057,7 @@ impl App {
             Action::SetTempsAnyway(targets) => {
                 self.set_temps(&actions::safe_targets(&targets));
             }
-            Action::StartPrint => self.start_print(),
+            Action::StartPrint(path) => self.start_print(&path),
             Action::CancelJob => {
                 self.printer.cancel();
                 self.warn("Cancelling");

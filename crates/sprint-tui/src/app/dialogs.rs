@@ -39,7 +39,9 @@ pub(crate) enum Action {
     SetTemps(Vec<(Heater, f32)>),
     /// Set heater targets (already confirmed).
     SetTempsAnyway(Vec<(Heater, f32)>),
-    StartPrint,
+    /// Print the loaded file, which must still be the one at this path
+    /// (the question named it).
+    StartPrint(PathBuf),
     CancelJob,
     Quit,
     EepromReset,
@@ -1327,15 +1329,15 @@ mod tests {
             "Print",
             "Not now",
             false,
-            Action::StartPrint,
+            Action::StartPrint(PathBuf::from("a.gcode")),
         );
         assert_eq!(
             c.handle_key(key(KeyCode::Enter)),
-            Outcome::Run(Action::StartPrint)
+            Outcome::Run(Action::StartPrint(PathBuf::from("a.gcode")))
         );
         assert_eq!(
             c.handle_key(key(KeyCode::Char('y'))),
-            Outcome::Run(Action::StartPrint)
+            Outcome::Run(Action::StartPrint(PathBuf::from("a.gcode")))
         );
         assert_eq!(c.handle_key(key(KeyCode::Char('n'))), Outcome::Close);
     }

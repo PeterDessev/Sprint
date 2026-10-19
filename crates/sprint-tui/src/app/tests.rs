@@ -1461,3 +1461,27 @@ fn terminal_events_resize_paste_and_cancel_typing() {
     press(&mut app, KeyCode::Enter);
     assert_eq!(app.focus, Focus::Console);
 }
+
+#[test]
+fn the_print_confirmation_starts_the_file_it_named() {
+    let mut app = connected_app();
+    load(&mut app, "calibration-cube.gcode");
+    press(&mut app, KeyCode::F(5));
+    assert!(matches!(app.modal, Some(Modal::Confirm(_))));
+    // Another file finishes loading while the question is open.
+    load(&mut app, "arcs-test.gcode");
+    press(&mut app, KeyCode::Enter);
+    app.sync();
+    assert!(
+        app.printer.with_state(|s| s.job.is_none()),
+        "printed a file the question did not name: {:?}",
+        app.view.job.as_ref().map(|j| j.name.clone())
+    );
+    assert!(
+        app.toast
+            .as_ref()
+            .is_some_and(|t| t.text.contains("press F5 again")),
+        "{:?}",
+        app.toast
+    );
+}
