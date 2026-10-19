@@ -84,6 +84,20 @@ impl Tab {
             Tab::SdCard => "SD card",
         }
     }
+
+    /// The tab's icon (see [`crate::icons`]).
+    pub fn icon(self) -> &'static str {
+        match self {
+            Tab::View3D => crate::icons::VIEW_3D,
+            Tab::Gcode => crate::icons::CODE,
+            Tab::Temperature => crate::icons::CHART,
+            Tab::Printer => crate::icons::PRINTER,
+            Tab::Tuning => crate::icons::TUNING,
+            Tab::Calibration => crate::icons::CALIBRATION,
+            Tab::BedMesh => crate::icons::MESH,
+            Tab::SdCard => crate::icons::SD_CARD,
+        }
+    }
 }
 
 /// Requests from panels to the app shell, handled after the frame's panels
@@ -106,6 +120,30 @@ pub enum AppAction {
     },
     /// Open the settings / printer profiles dialog.
     OpenSettings,
+    /// Load the current file again from disk (refused while it prints).
+    ReloadFile,
+    /// Unload the current file.
+    CloseFile,
+    /// Connect with the active profile's connection target.
+    Connect,
+    /// Close the printer connection.
+    Disconnect,
+    /// Pause the running job.
+    PauseJob,
+    /// Resume the paused job.
+    ResumeJob,
+    /// Ask whether to cancel the running job (and cancel it on "yes").
+    CancelJob,
+    /// Open the G-code tab's find bar.
+    FindInGcode,
+    /// Open the G-code tab's "go to line" field.
+    GotoLine,
+    /// Show the keyboard shortcuts.
+    OpenShortcuts,
+    /// Show the about dialog.
+    OpenAbout,
+    /// Switch between the dark and light theme.
+    SetTheme(crate::theme::Theme),
 }
 
 /// Everything a panel may use during one frame.
@@ -142,5 +180,19 @@ impl AppCtx<'_> {
             .job
             .as_ref()
             .is_some_and(|job| job.status.is_active())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_tab_has_a_distinct_title_and_icon() {
+        let titles: std::collections::HashSet<_> = Tab::ALL.iter().map(|t| t.title()).collect();
+        let icons: std::collections::HashSet<_> = Tab::ALL.iter().map(|t| t.icon()).collect();
+        assert_eq!(titles.len(), Tab::ALL.len());
+        assert_eq!(icons.len(), Tab::ALL.len());
+        assert_eq!(Tab::default(), Tab::View3D);
     }
 }
