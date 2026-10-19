@@ -16,6 +16,7 @@ pub mod dialogs;
 pub mod fonts;
 pub mod format;
 pub mod icons;
+pub mod insight;
 pub mod loader;
 pub mod menu;
 pub mod native_dialog;
