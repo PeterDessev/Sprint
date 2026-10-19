@@ -172,7 +172,6 @@ fn send_runs_each_argument_in_order() {
         .find("X:")
         .unwrap_or_else(|| panic!("no M114 reply in\n{text}"));
     assert!(temp < position, "{text}");
-    // An unknown command is answered, not an error.
     assert!(text.contains("Unknown command"), "{text}");
 }
 
@@ -192,7 +191,10 @@ fn send_gives_up_after_the_timeout() {
     ]);
     assert_eq!(output.status.code(), Some(1), "{}", stdout(&output));
     let err = stderr(&output);
-    assert!(err.contains("no ok for G4 S5 within"), "{err}");
+    assert!(
+        err.contains("no ok for G4 S5 and no sign of progress within"),
+        "{err}"
+    );
     assert!(err.contains("remaining commands were not sent"), "{err}");
     assert!(!stdout(&output).contains("ok T:"), "{}", stdout(&output));
     assert!(started.elapsed() < std::time::Duration::from_secs(20));

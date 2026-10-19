@@ -209,8 +209,9 @@ pub struct SendArgs {
     /// its options and, with --connect profile, its printer.
     #[arg(long, short = 'p', value_name = "NAME")]
     pub profile: Option<String>,
-    /// Seconds to wait for each command's "ok" (homing and heating take a
-    /// while).
+    /// Seconds the printer may stay silent about a command before Sprint
+    /// gives up: busy messages (homing, probing) and, while M109, M190 or
+    /// M191 waits for a temperature, temperature reports restart the wait.
     #[arg(long, value_name = "SECS", default_value_t = 30.0, value_parser = parse_timeout)]
     pub timeout: f32,
     /// Commands to send, in order (quote commands with parameters:
