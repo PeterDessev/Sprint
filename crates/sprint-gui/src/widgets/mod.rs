@@ -38,12 +38,14 @@
 mod button;
 mod card;
 mod chart;
+mod dialog;
 mod jog;
 mod keyvalue;
 mod numeric;
 mod progress;
 mod status;
 mod temperature;
+mod toast;
 mod toggle;
 
 pub use button::{ActionButton, ButtonKind, ButtonSize, EStopButton, EStopStyle, IconButton};
@@ -51,6 +53,7 @@ pub use card::{
     Card, EmptyState, EmptyStateResponse, SectionHeader, card, card_frame, section_header,
 };
 pub use chart::{ChartSeries, MiniChart, Sparkline, finite_runs, nice_ticks, smooth_points};
+pub use dialog::{ConfirmDialog, DialogResult};
 pub use jog::{
     Axis, ExtruderAction, ExtruderControl, HomeTarget, JOG_RINGS, JogAction, JogCorner,
     JogDirection, JogGeometry, JogPad, JogRegion, ZJog, signed_step, step_label,
@@ -63,6 +66,7 @@ pub use temperature::{
     HOT_THRESHOLD, HeaterState, TemperatureAction, TemperatureCard, format_temperature,
     parse_temperature,
 };
+pub use toast::{Toast, ToastId, ToastKind, Toasts};
 pub use toggle::{SegmentedControl, Toggle};
 
 use egui::{CornerRadius, FontId, Rect, Response, Stroke, StrokeKind, Ui};

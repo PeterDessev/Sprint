@@ -419,3 +419,75 @@ fn temperature_off_button_is_disabled_when_off() {
     h.run_ok();
     assert!(h.state().is_empty());
 }
+
+fn dialog_harness(danger: bool) -> egui_kittest::Harness<'static, Vec<DialogResult>> {
+    harness_state(
+        Theme::Dark,
+        (520.0, 320.0),
+        Vec::new(),
+        move |ui, answers| {
+            if answers.is_empty()
+                && let Some(answer) = ConfirmDialog::new("q", "Proceed?")
+                    .confirm_label("Go")
+                    .danger(danger)
+                    .show(ui.ctx())
+            {
+                answers.push(answer);
+            }
+        },
+    )
+}
+
+#[test]
+fn dialog_buttons_answer() {
+    let mut h = dialog_harness(false);
+    h.get_by_label("Go").click();
+    h.run_ok();
+    assert_eq!(h.state().as_slice(), &[DialogResult::Confirmed]);
+    let mut h = dialog_harness(true);
+    h.get_by_label("Cancel").click();
+    h.run_ok();
+    assert_eq!(h.state().as_slice(), &[DialogResult::Cancelled]);
+}
+
+#[test]
+fn dialog_keyboard() {
+    let mut h = dialog_harness(false);
+    h.key_press(egui::Key::Enter);
+    h.run_ok();
+    assert_eq!(h.state().as_slice(), &[DialogResult::Confirmed]);
+    let mut h = dialog_harness(false);
+    h.key_press(egui::Key::Escape);
+    h.run_ok();
+    assert_eq!(h.state().as_slice(), &[DialogResult::Cancelled]);
+    // Enter never confirms a danger dialog (Cancel has the focus).
+    let mut h = dialog_harness(true);
+    h.key_press(egui::Key::Enter);
+    h.run_ok();
+    assert_ne!(h.state().first(), Some(&DialogResult::Confirmed));
+}
+
+#[test]
+fn dialog_backdrop_click_cancels() {
+    let mut h = dialog_harness(true);
+    click_at(&mut h, egui::pos2(5.0, 5.0));
+    h.run_ok();
+    assert_eq!(h.state().as_slice(), &[DialogResult::Cancelled]);
+}
+
+#[test]
+fn toasts_dismiss_and_expire() {
+    let mut toasts = Toasts::new();
+    toasts.info("Short").duration(1.0);
+    toasts.error("Sticky").sticky();
+    let mut h = harness_state(Theme::Light, (520.0, 320.0), toasts, |ui, toasts| {
+        toasts.show(ui.ctx());
+    });
+    // The harness settles for many frames: the timed toast is gone.
+    h.run_ok();
+    assert_eq!(h.state().len(), 1);
+    assert!(h.query_by_label("Short").is_none());
+    h.get_by_label("Dismiss").click();
+    h.run_ok();
+    assert!(h.state().is_empty());
+}

@@ -466,3 +466,60 @@ fn temperatures_snapshot() {
         snapshot(&mut h, &name("temperatures", theme));
     }
 }
+
+fn toasts_state() -> Toasts {
+    let mut toasts = Toasts::new();
+    toasts.info("Connected to virtual printer").duration(1000.0);
+    toasts
+        .warning("Resend requested")
+        .message("Line 1234 had a checksum error; the link may be noisy.")
+        .sticky();
+    toasts.success("Print finished").sticky();
+    toasts.success("Print finished").sticky();
+    toasts
+        .error("Thermal runaway")
+        .message("Heater 0 stopped heating. The printer halted (M112).")
+        .sticky();
+    toasts
+}
+
+#[test]
+fn toasts_snapshot() {
+    for theme in Theme::ALL {
+        let mut h = common::harness_state(theme, (560.0, 460.0), toasts_state(), |ui, toasts| {
+            section_header(ui, "Toasts (top right)");
+            ui.label("Background content");
+            toasts.show(ui.ctx());
+        });
+        snapshot(&mut h, &name("toasts", theme));
+    }
+}
+
+#[test]
+fn dialogs_snapshot() {
+    for (danger, base) in [(true, "dialog_danger"), (false, "dialog")] {
+        for theme in Theme::ALL {
+            let mut h = common::harness(theme, (560.0, 340.0), move |ui| {
+                section_header(ui, "Behind the dialog");
+                ui.add(ActionButton::new("Reset EEPROM").danger());
+                let dialog = if danger {
+                    ConfirmDialog::new("reset", "Reset all settings to defaults?")
+                        .message(
+                            "This sends M502, which restores the firmware defaults. Tuned \
+                             values are lost unless they were saved elsewhere.",
+                        )
+                        .details("M502 ; factory reset")
+                        .confirm_label("Reset")
+                        .danger(true)
+                } else {
+                    ConfirmDialog::new("print", "Start printing benchy.gcode?")
+                        .message("Estimated 1 h 42 min, 11.3 m of filament.")
+                        .confirm_label("Start print")
+                        .icon(icons::PLAY)
+                };
+                let _ = dialog.show(ui.ctx());
+            });
+            snapshot(&mut h, &name(base, theme));
+        }
+    }
+}
