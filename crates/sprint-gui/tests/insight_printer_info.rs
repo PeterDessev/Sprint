@@ -145,6 +145,30 @@ fn printer_tab_tolerates_garbage_state() {
 }
 
 #[test]
+fn statistics_survive_huge_counters() {
+    // Uninitialised EEPROM statistics read as 0xFFFFFFFF.
+    let mut state = demo_state();
+    state.stats = Some(sprint_host::sprint_proto::StatsReport {
+        prints: Some(u32::MAX),
+        finished: Some(u32::MAX),
+        failed: Some(u32::MAX),
+        total_time: Some(u64::MAX),
+        longest_job: Some(u64::MAX),
+        filament_used_mm: Some(f64::MAX),
+    });
+    let mut h = harness_state(
+        Theme::Dark,
+        (1180.0, 1060.0),
+        Host::<PrinterInfoTab>::synthetic(state),
+        |ui, host| host.frame(ui),
+    );
+    h.run_ok();
+    assert!(h.query_by_label("Finished: 4,294,967,295").is_some());
+    // Half of the jobs that ended were finished.
+    assert!(h.query_by_label_contains("50%").is_some());
+}
+
+#[test]
 fn printer_tab_queries_the_simulator() {
     let printer = sim_printer(fast_sim());
     let mut h = harness_state(

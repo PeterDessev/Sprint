@@ -321,10 +321,11 @@ pub(super) fn statistics(ui: &mut Ui, ctx: &mut AppCtx<'_>) {
                     }
                     return;
                 };
-                let finished = stats.finished.unwrap_or(0);
-                let failed = stats.failed.unwrap_or(0);
+                // 64-bit: uninitialised EEPROM counters read as u32::MAX.
+                let finished = u64::from(stats.finished.unwrap_or(0));
+                let failed = u64::from(stats.failed.unwrap_or(0));
                 let ended = finished + failed;
-                let rate = (ended > 0).then(|| finished as f32 / ended as f32);
+                let rate = (ended > 0).then(|| (finished as f64 / ended as f64) as f32);
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 16.0;
                     let ring = match rate {
@@ -377,7 +378,7 @@ pub(super) fn statistics(ui: &mut Ui, ctx: &mut AppCtx<'_>) {
                     )
                 };
                 let average = match (stats.total_time, ended) {
-                    (Some(t), n) if n > 0 => format::duration(t as f64 / f64::from(n)),
+                    (Some(t), n) if n > 0 => format::duration(t as f64 / n as f64),
                     _ => format::MISSING.to_owned(),
                 };
                 kit::metric_grid(
