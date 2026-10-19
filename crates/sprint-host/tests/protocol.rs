@@ -498,3 +498,42 @@ fn injected_fatal_errors_fail_the_job() {
     // The link stays open so the user can see what happened.
     assert!(printer.with_state(|s| s.status.is_connected()));
 }
+
+#[test]
+fn a_reset_during_the_handshake_repeats_m110_at_once() {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut fw = Mini::new(Arc::clone(&log));
+    let mut booted = false;
+    let (link, _) = fake(
+        |_| {},
+        move |line, out| {
+            if !booted {
+                // Opening the port reset the board: the first command is
+                // lost while it boots.
+                booted = true;
+                out.line("start");
+                return;
+            }
+            if fw.accept(line, out).is_some() {
+                out.line("ok");
+            }
+        },
+    );
+    let start = Instant::now();
+    let printer = connect_fake(
+        link,
+        ConnectOptions {
+            query_on_connect: false,
+            temp_poll_secs: 0.0,
+            ..options()
+        },
+    );
+    wait_for(&printer, "connected", |s| s.is_connected());
+    // The first M110 goes out after a second of silence; the retry would
+    // come two seconds later, the reaction to "start" comes at once.
+    assert!(
+        start.elapsed() < Duration::from_millis(2500),
+        "{:?}",
+        start.elapsed()
+    );
+}

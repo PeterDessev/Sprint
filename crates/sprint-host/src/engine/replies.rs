@@ -89,6 +89,18 @@ impl Engine {
                 }
                 Reply::Firmware(info) => self.on_firmware(info),
                 Reply::Capability { name, enabled } => self.on_capability(name, enabled),
+                Reply::Start => {
+                    // The board (re)booted: whatever was sent before is
+                    // gone, so send M110 again right away.
+                    if let Phase::Handshake { started, .. } = self.phase {
+                        self.phase = Phase::Handshake {
+                            started,
+                            line_seen: true,
+                            attempts: 0,
+                            last_attempt: None,
+                        };
+                    }
+                }
                 _ => {}
             }
         }
