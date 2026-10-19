@@ -19,9 +19,10 @@
 //! Widgets never send G-code; the sections turn their actions into
 //! [`sprint_host::Printer`] calls, which never block the UI thread.
 
+mod motion;
 mod temperatures;
 
-use egui::{CornerRadius, Frame, Label, Margin, Response, RichText, Ui};
+use egui::{Align, CornerRadius, Frame, Label, Layout, Margin, Response, RichText, Ui};
 
 use crate::context::AppCtx;
 use crate::icons;
@@ -35,7 +36,9 @@ use crate::widgets::Card;
 /// the macro editor, ...); everything about the machine comes from the
 /// frame's [`AppCtx`].
 #[derive(Default)]
-pub struct ControlsSidebar {}
+pub struct ControlsSidebar {
+    motion: motion::Motion,
+}
 
 impl ControlsSidebar {
     /// Draw the panel (it scrolls vertically by itself).
@@ -49,7 +52,22 @@ impl ControlsSidebar {
                     offline_hint(ui, ctx);
                 }
                 temperatures::show(ui, ctx);
+                self.motion.show(ui, ctx);
             });
+    }
+}
+
+/// Why machine motion is unavailable right now, if it is.
+fn motion_lock(ctx: &AppCtx<'_>) -> Option<&'static str> {
+    if !ctx.connected() {
+        Some("Connect to a printer to use these controls.")
+    } else if ctx.job_active() {
+        Some(
+            "Locked while a job runs: moves and extrusion would be interleaved \
+             with the print. Live tuning, fans and temperatures stay available.",
+        )
+    } else {
+        None
     }
 }
 
@@ -90,6 +108,29 @@ fn notice(ui: &mut Ui, icon: &str, text: &str, tone: Tone) -> Response {
             });
         })
         .response
+}
+
+/// A dim caption line (hints under controls).
+fn caption(ui: &mut Ui, text: &str) -> Response {
+    let p = theme::ui_palette(ui);
+    ui.add(
+        Label::new(
+            RichText::new(text)
+                .font(theme::font(ui, theme::TextRole::Caption))
+                .color(p.text_dim),
+        )
+        .wrap(),
+    )
+}
+
+/// A row with `left` content and `right` content aligned to the right edge.
+fn split_row(ui: &mut Ui, left: impl FnOnce(&mut Ui), right: impl FnOnce(&mut Ui)) {
+    ui.horizontal(|ui| {
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            right(ui);
+            ui.with_layout(Layout::left_to_right(Align::Center), left);
+        });
+    });
 }
 
 /// The "not connected" hint at the top of the sidebar.
