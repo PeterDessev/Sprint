@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand};
+use sprint_host::ConnectTarget;
 
 /// Sprint: a fast, modern 3D printer host.
 ///
@@ -17,7 +18,11 @@ use clap::{Args, Parser, Subcommand};
     long_about = None,
     args_conflicts_with_subcommands = true,
     after_help = "Connection targets (T): a serial port such as COM3 or COM3@250000, \
-                  /dev/ttyUSB0@115200, tcp://host:port, or sim for the built-in virtual printer.\n\
+                  /dev/ttyUSB0@115200, tcp://host:port, or sim for the built-in virtual printer \
+                  (sim://?time_scale=50&instant_moves=true sets its options).\n\
+                  Sprint connects only to the target given, or in the TUI and the shell to the \
+                  profile's printer when the profile turns auto_connect on.\n\
+                  Configuration: SPRINT_CONFIG names another configuration file.\n\
                   Logging: set RUST_LOG (for example RUST_LOG=debug)."
 )]
 pub struct Cli {
@@ -93,7 +98,7 @@ pub struct TuiArgs {
     pub file: Option<PathBuf>,
     /// Printer to connect to at startup.
     #[arg(long, short = 'c', value_name = "T", value_parser = parse_target)]
-    pub connect: Option<String>,
+    pub connect: Option<ConnectTarget>,
 }
 
 /// Options of the line shell.
@@ -101,7 +106,7 @@ pub struct TuiArgs {
 pub struct ShellArgs {
     /// Printer to connect to at startup.
     #[arg(long, short = 'c', value_name = "T", value_parser = parse_target)]
-    pub connect: Option<String>,
+    pub connect: Option<ConnectTarget>,
 }
 
 /// Options of a headless print.
@@ -112,7 +117,14 @@ pub struct PrintArgs {
     pub file: PathBuf,
     /// Printer to print on.
     #[arg(long, short = 'c', value_name = "T", value_parser = parse_target)]
-    pub connect: String,
+    pub connect: ConnectTarget,
+    /// Resume an interrupted print from line N of the file (1 = the first
+    /// line): heat, home X and Y, and move back to where line N starts.
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u64).range(1..))]
+    pub start_line: Option<u64>,
+    /// Do not show the progress line on stderr.
+    #[arg(long)]
+    pub no_progress: bool,
 }
 
 /// Options of `analyze`.
@@ -136,9 +148,13 @@ pub struct AnalyzeArgs {
 pub struct SendArgs {
     /// Printer to send to.
     #[arg(long, short = 'c', value_name = "T", value_parser = parse_target)]
-    pub connect: String,
+    pub connect: ConnectTarget,
+    /// Seconds to wait for each command's "ok" (homing and heating take a
+    /// while).
+    #[arg(long, value_name = "SECS", default_value_t = 30.0, value_parser = parse_timeout)]
+    pub timeout: f32,
     /// Commands to send, in order (quote commands with parameters:
-    /// "G1 X10").
+    /// "G1 X10"; each argument is one command).
     #[arg(value_name = "CMD", required = true, num_args = 1..)]
     pub commands: Vec<String>,
 }
@@ -187,14 +203,17 @@ pub struct SimArgs {
     pub name: Option<String>,
 }
 
-/// A connection target: any non-blank text for now (it is validated when
-/// connecting).
-fn parse_target(text: &str) -> Result<String, String> {
+/// A connection target ([`ConnectTarget::parse`]); parsing never opens it.
+fn parse_target(text: &str) -> Result<ConnectTarget, String> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return Err("the connection target is empty (try COM3, tcp://host:port or sim)".into());
     }
-    Ok(trimmed.to_string())
+    ConnectTarget::parse(trimmed).map_err(|e| e.to_string())
+}
+
+fn parse_timeout(text: &str) -> Result<f32, String> {
+    parse_number(text, "the timeout", 0.1, 86_400.0)
 }
 
 /// A finite number in `min..=max`.
@@ -261,20 +280,56 @@ mod tests {
         let Ok(Command::Tui(t)) = parse(&["tui", "a.gcode", "--connect", "sim"]) else {
             panic!("tui");
         };
-        assert_eq!(t.connect.as_deref(), Some("sim"));
+        assert!(t.connect.as_ref().is_some_and(ConnectTarget::is_simulator));
         assert_eq!(t.file, Some(PathBuf::from("a.gcode")));
+        // Parsing a serial target only reads the text; nothing is opened.
         let Ok(Command::Shell(s)) = parse(&["shell", "-c", " COM3@250000 "]) else {
             panic!("shell");
         };
-        assert_eq!(s.connect.as_deref(), Some("COM3@250000"));
+        assert_eq!(
+            s.connect,
+            Some(ConnectTarget::Serial {
+                port: "COM3".into(),
+                baud: 250_000
+            })
+        );
         let Ok(Command::Print(p)) = parse(&["print", "a.gcode", "--connect", "tcp://h:1"]) else {
             panic!("print");
         };
-        assert_eq!(p.connect, "tcp://h:1");
+        assert_eq!(
+            p.connect,
+            ConnectTarget::Tcp {
+                host: "h".into(),
+                port: 1
+            }
+        );
+        assert_eq!(p.start_line, None);
+        assert!(!p.no_progress);
+        let Ok(Command::Print(p)) = parse(&[
+            "print",
+            "a.gcode",
+            "-c",
+            "sim://?time_scale=50&instant_moves=true",
+            "--start-line",
+            "120",
+            "--no-progress",
+        ]) else {
+            panic!("print");
+        };
+        assert!(p.connect.is_simulator());
+        assert_eq!(p.start_line, Some(120));
+        assert!(p.no_progress);
         let Ok(Command::Send(s)) = parse(&["send", "--connect", "sim", "G28", "M105"]) else {
             panic!("send");
         };
         assert_eq!(s.commands, ["G28", "M105"]);
+        assert_eq!(s.timeout, 30.0);
+        let Ok(Command::Send(s)) = parse(&["send", "-c", "sim", "--timeout", "2.5", "G1 X10"])
+        else {
+            panic!("send");
+        };
+        assert_eq!(s.commands, ["G1 X10"]);
+        assert_eq!(s.timeout, 2.5);
         assert!(matches!(parse(&["ports"]), Ok(Command::Ports)));
         let Ok(Command::Analyze(a)) = parse(&["analyze", "a.gcode", "--json"]) else {
             panic!("analyze");
@@ -331,6 +386,12 @@ mod tests {
             &["print", "a.gcode"],
             &["send", "--connect", "sim"],
             &["send", "--connect", "  ", "G28"],
+            &["send", "--connect", "ftp://x", "G28"],
+            &["send", "--connect", "sim://?nonsense=1", "G28"],
+            &["send", "--connect", "sim", "--timeout", "0", "G28"],
+            &["print", "a.gcode", "-c", "sim", "--start-line", "0"],
+            &["print", "a.gcode", "-c", "sim", "--start-line", "x"],
+            &["tui", "--connect", "COM3@fast"],
             &["sim", "--extruders", "0"],
             &["sim", "--extruders", "9"],
             &["sim", "--time-scale", "0"],
