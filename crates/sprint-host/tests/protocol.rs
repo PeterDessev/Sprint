@@ -637,6 +637,49 @@ fn marlin_1_settings_report_headers_are_not_messages() {
     assert_eq!(s.firmware_messages, ["hello"], "{:?}", s.firmware_messages);
 }
 
+#[test]
+fn an_autotune_the_firmware_does_not_run_does_not_stay_running() {
+    // Firmware built without PID autotune: "Unknown command" and ok.
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut fw = Mini::new(Arc::clone(&log));
+    let (link, _) = fake(
+        |out| out.line("start"),
+        move |line, out| {
+            let Some(cmd) = fw.accept(line, out) else {
+                return;
+            };
+            if cmd.starts_with("M303") {
+                out.line(&format!("echo:Unknown command: \"{cmd}\""));
+            }
+            out.line("ok");
+        },
+    );
+    let printer = connect_fake(
+        link,
+        ConnectOptions {
+            temp_poll_secs: 0.0,
+            query_on_connect: false,
+            ..options()
+        },
+    );
+    wait_for(&printer, "connected", |s| s.is_connected());
+    let events = printer.subscribe();
+    printer.start_pid_autotune(sprint_host::Heater::Hotend(0), 200.0, 3);
+    wait_for_within(
+        &printer,
+        "the autotune to end",
+        Duration::from_secs(5),
+        |s| s.autotune.as_ref().is_some_and(|a| !a.running),
+    );
+    let at = printer.with_state(|s| s.autotune.clone()).unwrap();
+    assert!(at.result.is_none() && at.error.is_some(), "{at:?}");
+    assert!(
+        events
+            .try_iter()
+            .any(|e| matches!(e, Event::AutotuneFailed(_)))
+    );
+}
+
 /// An SD print on firmware that reports `polls` progress lines and then
 /// "Not SD printing" (its "Done printing file" was lost, or the print was
 /// stopped at the printer).

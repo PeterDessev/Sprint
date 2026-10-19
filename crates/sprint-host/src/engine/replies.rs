@@ -637,6 +637,23 @@ impl Engine {
                 }
             }
             (b'M', 28) => self.upload_open_acknowledged(),
+            // M303 blocks until it is done and reports the result (or the
+            // failure) before its ok: without either the firmware did not
+            // run it (no PID autotune, "Unknown command").
+            (b'M', 303) => {
+                let running = self
+                    .shared
+                    .state
+                    .read()
+                    .autotune
+                    .as_ref()
+                    .is_some_and(|a| a.running);
+                if running {
+                    self.on_autotune_failed(
+                        "the printer finished M303 without reporting a result".to_string(),
+                    );
+                }
+            }
             _ => {}
         }
     }
