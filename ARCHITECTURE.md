@@ -1376,7 +1376,11 @@ Every public item is also re-exported at the crate root.
   "printer reset". Entering a halt and a board reset drop the user
   commands still queued (with a console warning): they were meant for a
   printer that has since lost its position. Both also close an open host
-  prompt (`Event::Prompt(None)`): a halted firmware ignores M876.
+  prompt (`Event::Prompt(None)`): a halted firmware ignores M876. Both
+  reset the positioning, extrusion and unit modes the engine tracks over
+  the commands it sent (they decide what `extrude` restores and which
+  modes the job scripts set first) to the firmware's defaults (G90, M82,
+  G21): a reset must not leave the host thinking an M83 is active.
 * Homing (`PrinterState::homed`): unknown after connecting; an
   acknowledged `G28` (any source, the job stream included) adds all or
   the listed axes; `M84`/`M18` without `S` clear all or the listed axes

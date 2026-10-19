@@ -222,3 +222,39 @@ fn homing_cut_short_by_a_halt_leaves_the_axes_unhomed() {
         (Some(sprint_host::Axes::NONE), 0.0)
     );
 }
+
+#[test]
+fn a_board_reset_or_a_halt_forgets_the_extruder_mode() {
+    // After M83 the host restores nothing when it extrudes; after a reset
+    // (or a halt) the firmware is back in M82, which extruding must keep.
+    let printer = connect(sim(), options());
+    let control = printer.sim_control().unwrap();
+    let extruded = |printer: &Printer| {
+        wait_idle(printer);
+        control.clear_received();
+        printer.extrude(0, 1.0, 100.0);
+        wait_for(printer, "the extrusion", |_| {
+            control.received_commands().len() >= 2
+        });
+        wait_idle(printer);
+        control.received_commands()
+    };
+    printer.send("M83");
+    assert_eq!(extruded(&printer), ["M83", "G1 E1 F100"]);
+    control.clear_received();
+    printer.reset_board().unwrap();
+    wait_for(&printer, "the setup after the reset", |_| {
+        control.received_commands().iter().any(|c| c == "M114")
+    });
+    assert_eq!(extruded(&printer), ["M83", "G1 E1 F100", "M82"]);
+
+    // A stopped firmware restarted with M999.
+    printer.send("M83");
+    assert_eq!(extruded(&printer), ["M83", "G1 E1 F100"], "M83 is known");
+    control
+        .inject_line("Error:Printer stopped due to errors. Fix the error and use M999 to restart.");
+    wait_for(&printer, "halted", |s| s.halted);
+    printer.firmware_restart();
+    wait_for(&printer, "running again", |s| !s.halted);
+    assert_eq!(extruded(&printer), ["M83", "G1 E1 F100", "M82"]);
+}

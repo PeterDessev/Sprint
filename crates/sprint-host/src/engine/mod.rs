@@ -452,7 +452,8 @@ pub(crate) struct Engine {
     last_temp_sample: Option<Instant>,
     /// Axes known to be homed (mirrors `PrinterState::homed`).
     homed: Option<Axes>,
-    /// Modes and positions over every command sent.
+    /// Modes and positions over every command sent since connecting, the
+    /// last board reset or halt (the firmware's defaults then).
     printer_modes: MachineState,
     settings_refresh_at: Option<Instant>,
 
@@ -885,6 +886,9 @@ impl Engine {
         self.drop_queued_commands("the printer reset");
         self.settings_refresh_at = None;
         self.shared.update(|s| s.babystep_z = 0.0);
+        // The firmware starts in its defaults (G90, M82, G21): a mode set
+        // before the reset (an M83 of the last print) is gone.
+        self.printer_modes = MachineState::new();
         self.halted = false;
         self.restarting = false;
         self.renumber_pending = false;
@@ -1407,6 +1411,9 @@ impl Engine {
             self.shared.update(|s| s.babystep_z = 0.0);
             // A halted firmware prints nothing, from the card neither.
             self.sd_stopped();
+            // It is reset (kill) or restarted (Klipper) into its default
+            // modes before it takes commands again: forget the ones sent.
+            self.printer_modes = MachineState::new();
         }
         // Before the M303 is released below: it did not finish, the halt
         // cut it short.
