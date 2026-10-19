@@ -1059,3 +1059,59 @@ fn a_failed_print_records_where_to_recover_from() {
     let job = printer.with_state(|s| s.job.clone()).unwrap();
     assert_eq!((job.status, job.stopped_at), (JobStatus::Completed, None));
 }
+
+#[test]
+fn a_pause_does_not_flood_a_heat_up_the_firmware_cannot_end() {
+    // Without EMERGENCY_PARSER, Marlin reads nothing while it waits for a
+    // temperature: an M108 cannot end the wait, it only waits in the
+    // receive buffer (128 bytes), and one every second overflows it.
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut fw = Mini::new(Arc::clone(&log));
+    let (link, _) = fake(
+        |out| out.line("start"),
+        move |line, out| {
+            let Some(cmd) = fw.accept(line, out) else {
+                return;
+            };
+            if cmd == "M115" {
+                out.line("FIRMWARE_NAME:Marlin 2.1.2 EXTRUDER_COUNT:1");
+                out.line("Cap:EMERGENCY_PARSER:0");
+            } else if cmd.starts_with("M190") {
+                // Reports temperatures while it heats for 4 s.
+                for _ in 0..8 {
+                    out.line(" T:200.00 /200.00 B:40.00 /60.00");
+                    thread::sleep(Duration::from_millis(500));
+                }
+            }
+            out.line("ok");
+        },
+    );
+    let printer = connect_fake(
+        link,
+        ConnectOptions {
+            temp_poll_secs: 0.0,
+            ..options()
+        },
+    );
+    wait_for(&printer, "connected", |s| {
+        s.is_connected() && s.firmware.is_some()
+    });
+    wait_idle(&printer);
+    let file = Arc::new(GcodeFile::from_text(
+        "heat.gcode",
+        "M190 S60\nG28\nG1 X10 F3000\n",
+    ));
+    printer.start_print(file, PrintOptions::default()).unwrap();
+    wait_for(&printer, "the heat-up", |_| {
+        log.lock().unwrap().iter().any(|c| c == "M190 S60")
+    });
+    printer.pause();
+    wait_for(&printer, "paused", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Paused)
+    });
+    let m108 = log.lock().unwrap().iter().filter(|c| *c == "M108").count();
+    assert_eq!(m108, 0, "{:?}", log.lock().unwrap());
+    printer.cancel();
+}

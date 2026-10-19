@@ -540,8 +540,10 @@ impl Engine {
     /// (M0/M1) of the stream with M108, so the pause does not wait for
     /// minutes (M600 keeps its own dialogue). Called again while the
     /// firmware reports that it still waits (at most once a second): an
-    /// M108 that arrives before the wait begins is lost. Returns what was
-    /// ended.
+    /// M108 that arrives before the wait begins is lost. Only for firmware
+    /// with EMERGENCY_PARSER: any other reads nothing while it waits, so an
+    /// M108 cannot end the wait and repeating it overflows the receive
+    /// buffer. Returns what was ended.
     pub(super) fn break_stream_wait(&mut self, now: Instant) -> Option<&'static str> {
         let wait = self.flow.in_flight().find_map(|e| {
             if !matches!(e.meta.job_line(), Some(JobLine::Stream(_))) {
@@ -554,6 +556,9 @@ impl Engine {
                 None
             }
         })?;
+        if !self.shared.state.read().has_capability("EMERGENCY_PARSER") {
+            return None;
+        }
         let job = self.job.as_mut()?;
         let pausing = job.info.kind == JobKind::HostPrint
             && job.info.status == JobStatus::Pausing

@@ -1260,7 +1260,10 @@ Every public item is also re-exported at the crate root.
   (M0/M1) of the stream is in flight ends it with M108 (repeated at most
   once a second while the firmware reports it still waits: an M108 that
   arrives before the wait begins is lost), so `Pausing` does not last
-  minutes; M600 keeps its own dialogue. When the active hotend is more
+  minutes. Only with firmware reporting `Cap:EMERGENCY_PARSER:1`: any
+  other reads nothing while it waits, so M108 could not end the wait and
+  the repeats would overflow its receive buffer (the pause then waits for
+  the wait to end). M600 keeps its own dialogue. When the active hotend is more
   than 5 °C short of its target the pause script's extruder-only moves
   (the retract) are left out, and the resume's (the prime) with them.
   Objects (exclude / cancel while printing): the engine reads the labels
