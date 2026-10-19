@@ -109,7 +109,7 @@ fn a_cancel_that_does_not_finish_in_time_still_switches_the_heaters_off() {
     assert!(!summary.acknowledged());
     assert_eq!(
         summary.to_string(),
-        "Dwell.gcode did not stop in time: the heaters and the part fan were switched off as \
+        "dwell.gcode did not stop in time: the heaters and the part fan were switched off as \
          the link closed"
     );
     // Written as the link closed, after the cancel script was queued.
@@ -196,6 +196,31 @@ fn an_sd_print_goes_on_on_the_printer() {
     assert!(
         matches!(&status, Some(JobStatus::Failed(m)) if m.contains("goes on printing part.gcode")),
         "{status:?}"
+    );
+}
+
+#[test]
+fn a_job_that_ends_before_the_cancel_is_not_reported_as_stopped_in_time() {
+    // The job finished between the look at the state and the cancel: no
+    // cancel script ran, no heaters were switched off at the close.
+    let summary = DisconnectSummary {
+        was_connected: true,
+        cancelled: Some((JobKind::HostPrint, "cube.gcode".into())),
+        cancel_status: Some(JobStatus::Completed),
+        sd_print_continues: None,
+    };
+    assert!(!summary.acknowledged());
+    assert_eq!(
+        summary.to_string(),
+        "cube.gcode finished before it was cancelled, then disconnected"
+    );
+    let upload = DisconnectSummary {
+        cancelled: Some((JobKind::SdUpload, "cube.gco".into())),
+        ..summary
+    };
+    assert_eq!(
+        upload.to_string(),
+        "The upload of cube.gco finished before it was cancelled, then disconnected"
     );
 }
 

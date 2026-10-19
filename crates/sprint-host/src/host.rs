@@ -36,10 +36,11 @@ pub struct DisconnectSummary {
     /// How that job ended before the link closed: `Cancelled` when the
     /// printer acknowledged the cancel (the cancel script ran, or the
     /// partial upload was closed and deleted), `Failed` when it failed
-    /// meanwhile (a halt, a lost link). `None` when it was still stopping
-    /// at the timeout: then every heater and the part fan were switched
-    /// off (host print) or the file was closed (upload) as the link
-    /// closed.
+    /// meanwhile (a halt, a lost link), `Completed` when it finished by
+    /// itself before the cancel reached it. `None` when it was still
+    /// stopping at the timeout: then every heater and the part fan were
+    /// switched off (host print) or the file was closed (upload) as the
+    /// link closed.
     pub cancel_status: Option<JobStatus>,
     /// An SD print that goes on on the printer, unwatched: its file name.
     /// It was not cancelled (cancel it first to stop it).
@@ -59,9 +60,13 @@ impl fmt::Display for DisconnectSummary {
             return f.write_str("Not connected");
         }
         if let Some((kind, name)) = &self.cancelled {
-            let job = match kind {
-                JobKind::SdUpload => format!("the upload of {name}"),
-                _ => name.clone(),
+            // (A file name keeps its case at the start of the sentence.)
+            let (job, subject) = match kind {
+                JobKind::SdUpload => (
+                    format!("the upload of {name}"),
+                    format!("The upload of {name}"),
+                ),
+                _ => (name.clone(), name.clone()),
             };
             match &self.cancel_status {
                 Some(JobStatus::Cancelled) => {
@@ -74,15 +79,21 @@ impl fmt::Display for DisconnectSummary {
                 Some(JobStatus::Failed(reason)) => {
                     write!(f, "Cancelling {job} failed ({reason}); disconnected")?;
                 }
-                _ => {
+                // It ended by itself before the cancel reached it.
+                Some(_) => {
+                    write!(
+                        f,
+                        "{subject} finished before it was cancelled, then disconnected"
+                    )?;
+                }
+                None => {
                     let what = match kind {
                         JobKind::SdUpload => "the file was closed",
                         _ => "the heaters and the part fan were switched off",
                     };
                     write!(
                         f,
-                        "{} did not stop in time: {what} as the link closed",
-                        capitalized(&job)
+                        "{subject} did not stop in time: {what} as the link closed"
                     )?;
                 }
             }
@@ -97,14 +108,6 @@ impl fmt::Display for DisconnectSummary {
         }
         Ok(())
     }
-}
-
-/// `text` with its first letter upper case.
-fn capitalized(text: &str) -> String {
-    let mut chars = text.chars();
-    chars.next().map_or_else(String::new, |c| {
-        c.to_uppercase().chain(chars).collect::<String>()
-    })
 }
 
 /// A handle to one printer connection (or the lack of one).

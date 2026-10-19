@@ -1005,7 +1005,8 @@ impl Printer {
 pub struct DisconnectSummary {                         // impl Display: "Cancelled cube.gcode (the cancel script ran), then disconnected", ...
     pub was_connected: bool,
     pub cancelled: Option<(JobKind, String)>,          // the host print or upload cancelled first
-    pub cancel_status: Option<JobStatus>,              // Cancelled (acknowledged), Failed (meanwhile), None (timed out: safe stop sent)
+    pub cancel_status: Option<JobStatus>,              // Cancelled (acknowledged), Failed (meanwhile), Completed (finished before the
+                                                       //   cancel reached it), None (timed out: safe stop sent)
     pub sd_print_continues: Option<String>,            // an SD print left running on the printer
 }
 impl DisconnectSummary { pub fn acknowledged(&self) -> bool; }
