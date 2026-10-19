@@ -945,7 +945,10 @@ fn a_paused_print_can_be_jogged_and_extruded() {
     let mut app = timed_app();
     app.open_file(slow_file(&scratch.0));
     wait_app(&mut app, "the analysis", |a| a.loader.is_none());
-    app.run_action(dialogs::Action::StartPrint(scratch.0.join("slow.gcode")));
+    app.run_action(dialogs::Action::StartPrint(
+        scratch.0.join("slow.gcode"),
+        Vec::new(),
+    ));
     wait(&mut app, "the print", |s| {
         s.job.as_ref().is_some_and(|j| j.current_line > 8)
     });
@@ -1742,6 +1745,48 @@ fn the_profile_can_show_the_progress_on_the_printer() {
     });
     let got = received(&app);
     assert!(got.iter().any(|c| c.starts_with("M73 P")), "{got:?}");
+}
+
+#[test]
+fn the_palette_prints_with_pauses_before_layers() {
+    let mut app = connected_app();
+    load(&mut app, "calibration-cube.gcode");
+    // A layer the file does not have.
+    app.run_line("print --pause-at-layer 101");
+    assert!(app.modal.is_none());
+    assert!(
+        app.toast
+            .as_ref()
+            .is_some_and(|t| t.text.contains("calibration-cube.gcode has 100 layers")),
+        "{:?}",
+        app.toast
+    );
+    app.run_line("print --pause-at-layer 3,2");
+    let Some(Modal::Confirm(confirm)) = &app.modal else {
+        panic!("no question: {:?}", app.toast);
+    };
+    assert_eq!(
+        confirm.message.last().map(String::as_str),
+        Some("Pauses before layer 2, 3 (F6 resumes).")
+    );
+    press(&mut app, KeyCode::Char('y'));
+    wait(&mut app, "the pause before layer 2", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Paused && j.pause_at.len() == 1)
+    });
+    let file = app.file.as_ref().expect("loaded");
+    let layer2 = file.toolpath.layers[1].lines.start as usize;
+    assert_eq!(app.view.job.as_ref().map(|j| j.current_line), Some(layer2));
+    // F6 goes on, to the next pause.
+    press(&mut app, KeyCode::F(6));
+    wait(&mut app, "the pause before layer 3", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Paused && j.pause_at.is_empty())
+    });
+    app.printer.cancel();
+    wait(&mut app, "the cancel", |s| !s.job_active());
 }
 
 #[test]

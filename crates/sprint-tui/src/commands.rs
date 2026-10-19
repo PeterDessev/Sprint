@@ -146,8 +146,8 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "print",
         aliases: &[],
-        usage: "print",
-        summary: "Print the loaded file",
+        usage: "print [--pause-at-layer L[,L…]]",
+        summary: "Print the loaded file, pausing before the layers given (1 = the first)",
         group: Group::Job,
     },
     CommandSpec {
@@ -578,8 +578,12 @@ pub enum Command {
     Load(PathBuf),
     /// `info`.
     Info,
-    /// `print`.
-    Print,
+    /// `print [--pause-at-layer L]`: print the loaded file, pausing
+    /// (with the pause script) before these layers (1-based).
+    Print {
+        /// Layers to pause before.
+        pause_at: Vec<u64>,
+    },
     /// `pause`.
     Pause,
     /// `resume`.
@@ -1020,7 +1024,7 @@ fn parse_command(spec: &'static CommandSpec, rest: &str) -> Result<Command, Pars
         "disconnect" => none(Command::Disconnect),
         "ports" => none(Command::Ports),
         "info" => none(Command::Info),
-        "print" => none(Command::Print),
+        "print" => parse_print(spec, &args),
         "pause" => none(Command::Pause),
         "resume" => none(Command::Resume),
         "cancel" => none(Command::Cancel),
@@ -1261,6 +1265,38 @@ fn parse_command(spec: &'static CommandSpec, rest: &str) -> Result<Command, Pars
             spec.name
         ))),
     }
+}
+
+/// `print [--pause-at-layer L[,L…]]` (the option may repeat).
+fn parse_print(spec: &'static CommandSpec, args: &[String]) -> Result<Command, ParseError> {
+    let mut pause_at = Vec::new();
+    let mut words = args.iter();
+    while let Some(word) = words.next() {
+        let value = match word.split_once('=') {
+            Some((flag, value)) if flag.eq_ignore_ascii_case("--pause-at-layer") => value,
+            _ if word.eq_ignore_ascii_case("--pause-at-layer") => words
+                .next()
+                .ok_or_else(|| ParseError::usage(spec, "--pause-at-layer needs a layer"))?,
+            _ => {
+                return Err(ParseError::usage(
+                    spec,
+                    format!("unexpected argument '{word}'"),
+                ));
+            }
+        };
+        for layer in value.split(',').map(str::trim).filter(|l| !l.is_empty()) {
+            match layer.parse::<u64>() {
+                Ok(n) if n >= 1 => pause_at.push(n),
+                _ => {
+                    return Err(ParseError::usage(
+                        spec,
+                        format!("'{layer}' is not a layer (1 is the first)"),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(Command::Print { pause_at })
 }
 
 /// `macro [name [args]] | define <name> [gcode] | edit <name> [gcode] |
@@ -1526,7 +1562,13 @@ mod tests {
                 Command::Load("C:\\prints\\a b.gcode".into()),
             ),
             ("info", Command::Info),
-            ("print", Command::Print),
+            ("print", Command::Print { pause_at: vec![] }),
+            (
+                "print --pause-at-layer 5 --pause-at-layer=2,10",
+                Command::Print {
+                    pause_at: vec![5, 2, 10],
+                },
+            ),
             ("Pause", Command::Pause),
             ("resume", Command::Resume),
             ("cancel", Command::Cancel),
@@ -1900,6 +1942,21 @@ mod tests {
                 "temp 200 1 2",
                 "unexpected argument '2'",
                 Some("temp <celsius|preset|off> [tool]"),
+            ),
+            (
+                "print --pause-at-layer 0",
+                "'0' is not a layer (1 is the first)",
+                Some("print [--pause-at-layer L[,L…]]"),
+            ),
+            (
+                "print --pause-at-layer",
+                "--pause-at-layer needs a layer",
+                Some("print [--pause-at-layer L[,L…]]"),
+            ),
+            (
+                "print now",
+                "unexpected argument 'now'",
+                Some("print [--pause-at-layer L[,L…]]"),
             ),
             (
                 "bedtemp -5",

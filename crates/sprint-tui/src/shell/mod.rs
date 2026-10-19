@@ -171,6 +171,10 @@ pub(crate) struct Shell {
     /// When `pause` asked to pause the job (nothing in the shell resumed
     /// it since).
     pause_asked: Option<Instant>,
+    /// Pause points (`print --pause-at-layer`) still ahead when the print
+    /// started or was last resumed: a pause at one of them is the
+    /// script's, like `pause`.
+    layer_pauses_ahead: usize,
 }
 
 impl Shell {
@@ -196,6 +200,7 @@ impl Shell {
             base_dir: std::env::current_dir().unwrap_or_default(),
             sourcing: 0,
             pause_asked: None,
+            layer_pauses_ahead: 0,
         }
     }
 
@@ -655,7 +660,7 @@ impl Shell {
                 Some(file) => self.out.lines(&report::file_lines(file)),
                 None => self.out.warn("No file loaded (load <file>)"),
             },
-            Command::Print => self.print(),
+            Command::Print { pause_at } => self.print(&pause_at),
             Command::Pause => {
                 if self.job_active() {
                     self.printer.pause();
@@ -667,6 +672,9 @@ impl Shell {
             }
             Command::Resume => {
                 self.pause_asked = None;
+                self.layer_pauses_ahead = self
+                    .printer
+                    .with_state(|s| s.job.as_ref().map_or(0, |j| j.pause_at.len()));
                 let (waiting, paused) = self.printer.with_state(|s| {
                     (
                         actions::waiting_for_user(s),
@@ -1143,7 +1151,9 @@ impl Shell {
         }
     }
 
-    fn print(&mut self) {
+    /// `print [--pause-at-layer L]`: print the loaded file, pausing (with
+    /// the pause script) before the layers given; `resume` goes on.
+    fn print(&mut self, pause_at: &[u64]) {
         let blocker = self
             .printer
             .with_state(|s| actions::print_blocker(s, self.file.as_ref()));
@@ -1159,12 +1169,24 @@ impl Shell {
         let Some(file) = &self.file else {
             return;
         };
+        let points = match actions::pause_points(file, pause_at, 0) {
+            Ok(points) => points,
+            Err(why) => {
+                self.out.error(why);
+                return;
+            }
+        };
         self.pause_asked = None;
         let options = actions::print_options(file, &self.profile);
         let note = actions::progress_note(&options);
         match self.printer.start_print(file.file.clone(), options) {
             // The printer's console says "Printing ..."; add the plan.
             Ok(()) => {
+                if !points.is_empty() {
+                    let lines: Vec<usize> = points.iter().map(|p| p.line).collect();
+                    self.printer.pause_at_lines(&lines);
+                }
+                self.layer_pauses_ahead = points.len();
                 let stats = &file.toolpath.stats;
                 self.echo.settle();
                 self.out.dim(format!(
@@ -1174,6 +1196,12 @@ impl Shell {
                 ));
                 if let Some(note) = note {
                     self.out.dim(note);
+                }
+                if !points.is_empty() {
+                    self.out.dim(format!(
+                        "Pausing before layer {} (resume goes on)",
+                        actions::layers_text(&points)
+                    ));
                 }
             }
             Err(e) => self.out.error(format!("Cannot print: {e}")),
@@ -1558,7 +1586,7 @@ impl Shell {
             | Command::Ports
             | Command::Load(_)
             | Command::Info
-            | Command::Print
+            | Command::Print { .. }
             | Command::Pause
             | Command::Resume
             | Command::Cancel
@@ -1666,8 +1694,14 @@ impl Shell {
             self.interrupt.reset();
             let out = self.out.clone();
             let mut told = false;
+            let ahead = self.layer_pauses_ahead;
             let finished =
                 session::wait_for(&self.printer, Duration::MAX, &self.interrupt, true, |s| {
+                    // A pause before a layer the script asked for: nothing
+                    // will resume it either.
+                    if paused_at_layer(s, ahead) {
+                        return true;
+                    }
                     let paused = s.job.as_ref().is_some_and(|j| {
                         matches!(
                             j.status,
@@ -1686,6 +1720,12 @@ impl Shell {
                 });
             if finished == Err(WaitError::Interrupted) {
                 self.cancel_and_wait();
+            } else if self.paused_by_script() {
+                self.out.warn(format!(
+                    "{name} paused before a layer and a script cannot resume it: cancelling \
+                     it (the cancel script turns the heaters off)"
+                ));
+                self.cancel_and_wait();
             }
             self.echo.settle();
             return true;
@@ -1702,6 +1742,10 @@ impl Shell {
     /// pausing). A pause asked a moment ago is given [`PAUSE_SETTLE`] to
     /// show: the engine starts pausing a few milliseconds after `pause`.
     fn paused_by_script(&self) -> bool {
+        let ahead = self.layer_pauses_ahead;
+        if self.printer.with_state(|s| paused_at_layer(s, ahead)) {
+            return true;
+        }
         let Some(asked) = self.pause_asked else {
             return false;
         };
@@ -1728,6 +1772,15 @@ impl Shell {
         });
         self.echo.settle();
     }
+}
+
+/// Whether the job is paused at a `print --pause-at-layer` point: fewer
+/// points are ahead than the `ahead` there were when it last ran.
+fn paused_at_layer(state: &sprint_host::PrinterState, ahead: usize) -> bool {
+    state
+        .job
+        .as_ref()
+        .is_some_and(|j| j.status.is_active() && j.status.is_paused() && j.pause_at.len() < ahead)
 }
 
 /// What to ask before disconnecting while a job runs: a print Sprint

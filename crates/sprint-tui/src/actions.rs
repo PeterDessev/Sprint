@@ -442,6 +442,61 @@ pub fn print_options(loaded: &LoadedFile, profile: &PrinterProfile) -> PrintOpti
     }
 }
 
+/// A `--pause-at-layer` point: the print pauses (with the pause script)
+/// before `line`, the first line of `layer`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PausePoint {
+    /// 0-based file line the job pauses before
+    /// ([`Printer::pause_at_lines`]).
+    pub line: usize,
+    /// The layer, 1-based as the user gave it.
+    pub layer: u64,
+}
+
+/// The pause points for `layers` (1-based) of `loaded`, in file order and
+/// without repeats: each layer must exist and start at or after the line
+/// the print starts from (`start_line`, 0-based).
+pub fn pause_points(
+    loaded: &LoadedFile,
+    layers: &[u64],
+    start_line: usize,
+) -> Result<Vec<PausePoint>, String> {
+    let count = loaded.toolpath.layers.len();
+    let mut points = Vec::new();
+    for &layer in layers {
+        let found = usize::try_from(layer)
+            .ok()
+            .and_then(|l| l.checked_sub(1))
+            .and_then(|i| loaded.toolpath.layers.get(i));
+        let Some(found) = found else {
+            return Err(format!(
+                "--pause-at-layer {layer}: {} has {count} layer{}",
+                loaded.name(),
+                if count == 1 { "" } else { "s" }
+            ));
+        };
+        let line = usize::try_from(found.lines.start).unwrap_or(usize::MAX);
+        if line < start_line {
+            return Err(format!(
+                "--pause-at-layer {layer} starts before the line the print starts from"
+            ));
+        }
+        points.push(PausePoint { line, layer });
+    }
+    points.sort_by_key(|p| p.line);
+    points.dedup();
+    Ok(points)
+}
+
+/// "2, 5, 10": the layers of `points`.
+pub fn layers_text(points: &[PausePoint]) -> String {
+    points
+        .iter()
+        .map(|p| p.layer.to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// "Progress shows on the printer (M73)." when a print with `options`
 /// sends it.
 pub fn progress_note(options: &PrintOptions) -> Option<&'static str> {

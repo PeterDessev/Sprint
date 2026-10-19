@@ -502,7 +502,7 @@ fn exit_asks_while_printing_on_a_terminal() {
     let scratch = Scratch::new("exit");
     let (mut shell, buffer) = connected_timed();
     shell.load(&scratch.slow_file());
-    shell.print();
+    shell.print(&[]);
     wait_for(&shell, "the print", |s| s.job_active());
     let mut input = Script::new(["exit", "n", "exit", "y"], true);
     let mut flows = Vec::new();
@@ -1565,4 +1565,84 @@ fn files_that_are_not_gcode_are_not_loaded() {
         buffer.text()
     );
     assert!(shell.printer.with_state(|s| s.job.is_none()));
+}
+
+/// A file of `layers` layers, a few extrusions each.
+fn layered_file(dir: &std::path::Path, layers: usize) -> PathBuf {
+    let mut gcode = String::from("G28\nG90\nM83\n");
+    for layer in 0..layers {
+        gcode.push_str(&format!("G1 Z{:.1} F600\n", 0.2 * (layer + 1) as f64));
+        for i in 0..4 {
+            gcode.push_str(&format!("G1 X{} Y20 E0.5 F1200\n", 20 + (i % 2) * 10));
+        }
+    }
+    let path = dir.join("layers.gcode");
+    std::fs::write(&path, gcode).expect("write layered file");
+    path
+}
+
+#[test]
+fn print_pauses_before_the_layers_asked_for() {
+    let scratch = Scratch::new("pause-layer");
+    let file = layered_file(&scratch.0, 4);
+    let (mut shell, buffer) = connected();
+    // A layer the file does not have: nothing starts.
+    script(
+        &mut shell,
+        &[
+            &format!("load {}", file.display()),
+            "print --pause-at-layer 9",
+        ],
+    );
+    let text = buffer.text();
+    assert!(
+        text.contains("--pause-at-layer 9: layers.gcode has 4 layers"),
+        "{text}"
+    );
+    assert!(shell.printer.with_state(|s| s.job.is_none()));
+    // At a terminal: paused before layer 3, resume goes on.
+    buffer.clear();
+    let mut input = Script::new(["print --pause-at-layer 3"], true);
+    shell.run_lines_until_eof_without_leaving(&mut input);
+    assert!(
+        buffer
+            .text()
+            .contains("Pausing before layer 3 (resume goes on)"),
+        "{}",
+        buffer.text()
+    );
+    wait_for(&shell, "the pause", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Paused && j.pause_at.is_empty())
+    });
+    let line = shell
+        .printer
+        .with_state(|s| s.job.as_ref().map(|j| j.current_line));
+    let layer_start = shell
+        .file
+        .as_ref()
+        .map(|f| f.toolpath.layers[2].lines.start as usize);
+    assert_eq!(line, layer_start, "paused right before layer 3");
+    let mut input = Script::new(["resume"], true);
+    shell.run_lines_until_eof_without_leaving(&mut input);
+    wait_for(&shell, "the end", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Completed)
+    });
+    // In a script nothing could resume it: the end of the script cancels.
+    buffer.clear();
+    script(&mut shell, &["print --pause-at-layer 2"]);
+    let text = buffer.text();
+    assert!(
+        text.contains("layers.gcode paused before a layer and a script cannot resume it"),
+        "{text}"
+    );
+    assert_eq!(
+        shell
+            .printer
+            .with_state(|s| s.job.as_ref().map(|j| j.status.clone())),
+        Some(JobStatus::Cancelled)
+    );
 }

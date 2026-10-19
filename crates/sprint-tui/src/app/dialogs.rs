@@ -41,8 +41,8 @@ pub(crate) enum Action {
     /// Set heater targets (already confirmed).
     SetTempsAnyway(Vec<(Heater, f32)>),
     /// Print the loaded file, which must still be the one at this path
-    /// (the question named it).
-    StartPrint(PathBuf),
+    /// (the question named it), pausing before these 0-based lines.
+    StartPrint(PathBuf, Vec<usize>),
     CancelJob,
     Quit,
     EepromReset,
@@ -1405,15 +1405,15 @@ mod tests {
             "Print",
             "Not now",
             false,
-            Action::StartPrint(PathBuf::from("a.gcode")),
+            Action::StartPrint(PathBuf::from("a.gcode"), Vec::new()),
         );
         assert_eq!(
             c.handle_key(key(KeyCode::Enter)),
-            Outcome::Run(Action::StartPrint(PathBuf::from("a.gcode")))
+            Outcome::Run(Action::StartPrint(PathBuf::from("a.gcode"), Vec::new()))
         );
         assert_eq!(
             c.handle_key(key(KeyCode::Char('y'))),
-            Outcome::Run(Action::StartPrint(PathBuf::from("a.gcode")))
+            Outcome::Run(Action::StartPrint(PathBuf::from("a.gcode"), Vec::new()))
         );
         assert_eq!(c.handle_key(key(KeyCode::Char('n'))), Outcome::Close);
     }

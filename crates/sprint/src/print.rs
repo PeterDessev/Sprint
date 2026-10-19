@@ -22,6 +22,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow, bail};
 use sprint_gcode::{ResumeOptions, resume_preamble};
 use sprint_host::{Event, JobStatus, PrintOptions, Printer, PrinterProfile};
+use sprint_tui::actions::{PausePoint, layers_text, pause_points};
 use sprint_tui::format;
 use sprint_tui::interrupt::{self, Interrupt};
 use sprint_tui::loader::LoadedFile;
@@ -66,7 +67,8 @@ pub fn run(args: &PrintArgs) -> Result<ExitCode> {
         Err(e) => return Err(e),
     };
     let options = print_options(args, &loaded, &profile)?;
-    let pauses = pause_points(&loaded, &args.pause_at_layer, options.start_line)?;
+    let pauses = pause_points(&loaded, &args.pause_at_layer, options.start_line)
+        .map_err(anyhow::Error::msg)?;
 
     let printer = Printer::with_console_capacity(config.console_max_lines);
     printer.set_profile(profile.clone());
@@ -95,8 +97,10 @@ pub fn run(args: &PrintArgs) -> Result<ExitCode> {
             format::duration(f64::from(stats.estimated_time))
         );
         if !pauses.is_empty() {
-            let layers: Vec<String> = pauses.iter().map(|p| p.layer.to_string()).collect();
-            eprintln!("Pausing before layer {} (Enter resumes)", layers.join(", "));
+            eprintln!(
+                "Pausing before layer {} (Enter resumes)",
+                layers_text(&pauses)
+            );
         }
     }
 
@@ -177,45 +181,6 @@ fn print_options(
         options.preamble = resume_preamble(&loaded.file, index, &resume_options(args));
     }
     Ok(options)
-}
-
-/// A `--pause-at-layer` point: the print pauses before `line`, the first
-/// line of `layer`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PausePoint {
-    /// 0-based file line the job pauses before.
-    pub line: usize,
-    /// The layer, 1-based as the user gave it.
-    pub layer: u64,
-}
-
-/// The pause points of `--pause-at-layer` (1-based layers), in file order:
-/// each layer must exist and start at or after the line the print starts
-/// from (`start_line`, 0-based).
-fn pause_points(loaded: &LoadedFile, layers: &[u64], start_line: usize) -> Result<Vec<PausePoint>> {
-    let count = loaded.toolpath.layers.len();
-    let mut points = Vec::new();
-    for &layer in layers {
-        let found = usize::try_from(layer)
-            .ok()
-            .and_then(|l| l.checked_sub(1))
-            .and_then(|i| loaded.toolpath.layers.get(i));
-        let Some(found) = found else {
-            bail!(
-                "--pause-at-layer {layer}: {} has {count} layer{}",
-                loaded.name(),
-                if count == 1 { "" } else { "s" }
-            );
-        };
-        let line = usize::try_from(found.lines.start).unwrap_or(usize::MAX);
-        if line < start_line {
-            bail!("--pause-at-layer {layer} starts before the line the print starts from");
-        }
-        points.push(PausePoint { line, layer });
-    }
-    points.sort_by_key(|p| p.line);
-    points.dedup();
-    Ok(points)
 }
 
 /// The command that resumes this print from `stopped_at` (the 0-based
@@ -1044,12 +1009,9 @@ mod tests {
         );
         assert!(pause_points(&loaded, &[], 0).expect("none").is_empty());
         let err = pause_points(&loaded, &[5], 0).expect_err("no layer 5");
-        assert_eq!(
-            err.to_string(),
-            "--pause-at-layer 5: layers.gcode has 4 layers"
-        );
+        assert_eq!(err, "--pause-at-layer 5: layers.gcode has 4 layers");
         let err = pause_points(&loaded, &[2], start(2)).expect_err("before the start");
-        assert!(err.to_string().contains("starts before"), "{err}");
+        assert!(err.contains("starts before"), "{err}");
     }
 
     #[test]

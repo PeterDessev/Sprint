@@ -855,8 +855,9 @@ impl App {
         }
     }
 
-    /// F5: ask before printing the loaded file.
-    fn request_print(&mut self) {
+    /// F5 (or `:print [--pause-at-layer L]`): ask before printing the
+    /// loaded file, pausing before the layers given (1-based).
+    fn request_print(&mut self, pause_at: &[u64]) {
         let blocker = self
             .printer
             .with_state(|s| actions::print_blocker(s, self.file.as_ref()));
@@ -873,6 +874,13 @@ impl App {
         let Some(file) = &self.file else {
             return;
         };
+        let points = match actions::pause_points(file, pause_at, 0) {
+            Ok(points) => points,
+            Err(why) => {
+                self.error(why);
+                return;
+            }
+        };
         let stats = &file.toolpath.stats;
         let target = self.view.target.clone().unwrap_or_default();
         let mut message = vec![
@@ -887,19 +895,27 @@ impl App {
         ];
         let options = actions::print_options(file, &self.profile);
         message.extend(actions::progress_note(&options).map(str::to_string));
+        if !points.is_empty() {
+            message.push(format!(
+                "Pauses before layer {} (F6 resumes).",
+                actions::layers_text(&points)
+            ));
+        }
+        let lines = points.iter().map(|p| p.line).collect();
         self.modal = Some(Modal::Confirm(Confirm::new(
             "Start print?",
             message,
             "Print",
             "Not now",
             false,
-            Action::StartPrint(file.path.clone()),
+            Action::StartPrint(file.path.clone(), lines),
         )));
     }
 
-    /// Print the loaded file when it is still the one at `path`: another
-    /// file may have finished loading while the question was open.
-    fn start_print(&mut self, path: &Path) {
+    /// Print the loaded file when it is still the one at `path` (another
+    /// file may have finished loading while the question was open),
+    /// pausing before `pause_lines`.
+    fn start_print(&mut self, path: &Path, pause_lines: &[usize]) {
         let Some(file) = &self.file else {
             self.warn("No file loaded (F3 opens one)");
             return;
@@ -915,6 +931,9 @@ impl App {
         let name = file.name().to_string();
         match self.printer.start_print(file.file.clone(), options) {
             Ok(()) => {
+                if !pause_lines.is_empty() {
+                    self.printer.pause_at_lines(pause_lines);
+                }
                 self.layer_view = None;
                 self.good(format!("Printing {name}"));
             }
@@ -1297,7 +1316,7 @@ impl App {
             Action::SetTempsAnyway(targets) => {
                 self.set_temps(&actions::safe_targets(&targets));
             }
-            Action::StartPrint(path) => self.start_print(&path),
+            Action::StartPrint(path, pause_lines) => self.start_print(&path, &pause_lines),
             Action::CancelJob => {
                 self.printer.cancel();
                 self.warn("Cancelling");
@@ -1547,7 +1566,7 @@ impl App {
                 return;
             }
             KeyCode::F(5) => {
-                self.request_print();
+                self.request_print(&[]);
                 return;
             }
             KeyCode::F(6) => {
@@ -2012,7 +2031,7 @@ impl App {
                 }
                 None => self.warn("No file loaded (F3 opens one)"),
             },
-            Command::Print => self.request_print(),
+            Command::Print { pause_at } => self.request_print(&pause_at),
             Command::Pause => {
                 if self.view.job_active() {
                     self.printer.pause();
@@ -2349,7 +2368,7 @@ impl App {
             | Command::Ports
             | Command::Load(_)
             | Command::Info
-            | Command::Print
+            | Command::Print { .. }
             | Command::Pause
             | Command::Resume
             | Command::Cancel
