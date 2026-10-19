@@ -59,6 +59,8 @@ const EVENTS_PER_FRAME: usize = 20_000;
 const TAB_STRIP_H: f32 = 38.0;
 /// Horizontal padding inside a tab.
 const TAB_PAD: f32 = 12.0;
+/// Horizontal padding inside an icon-only tab.
+const ICON_TAB_PAD: f32 = 9.0;
 /// Width of the panel toggles at the right end of the tab strip.
 const TOGGLES_W: f32 = 64.0;
 
@@ -1610,13 +1612,14 @@ fn tab_galleys(ui: &Ui, tab: Tab, selected: bool) -> (Arc<egui::Galley>, Arc<egu
     )
 }
 
-/// Width of a tab, with or without its title.
+/// Width of a tab, with or without its title (icon-only tabs are
+/// narrower).
 fn tab_width(ui: &Ui, tab: Tab, selected: bool, label: bool) -> f32 {
     let (icon, text) = tab_galleys(ui, tab, selected);
     if label {
         TAB_PAD + icon.size().x + 7.0 + text.size().x + TAB_PAD
     } else {
-        TAB_PAD + icon.size().x + TAB_PAD
+        2.0 * ICON_TAB_PAD + icon.size().x
     }
 }
 
@@ -1650,8 +1653,9 @@ fn tab_button(ui: &mut Ui, tab: Tab, selected: bool, label: bool, p: &Palette) -
         }
         let icon_color = if selected { p.accent } else { color };
         let y = rect.center().y;
+        let pad = if label { TAB_PAD } else { ICON_TAB_PAD };
         ui.painter().galley(
-            egui::pos2(rect.left() + TAB_PAD, y - icon.size().y / 2.0),
+            egui::pos2(rect.left() + pad, y - icon.size().y / 2.0),
             Arc::clone(&icon),
             icon_color,
         );

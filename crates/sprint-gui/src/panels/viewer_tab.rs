@@ -34,6 +34,17 @@ const SCRUB_H: f32 = 44.0;
 const EDGE: f32 = 12.0;
 /// Outer width of the file information card.
 const INFO_W: f32 = 282.0;
+/// Room for the legend card.
+const LEGEND_W: f32 = 300.0;
+/// Below this width the toolbar is compact.
+const COMPACT_TOOLBAR_W: f32 = 820.0;
+
+/// The floating cards over the view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OverlayCard {
+    Legend,
+    Info,
+}
 
 /// Things the shell lends the viewer tab besides the [`AppCtx`].
 #[derive(Clone, Copy, Default)]
@@ -106,6 +117,7 @@ struct Overlay {
     play_accum: f32,
     scrub_layer: Option<usize>,
     followed: Option<usize>,
+    last_overlay: Option<OverlayCard>,
 }
 
 impl ViewerTab {
@@ -344,13 +356,23 @@ impl ViewerTab {
         }
         self.prefs.update_from(viewer.options());
 
-        // Overlays (drawn after the view, so they take the clicks).
+        // Overlays (drawn after the view, so they take the clicks). When
+        // the legend and the file card do not fit side by side, only the
+        // one switched on last is shown.
         let loading = viewer.is_loading();
-        if self.prefs.show_legend {
+        let room = view.width() >= LEGEND_W + INFO_W + SLIDER_W + 3.0 * EDGE;
+        let (show_legend, show_info) = match (self.prefs.show_legend, self.prefs.show_file_info) {
+            (true, true) if !room => match self.ov.last_overlay {
+                Some(OverlayCard::Info) => (false, true),
+                _ => (true, false),
+            },
+            both => both,
+        };
+        if show_legend {
             let legend_rect = Rect::from_min_max(
                 view.min + vec2(EDGE, EDGE),
                 Pos2::new(
-                    (view.left() + EDGE + 300.0).min(slider_rect.left() - EDGE),
+                    (view.left() + EDGE + LEGEND_W).min(slider_rect.left() - EDGE),
                     scrub_rect.top() - EDGE,
                 ),
             );
@@ -361,7 +383,7 @@ impl ViewerTab {
                 viewer.legend_ui(ui);
             });
         }
-        if self.prefs.show_file_info {
+        if show_info {
             let right = slider_rect.left() - EDGE * 0.5;
             // Right-aligned by position: a right-aligned layout would let
             // the grid inside stretch the card to the left edge.
@@ -415,6 +437,9 @@ impl ViewerTab {
             ctx.state.job.as_ref().is_some_and(|j| {
                 j.status.is_active() && format::job_matches_file(j, file.file.name())
             });
+        // Narrow views move the style and visibility toggles into the View
+        // menu and shorten the rest.
+        let compact = ui.available_width() < COMPACT_TOOLBAR_W;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
             let mut layer_view = self.prefs.layer_view;
@@ -432,10 +457,19 @@ impl ViewerTab {
             }
             ui.add_space(4.0);
             let mode = self.prefs.color_mode();
+            let (selected, width) = if compact {
+                (icons::phosphor::PALETTE.to_owned(), 44.0)
+            } else {
+                (
+                    format!("{}  {}", icons::phosphor::PALETTE, mode.name()),
+                    150.0,
+                )
+            };
             egui::ComboBox::from_id_salt("viewer-color")
-                .selected_text(format!("{}  {}", icons::phosphor::PALETTE, mode.name()))
-                .width(150.0)
+                .selected_text(selected)
+                .width(width)
                 .show_ui(ui, |ui| {
+                    ui.set_min_width(150.0);
                     for m in ColorMode::ALL {
                         if ui.selectable_label(m == mode, m.name()).clicked() {
                             self.prefs.set_color_mode(m);
@@ -443,55 +477,44 @@ impl ViewerTab {
                     }
                 })
                 .response
-                .on_hover_text("Color by");
-            let mut lines = self.prefs.lines;
-            if ui
-                .add(
-                    SegmentedControl::new(&mut lines, &[(false, "Tubes"), (true, "Lines")])
-                        .id_salt("viewer-style"),
-                )
-                .on_hover_text("Lit tubes, or thin lines for huge files and slow GPUs")
-                .changed()
-            {
-                self.prefs.lines = lines;
-            }
-            ui.add_space(4.0);
-            if ui
-                .add(Chip::new("Travel").selected(self.prefs.show_travel))
-                .on_hover_text("Show travel moves")
-                .clicked()
-            {
-                self.prefs.show_travel = !self.prefs.show_travel;
-            }
-            if ui
-                .add(Chip::new("Retractions").selected(self.prefs.show_retractions))
-                .on_hover_text("Show retraction and prime points")
-                .clicked()
-            {
-                self.prefs.show_retractions = !self.prefs.show_retractions;
-            }
-            ui.add_space(4.0);
-            ui.menu_button(format!("{}  View", icons::VIEW_3D), |ui| {
-                for (i, preset) in ViewPreset::ALL.into_iter().enumerate() {
-                    let button =
-                        egui::Button::new(preset.name()).shortcut_text(format!("{}", i + 1));
-                    if ui.add(button).clicked() {
-                        self.set_view(preset);
-                    }
-                }
-                ui.separator();
+                .on_hover_text(format!("Color by: {}", mode.name()));
+            if !compact {
+                let mut lines = self.prefs.lines;
                 if ui
-                    .add(egui::Button::new("Fit to view").shortcut_text("Z"))
+                    .add(
+                        SegmentedControl::new(&mut lines, &[(false, "Tubes"), (true, "Lines")])
+                            .id_salt("viewer-style"),
+                    )
+                    .on_hover_text("Lit tubes, or thin lines for huge files and slow GPUs")
+                    .changed()
+                {
+                    self.prefs.lines = lines;
+                }
+                ui.add_space(4.0);
+                if ui
+                    .add(Chip::new("Travel").selected(self.prefs.show_travel))
+                    .on_hover_text("Show travel moves")
                     .clicked()
                 {
-                    self.fit();
+                    self.prefs.show_travel = !self.prefs.show_travel;
                 }
-                ui.separator();
-                ui.checkbox(&mut self.prefs.show_bed, "Bed");
-                ui.checkbox(&mut self.prefs.show_build_volume, "Build volume");
-                ui.checkbox(&mut self.prefs.show_axes, "Axes");
-                ui.checkbox(&mut self.prefs.show_tool_head, "Tool head");
-            });
+                if ui
+                    .add(Chip::new("Retractions").selected(self.prefs.show_retractions))
+                    .on_hover_text("Show retraction and prime points")
+                    .clicked()
+                {
+                    self.prefs.show_retractions = !self.prefs.show_retractions;
+                }
+                ui.add_space(4.0);
+            }
+            let view_label = if compact {
+                icons::VIEW_3D.to_owned()
+            } else {
+                format!("{}  View", icons::VIEW_3D)
+            };
+            ui.menu_button(view_label, |ui| self.view_menu(ui))
+                .response
+                .on_hover_text("Camera and visibility");
             if ui
                 .add(
                     IconButton::new(icons::phosphor::CORNERS_OUT)
@@ -514,6 +537,7 @@ impl ViewerTab {
                     .clicked()
                 {
                     self.prefs.show_file_info = !self.prefs.show_file_info;
+                    self.ov.last_overlay = Some(OverlayCard::Info);
                 }
                 if ui
                     .add(
@@ -525,21 +549,34 @@ impl ViewerTab {
                     .clicked()
                 {
                     self.prefs.show_legend = !self.prefs.show_legend;
+                    self.ov.last_overlay = Some(OverlayCard::Legend);
                 }
                 if printing {
                     ui.add_space(6.0);
-                    if ui
-                        .add(
+                    let changed = if compact {
+                        let r = ui.add(
+                            IconButton::new(icons::POSITION)
+                                .ghost()
+                                .selected(self.prefs.follow_print)
+                                .tooltip("Follow print: move the top layer with the print"),
+                        );
+                        if r.clicked() {
+                            self.prefs.follow_print = !self.prefs.follow_print;
+                        }
+                        r.clicked()
+                    } else {
+                        ui.add(
                             crate::widgets::Toggle::new(&mut self.prefs.follow_print)
                                 .label("Follow print"),
                         )
                         .on_hover_text("Move the top layer with the print")
                         .changed()
-                    {
+                    };
+                    if changed {
                         self.ov.followed = None;
                     }
                 }
-                if let Some(line) = ctx.selected_line {
+                if !compact && let Some(line) = ctx.selected_line {
                     ui.add_space(6.0);
                     ui.label(
                         RichText::new(format!("Line {}", format::count(u64::from(line) + 1)))
@@ -549,6 +586,33 @@ impl ViewerTab {
                 }
             });
         });
+    }
+
+    /// The View menu: camera presets, style and what is drawn.
+    fn view_menu(&mut self, ui: &mut Ui) {
+        for (i, preset) in ViewPreset::ALL.into_iter().enumerate() {
+            let button = egui::Button::new(preset.name()).shortcut_text(format!("{}", i + 1));
+            if ui.add(button).clicked() {
+                self.set_view(preset);
+            }
+        }
+        ui.separator();
+        if ui
+            .add(egui::Button::new("Fit to view").shortcut_text("Z"))
+            .clicked()
+        {
+            self.fit();
+        }
+        ui.separator();
+        ui.radio_value(&mut self.prefs.lines, false, "Tubes");
+        ui.radio_value(&mut self.prefs.lines, true, "Lines");
+        ui.separator();
+        ui.checkbox(&mut self.prefs.show_travel, "Travel moves");
+        ui.checkbox(&mut self.prefs.show_retractions, "Retractions");
+        ui.checkbox(&mut self.prefs.show_bed, "Bed");
+        ui.checkbox(&mut self.prefs.show_build_volume, "Build volume");
+        ui.checkbox(&mut self.prefs.show_axes, "Axes");
+        ui.checkbox(&mut self.prefs.show_tool_head, "Tool head");
     }
 
     fn empty(&mut self, ui: &mut Ui, ctx: &mut AppCtx<'_>, load: Option<&LoadStatus>, p: &Palette) {
@@ -845,7 +909,8 @@ impl Overlay {
                 let segment = toolpath.segments.get(segs.start + position);
                 let line = segment.map_or(0, |s| s.line);
                 let text = format::sanitize(file.file.line(line as usize).trim(), 48);
-                let label_w = 250.0;
+                let show_label = ui.available_width() >= 420.0;
+                let label_w = if show_label { 250.0 } else { 0.0 };
                 let slider_w = (ui.available_width() - label_w - 8.0).max(60.0);
                 ui.spacing_mut().slider_width = slider_w;
                 let slider = ui.add(
@@ -858,6 +923,9 @@ impl Overlay {
                     self.scrub = (position < last).then_some(position);
                 }
                 slider.on_hover_text("Scrub through the moves of the top layer");
+                if !show_label {
+                    return;
+                }
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 0.0;
                     ui.label(
