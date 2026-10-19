@@ -132,7 +132,9 @@ pub fn sniff_content(head: &[u8], total_len: u64) -> ContentKind {
     if looks_binary(&text, complete) {
         return ContentKind::Binary;
     }
-    let mut lines: Vec<&str> = text.lines().collect();
+    // `\n`, `\r\n` and a lone `\r` end lines, as in `GcodeFile` (the empty
+    // pieces between `\r` and `\n` are blank lines, which are skipped).
+    let mut lines: Vec<&str> = text.split(['\n', '\r']).collect();
     if !complete && lines.len() > 1 {
         lines.pop();
     }
@@ -428,6 +430,26 @@ mod tests {
         assert_eq!(
             ContentKind::OtherText.description(),
             "a text file that is not G-code"
+        );
+    }
+
+    #[test]
+    fn lone_carriage_returns_end_lines() {
+        // GcodeFile reads a lone \r as a line ending, so sniffing must too:
+        // otherwise the whole file is one "line" judged by its first word.
+        assert_eq!(sniff(&ASCII_STL.replace('\n', "\r")), ContentKind::AsciiStl);
+        assert_eq!(
+            sniff("M117 hello\rthis is text\rand more text\r"),
+            ContentKind::OtherText
+        );
+        assert_eq!(sniff("G28\rG1 X10\rM104 S200\r"), ContentKind::Gcode);
+        assert_eq!(sniff("G28\r\nG1 X10\r\n"), ContentKind::Gcode);
+        // A head cut after a lone \r keeps its last complete line.
+        let mut text = "G1 X1\r".repeat(10);
+        text.push_str("this line is cut");
+        assert_eq!(
+            sniff_content(text.as_bytes(), 1_000_000),
+            ContentKind::Gcode
         );
     }
 
