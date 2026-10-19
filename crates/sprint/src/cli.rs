@@ -187,7 +187,8 @@ pub struct PrintArgs {
     /// What to do when the printer asks the user something during the
     /// print (a filament change, M0 "insert magnets"): ask shows the
     /// question and reads the answer from standard input (or it is
-    /// answered at the printer), continue answers Continue at once.
+    /// answered at the printer), continue answers Continue at once (a
+    /// pause made at the printer is still resumed there).
     #[arg(long, value_enum, value_name = "HOW", default_value_t = AnswerPrompts::Ask)]
     pub answer_prompts: AnswerPrompts,
 }
@@ -199,8 +200,10 @@ pub enum AnswerPrompts {
     /// the first) from standard input.
     #[default]
     Ask,
-    /// Press the button that lets the print go on (Continue, Resume) and
-    /// release a firmware waiting for the user (M108) at once.
+    /// Press the button that lets the print go on (Continue) and release
+    /// a firmware waiting for the user (M108) at once. A pause made at the
+    /// printer (from its menu, or without a question) is left to the
+    /// person there.
     Continue,
 }
 

@@ -11,7 +11,9 @@
 //! terminal, lines typed before a question are forgotten (a stray Enter
 //! must not answer it); piped answers are used in order. With
 //! `--answer-prompts continue` the answer that lets the print go on is
-//! given at once. Each question is answered once: while it still shows
+//! given at once, except to a pause made at the printer (its menu's
+//! pause, which offers only Resume, or a pause without a question): that
+//! is left to the person there. Each question is answered once: while it still shows
 //! after its answer (a wait for the user ends with the printer's next busy
 //! message) no further line is spent on it, and one that is still there
 //! after a few seconds is asked again.
@@ -207,6 +209,14 @@ impl PromptWatch {
         }
         match self.policy {
             AnswerPrompts::Continue => match question {
+                // Someone at the printer paused it (or a runout did):
+                // resuming at once would undo that.
+                Question::Prompt(prompt) if resumes_a_pause(prompt) => {
+                    effects.push(Effect::Say(PAUSED_AT_THE_PRINTER.to_string()));
+                }
+                Question::Paused => {
+                    effects.push(Effect::Say(PAUSED_AT_THE_PRINTER.to_string()));
+                }
                 Question::Prompt(prompt) => {
                     let index = continue_button(&prompt.buttons);
                     effects.push(Effect::Answer(index));
@@ -215,7 +225,7 @@ impl PromptWatch {
                         button_name(prompt, index)
                     )));
                 }
-                Question::WaitingForUser | Question::Paused => {
+                Question::WaitingForUser => {
                     effects.push(Effect::Continue);
                     effects.push(Effect::Say(format!(
                         "{} (--answer-prompts continue)",
@@ -284,6 +294,23 @@ impl PromptWatch {
             while answers.try_recv().is_ok() {}
         }
     }
+}
+
+/// What `--answer-prompts continue` says about a pause made at the
+/// printer.
+const PAUSED_AT_THE_PRINTER: &str = "Paused at the printer: resume it at the printer \
+     (--answer-prompts continue does not); Ctrl+C cancels the print";
+
+/// Whether `prompt` only offers to resume a print paused at the printer
+/// (Marlin's "UI Pause" from its own menu): no Continue to press.
+fn resumes_a_pause(prompt: &HostPrompt) -> bool {
+    let offers = |word: &str| {
+        prompt
+            .buttons
+            .iter()
+            .any(|b| b.to_ascii_lowercase().contains(word))
+    };
+    offers("resume") && !offers("continue")
 }
 
 /// What is said when the printer is told to go on.
@@ -528,12 +555,41 @@ mod tests {
         assert!(said(&effects).contains("waits for the user"));
         // Announced once per wait.
         assert_eq!(watch.update(Some(Question::WaitingForUser)), []);
-        let effects = watch.update(Some(Question::Paused));
-        assert!(effects.contains(&Effect::Continue), "{effects:?}");
-        assert!(said(&effects).contains("Resuming the print"));
         assert_eq!(continue_button(&[]), 0);
         assert_eq!(continue_button(&["Resume".into()]), 0);
         assert_eq!(continue_button(&["Purge".into(), "Dismiss".into()]), 1);
+    }
+
+    #[test]
+    fn continue_leaves_a_pause_made_at_the_printer_alone() {
+        let mut watch = PromptWatch::new(AnswerPrompts::Continue);
+        // Paused at the printer (or by a runout) without a question.
+        let effects = watch.update(Some(Question::Paused));
+        assert!(!effects.contains(&Effect::Continue), "{effects:?}");
+        assert!(
+            said(&effects).contains("resume it at the printer"),
+            "{effects:?}"
+        );
+        // Marlin's pause from its own menu, with host prompts.
+        assert_eq!(watch.update(None), []);
+        let ui_pause = prompt("UI Pause", &["Resume"]);
+        let effects = watch.update(Some(Question::Prompt(&ui_pause)));
+        assert!(
+            !effects.iter().any(|e| matches!(e, Effect::Answer(_))),
+            "{effects:?}"
+        );
+        assert!(
+            said(&effects).contains("resume it at the printer"),
+            "{effects:?}"
+        );
+        // A filament change's questions are still answered.
+        assert_eq!(watch.update(None), []);
+        let parked = prompt("Nozzle Parked", &["Continue"]);
+        assert!(
+            watch
+                .update(Some(Question::Prompt(&parked)))
+                .contains(&Effect::Answer(0))
+        );
     }
 
     #[test]
