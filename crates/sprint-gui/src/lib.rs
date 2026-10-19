@@ -3,6 +3,7 @@
 
 use std::path::PathBuf;
 
+pub mod connection;
 pub mod context;
 pub mod fonts;
 pub mod format;
