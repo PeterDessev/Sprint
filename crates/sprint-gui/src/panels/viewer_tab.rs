@@ -124,6 +124,9 @@ struct Overlay {
     play_accum: f32,
     scrub_layer: Option<usize>,
     followed: Option<usize>,
+    /// The user moved the layers during this print: following waits for
+    /// the next print (the preference itself stays as it is).
+    follow_paused: bool,
     last_overlay: Option<OverlayCard>,
 }
 
@@ -190,8 +193,22 @@ impl ViewerTab {
         if range != (lo, hi) || v.options().line_limit.is_some() {
             v.options_mut().layer_range = range;
             v.options_mut().line_limit = None;
-            self.ov.user_moved_layers(&mut self.prefs);
+            self.ov.user_moved_layers();
         }
+    }
+
+    /// Whether the top layer follows the print now: the preference, unless
+    /// the user moved the layers during this print.
+    pub fn following(&self) -> bool {
+        self.prefs.follow_print && !self.ov.follow_paused
+    }
+
+    /// Follow the print (or not), as the toggle and the View menu ask: the
+    /// persisted preference.
+    fn set_following(&mut self, on: bool) {
+        self.prefs.follow_print = on;
+        self.ov.follow_paused = false;
+        self.ov.followed = None;
     }
 
     /// Fit the camera to the toolpath.
@@ -302,7 +319,11 @@ impl ViewerTab {
         viewer.options_mut().progress_line =
             progress.map(|done| (done.saturating_sub(1)).min(u32::MAX as usize) as u32);
         let layer_count = toolpath.layers.len();
-        if let (Some(done), true) = (progress, self.prefs.follow_print)
+        if progress.is_none() {
+            // Between prints: the next one is followed again.
+            self.ov.follow_paused = false;
+        }
+        if let (Some(done), true) = (progress, self.prefs.follow_print && !self.ov.follow_paused)
             && layer_count > 0
             && self.ov.drag.is_none()
         {
@@ -348,7 +369,7 @@ impl ViewerTab {
                 let steps = wheel;
                 let range = viewer.options().layer_range;
                 viewer.options_mut().layer_range = move_layer(range, layer_count, true, steps);
-                self.ov.user_moved_layers(&mut self.prefs);
+                self.ov.user_moved_layers();
             }
         } else if over_scrub {
             ui.input_mut(|i| i.smooth_scroll_delta = Vec2::ZERO);
@@ -381,7 +402,7 @@ impl ViewerTab {
             for (top, delta) in moves {
                 let range = viewer.options().layer_range;
                 viewer.options_mut().layer_range = move_layer(range, layer_count, top, delta);
-                self.ov.user_moved_layers(&mut self.prefs);
+                self.ov.user_moved_layers();
             }
         }
 
@@ -469,7 +490,7 @@ impl ViewerTab {
             );
             if range != before {
                 viewer.options_mut().layer_range = range;
-                self.ov.user_moved_layers(&mut self.prefs);
+                self.ov.user_moved_layers();
             }
             let top = range.1;
             if self.ov.scrub_layer != Some(top) {
@@ -606,27 +627,25 @@ impl ViewerTab {
                 }
                 if printing {
                     ui.add_space(6.0);
+                    let mut on = self.following();
                     let changed = if compact {
                         let r = ui.add(
                             IconButton::new(icons::POSITION)
                                 .ghost()
-                                .selected(self.prefs.follow_print)
+                                .selected(on)
                                 .tooltip("Follow print: move the top layer with the print"),
                         );
                         if r.clicked() {
-                            self.prefs.follow_print = !self.prefs.follow_print;
+                            on = !on;
                         }
                         r.clicked()
                     } else {
-                        ui.add(
-                            crate::widgets::Toggle::new(&mut self.prefs.follow_print)
-                                .label("Follow print"),
-                        )
-                        .on_hover_text("Move the top layer with the print")
-                        .changed()
+                        ui.add(crate::widgets::Toggle::new(&mut on).label("Follow print"))
+                            .on_hover_text("Move the top layer with the print")
+                            .changed()
                     };
                     if changed {
-                        self.ov.followed = None;
+                        self.set_following(on);
                     }
                 }
                 if !compact && let Some(line) = ctx.selected_line {
@@ -666,6 +685,15 @@ impl ViewerTab {
         ui.checkbox(&mut self.prefs.show_build_volume, "Build volume");
         ui.checkbox(&mut self.prefs.show_axes, "Axes");
         ui.checkbox(&mut self.prefs.show_tool_head, "Tool head");
+        ui.separator();
+        let mut follow = self.following();
+        if ui
+            .checkbox(&mut follow, "Follow the print")
+            .on_hover_text("Move the top layer with the print")
+            .changed()
+        {
+            self.set_following(follow);
+        }
     }
 
     fn empty(&mut self, ui: &mut Ui, ctx: &mut AppCtx<'_>, load: Option<&LoadStatus>, p: &Palette) {
@@ -744,10 +772,11 @@ impl ViewerTab {
 }
 
 impl Overlay {
-    /// The user moved the layers: stop following the print and scrubbing.
-    fn user_moved_layers(&mut self, prefs: &mut ViewerPrefs) {
+    /// The user moved the layers: stop following this print (the next one
+    /// is followed again) and scrubbing.
+    fn user_moved_layers(&mut self) {
         if self.followed.is_some() {
-            prefs.follow_print = false;
+            self.follow_paused = true;
             self.followed = None;
         }
         self.scrub = None;

@@ -1208,6 +1208,50 @@ fn a_click_below_a_single_layer_lowers_the_bottom_handle() {
 }
 
 #[test]
+fn moving_the_layers_pauses_following_for_this_print_only() {
+    let options = with_file(AppOptions::headless(), sample("calibration-cube.gcode"));
+    let mut h = app(options, WINDOW);
+    expect(&mut h, "the cube to be analyzed", analyzed);
+    if h.state().viewer_tab().viewer().is_none() {
+        eprintln!("no GPU viewer on this machine: not tested");
+        return;
+    }
+    h.state_mut().set_side_panels(false, false);
+    let printing_at = |line: usize| {
+        let mut state = printing_state(JobStatus::Printing);
+        if let Some(job) = &mut state.job {
+            job.name = "calibration-cube.gcode".into();
+            job.current_line = line;
+        }
+        state
+    };
+    let top = |h: &Harness<'_, SprintApp>| h.state().viewer_tab().layer_range().expect("range").1;
+    h.state_mut().set_state_override(Some(printing_at(3000)));
+    settle(&mut h);
+    let followed = top(&h);
+    assert!(followed < 99, "follows the print: {followed}");
+    // One layer key over the view: this print is no longer followed...
+    h.hover_at(egui::pos2(640.0, 600.0));
+    h.key_press(Key::ArrowDown);
+    settle(&mut h);
+    assert_eq!(top(&h), followed - 1);
+    h.state_mut().set_state_override(Some(printing_at(6000)));
+    settle(&mut h);
+    assert_eq!(top(&h), followed - 1);
+    assert!(!h.state().viewer_tab().following());
+    // ...but the preference stays, and the next print is followed again.
+    assert!(h.state().ui_prefs().viewer.follow_print);
+    let mut idle = printing_at(0);
+    idle.job = None;
+    h.state_mut().set_state_override(Some(idle));
+    settle(&mut h);
+    h.state_mut().set_state_override(Some(printing_at(6000)));
+    settle(&mut h);
+    assert!(h.state().viewer_tab().following());
+    assert!(top(&h) > followed, "{} > {followed}", top(&h));
+}
+
+#[test]
 fn the_cards_over_the_3d_view_keep_the_pointer_from_the_toolpath() {
     let options = with_file(AppOptions::headless(), sample("calibration-cube.gcode"));
     let mut h = app(options, WINDOW);
