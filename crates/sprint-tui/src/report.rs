@@ -22,8 +22,8 @@ use crate::commands::{COMMANDS, CommandSpec, Group};
 use crate::format;
 use crate::loader::LoadedFile;
 use crate::theme::{ColorSupport, Theme};
+use crate::widgets::summary_rows;
 use crate::widgets::util::sanitize;
-use crate::widgets::{part_bounds, summary_rows};
 
 /// The meaning of a piece of report text, mapped to a style by the
 /// front end.
@@ -990,8 +990,11 @@ pub fn file_lines(loaded: &LoadedFile) -> Vec<ReportLine> {
         ),
         ReportLine::new(),
     ];
-    let bounds = part_bounds(toolpath);
-    let rows = summary_rows(&toolpath.stats, &toolpath.metadata, Some(&bounds));
+    let rows = summary_rows(
+        &toolpath.stats,
+        &toolpath.metadata,
+        Some(&loaded.part_bounds),
+    );
     let width = rows.iter().map(|r| r.label.len()).max().unwrap_or(0) + 2;
     for row in rows {
         let mut line = ReportLine::row(row.label, width, &row.value, Tone::Plain);

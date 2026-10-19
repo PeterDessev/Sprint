@@ -11,7 +11,7 @@ use crossbeam_channel::{Receiver, TryRecvError};
 use sprint_host::PrinterProfile;
 use sprint_host::sprint_gcode::{AnalyzeOptions, Bounds, GcodeFile, Toolpath, analyze};
 
-use crate::widgets::object_bounds;
+use crate::widgets::{object_bounds, part_bounds};
 
 /// A loaded and analysed G-code file.
 #[derive(Clone)]
@@ -24,6 +24,9 @@ pub struct LoadedFile {
     pub toolpath: Arc<Toolpath>,
     /// XY extents of the printed object (for the layer view).
     pub object_bounds: Bounds,
+    /// Extents of the part ([`part_bounds`], for the statistics), measured
+    /// once: it takes a pass over every segment.
+    pub part_bounds: Bounds,
     /// How long loading and analysis took.
     pub load_time: Duration,
 }
@@ -42,11 +45,13 @@ impl LoadedFile {
     /// Build from an already analysed file.
     pub fn new(path: PathBuf, file: GcodeFile, toolpath: Toolpath, load_time: Duration) -> Self {
         let bounds = object_bounds(&toolpath);
+        let part = part_bounds(&toolpath);
         LoadedFile {
             path,
             file: Arc::new(file),
             toolpath: Arc::new(toolpath),
             object_bounds: bounds,
+            part_bounds: part,
             load_time,
         }
     }

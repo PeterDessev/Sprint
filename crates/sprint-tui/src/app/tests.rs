@@ -1524,3 +1524,20 @@ fn a_pasted_block_sends_one_command_per_line_after_asking() {
     assert!(app.modal.is_none());
     assert_eq!(app.gcode_input.text(), "M115");
 }
+
+#[test]
+fn the_statistics_use_the_bounds_measured_at_load() {
+    // Measuring the part walks every segment: millions in a big file, too
+    // slow for every frame. The panel shows what the load measured.
+    let mut app = app();
+    load(&mut app, "calibration-cube.gcode");
+    let file = app.file.as_mut().expect("loaded");
+    assert_eq!(file.part_bounds, crate::part_bounds(&file.toolpath));
+    file.part_bounds = sprint_host::sprint_gcode::Bounds {
+        min: [0.0, 0.0, 0.0],
+        max: [123.0, 45.0, 6.0],
+    };
+    press(&mut app, KeyCode::Char('s'));
+    let text = screen(&mut app, 120, 40);
+    assert!(text.contains("123.0 x 45.0 x 6.0 mm"), "{text}");
+}

@@ -551,7 +551,11 @@ impl App {
             return;
         };
         if self.center == Center::Stats {
-            let panel = StatsPanel::from_toolpath(&file.toolpath).theme(&theme);
+            // The bounds measured at load: measuring walks every segment.
+            let toolpath = &file.toolpath;
+            let panel = StatsPanel::new(&toolpath.stats, &toolpath.metadata)
+                .bounds(Some(file.part_bounds))
+                .theme(&theme);
             let max = panel
                 .line_count()
                 .saturating_sub(usize::from(area.height.saturating_sub(2)));
