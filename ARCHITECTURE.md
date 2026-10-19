@@ -694,7 +694,7 @@ impl SimServer {
     pub fn bind(addr: impl ToSocketAddrs, config: SimConfig) -> std::io::Result<SimServer>;
     pub fn local_addr(&self) -> SocketAddr;
     pub fn is_finished(&self) -> bool;               // the accept loop ended (stopped, or the listener failed)
-    pub fn wait(&self) -> std::io::Result<()>;      // block until it ends: Ok after stop(), else the listener's error
+    pub fn wait(&self) -> std::io::Result<()>;      // block until it ends: Ok after stop(), else the listener's error (first caller only)
     pub fn stop(&self);                              // ask it to stop without waiting
     pub fn shutdown(self) -> std::io::Result<()>;   // stop + wait
 }

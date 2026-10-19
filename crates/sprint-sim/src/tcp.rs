@@ -38,7 +38,19 @@ pub fn serve_tcp(addr: &str, config: SimConfig) -> io::Result<()> {
 pub struct SimServer {
     addr: SocketAddr,
     stop: Arc<AtomicBool>,
+    /// Set by the server thread when its accept loop has ended (also while
+    /// a [`SimServer::wait`] holds the join handle).
+    finished: Arc<AtomicBool>,
     thread: Mutex<Option<JoinHandle<io::Result<()>>>>,
+}
+
+/// Sets its flag when dropped: the server thread ended, however it ended.
+struct SetOnDrop(Arc<AtomicBool>);
+
+impl Drop for SetOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
 }
 
 impl SimServer {
@@ -49,12 +61,18 @@ impl SimServer {
         let local = listener.local_addr()?;
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
+        let finished = Arc::new(AtomicBool::new(false));
+        let thread_finished = SetOnDrop(Arc::clone(&finished));
         let thread = thread::Builder::new()
             .name("sprint-sim-tcp".to_string())
-            .spawn(move || serve_listener(&listener, &config, &thread_stop))?;
+            .spawn(move || {
+                let _finished = thread_finished;
+                serve_listener(&listener, &config, &thread_stop)
+            })?;
         Ok(SimServer {
             addr: local,
             stop,
+            finished,
             thread: Mutex::new(Some(thread)),
         })
     }
@@ -67,16 +85,13 @@ impl SimServer {
     /// The accept loop has ended: stopped, or the listener failed
     /// ([`SimServer::wait`] tells which).
     pub fn is_finished(&self) -> bool {
-        self.thread
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .as_ref()
-            .is_none_or(JoinHandle::is_finished)
+        self.finished.load(Ordering::Acquire)
     }
 
     /// Block until the accept loop ends and return how: `Ok` after
-    /// [`SimServer::stop`], the listener's error otherwise. Later calls
-    /// return `Ok(())` at once.
+    /// [`SimServer::stop`], the listener's error otherwise. Only the first
+    /// call gets the error: other calls (also ones made meanwhile from
+    /// other threads) wait for the end too and return `Ok(())`.
     pub fn wait(&self) -> io::Result<()> {
         let thread = self
             .thread
@@ -87,7 +102,13 @@ impl SimServer {
             Some(t) => t
                 .join()
                 .unwrap_or_else(|_| Err(io::Error::other("server thread panicked"))),
-            None => Ok(()),
+            None => {
+                // Another call is joining the thread.
+                while !self.is_finished() {
+                    thread::sleep(POLL);
+                }
+                Ok(())
+            }
         }
     }
 

@@ -96,6 +96,29 @@ fn the_server_can_be_watched_until_it_ends() {
 }
 
 #[test]
+fn a_server_being_waited_for_is_not_finished() {
+    // `sprint sim` may wait on one thread and look on another.
+    let server = SimServer::bind("127.0.0.1:0", fast(50.0)).expect("bind");
+    let (finished, second_returned) = std::thread::scope(|s| {
+        let first = s.spawn(|| server.wait());
+        std::thread::sleep(Duration::from_millis(100));
+        let finished = server.is_finished();
+        let second = s.spawn(|| server.wait());
+        std::thread::sleep(Duration::from_millis(100));
+        let second_returned = second.is_finished();
+        // (Stopped before asserting: a failed assertion here would leave
+        // the scope waiting for the waiters forever.)
+        server.stop();
+        first.join().unwrap().expect("a clean stop");
+        second.join().unwrap().expect("a clean stop");
+        (finished, second_returned)
+    });
+    assert!(!finished, "still serving while waited for");
+    assert!(!second_returned, "a second wait blocks too");
+    assert!(server.is_finished());
+}
+
+#[test]
 fn bind_errors_are_reported() {
     let server = SimServer::bind("127.0.0.1:0", fast(50.0)).expect("bind");
     let taken = server.local_addr();
