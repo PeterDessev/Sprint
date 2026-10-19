@@ -711,3 +711,23 @@ fn extruder_never_reports_beyond_its_limits() {
         }]
     );
 }
+
+#[test]
+fn key_value_custom_row_stays_in_the_value_column() {
+    let mut h = harness_state(Theme::Dark, (520.0, 160.0), (), |ui, ()| {
+        KeyValueGrid::new("kv").show(ui, |kv| {
+            kv.row_ui("Extruders", |ui| {
+                ui.label("Alpha");
+                ui.label("Beta");
+            });
+            kv.row("Firmware", "A much longer firmware value");
+        });
+    });
+    h.run_ok();
+    let beta = h.get_by_label("Beta").rect();
+    let long = h.get_by_label("A much longer firmware value").rect();
+    assert!(
+        beta.min.x < long.max.x,
+        "Beta spilled into a third column: {beta:?} vs {long:?}"
+    );
+}

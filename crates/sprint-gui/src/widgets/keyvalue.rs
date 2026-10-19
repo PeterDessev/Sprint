@@ -134,10 +134,13 @@ impl KeyValueRows<'_> {
         self.value_row(key, value, FontId::proportional(13.0), color)
     }
 
-    /// A label and custom content in the value column.
+    /// A label and custom content in the value column. Everything
+    /// `add_value` adds is laid out left to right in that one cell.
     pub fn row_ui<R>(&mut self, key: &str, add_value: impl FnOnce(&mut Ui) -> R) -> R {
         key_label(self.ui, &self.p, key);
-        let inner = add_value(self.ui);
+        // Without a wrapping Ui, every widget would take a grid cell of its
+        // own and a second one would spill into a third column.
+        let inner = self.ui.horizontal(add_value).inner;
         self.ui.end_row();
         inner
     }
