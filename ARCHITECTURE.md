@@ -754,9 +754,10 @@ commands are known by name. Rules:
   babysteps, M600, object exclusion) is allowed.
 * Paused: moves, extrusion, mode changes, `G92 E`, heaters and waits, M410
   Allow (the host restores position and modes on resume); homing Z (G28
-  naming Z or no axis), probing, other coordinate shifts, tool changes,
-  motors off, calibration, leveling changes, SD prints and start/end macros
-  Confirm; M28 Block.
+  naming Z, or neither X nor Y: firmware homes every axis for `G28`,
+  Prusa's `G28 W`, `G28 O`, ...), probing, other coordinate shifts, tool
+  changes, motors off, calibration, leveling changes, SD prints and
+  start/end macros Confirm; M28 Block.
 * Idle: everything else is allowed. Unknown commands and macros are allowed.
 
 ---

@@ -297,7 +297,7 @@ enum Class {
     Other,
     /// Moves, extrudes or retracts.
     Move,
-    /// G28; `z` when it homes Z (names Z or no axis at all).
+    /// G28; `z` when it homes Z (names Z, or neither X nor Y).
     Home {
         z: bool,
     },
@@ -458,7 +458,10 @@ fn classic_class(letter: u8, number: u32, w: &[Word]) -> Class {
             }
         }
         (b'G', 28) => Class::Home {
-            z: has(w, b'Z') || !has_any(b"XYZABCUVW"),
+            // Only X and Y keep Z still: without X/Y/Z, Marlin, Prusa
+            // (`G28 W`, `G28 C`) and Klipper home every axis, and a 3-axis
+            // printer reads other axis letters that way too.
+            z: has(w, b'Z') || !has_any(b"XY"),
         },
         (b'G', 26 | 29..=30 | 32..=35 | 38 | 76 | 80) => Class::Probe,
         (b'G', 20 | 21 | 90 | 91) | (b'M', 82 | 83) => Class::Mode,
@@ -894,6 +897,19 @@ mod tests {
             ("G28", Allow, home, home),
             ("G28 Z", Allow, home, home),
             ("G28 X Y", Allow, home, Allow),
+            // Firmware homes every axis when no X/Y/Z is named: Prusa's
+            // `G28 W` (without mesh leveling) and `G28 C` (calibrate),
+            // Marlin's `G28 O` / `G28 R5`, and letters a 3-axis Marlin or
+            // Klipper does not know.
+            ("G28 W", Allow, home, home),
+            ("g28 c", Allow, home, home),
+            ("G28 O", Allow, home, home),
+            ("G28 R5", Allow, home, home),
+            ("G28 A", Allow, home, home),
+            ("G28 U V", Allow, home, home),
+            ("G28 X W", Allow, home, Allow),
+            ("G28 Y0", Allow, home, Allow),
+            ("G28 X Z", Allow, home, home),
             ("G29", Allow, home, home),
             ("G29 P1", Allow, home, home),
             ("G30", Allow, home, home),
