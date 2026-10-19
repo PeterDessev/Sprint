@@ -130,20 +130,30 @@ pub fn run(args: &PrintArgs) -> Result<ExitCode> {
             eprintln!("Cancelled {name} at {percent}");
             Ok(ExitCode::from(EXIT_INTERRUPTED))
         }
-        JobStatus::Failed(why) => Err(anyhow!("{name} failed at {percent}: {why}")),
+        JobStatus::Failed(why) => {
+            let heaters = match heaters {
+                Some(true) => "; the heaters are off",
+                Some(false) => "; the heaters may still be on: check the printer",
+                None => "",
+            };
+            Err(anyhow!("{name} failed at {percent}: {why}{heaters}"))
+        }
         JobStatus::Cancelled => Err(anyhow!("the printer cancelled {name} at {percent}")),
         other => Err(anyhow!("{name} stopped at {percent} ({})", other.label())),
     }
 }
 
-/// Before the link closes: when Sprint stopped waiting for a cancel
-/// ([`Outcome::abandoned`]), the cancel script may not have turned the
+/// Before the link closes: when the job failed (a line the firmware kept
+/// rejecting, a resend it could not serve) or Sprint stopped waiting for
+/// a cancel ([`Outcome::abandoned`]), no cancel script has turned the
 /// heaters off, so they are switched off here (see
-/// [`session::heaters_off`]). `say` gets what is going on. Returns
-/// whether the printer reported them off, or `None` when nothing was
-/// needed (or the link is gone, or the printer halted).
+/// [`session::heaters_off`]; harmless when the engine did it already).
+/// `say` gets what is going on. Returns whether the printer reported them
+/// off, or `None` when nothing was needed (or the link is gone, or the
+/// printer halted, which switches them off itself).
 fn stop_safely(printer: &Printer, outcome: &Outcome, say: &mut dyn FnMut(&str)) -> Option<bool> {
-    if !outcome.abandoned {
+    let failed = matches!(outcome.last.0, JobStatus::Failed(_));
+    if !outcome.abandoned && !failed {
         return None;
     }
     let reachable = printer.with_state(|s| s.is_connected() && !s.halted);
@@ -459,6 +469,66 @@ mod tests {
         assert_eq!(sim.hotend_targets, [0.0]);
         assert_eq!(sim.bed_target, 0.0);
         printer.disconnect();
+    }
+
+    #[test]
+    fn a_failed_print_leaves_the_heaters_off() {
+        let printer = connect(SimConfig {
+            boot_delay_ms: 20,
+            time_scale: 100.0,
+            instant_moves: true,
+            ..SimConfig::default()
+        });
+        let control = printer.sim_control().expect("simulator");
+        // A line longer than the firmware's line buffer is rejected again
+        // and again until the engine gives up on the job, while the link
+        // stays usable.
+        let mut text = String::from(
+            "M104 S200
+M140 S60
+G28
+G90
+",
+        );
+        for i in 0..50 {
+            text.push_str(&format!(
+                "G1 X{} Y20 F3000
+",
+                20 + i % 2
+            ));
+        }
+        text.push_str(&format!(
+            "M117 {}
+",
+            "x".repeat(600)
+        ));
+        for i in 0..50 {
+            text.push_str(&format!(
+                "G1 X{} Y30 F3000
+",
+                20 + i % 2
+            ));
+        }
+        let file = Arc::new(sprint_gcode::GcodeFile::from_text("long.gcode", &text));
+        printer
+            .start_print(file, Default::default())
+            .expect("start");
+        let outcome = follow(&printer, &Interrupt::new(), &mut |_| {});
+        assert!(
+            matches!(outcome.last.0, JobStatus::Failed(_)),
+            "{outcome:?}"
+        );
+        assert!(!outcome.cancel_sent && !outcome.abandoned);
+        let mut said = Vec::new();
+        let off = stop_safely(&printer, &outcome, &mut |t| said.push(t.to_string()));
+        assert_eq!(off, Some(true), "{said:?}");
+        assert!(said.iter().any(|t| t.contains("heaters off")), "{said:?}");
+        let sim = control.snapshot();
+        assert_eq!(sim.hotend_targets, [0.0]);
+        assert_eq!(sim.bed_target, 0.0);
+        printer.disconnect();
+        // Once the link is gone there is nothing left to do.
+        assert_eq!(stop_safely(&printer, &outcome, &mut |_| {}), None);
     }
 
     #[test]

@@ -291,6 +291,32 @@ fn print_checks_the_file_before_connecting() {
 }
 
 #[test]
+fn a_failed_print_turns_the_heaters_off_before_exiting() {
+    let scratch = Scratch::new("print-failed");
+    // The long M117 overflows the firmware's line buffer: the engine gives
+    // up on the job while the link still works.
+    let mut gcode = String::from("M104 S200\nM140 S60\nG28\n");
+    for i in 0..20 {
+        gcode.push_str(&format!("G1 X{} Y20 F3000\n", 20 + i % 2));
+    }
+    gcode.push_str(&format!("M117 {}\nG1 X30 Y30\n", "x".repeat(600)));
+    let path = scratch.0.join("long.gcode");
+    std::fs::write(&path, gcode).expect("write");
+    let output = scratch.run(&[
+        "print",
+        &path.display().to_string(),
+        "-c",
+        PRINT_SIM,
+        "--no-progress",
+    ]);
+    assert_eq!(output.status.code(), Some(1), "{}", stdout(&output));
+    let err = stderr(&output);
+    assert!(err.contains("Turning the heaters off"), "{err}");
+    assert!(err.contains("long.gcode failed at"), "{err}");
+    assert!(err.contains("the heaters are off"), "{err}");
+}
+
+#[test]
 fn print_fails_when_the_printer_is_unreachable() {
     let scratch = Scratch::new("print-refused");
     let cube = sample("calibration-cube.gcode");
