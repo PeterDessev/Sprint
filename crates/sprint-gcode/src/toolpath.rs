@@ -138,8 +138,8 @@ impl Feature {
 /// One straight move. Arcs (G2/G3) are tessellated into several segments.
 ///
 /// Segments are stored in file order, so `line` is non-decreasing across
-/// `Toolpath::segments`.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+/// `Toolpath::segments`. `Default` gives a travel outside any object.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Segment {
     /// Start position in machine coordinates (mm).
     pub start: [f32; 3],
@@ -169,9 +169,43 @@ pub struct Segment {
     pub tool: u8,
     /// Part-cooling fan speed, 0..=255.
     pub fan: u8,
+    /// Index into `Toolpath::objects` of the labelled object this move
+    /// belongs to, or [`Segment::NO_OBJECT`] outside any object (start
+    /// G-code, purge lines, skirts, files without labels).
+    pub object: u16,
+}
+
+impl Default for Segment {
+    fn default() -> Self {
+        Segment {
+            start: [0.0; 3],
+            end: [0.0; 3],
+            feedrate: 0.0,
+            width: 0.0,
+            height: 0.0,
+            extruded: 0.0,
+            time: 0.0,
+            duration: 0.0,
+            line: 0,
+            layer: 0,
+            kind: MoveKind::Travel,
+            feature: Feature::Unknown,
+            tool: 0,
+            fan: 0,
+            object: Segment::NO_OBJECT,
+        }
+    }
 }
 
 impl Segment {
+    /// [`Segment::object`] of moves outside any object.
+    pub const NO_OBJECT: u16 = u16::MAX;
+
+    /// Index into `Toolpath::objects`, `None` outside any object.
+    pub fn object_index(&self) -> Option<usize> {
+        (self.object != Segment::NO_OBJECT).then_some(usize::from(self.object))
+    }
+
     /// Straight-line length in mm.
     pub fn length(&self) -> f32 {
         let d = [
@@ -436,6 +470,48 @@ pub struct SlicerMetadata {
     pub flavor: Option<String>,
 }
 
+/// A labelled object (part) of a multi-object print, as the slicer marked it
+/// for object exclusion / cancel-object.
+///
+/// Markers: Marlin/Prusa/RepRapFirmware `M486 S<id> [A<name>]` (`S-1` ends
+/// the object; a later `M486 A<name>` names the current one), Klipper
+/// `EXCLUDE_OBJECT_DEFINE NAME=` / `EXCLUDE_OBJECT_START NAME=` /
+/// `EXCLUDE_OBJECT_END`, PrusaSlicer `; printing object <name>` / `; stop
+/// printing object <name>`, and Cura `;MESH:<name>` (`;MESH:NONMESH` ends
+/// it). An object block runs from its start marker to the next start or end
+/// marker.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct ObjectInfo {
+    /// The label exactly as written, trimmed and unquoted (`M486 A"name"`,
+    /// `NAME=`, `; printing object name`, `;MESH:name`). M486 objects
+    /// without a name are `"Object <id>"`. Object exclusion in the host uses
+    /// the same names.
+    pub name: String,
+    /// Numeric id of M486 objects (`S<id>`).
+    pub id: Option<u32>,
+    /// Bounds of the object's extruding segments (empty when it has none).
+    pub bounds: Bounds,
+    /// Source line ranges of the object's blocks that contain moves, from
+    /// the start marker up to (not including) the end marker, ascending.
+    pub lines: Vec<Range<u32>>,
+    /// Estimated seconds spent on the object's segments.
+    pub time: f32,
+    /// Filament the object uses, mm.
+    pub extruded: f32,
+    /// Number of segments (extrusions and travels) inside the object.
+    pub segments: usize,
+}
+
+impl ObjectInfo {
+    /// True when source line `line` lies in one of the object's blocks.
+    pub fn contains_line(&self, line: u32) -> bool {
+        let n = self.lines.partition_point(|r| r.start <= line);
+        n.checked_sub(1)
+            .and_then(|i| self.lines.get(i))
+            .is_some_and(|r| r.contains(&line))
+    }
+}
+
 /// Result of analysing a G-code file.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Toolpath {
@@ -455,9 +531,17 @@ pub struct Toolpath {
     pub metadata: SlicerMetadata,
     /// Number of lines in the source file.
     pub line_count: u32,
+    /// Labelled objects in first-seen order (empty when the file has no
+    /// object labels); `Segment::object` indexes this list.
+    pub objects: Vec<ObjectInfo>,
 }
 
 impl Toolpath {
+    /// Index of the object whose block contains source line `line`.
+    pub fn object_at_line(&self, line: u32) -> Option<usize> {
+        self.objects.iter().position(|o| o.contains_line(line))
+    }
+
     /// Index of the last segment whose source line is `<= line`.
     pub fn segment_at_line(&self, line: u32) -> Option<usize> {
         let n = self.segments.partition_point(|s| s.line <= line);

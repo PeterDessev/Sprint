@@ -586,6 +586,7 @@ pub fn stress_toolpath(target_segments: usize) -> Toolpath {
                     tool: 0,
                     fan: 255,
                     extruded: 0.0,
+                    object: Segment::NO_OBJECT,
                 });
                 line += 1;
                 time += 0.31;
@@ -631,6 +632,7 @@ pub fn stress_toolpath(target_segments: usize) -> Toolpath {
                     tool: 0,
                     fan: 255,
                     extruded: 0.01,
+                    object: Segment::NO_OBJECT,
                 });
                 line += 1;
                 time += 0.1;

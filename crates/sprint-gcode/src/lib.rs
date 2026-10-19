@@ -10,6 +10,7 @@ pub mod content;
 pub mod estimate;
 pub mod file;
 pub mod meta;
+mod objects;
 pub mod parse;
 pub mod resume;
 pub mod state;

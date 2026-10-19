@@ -314,6 +314,25 @@ pub fn resume_preamble(file: &GcodeFile, line: usize, options: &ResumeOptions) -
   mm/min, as RepRapFirmware defines it; in Klipper-flavored files
   (`gcode_flavor = klipper`) `M204 P.. T..` sets print and travel
   acceleration to the smaller value, as Klipper does.
+* Objects (cancel-object / exclusion): `Toolpath::objects: Vec<ObjectInfo>`
+  (`name`, `id: Option<u32>`, extrusion `bounds`, `lines: Vec<Range<u32>>`,
+  `time`, `extruded`, `segments`; `contains_line`) in first-seen order,
+  `Toolpath::object_at_line`, and `Segment::object: u16` (index into
+  `objects`, `Segment::NO_OBJECT` = `u16::MAX` outside any object;
+  `Segment::object_index()`; `Segment::default()` has no object; the
+  segment stays 64 bytes). Markers: `M486 S<id> [A<name>]` (`S-1` ends,
+  `M486 A<name>` alone names the current M486 object, `T/P/U/C` change
+  nothing), Klipper `EXCLUDE_OBJECT_DEFINE NAME=` (lists the object),
+  `EXCLUDE_OBJECT_START NAME=` / `EXCLUDE_OBJECT_END`, PrusaSlicer `;
+  printing object <name>` / `; stop printing object`, Cura `;MESH:<name>`
+  (`;MESH:NONMESH` ends). A block runs from its start marker to the next
+  start or end marker; `lines` holds the blocks that contain moves (start
+  marker line included, end marker excluded). Names are the label exactly
+  as written, trimmed and unquoted; M486 objects without a name are
+  `"Object <id>"` (a name given by any M486 line for that id, before or
+  after, wins). The same label written as a comment and as `M486 ... A`
+  is one object. Purge lines, skirts and start G-code outside the markers
+  belong to no object. The host's exclusion uses the same names.
 * `meta`: `is_layer_marker`, `parse_duration`; `SlicerMetadata` gained
   `filament_density`, `layer_count`, `flavor`.
 

@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::estimate::{KinematicLimits, PlannedBlock, Planner};
 use crate::file::GcodeFile;
-use crate::meta::{first_number, is_layer_marker, read_metadata};
+use crate::meta::{first_number, is_layer_marker, m486_name, read_metadata};
+use crate::objects::ObjectTracker;
 use crate::parse::{ExtendedCommand, ParsedLine, parse_into};
 use crate::state::{MachineState, Move, MoveCommand};
 use crate::toolpath::{
@@ -67,8 +68,9 @@ pub fn analyze(
                 return None;
             }
         }
-        parse_into(file.line(index), &mut parsed);
-        analyzer.line(saturating_u32(index), &parsed);
+        let raw = file.line(index);
+        parse_into(raw, &mut parsed);
+        analyzer.line(saturating_u32(index), &parsed, raw);
     }
     let toolpath = analyzer.finish(metadata, saturating_u32(total));
     if !progress(1.0) {
@@ -237,6 +239,8 @@ struct Analyzer {
     reprapfirmware: bool,
     /// Klipper flavor: `M204 P T` sets one acceleration, the smaller one.
     klipper: bool,
+    /// Object labels (M486, EXCLUDE_OBJECT, `; printing object`, `;MESH:`).
+    objects: ObjectTracker,
 }
 
 impl Analyzer {
@@ -315,18 +319,25 @@ impl Analyzer {
                 .flavor
                 .as_deref()
                 .is_some_and(|f| f.trim().eq_ignore_ascii_case("klipper")),
+            objects: ObjectTracker::default(),
         }
+    }
+
+    /// Moves recorded so far (segments and E-only moves): tells object
+    /// blocks with moves from empty ones.
+    fn moves(&self) -> usize {
+        self.segments.len() + self.retractions.len()
     }
 
     // ---------------------------------------------------------------- lines
 
-    fn line(&mut self, ln: u32, p: &ParsedLine) {
+    fn line(&mut self, ln: u32, p: &ParsedLine, raw: &str) {
         if let Some(c) = p.comment {
-            self.comment(c);
+            self.comment(c, ln);
         }
         let Some(code) = p.code else {
             if let Some(cmd) = p.text.and_then(ExtendedCommand::parse) {
-                self.extended(&cmd);
+                self.extended(&cmd, ln);
             }
             return;
         };
@@ -456,13 +467,53 @@ impl Analyzer {
                     self.tool_changes += 1;
                 }
             }
+            (b'M', 486, None) => {
+                // Object labels: S<id> starts an object, S-1 ends it,
+                // A<name> alone names the current one; T/P/U/C do not
+                // change which object the moves belong to.
+                let name = raw
+                    .find(['M', 'm'])
+                    .and_then(|at| raw.get(at..))
+                    .and_then(m486_name);
+                let moves = self.moves();
+                match p.get('S') {
+                    Some(s) if s < 0.0 => self.objects.end(ln, moves),
+                    Some(s) if s <= f64::from(u32::MAX) => {
+                        self.objects.start_m486(s as u32, name, ln, moves);
+                    }
+                    Some(_) => {}
+                    None => {
+                        if let Some(name) = name {
+                            self.objects.name_current(name);
+                        }
+                    }
+                }
+            }
             _ => {
                 self.state.apply(p);
             }
         }
     }
 
-    fn extended(&mut self, cmd: &ExtendedCommand<'_>) {
+    fn extended(&mut self, cmd: &ExtendedCommand<'_>, ln: u32) {
+        if cmd.is("EXCLUDE_OBJECT_START") {
+            if let Some(name) = cmd.param("NAME") {
+                let moves = self.moves();
+                self.objects.start_named(name, ln, moves);
+            }
+            return;
+        }
+        if cmd.is("EXCLUDE_OBJECT_END") {
+            let moves = self.moves();
+            self.objects.end(ln, moves);
+            return;
+        }
+        if cmd.is("EXCLUDE_OBJECT_DEFINE") {
+            if let Some(name) = cmd.param("NAME") {
+                self.objects.define(name);
+            }
+            return;
+        }
         if self.planner.limits_mut().apply_extended(cmd) {
             return;
         }
@@ -500,10 +551,40 @@ impl Analyzer {
         }
     }
 
-    fn comment(&mut self, c: &str) {
+    fn comment(&mut self, c: &str, ln: u32) {
         let Some(&first) = c.as_bytes().first() else {
             return;
         };
+        // Object labels: PrusaSlicer "; printing object <name>" / "; stop
+        // printing object <name>", Cura ";MESH:<name>" / ";MESH:NONMESH".
+        match first {
+            b'p' => {
+                if let Some(name) = c.strip_prefix("printing object ") {
+                    let moves = self.moves();
+                    self.objects.start_named(name, ln, moves);
+                    return;
+                }
+            }
+            b's' => {
+                if c.starts_with("stop printing object") {
+                    let moves = self.moves();
+                    self.objects.end(ln, moves);
+                    return;
+                }
+            }
+            b'M' => {
+                if let Some(name) = c.strip_prefix("MESH:") {
+                    let moves = self.moves();
+                    if name.trim() == "NONMESH" {
+                        self.objects.end(ln, moves);
+                    } else {
+                        self.objects.start_named(name, ln, moves);
+                    }
+                    return;
+                }
+            }
+            _ => {}
+        }
         match first {
             b'T' => {
                 if let Some(v) = c.strip_prefix("TYPE:") {
@@ -743,6 +824,7 @@ impl Analyzer {
             feature: self.feature,
             tool: self.state.tool,
             fan: self.state.fan,
+            object: self.objects.current(),
         });
         if extruding {
             self.last_extrusion = Some(index);
@@ -943,6 +1025,8 @@ impl Analyzer {
         for r in &mut retractions {
             r.layer = layer_index_at_line(&layers, r.line);
         }
+        let moves = self.segments.len() + retractions.len();
+        let objects = std::mem::take(&mut self.objects).finish(line_count, moves, &self.segments);
         let mut toolpath = Toolpath {
             segments: Vec::new(),
             layers,
@@ -952,6 +1036,7 @@ impl Analyzer {
             stats: Stats::default(),
             metadata,
             line_count,
+            objects,
         };
         self.fill_stats(&mut toolpath, total_time);
         toolpath.segments = std::mem::take(&mut self.segments);
@@ -1630,7 +1715,7 @@ mod tests {
         let mut parsed = ParsedLine::default();
         for i in 0..file.len() {
             parse_into(file.line(i), &mut parsed);
-            analyzer.line(saturating_u32(i), &parsed);
+            analyzer.line(saturating_u32(i), &parsed, file.line(i));
         }
         let tp = analyzer.finish(metadata, saturating_u32(file.len()));
         let arc_segments = tp.segments.iter().filter(|s| s.line > 1).count();
@@ -1863,5 +1948,198 @@ mod tests {
         assert_eq!(most_common(&[]), 0.0);
         assert_eq!(most_common(&[0.3, 0.2, 0.2, 0.1]), 0.2);
         assert_eq!(most_common(&[0.3, 0.2]), 0.2);
+    }
+
+    /// Object index of every extruding segment, by source line.
+    fn extrusion_objects(tp: &Toolpath) -> Vec<(u32, Option<usize>)> {
+        tp.segments
+            .iter()
+            .filter(|s| s.is_extrusion())
+            .map(|s| (s.line, s.object_index()))
+            .collect()
+    }
+
+    #[test]
+    fn prusaslicer_object_labels() {
+        // Audit A29: per-object moves for cancel-object / exclusion.
+        let tp = run("\
+M83
+;TYPE:Skirt
+G1 Z0.2 F600
+G1 X0 Y0
+G1 X50 Y0 E2
+; printing object cube id:0 copy 0
+;TYPE:External perimeter
+G1 X10 Y10
+G1 X20 Y10 E1
+; stop printing object cube id:0 copy 0
+; printing object cyl id:1 copy 0
+G1 X30 Y10
+G1 X40 Y12 E1
+; stop printing object cyl id:1 copy 0
+G1 Z0.4
+; printing object cube id:0 copy 0
+G1 X10 Y10
+G1 X20 Y10 E1
+; stop printing object cube id:0 copy 0
+G1 X0 Y0
+");
+        let names: Vec<&str> = tp.objects.iter().map(|o| o.name.as_str()).collect();
+        assert_eq!(names, ["cube id:0 copy 0", "cyl id:1 copy 0"]);
+        assert_eq!(
+            extrusion_objects(&tp),
+            [(4, None), (8, Some(0)), (12, Some(1)), (17, Some(0))]
+        );
+        let cube = &tp.objects[0];
+        assert_eq!(cube.id, None);
+        assert_eq!(cube.lines, vec![5..9, 15..18]);
+        assert_eq!(cube.segments, 4);
+        assert_eq!(cube.extruded, 2.0);
+        assert_eq!(
+            (cube.bounds.min, cube.bounds.max),
+            ([10.0, 10.0, 0.2], [20.0, 10.0, 0.4])
+        );
+        assert!(cube.time > 0.0);
+        let cyl = &tp.objects[1];
+        assert_eq!(cyl.lines, vec![10..13]);
+        assert_eq!((cyl.bounds.min[1], cyl.bounds.max[1]), (10.0, 12.0));
+        assert_eq!(tp.object_at_line(7), Some(0));
+        assert_eq!(tp.object_at_line(12), Some(1));
+        assert_eq!(tp.object_at_line(4), None);
+        assert_eq!(tp.object_at_line(18), None);
+        // The final travel is outside every object.
+        assert_eq!(tp.segments.last().and_then(Segment::object_index), None);
+    }
+
+    #[test]
+    fn marlin_m486_object_labels() {
+        let tp = run("\
+M486 T3
+M486 S0
+M486 Acube
+M486 S1 A\"my part\"
+M486 S-1
+M83
+G1 Z0.2 F600
+G1 X5 Y0 E1
+M486 S0
+G1 X10 Y10 E1
+M486 S2
+G1 X20 Y20 E1
+M486 S1
+G1 X30 Y30 E1
+M486 S-1
+G1 X0 Y0 E1
+");
+        let names: Vec<(&str, Option<u32>)> =
+            tp.objects.iter().map(|o| (o.name.as_str(), o.id)).collect();
+        assert_eq!(
+            names,
+            [
+                ("cube", Some(0)),
+                ("my part", Some(1)),
+                ("Object 2", Some(2))
+            ]
+        );
+        assert_eq!(
+            extrusion_objects(&tp),
+            [
+                (7, None),
+                (9, Some(0)),
+                (11, Some(2)),
+                (13, Some(1)),
+                (15, None)
+            ]
+        );
+        // The naming block in the header has no moves and no range.
+        assert_eq!(tp.objects[0].lines, vec![8..10]);
+        assert_eq!(tp.objects[1].lines, vec![12..14]);
+        // Unknown M486 forms change nothing.
+        let tp = run("M83\nM486 S0\nG1 X1 E1\nM486 P0\nM486 C\nG1 X2 E1\n");
+        assert_eq!(extrusion_objects(&tp), [(2, Some(0)), (5, Some(0))]);
+        assert_eq!(tp.objects[0].name, "Object 0");
+    }
+
+    #[test]
+    fn klipper_and_cura_object_labels() {
+        let tp = run("\
+EXCLUDE_OBJECT_DEFINE NAME=part_a CENTER=10,10 POLYGON=[[0,0],[1,1]]
+EXCLUDE_OBJECT_DEFINE NAME='part b'
+EXCLUDE_OBJECT_DEFINE NAME=unused
+M83
+G1 Z0.2 F600
+EXCLUDE_OBJECT_START NAME=part_a
+G1 X1 Y1 E1
+EXCLUDE_OBJECT_END NAME=part_a
+EXCLUDE_OBJECT_START NAME='part b'
+G1 X2 Y2 E1
+EXCLUDE_OBJECT_END
+G1 X3 Y3 E1
+");
+        let names: Vec<&str> = tp.objects.iter().map(|o| o.name.as_str()).collect();
+        assert_eq!(names, ["part_a", "part b", "unused"]);
+        assert_eq!(
+            extrusion_objects(&tp),
+            [(6, Some(0)), (9, Some(1)), (11, None)]
+        );
+        let unused = &tp.objects[2];
+        assert!(unused.bounds.is_empty() && unused.lines.is_empty());
+        assert_eq!(unused.segments, 0);
+
+        let tp = run("\
+;FLAVOR:Marlin
+M82
+;LAYER:0
+;TYPE:SKIRT
+G1 Z0.2 F600
+G1 X10 Y0 E1
+;MESH:vase.stl
+G1 X20 Y0 E2
+;MESH:NONMESH
+G0 X30 Y30
+;MESH:lid.stl
+G1 X40 Y30 E3
+;LAYER:1
+G1 Z0.4
+;MESH:vase.stl
+G1 X20 Y0 E4
+");
+        let names: Vec<&str> = tp.objects.iter().map(|o| o.name.as_str()).collect();
+        assert_eq!(names, ["vase.stl", "lid.stl"]);
+        assert_eq!(
+            extrusion_objects(&tp),
+            [(5, None), (7, Some(0)), (11, Some(1)), (15, Some(0))]
+        );
+        // The travel after NONMESH belongs to no object.
+        let travel = tp.segments.iter().find(|s| s.line == 9);
+        assert_eq!(travel.and_then(Segment::object_index), None);
+    }
+
+    #[test]
+    fn object_labels_written_two_ways_are_one_object() {
+        let tp = run("\
+M83
+G1 Z0.2
+; printing object cube
+M486 S0 A\"cube\"
+G1 X1 E1
+M486 S-1
+; stop printing object cube
+");
+        assert_eq!(tp.objects.len(), 1);
+        assert_eq!(tp.objects[0].id, Some(0));
+        assert_eq!(extrusion_objects(&tp), [(4, Some(0))]);
+        // A marker in the comment of a move: the move is inside the block.
+        let tp =
+            run("M83\nG1 Z0.2\nG1 X1 E1 ; printing object a\nG1 X2 E1 ; stop printing object a\n");
+        assert_eq!(extrusion_objects(&tp), [(2, Some(0)), (3, None)]);
+        assert_eq!(tp.objects[0].lines, vec![2..3]);
+        // The object index keeps segments small (5M+ segments in memory).
+        assert!(std::mem::size_of::<Segment>() <= 64);
+        // Without labels nothing belongs to an object.
+        let tp = run("M83\nG1 Z0.2\nG1 X1 E1\n");
+        assert!(tp.objects.is_empty());
+        assert_eq!(extrusion_objects(&tp), [(2, None)]);
+        assert_eq!(Segment::default().object_index(), None);
     }
 }

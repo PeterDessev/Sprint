@@ -846,7 +846,7 @@ fn param_value(t: &str, letter: char) -> Option<f32> {
 }
 
 /// `M486 A"name"` / `M486 S0 Aname`.
-fn m486_name(t: &str) -> Option<&str> {
+pub(crate) fn m486_name(t: &str) -> Option<&str> {
     let t = t.split(';').next().unwrap_or(t);
     let rest = t.get(4..)?;
     let b = rest.as_bytes();

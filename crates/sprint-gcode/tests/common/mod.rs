@@ -113,4 +113,21 @@ pub fn check_toolpath(tp: &Toolpath) {
         let layer_time: f32 = tp.layers.iter().map(|l| l.duration).sum();
         assert!(close(layer_time, st.estimated_time, 1e-3));
     }
+    // Objects: valid indices, totals match their segments, ranges sorted.
+    assert!(tp.objects.len() < usize::from(u16::MAX));
+    let mut per_object = vec![0usize; tp.objects.len()];
+    for s in &tp.segments {
+        if let Some(i) = s.object_index() {
+            assert!(i < tp.objects.len(), "segment object {i} out of range");
+            per_object[i] += 1;
+            assert!(tp.objects[i].contains_line(s.line), "line {}", s.line);
+        }
+    }
+    for (object, count) in tp.objects.iter().zip(per_object) {
+        assert_eq!(object.segments, count, "{}", object.name);
+        assert!(!object.name.is_empty());
+        assert!(object.time.is_finite() && object.extruded.is_finite());
+        assert!(object.lines.windows(2).all(|w| w[0].end < w[1].start));
+        assert!(object.lines.iter().all(|r| r.start <= r.end));
+    }
 }
