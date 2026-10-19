@@ -11,8 +11,11 @@
 //!   peak-to-peak), heat-up detection (time to target, overshoot, settling
 //!   time), holding power and the findings derived from them (oscillation
 //!   that warrants a PID autotune, an underpowered heater, ...).
+//! * [`mesh`]: bed mesh geometry, bilinear interpolation and the bed-screw
+//!   helper (how far to turn each leveling screw).
 
 #![warn(missing_docs)]
 
 pub mod format;
+pub mod mesh;
 pub mod thermal;
