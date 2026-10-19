@@ -246,7 +246,9 @@ impl Macros {
     /// Draw the section.
     pub(super) fn show(&mut self, ui: &mut Ui, ctx: &mut AppCtx<'_>) {
         let connected = ctx.connected();
-        let job_active = ctx.job_active();
+        // Also a print the printer runs from its card: the macro's
+        // commands would come between its lines just the same.
+        let job_active = ctx.printer_busy();
         let mut op = None;
         let mut run = None;
         let mut add_header = false;
@@ -432,10 +434,9 @@ impl Macros {
             let title = format!("Run “{}”?", m.name.trim());
             let dangerous = dangerous_commands(&m.gcode);
             let mut reasons = Vec::new();
-            if ctx.job_active() {
+            if ctx.printer_busy() {
                 reasons.push(
-                    "A job is running: these commands are sent between the print's lines."
-                        .to_owned(),
+                    "A print is running: these commands are sent between its lines.".to_owned(),
                 );
             }
             if !dangerous.is_empty() {
@@ -449,7 +450,7 @@ impl Macros {
             }
             let message = reasons.join(" ");
             let details = preview(&m.gcode);
-            let danger = ctx.job_active() || !dangerous.is_empty();
+            let danger = ctx.printer_busy() || !dangerous.is_empty();
             let answer = ConfirmDialog::new("sprint-controls-macro-run", &title)
                 .message(&message)
                 .details(&details)
@@ -610,7 +611,7 @@ fn editor_dialog(ctx: &egui::Context, editor: &mut Editor, app: &mut AppCtx<'_>)
     let dangerous = dangerous_commands(&editor.draft.gcode);
     let name_ok = !editor.draft.name.trim().is_empty();
     let can_save = name_ok && !lines.is_empty();
-    let can_test = app.connected() && !app.job_active() && !lines.is_empty();
+    let can_test = app.connected() && !app.printer_busy() && !lines.is_empty();
     let modal = Modal::new(Id::new("sprint-controls-macro-editor"))
         .frame(frame)
         .backdrop_color(backdrop)
@@ -695,8 +696,8 @@ fn editor_dialog(ctx: &egui::Context, editor: &mut Editor, app: &mut AppCtx<'_>)
                         .icon(icons::SEND)
                         .tooltip("Send the G-code now without saving"),
                 );
-                let test = if app.job_active() {
-                    test.on_disabled_hover_text("Not while a job runs")
+                let test = if app.printer_busy() {
+                    test.on_disabled_hover_text("Not while a print runs")
                 } else if !app.connected() {
                     test.on_disabled_hover_text("Connect to a printer first")
                 } else {

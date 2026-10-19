@@ -1904,13 +1904,32 @@ fn a_print_from_the_card_locks_motion_and_probing() {
     // A move typed in the console asks first.
     type_command(&mut h, "G1 X10");
     assert!(h.state().console().is_confirming());
+    h.key_press(Key::Escape);
+    settle(&mut h);
+    assert!(!h.state().console().is_confirming());
+    // So does a macro, as while a job of Sprint's runs.
+    // (Below the fold of the sidebar.)
+    h.get_by_label("Motors off").scroll_to_me();
+    settle(&mut h);
+    h.get_by_label("Motors off").click();
+    settle(&mut h);
+    assert!(h.query_by_label("Run “Motors off”?").is_some());
 }
 
 #[test]
 fn no_print_starts_while_the_printer_prints_from_its_card() {
-    let options = with_file(AppOptions::headless(), sample("calibration-cube.gcode"));
-    let mut h = app(options, WINDOW);
-    expect(&mut h, "the cube to be analyzed", analyzed);
+    let dir = temp_dir("card-print");
+    let path = dir.join("square.gcode");
+    std::fs::write(
+        &path,
+        "G90
+G1 X10 Y10 F3000
+M105
+",
+    )
+    .expect("write");
+    let mut h = app(with_file(AppOptions::headless(), path), WINDOW);
+    expect(&mut h, "the file to be analyzed", analyzed);
     // Started on the printer's display: no job, only its SD progress.
     let mut state = printing_state(JobStatus::Printing);
     state.job = None;
@@ -1927,6 +1946,18 @@ fn no_print_starts_while_the_printer_prints_from_its_card() {
     settle(&mut h);
     assert_eq!(h.state().dialog(), None);
     assert!(toast_titles(h.state()).contains(&"Cannot print right now".to_owned()));
+    // Nor does a line of the file go out between the card's.
+    h.state_mut().push_action(AppAction::ShowTab(Tab::Gcode));
+    settle(&mut h);
+    h.get_by_label("Line 3: M105").click_secondary();
+    settle(&mut h);
+    assert!(
+        h.get_by_label_contains("Send line to printer")
+            .accesskit_node()
+            .is_disabled()
+    );
+    drop(h);
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]

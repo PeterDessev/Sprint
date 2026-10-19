@@ -1125,8 +1125,9 @@ impl GcodeTab {
             Some("This line has no command")
         } else if !ctx.connected() {
             Some("Connect to a printer first")
-        } else if ctx.job_active() {
-            Some("Not while a job is running")
+        } else if ctx.printer_busy() {
+            // Also a print from the card: the line would come between its own.
+            Some("Not while a print runs")
         } else {
             None
         };
@@ -1169,7 +1170,7 @@ impl GcodeTab {
         match answer {
             Some(DialogResult::Confirmed) => {
                 if let Some(command) = self.confirm_send.take() {
-                    if ctx.connected() && !ctx.job_active() {
+                    if ctx.connected() && !ctx.printer_busy() {
                         send_line(ctx, &command);
                     } else {
                         ctx.toasts
