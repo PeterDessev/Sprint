@@ -201,24 +201,32 @@ impl Engine {
                 log::debug!("resend from line {from} ({stale} stale lines)");
             }
             ResendAction::Duplicate | ResendAction::Barrier | ResendAction::NothingToResend => {}
-            ResendAction::Desync { expected } => {
-                self.warn(format!(
-                    "The printer expects line {expected}, which was never sent; resetting the line counter"
-                ));
-                self.renumber_pending = true;
-            }
-            ResendAction::Unavailable { line } => {
-                let message =
-                    format!("The printer asked for line {line}, which is no longer available");
-                self.shared
-                    .log(ConsoleKind::Error, message.clone(), false, None);
-                self.shared.emit(Event::Error(message.clone()));
-                if self.job.is_some() {
-                    self.fail_job(&message);
-                }
-                self.renumber_pending = true;
-            }
+            ResendAction::Desync { expected } => self.line_counter_lost(format!(
+                "The printer expects line {expected}, which was never sent: its line counter changed"
+            )),
+            ResendAction::Unavailable { line } => self.line_counter_lost(format!(
+                "The printer asked for line {line}, which cannot be resent safely"
+            )),
         }
+    }
+
+    /// The firmware lost track of the line numbers: the numbered commands in
+    /// flight were dropped (resending could execute some twice), so a job
+    /// cannot continue; the counter is reset before anything else is sent.
+    fn line_counter_lost(&mut self, message: String) {
+        self.shared
+            .log(ConsoleKind::Error, message.clone(), false, None);
+        self.shared.emit(Event::Error(message.clone()));
+        if self.job.is_some() {
+            self.fail_job(&message);
+        }
+        self.renumber_pending = true;
+        let polls = |kind: PollKind, flow: &super::flow::Flow<Meta>| {
+            flow.in_flight()
+                .any(|e| e.meta.source == Source::Poll(kind))
+        };
+        self.temp_poll_outstanding = polls(PollKind::Temperature, &self.flow);
+        self.sd_poll_outstanding = polls(PollKind::SdStatus, &self.flow);
     }
 
     /// Marlin prints `wait` when its queue has been empty for a while; with

@@ -354,12 +354,6 @@ fn odd_resend_requests() {
     let t = t0();
     let mut f = synced(2, t);
     send(&mut f, "A", t);
-    // Firmware ahead of us.
-    assert_eq!(
-        resend(feed(&mut f, "Resend: 9", t)),
-        ResendAction::Desync { expected: 9 }
-    );
-    feed(&mut f, "ok", t);
     // Everything we sent was accepted.
     assert_eq!(
         resend(feed(&mut f, "Resend: 2", t)),
@@ -368,25 +362,50 @@ fn odd_resend_requests() {
     feed(&mut f, "ok", t);
     assert_eq!(f.in_flight_len(), 1);
     assert_eq!(acked(feed(&mut f, "ok", t)), ["A"]);
-    // A line older than the ring.
-    for i in 0..(RING_CAPACITY + 50) {
-        send(&mut f, &format!("G1 X{i}"), t);
-        acked(feed(&mut f, "ok", t));
-    }
-    assert!(f.ring.len() <= RING_CAPACITY);
+    // Firmware ahead of us: the numbered lines in flight are dropped, not
+    // resent (some of them may have been executed).
+    send(&mut f, "B", t);
+    assert_eq!(
+        resend(feed(&mut f, "Resend: 9", t)),
+        ResendAction::Desync { expected: 9 }
+    );
+    feed(&mut f, "ok", t);
+    assert!(f.is_idle());
+    assert!(f.poll_retransmit(ms(t, 100)).is_none());
+    // A line that was already acknowledged: the firmware lost its state.
+    send(&mut f, "C", t);
+    assert_eq!(acked(feed(&mut f, "ok", t)), ["C"]);
+    send(&mut f, "D", t);
     assert_eq!(
         resend(feed(&mut f, "Resend: 1", t)),
         ResendAction::Unavailable { line: 1 }
     );
     feed(&mut f, "ok", t);
-    // A recent one is still there.
-    let recent = f.next_line() - 3;
+    assert!(f.is_idle(), "D was dropped");
+    // After the counter reset everything is normal again.
+    f.send_line_reset(0, true, "M110".into(), t);
+    acked(feed(&mut f, "ok", t));
+    for i in 0..(RING_CAPACITY + 50) {
+        send(&mut f, &format!("G1 X{i}"), t);
+        acked(feed(&mut f, "ok", t));
+    }
+    assert!(f.ring.len() <= RING_CAPACITY);
+    // A recent line that is still in flight can be resent ...
+    let recent = f.next_line();
+    send(&mut f, "E", t);
+    send(&mut f, "F", t);
     assert_eq!(
         resend(feed(&mut f, &format!("Resend: {recent}"), t)),
         ResendAction::Rewind {
             from: recent,
-            stale: 0
+            stale: 1
         }
+    );
+    feed(&mut f, "ok", t);
+    // ... a line older than the ring cannot.
+    assert_eq!(
+        resend(feed(&mut f, "Resend: 1", t)),
+        ResendAction::Unavailable { line: 1 }
     );
 }
 

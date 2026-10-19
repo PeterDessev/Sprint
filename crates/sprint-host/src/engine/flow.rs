@@ -151,10 +151,14 @@ pub(crate) enum ResendAction {
     Barrier,
     /// Every line we sent was accepted; nothing to resend.
     NothingToResend,
-    /// The firmware expects a line number we never sent; the counter must
-    /// be reset with M110.
+    /// The firmware expects a line number we never sent: its counter was
+    /// changed behind our back. The numbered lines in flight were dropped
+    /// (resending them could execute some twice); the counter must be reset
+    /// with M110.
     Desync { expected: u32 },
-    /// The requested line is no longer in the ring.
+    /// The requested line cannot be resent safely: it is no longer in the
+    /// ring, or it was already acknowledged (the firmware lost its state,
+    /// e.g. an unnoticed reset). Handled like [`ResendAction::Desync`].
     Unavailable { line: u32 },
 }
 
@@ -208,6 +212,9 @@ pub(crate) struct Flow<M> {
     error_for_resend: Option<LineError>,
     last_activity: Instant,
     rtt_avg: Option<Duration>,
+    /// Highest line number acknowledged by a real `ok` (since the last
+    /// M110).
+    acked_upto: Option<u32>,
 }
 
 impl<M: Clone> Flow<M> {
@@ -228,6 +235,7 @@ impl<M: Clone> Flow<M> {
             error_for_resend: None,
             last_activity: now,
             rtt_avg: None,
+            acked_upto: None,
         }
     }
 
@@ -450,6 +458,7 @@ impl<M: Clone> Flow<M> {
         } else {
             (command, None)
         };
+        self.acked_upto = None;
         self.ring.clear();
         self.rewind = None;
         self.next_line = value.saturating_add(1);
@@ -525,8 +534,9 @@ impl<M: Clone> Flow<M> {
             {
                 self.rewind = None;
             }
-            if e.number.is_some() {
+            if let Some(n) = e.number {
                 self.slow_start = self.slow_start.saturating_sub(1);
+                self.acked_upto = Some(self.acked_upto.map_or(n, |a| a.max(n)));
             }
             acked.push(Acked { meta: e.meta, rtt });
         }
@@ -555,9 +565,12 @@ impl<M: Clone> Flow<M> {
             return ResendAction::Barrier;
         }
         if n > self.next_line {
+            self.abandon_numbered();
             return ResendAction::Desync { expected: n };
         }
-        if n < self.next_line && self.ring_get(n).is_none() {
+        let acked = self.acked_upto.is_some_and(|a| n <= a);
+        if acked || (n < self.next_line && self.ring_get(n).is_none()) {
+            self.abandon_numbered();
             return ResendAction::Unavailable { line: n };
         }
         if let Some(rw) = &mut self.rewind
@@ -651,11 +664,21 @@ impl<M: Clone> Flow<M> {
         self.in_flight.drain(..).map(|e| e.meta).collect()
     }
 
+    /// The firmware's line counter can no longer be trusted: forget the
+    /// numbered lines in flight and waiting for retransmission (they must
+    /// not be resent). The next numbered command must be an M110.
+    fn abandon_numbered(&mut self) {
+        self.in_flight.retain(|e| e.number.is_none());
+        self.cursor = self.next_line;
+        self.rewind = None;
+    }
+
     /// Forget everything (board reset, halt). The next numbered command
     /// must be an M110 ([`Flow::send_line_reset`]).
     pub(crate) fn reset(&mut self, now: Instant) {
         self.in_flight.clear();
         self.ring.clear();
+        self.acked_upto = None;
         self.cursor = self.next_line;
         self.rewind = None;
         self.barrier = None;
