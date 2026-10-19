@@ -905,11 +905,12 @@ impl Shell {
     }
 
     fn set_temps(&self, targets: &[(Heater, f32)]) {
-        for &(heater, celsius) in targets {
+        let targets = actions::safe_targets(targets);
+        for &(heater, celsius) in &targets {
             self.printer.set_temperature(heater, celsius);
         }
         if !targets.is_empty() {
-            self.out.dim(actions::targets_text(targets));
+            self.out.dim(actions::targets_text(&targets));
         }
     }
 

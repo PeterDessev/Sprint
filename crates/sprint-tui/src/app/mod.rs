@@ -853,6 +853,7 @@ impl App {
             Action::DisconnectAnyway => self.printer.disconnect(),
             Action::Open(path) => self.open_file(path),
             Action::SetTemps(targets) => {
+                let targets = actions::safe_targets(&targets);
                 for &(heater, celsius) in &targets {
                     self.printer.set_temperature(heater, celsius);
                 }

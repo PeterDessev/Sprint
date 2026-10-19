@@ -123,6 +123,24 @@ pub fn heater_label(heater: Heater) -> String {
     }
 }
 
+/// A heater target safe to send: 0..=500 °C; anything else (NaN or a
+/// negative value from a broken preset) is off.
+pub fn safe_target(celsius: f32) -> f32 {
+    if celsius.is_finite() {
+        celsius.clamp(0.0, 500.0)
+    } else {
+        0.0
+    }
+}
+
+/// `targets` with [`safe_target`] values.
+pub fn safe_targets(targets: &[(Heater, f32)]) -> Vec<(Heater, f32)> {
+    targets
+        .iter()
+        .map(|&(heater, celsius)| (heater, safe_target(celsius)))
+        .collect()
+}
+
 /// "Hotend T0 210 °C, Bed off": what setting `targets` does.
 pub fn targets_text(targets: &[(Heater, f32)]) -> String {
     targets
@@ -301,6 +319,18 @@ mod tests {
                 Heater::Bed,
                 Heater::Chamber
             ]
+        );
+    }
+
+    #[test]
+    fn targets_are_made_safe() {
+        assert_eq!(safe_target(210.0), 210.0);
+        assert_eq!(safe_target(-5.0), 0.0);
+        assert_eq!(safe_target(9999.0), 500.0);
+        assert_eq!(safe_target(f32::NAN), 0.0);
+        assert_eq!(
+            safe_targets(&[(Heater::Bed, f32::INFINITY)]),
+            [(Heater::Bed, 0.0)]
         );
     }
 
