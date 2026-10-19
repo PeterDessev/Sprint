@@ -394,9 +394,9 @@ magnets", a runout), a dialog shows its question and buttons; **Hide**
 keeps it for later.
 
 ![The printer asks a question](images/gui-prompt.png)
- When the firmware waits for the user without a
-question (M0/M1 on firmware without host prompts), the job bar shows
-**Continue** (M108).
+
+When the firmware waits for the user without a question (M0/M1 on
+firmware without host prompts), the job bar shows **Continue** (M108).
 
 When a print completes or fails, Sprint shows a notification and asks the
 window manager for your attention (the taskbar button flashes).
