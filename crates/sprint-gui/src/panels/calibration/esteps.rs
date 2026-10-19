@@ -51,6 +51,9 @@ pub struct EstepsWizard {
     remaining: f64,
     /// UI time when the test extrusion was sent.
     extrude_started: Option<f64>,
+    /// The extruder steps/mm in effect for the test extrusion: the result
+    /// corrects these, whatever the printer reports after applying it.
+    tested_steps: Option<f32>,
     applied: Option<f32>,
 }
 
@@ -63,6 +66,7 @@ impl Default for EstepsWizard {
             mark: ESTEPS_MARK_MM,
             remaining: 20.0,
             extrude_started: None,
+            tested_steps: None,
             applied: None,
         }
     }
@@ -258,6 +262,7 @@ impl EstepsWizard {
                 ctx.printer
                     .extrude(self.tool, ESTEPS_EXTRUDE_MM, ESTEPS_FEEDRATE_MM_MIN);
                 self.extrude_started = Some(now);
+                self.tested_steps = current_esteps(&ctx.state.settings, self.tool);
             }
             if !hot {
                 ui.add(StatusPill::new("Hotend not hot", Tone::Warning));
@@ -286,7 +291,10 @@ impl EstepsWizard {
     }
 
     fn measure(&mut self, ui: &mut Ui, ctx: &mut AppCtx<'_>) {
-        let current = current_esteps(&ctx.state.settings, self.tool);
+        let reported = current_esteps(&ctx.state.settings, self.tool);
+        // The measurement corrects the steps/mm the test ran with, not
+        // whatever the printer reports once the result was applied.
+        let current = self.tested_steps.or(reported);
         kit::dim(ui, MEASURE_HELP);
         ui.add_space(8.0);
         ui.add(
@@ -325,7 +333,7 @@ impl EstepsWizard {
                             None,
                         ),
                         (
-                            "Current",
+                            "Tested with",
                             current.map_or_else(
                                 || format::MISSING.to_owned(),
                                 |c| format::fixed(f64::from(c), 2),
@@ -357,9 +365,11 @@ impl EstepsWizard {
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     let connected = ctx.connected();
-                    let applied = self
-                        .applied
-                        .is_some_and(|a| current.is_some_and(|c| (c - a).abs() < 0.006));
+                    // This result was applied and the printer reports it (a
+                    // new measurement needs applying again).
+                    let target = (r.new_steps * 100.0).round() / 100.0;
+                    let same = |v: f32| (v - target).abs() < 0.006;
+                    let applied = self.applied.is_some_and(same) && reported.is_some_and(same);
                     let label = format!(
                         "Apply {} steps/mm",
                         format::fixed(f64::from(r.new_steps), 2)
@@ -374,7 +384,8 @@ impl EstepsWizard {
                     {
                         let cmd = esteps_command(&ctx.state.settings, self.tool, r.new_steps);
                         ctx.printer.apply_setting(&cmd);
-                        self.applied = Some((r.new_steps * 100.0).round() / 100.0);
+                        self.tested_steps = current;
+                        self.applied = Some(target);
                         ctx.toasts
                             .success("E-steps applied")
                             .message("Run the test again to confirm, then save to EEPROM.");

@@ -7,7 +7,7 @@ mod insight_common;
 use common::{harness_state, snapshot};
 use egui::accesskit::Role;
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable as _;
+use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use insight_common::*;
 use sprint_gui::panels::CalibrationTab;
 use sprint_gui::theme::Theme;
@@ -164,6 +164,43 @@ fn esteps_wizard_walks_through_the_steps() {
     type_number(&mut h, 0, "90");
     assert!(h.query_by_label_contains("Apply").is_none());
     assert!(h.query_by_label("Cannot compute E-steps").is_some());
+}
+
+/// Replace a setting in the synthetic state, as the printer's report would.
+fn report_setting(h: &mut H<'_>, line: &str) {
+    if let Some(s) = h.state_mut().state.as_mut() {
+        s.settings
+            .insert(sprint_host::sprint_proto::SettingCommand::parse(line).expect("setting"));
+    }
+    h.run_ok();
+}
+
+#[test]
+fn esteps_result_stays_put_after_applying() {
+    let mut h = tab(Theme::Dark, (1100.0, 900.0), Some(demo_state()), None);
+    h.get_by_label("Extruder E-steps").click();
+    h.run_ok();
+    for step in ["Next", "Marked", "Extrude 100 mm", "Measure"] {
+        h.get_by_label(step).click();
+        h.run_ok();
+    }
+    type_number(&mut h, 0, "22");
+    h.get_by_label("Apply 94.90 steps/mm").click();
+    h.run_ok();
+    // The printer now reports the new steps/mm. The measurement was made
+    // with 93: the result must not be corrected a second time.
+    report_setting(&mut h, "M92 X80 Y80 Z400 E94.90");
+    assert!(h.query_by_label("New steps/mm: 94.90").is_some());
+    assert!(h.query_by_label("Tested with: 93.00").is_some());
+    assert!(
+        h.query_by_label_contains("Apply").is_none(),
+        "already applied"
+    );
+    assert!(
+        !h.get_by_label("Save to EEPROM")
+            .accesskit_node()
+            .is_disabled()
+    );
 }
 
 #[test]
