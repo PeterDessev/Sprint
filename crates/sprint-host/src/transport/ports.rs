@@ -192,19 +192,20 @@ mod tests {
 
     #[test]
     fn a_port_listed_twice_appears_once() {
-        // Sorting puts the USB entry first; the plain one is not adjacent.
+        // Sorting puts the USB entries first, so the plain COM5 ends up
+        // behind COM9, not next to the USB COM5.
         let ports = vec![
             SerialPortInfo {
                 port_name: "COM5".into(),
                 port_type: SerialPortType::Unknown,
             },
-            usb("COM7", 0x046D, None),
+            usb("COM9", 0x0403, None),
             usb("COM5", 0x1A86, None),
         ];
         let out = map_ports(ports);
         let names: Vec<&str> = out.iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(names, ["COM5", "COM7"]);
-        assert!(out[0].likely_printer);
+        assert_eq!(names, ["COM5", "COM9"]);
+        assert!(out[0].likely_printer && out[0].vid == Some(0x1A86));
     }
 
     #[test]
