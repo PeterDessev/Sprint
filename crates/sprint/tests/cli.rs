@@ -288,11 +288,18 @@ fn missing_file_is_a_friendly_error() {
 
 #[test]
 fn empty_and_binary_files_still_get_a_report() {
+    // Analysed all the same, but called out: their statistics mean nothing.
     let scratch = Scratch::new("odd");
     let empty = scratch.file("empty.gcode", "");
     let output = sprint(&["analyze", &empty]);
     assert!(output.status.success(), "{}", stderr(&output));
     assert!(stdout(&output).contains("0 lines"));
+    assert!(
+        stderr(&output)
+            .contains("empty.gcode: The file is empty. The statistics below mean nothing."),
+        "{}",
+        stderr(&output)
+    );
     let binary_path = scratch.0.join("image.png");
     let bytes: Vec<u8> = (0..=255u8).cycle().take(4096).collect();
     std::fs::write(&binary_path, bytes).expect("write");
@@ -300,6 +307,33 @@ fn empty_and_binary_files_still_get_a_report() {
     assert!(output.status.success(), "{}", stderr(&output));
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("JSON");
     assert!(json["stats"].is_object());
+    assert_eq!(json["file"]["content"], "Binary");
+    assert!(
+        stderr(&output).contains("This is a binary file, not G-code."),
+        "{}",
+        stderr(&output)
+    );
+    // A model: the warning says what to do.
+    let stl = scratch.file(
+        "cube.stl",
+        "solid cube
+ facet normal 0 0 1
+  outer loop
+   vertex 0 0 0
+   vertex 1 0 0
+            vertex 0 1 0
+  endloop
+ endfacet
+endsolid cube
+",
+    );
+    let output = sprint(&["analyze", &stl]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("This is a 3D model, not G-code: slice it first."),
+        "{}",
+        stderr(&output)
+    );
 }
 
 #[test]

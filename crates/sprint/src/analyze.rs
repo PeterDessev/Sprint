@@ -6,7 +6,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use serde::Serialize;
-use sprint_gcode::{AnalyzeOptions, Bounds, GcodeFile, SlicerMetadata, Stats, Toolpath};
+use sprint_gcode::{
+    AnalyzeOptions, Bounds, ContentKind, GcodeFile, SlicerMetadata, Stats, Toolpath,
+};
 use sprint_tui::format;
 use sprint_tui::widgets::stats::label_width;
 use sprint_tui::{feature_rows, part_bounds, summary_rows};
@@ -17,7 +19,14 @@ use crate::cli::AnalyzeArgs;
 /// Run `sprint analyze`.
 pub fn run(args: &AnalyzeArgs) -> Result<()> {
     let file = load(&args.file)?;
-    if file.command_count() == 0 {
+    // Anything is analyzed, but a file that is not G-code is called out:
+    // its statistics mean nothing (and it must not be printed).
+    if let Some(problem) = file.content_kind().problem() {
+        eprintln!(
+            "sprint: warning: {}: {problem} The statistics below mean nothing.",
+            args.file.display()
+        );
+    } else if file.command_count() == 0 {
         eprintln!(
             "sprint: warning: {} contains no G-code commands",
             args.file.display()
@@ -258,6 +267,8 @@ struct JsonFile<'a> {
     bytes: usize,
     lines: usize,
     commands: usize,
+    /// What the file is (`"Gcode"`, `"AsciiStl"`, `"Binary"`, ...).
+    content: ContentKind,
 }
 
 /// One layer in the JSON output.
@@ -297,6 +308,7 @@ pub fn write_json(out: &mut impl Write, file: &GcodeFile, toolpath: &Toolpath) -
             bytes: file.byte_len(),
             lines: file.len(),
             commands: file.command_count(),
+            content: file.content_kind(),
         },
         stats: &toolpath.stats,
         metadata: &toolpath.metadata,
@@ -404,6 +416,7 @@ G1 Z0.4 F600\nG1 X30 Y10 E1 F1200\nG2 X30 Y30 I0 J10 E1\n\
         let json: serde_json::Value = serde_json::from_slice(&out).expect("valid JSON");
         let number = |v: &serde_json::Value| v.as_f64().map(|n| n as f32);
         assert_eq!(json["file"]["name"], "cube.gcode");
+        assert_eq!(json["file"]["content"], "Gcode");
         assert_eq!(json["file"]["lines"], file.len());
         assert_eq!(
             number(&json["stats"]["estimated_time"]),

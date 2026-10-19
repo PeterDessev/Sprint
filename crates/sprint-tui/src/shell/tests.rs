@@ -1514,3 +1514,43 @@ fn reset_says_why_a_network_printer_cannot_be_reset() {
     assert!(text.contains("reset button"), "{text}");
     shell.printer.disconnect();
 }
+
+#[test]
+fn files_that_are_not_gcode_are_not_loaded() {
+    let scratch = Scratch::new("not-gcode");
+    let stl = scratch.0.join("cube.stl");
+    std::fs::write(
+        &stl,
+        "solid cube
+ facet normal 0 0 1
+  outer loop
+   vertex 0 0 0
+   vertex 1 0 0
+            vertex 0 1 0
+  endloop
+ endfacet
+endsolid cube
+",
+    )
+    .expect("write");
+    let (mut shell, buffer) = connected();
+    script(
+        &mut shell,
+        &[&format!("load {}", stl.display()), "print", "sd upload"],
+    );
+    let text = buffer.text();
+    assert!(
+        text.contains("cube.stl: This is a 3D model, not G-code: slice it first."),
+        "{text}"
+    );
+    assert!(text.contains("No file loaded"), "{text}");
+    // Nor uploaded to the card.
+    buffer.clear();
+    script(&mut shell, &[&format!("sd upload {}", stl.display())]);
+    assert!(
+        buffer.text().contains("This is a 3D model"),
+        "{}",
+        buffer.text()
+    );
+    assert!(shell.printer.with_state(|s| s.job.is_none()));
+}

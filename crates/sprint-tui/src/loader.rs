@@ -75,17 +75,33 @@ pub fn analyze_options(profile: &PrinterProfile) -> AnalyzeOptions {
     options
 }
 
-/// Read a G-code file with a friendly error message.
+/// Read a G-code file with a friendly error message. A file that is not
+/// G-code ([`check_content`]: a 3D model, an archive, binary data, other
+/// text, nothing) is refused: it must never be streamed to a printer, and
+/// its "toolpath" would mean nothing.
 pub fn read_file(path: &Path) -> Result<GcodeFile, String> {
     let shown = path.display();
     if path.is_dir() {
         return Err(format!("{shown} is a directory, not a G-code file"));
     }
-    GcodeFile::load(path).map_err(|e| match e.kind() {
+    let file = GcodeFile::load(path).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => format!("{shown}: no such file"),
         std::io::ErrorKind::PermissionDenied => format!("{shown}: permission denied"),
         _ => format!("cannot read {shown}: {e}"),
-    })
+    })?;
+    check_content(path, &file)?;
+    Ok(file)
+}
+
+/// Refuse a file that is not G-code, saying what it is and what to do
+/// ([`ContentKind::problem`](sprint_host::sprint_gcode::ContentKind::problem):
+/// "This is a 3D model, not G-code: slice it first."), as sniffed when it
+/// was loaded.
+pub fn check_content(path: &Path, file: &GcodeFile) -> Result<(), String> {
+    match file.content_kind().problem() {
+        None => Ok(()),
+        Some(problem) => Err(format!("{}: {problem}", path.display())),
+    }
 }
 
 /// Load and analyse `path`, reporting progress (0..=1) to `progress`,
@@ -251,6 +267,68 @@ mod tests {
         let dir = std::env::temp_dir();
         let err = read_file(&dir).map(|_| ()).expect_err("directory");
         assert!(err.ends_with("is a directory, not a G-code file"), "{err}");
+    }
+
+    #[test]
+    fn files_that_are_not_gcode_are_refused() {
+        let dir = std::env::temp_dir().join(format!("sprint-tui-loader-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let stl = dir.join("cube.stl");
+        std::fs::write(
+            &stl,
+            "solid cube
+ facet normal 0 0 1
+  outer loop
+   vertex 0 0 0
+                vertex 1 0 0
+   vertex 0 1 0
+  endloop
+ endfacet
+endsolid cube
+",
+        )
+        .expect("write");
+        let err = read_file(&stl).map(|_| ()).expect_err("a model");
+        assert!(
+            err.ends_with("cube.stl: This is a 3D model, not G-code: slice it first."),
+            "{err}"
+        );
+        // The background load says the same.
+        let job = LoadJob::spawn(stl.clone(), AnalyzeOptions::default());
+        assert_eq!(wait(&job).map(|_| ()), Err(err));
+        let zip = dir.join("plate.3mf");
+        std::fs::write(&zip, b"PK rest of a 3MF archive").expect("write");
+        let err = read_file(&zip).map(|_| ()).expect_err("an archive");
+        assert!(err.contains("plate.3mf: This is a 3D model"), "{err}");
+        let empty = dir.join("empty.gcode");
+        std::fs::write(
+            &empty, "  
+",
+        )
+        .expect("write");
+        let err = read_file(&empty).map(|_| ()).expect_err("empty");
+        assert!(err.ends_with("The file is empty."), "{err}");
+        // Comments only is G-code (nothing to send, but nothing wrong).
+        let notes = dir.join("notes.gcode");
+        std::fs::write(
+            &notes,
+            "; just a comment
+",
+        )
+        .expect("write");
+        assert!(read_file(&notes).is_ok());
+        assert_eq!(
+            check_content(
+                &notes,
+                &GcodeFile::from_text(
+                    "x", "G28
+"
+                )
+            ),
+            Ok(())
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(sprint_host::sprint_gcode::ContentKind::BinaryStl.is_model());
     }
 
     #[test]

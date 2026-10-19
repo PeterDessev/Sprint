@@ -181,7 +181,9 @@ fn resume_options(args: &PrintArgs) -> ResumeOptions {
     }
 }
 
-/// Load and analyze the file (progress on stderr when `progress`).
+/// Load and analyze the file (progress on stderr when `progress`). A
+/// file that is not G-code (a 3D model, an archive, binary data) is
+/// refused before anything connects: it must never be streamed.
 fn load(
     path: &Path,
     profile: &PrinterProfile,
@@ -189,6 +191,7 @@ fn load(
     interrupt: &Interrupt,
 ) -> Result<LoadedFile> {
     let file = analyze::load(path)?;
+    sprint_tui::loader::check_content(path, &file).map_err(anyhow::Error::msg)?;
     let options = sprint_tui::loader::analyze_options(profile);
     let started = Instant::now();
     let stderr = io::stderr();

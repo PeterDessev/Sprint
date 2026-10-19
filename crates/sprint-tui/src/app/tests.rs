@@ -173,6 +173,26 @@ fn load(app: &mut App, name: &str) {
 }
 
 #[test]
+fn files_that_are_not_gcode_are_not_opened() {
+    let scratch = Scratch::new("not-gcode");
+    let zip = scratch.0.join("plate.3mf");
+    std::fs::write(&zip, b"PK the rest of a 3MF archive").expect("write");
+    let mut app = app();
+    app.open_file(zip);
+    wait_app(&mut app, "the load", |a| a.loader.is_none());
+    assert!(app.file.is_none());
+    let toast = app.toast.clone().expect("refused");
+    assert_eq!(toast.tone, Tone::Bad);
+    assert!(
+        toast
+            .text
+            .ends_with("plate.3mf: This is a 3D model, not G-code: slice it first."),
+        "{}",
+        toast.text
+    );
+}
+
+#[test]
 fn configuration_problems_show_in_the_console() {
     let mut app = app();
     app.config_warnings(Vec::new());

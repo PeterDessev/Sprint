@@ -291,6 +291,30 @@ fn print_checks_the_file_before_connecting() {
         err.trim(),
         "sprint: error: no-such-file-3a.gcode: no such file"
     );
+    // A 3D model is never streamed: refused before connecting.
+    let stl = scratch.0.join("cube.stl");
+    std::fs::write(
+        &stl,
+        "solid cube
+ facet normal 0 0 1
+  outer loop
+   vertex 0 0 0
+   vertex 1 0 0
+            vertex 0 1 0
+  endloop
+ endfacet
+endsolid cube
+",
+    )
+    .expect("write");
+    let output = scratch.run(&["print", &stl.display().to_string(), "-c", PRINT_SIM]);
+    assert_eq!(output.status.code(), Some(1));
+    let err = stderr(&output);
+    assert!(
+        err.contains("cube.stl: This is a 3D model, not G-code: slice it first."),
+        "{err}"
+    );
+    assert!(!err.contains("Connecting"), "{err}");
 }
 
 #[test]
