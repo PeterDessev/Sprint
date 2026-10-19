@@ -116,6 +116,8 @@ pub struct SettingsDialog {
     page: Page,
     confirm_delete: Option<usize>,
     tcp_text: String,
+    /// The profile page `tcp_text` was typed on.
+    tcp_page: Option<usize>,
     ports: Vec<String>,
     config_path: Option<std::path::PathBuf>,
 }
@@ -134,6 +136,7 @@ impl SettingsDialog {
             page,
             confirm_delete: None,
             tcp_text: String::new(),
+            tcp_page: None,
             ports,
             config_path: Some(AppConfig::path()),
         }
@@ -194,6 +197,8 @@ impl SettingsDialog {
             return false;
         }
         self.draft.profiles.remove(i);
+        // The page index may now show another profile.
+        self.tcp_page = None;
         let active = self.draft.active_profile;
         self.draft.active_profile = if active > i {
             active - 1
@@ -491,6 +496,12 @@ impl SettingsDialog {
         section(ui, "Connection", p);
         if connected && active {
             note(ui, "Connection changes apply the next time you connect.", p);
+        }
+        if self.tcp_page != Some(i) {
+            // Another page: what was typed on the last one does not apply
+            // (empty shows this profile's address).
+            self.tcp_text.clear();
+            self.tcp_page = Some(i);
         }
         connection_editor(ui, profile, &mut self.tcp_text, &self.ports, p);
         ui.add_space(4.0);

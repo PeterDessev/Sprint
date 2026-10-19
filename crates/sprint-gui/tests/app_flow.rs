@@ -993,6 +993,57 @@ fn an_unfinished_address_does_not_stick_to_another_profile() {
 }
 
 #[test]
+fn the_settings_show_each_profile_its_own_address() {
+    let mut options = AppOptions::headless();
+    let bridge = |name: &str, host: &str| sprint_host::PrinterProfile {
+        name: name.into(),
+        connection: ConnectTarget::Tcp {
+            host: host.into(),
+            port: 23,
+        },
+        ..sprint_host::PrinterProfile::default()
+    };
+    options.config.profiles = vec![bridge("Bridge A", "a.local"), bridge("Bridge B", "b.local")];
+    let mut h = app(options, WINDOW);
+    h.state_mut().push_action(AppAction::OpenSettings);
+    settle(&mut h);
+    let field = |h: &Harness<'_, SprintApp>, value: &str| {
+        h.query_all_by_role(Role::TextInput)
+            .any(|n| n.value().as_deref() == Some(value))
+    };
+    // Garbage typed into the first profile's address...
+    h.query_all_by_role(Role::TextInput)
+        .filter(|n| n.value().as_deref() == Some("a.local:23"))
+        .last()
+        .expect("the address field")
+        .click();
+    settle(&mut h);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+    h.event(egui::Event::Text("nonsense".into()));
+    settle(&mut h);
+    assert!(field(&h, "nonsense"));
+    // ...is not shown as the second profile's.
+    h.state_mut()
+        .settings_dialog_mut()
+        .expect("settings")
+        .set_page(sprint_gui::settings::Page::Profile(1));
+    settle(&mut h);
+    assert!(field(&h, "b.local:23"));
+    assert!(!field(&h, "nonsense"));
+    // Both profiles keep their addresses.
+    h.get_by_label("Save").click();
+    settle(&mut h);
+    let hosts: Vec<String> = h
+        .state()
+        .config()
+        .profiles
+        .iter()
+        .map(|p| p.connection.label())
+        .collect();
+    assert_eq!(hosts, ["tcp://a.local:23", "tcp://b.local:23"]);
+}
+
+#[test]
 fn firmware_limits_analysis_survives_a_disconnect() {
     let options = with_file(sim_options(), sample("calibration-cube.gcode"));
     let mut h = app(options, WINDOW);
