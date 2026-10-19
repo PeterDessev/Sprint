@@ -318,11 +318,12 @@ impl SprintApp {
         printer.set_waker(move || waker_ctx.request_repaint());
 
         let viewer = ViewerTab::new(cc.wgpu_render_state.as_ref(), prefs.viewer.clone());
-        let console = ConsolePanel::new(
+        let mut console = ConsolePanel::new(
             config.console_max_lines,
             prefs.console.clone(),
             prefs.history.clone(),
         );
+        console.set_native_dialogs(options.native_dialogs);
         let scanner = PortScanner::new(options.scan_ports, Some(ctx.clone()));
         let icon = ctx.load_texture(
             "sprint-app-icon",

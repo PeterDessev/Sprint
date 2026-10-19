@@ -257,6 +257,10 @@ pub struct ConsolePanel {
     at_bottom: bool,
     focus_input: bool,
     export: Option<Receiver<Result<Option<PathBuf>, String>>>,
+    /// Export asks where to save with a native dialog (see
+    /// [`ConsolePanel::set_native_dialogs`]).
+    native_dialogs: bool,
+    export_requests: usize,
 }
 
 impl Default for ConsolePanel {
@@ -293,6 +297,8 @@ impl ConsolePanel {
             at_bottom: true,
             focus_input: false,
             export: None,
+            native_dialogs: true,
+            export_requests: 0,
         };
         panel.apply_filter();
         panel
@@ -992,7 +998,23 @@ impl ConsolePanel {
         text
     }
 
+    /// Use native file dialogs (the default). Without them, as in headless
+    /// runs and tests, Export only counts the request
+    /// ([`ConsolePanel::export_requests`]) and never opens a window.
+    pub fn set_native_dialogs(&mut self, native: bool) {
+        self.native_dialogs = native;
+    }
+
+    /// How often Export was asked for while native dialogs are off.
+    pub fn export_requests(&self) -> usize {
+        self.export_requests
+    }
+
     fn start_export(&mut self, repaint: &egui::Context) {
+        if !self.native_dialogs {
+            self.export_requests += 1;
+            return;
+        }
         let text = self.export_text();
         self.export = Some(native_dialog::spawn(Some(repaint.clone()), move || {
             match native_dialog::save_text_file("Export console", "sprint-console.txt") {

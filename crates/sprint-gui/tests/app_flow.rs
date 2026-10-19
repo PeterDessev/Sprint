@@ -184,6 +184,27 @@ fn starting_from_a_layer_sends_the_preamble() {
 }
 
 #[test]
+fn the_console_export_opens_no_dialog_without_native_dialogs() {
+    let mut h = app(sim_options(), WINDOW);
+    connect(&mut h);
+    expect(&mut h, "console lines", |app| {
+        app.console().visible_entries().next().is_some()
+    });
+    settle(&mut h);
+    h.get_by_label_contains("Export the shown lines").click();
+    settle(&mut h);
+    // Counted instead of a file dialog (a headless run has no window for
+    // it, and a test must not wait for one).
+    assert_eq!(h.state().console().export_requests(), 1);
+    assert!(
+        !h.get_by_label_contains("Export the shown lines")
+            .accesskit_node()
+            .is_disabled(),
+        "no export is left running"
+    );
+}
+
+#[test]
 fn the_console_sends_and_remembers_commands() {
     let mut h = app(sim_options(), WINDOW);
     connect(&mut h);
