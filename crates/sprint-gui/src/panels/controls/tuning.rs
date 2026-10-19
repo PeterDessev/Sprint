@@ -460,8 +460,10 @@ fn slim_slider(
                 (Key::ArrowLeft, -1.0),
                 (Key::ArrowDown, -1.0),
             ] {
-                delta += sign * i.count_and_consume_key(Modifiers::NONE, key) as f32;
+                // Shift first: the plain pattern also matches Shift+arrow
+                // (egui matches modifiers logically).
                 delta += sign * 10.0 * i.count_and_consume_key(Modifiers::SHIFT, key) as f32;
+                delta += sign * i.count_and_consume_key(Modifiers::NONE, key) as f32;
             }
         });
         if delta != 0.0 {

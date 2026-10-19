@@ -560,6 +560,29 @@ fn overrides_beyond_the_slider_ranges_read_out_as_reported() {
     assert!(h.query_by_label("50%").is_some(), "the fan, unchanged");
 }
 
+/// A focused slider steps by 1 with the arrow keys and by 10 with Shift.
+#[test]
+fn focused_sliders_step_with_the_arrow_keys() {
+    let mut h = connected();
+    let p = printer(&h);
+    h.get_all_by_role(Role::Slider)
+        .find(|n| n.accesskit_node().label().as_deref() == Some("Speed"))
+        .expect("the speed slider")
+        .focus();
+    h.run_ok();
+    h.key_press(egui::Key::ArrowRight);
+    h.run_ok();
+    wait_for_commands(&p, &["M220 S101"]);
+    h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::ArrowRight);
+    h.run_ok();
+    wait_for_commands(&p, &["M220 S111"]);
+    h.key_press_modifiers(egui::Modifiers::SHIFT, egui::Key::ArrowLeft);
+    h.run_ok();
+    h.key_press(egui::Key::ArrowDown);
+    h.run_ok();
+    wait_for_commands(&p, &["M220 S101", "M220 S100"]);
+}
+
 #[test]
 fn cold_hotend_blocks_extrusion_until_heated() {
     let mut h = connected();
