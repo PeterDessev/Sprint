@@ -43,6 +43,8 @@ struct Globals {
     // x: cavity (groove) darkening, y/z: projected bead thickness in pixels
     // where shading detail fades in (y) and is complete (z), w: exposure.
     shading: vec4<f32>,
+    // x: opacity of translucent ghosts, yzw: unused.
+    ghost: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -53,6 +55,7 @@ const FLAG_LINE_LIMIT: u32 = 4u;
 const FLAG_HOVER: u32 = 8u;
 const FLAG_LAYER_TOP: u32 = 16u;
 const FLAG_ENCODE_GAMMA: u32 = 32u;
+const FLAG_TRANSLUCENT_GHOSTS: u32 = 64u;
 
 const TRAVEL_BIT: u32 = 32u;
 
@@ -338,12 +341,35 @@ fn ghostify(c: vec3<f32>) -> vec3<f32> {
     return mix(vec3<f32>(l), c, 0.15) * 0.16 + vec3<f32>(0.02, 0.022, 0.03);
 }
 
+// Translucent ghosts: a cool, light grey keeping a little of the hue, so
+// the printed part shows through what is still to come.
+fn ghost_tint(c: vec3<f32>) -> vec3<f32> {
+    let l = dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
+    return mix(vec3<f32>(l), c, 0.3) * 0.45 + vec3<f32>(0.1, 0.11, 0.13);
+}
+
+// Whether a pass draws an instance. Ghosts are drawn with everything else
+// unless they are translucent; then only the ghost pass draws them.
+fn in_pass(s: SegmentIn, ghost_pass: bool) -> bool {
+    if (!extrusion_visible(s)) {
+        return false;
+    }
+    if (!has_flag(FLAG_TRANSLUCENT_GHOSTS)) {
+        return !ghost_pass;
+    }
+    return is_ghost(s.line, s.layer) == ghost_pass;
+}
+
 // rgb = state-adjusted color, a = emissive.
 fn segment_shade(s: SegmentIn) -> vec4<f32> {
     var c = base_color(s);
     var emissive = 0.0;
     if (is_ghost(s.line, s.layer)) {
-        c = ghostify(c);
+        if (has_flag(FLAG_TRANSLUCENT_GHOSTS)) {
+            c = ghost_tint(c);
+        } else {
+            c = ghostify(c);
+        }
     }
     if (has_flag(FLAG_HOVER) && s.line == g.lines.w) {
         c = mix(c, vec3<f32>(1.0), 0.3);
@@ -417,10 +443,9 @@ struct PrismOut {
     @location(3) @interpolate(flat) macro_n: vec4<f32>,
 };
 
-@vertex
-fn vs_tube(v: TubeVertex, s: SegmentIn) -> PrismOut {
+fn tube_vertex(v: TubeVertex, s: SegmentIn, ghost_pass: bool) -> PrismOut {
     var out: PrismOut;
-    if (!extrusion_visible(s)) {
+    if (!in_pass(s, ghost_pass)) {
         out.clip = HIDDEN_POS;
         return out;
     }
@@ -437,7 +462,11 @@ fn vs_tube(v: TubeVertex, s: SegmentIn) -> PrismOut {
     let hh = 0.5 * s.height * grow;
     let drop = vec3<f32>(0.0, 0.0, 0.5 * s.height);
     let center = mix(s.start, s.end, v.profile.x) - drop;
-    let world = center + right * (v.profile.y * hw) + up * (v.profile.z * hh) + dir * (v.profile.w * hw);
+    // Pointed end caps close the joints of a polyline; translucent ghosts
+    // get flat ends instead, since overlapping caps would double the alpha
+    // at every joint.
+    let cap = select(hw, 0.0, ghost_pass);
+    let world = center + right * (v.profile.y * hw) + up * (v.profile.z * hh) + dir * (v.profile.w * cap);
     // Inverse-scale the profile normal (softened so beads read round).
     let sh = mix(hh, hw, 0.3);
     out.normal = right * (v.normal.x * sh) + up * (v.normal.y * hw) + dir * (v.normal.z * sh);
@@ -447,6 +476,32 @@ fn vs_tube(v: TubeVertex, s: SegmentIn) -> PrismOut {
     let bm = bead_macro(feature_of(s), right, up, hw, hh, (s.start + s.end) * 0.5 - drop);
     out.macro_n = vec4<f32>(bm.normal, bm.pixels);
     return out;
+}
+
+@vertex
+fn vs_tube(v: TubeVertex, s: SegmentIn) -> PrismOut {
+    return tube_vertex(v, s, false);
+}
+
+// Translucent ghosts are lit per vertex: cheap with heavy overdraw, and
+// the bead detail would not show through the transparency anyway.
+fn ghost_vertex(clip: vec4<f32>, world: vec3<f32>, n_bead: vec3<f32>, m: vec4<f32>, color: vec4<f32>) -> FlatOut {
+    var out: FlatOut;
+    out.clip = clip;
+    let shape = smoothstep(g.shading.z * 0.5, g.shading.z * 2.5, m.w);
+    let n = normalize(mix(m.xyz, facing(n_bead, view_vector(world)), shape));
+    let c = light(world, n, color.rgb, color.a, 0.5);
+    out.color = vec4<f32>(post(world, c), g.ghost.x);
+    return out;
+}
+
+@vertex
+fn vs_tube_ghost(v: TubeVertex, s: SegmentIn) -> FlatOut {
+    if (!in_pass(s, true)) {
+        return hidden_flat();
+    }
+    let p = tube_vertex(v, s, true);
+    return ghost_vertex(p.clip, p.world, p.normal, p.macro_n, p.color);
 }
 
 @fragment
@@ -474,10 +529,9 @@ struct RibbonOut {
     @location(5) @interpolate(flat) macro_n: vec4<f32>,
 };
 
-@vertex
-fn vs_ribbon(@builtin(vertex_index) vi: u32, s: SegmentIn) -> RibbonOut {
+fn ribbon_vertex(vi: u32, s: SegmentIn, ghost_pass: bool) -> RibbonOut {
     var out: RibbonOut;
-    if (!extrusion_visible(s)) {
+    if (!in_pass(s, ghost_pass)) {
         out.clip = HIDDEN_POS;
         return out;
     }
@@ -519,7 +573,8 @@ fn vs_ribbon(@builtin(vertex_index) vi: u32, s: SegmentIn) -> RibbonOut {
     // Pull the strip towards the viewer to roughly the bead's front surface.
     let support = sqrt(a * a * vr * vr + b * b * vu * vu);
     let end_sign = along * 2.0 - 1.0;
-    let base = mix(s.start, s.end, along) - drop + dir * (end_sign * 0.5 * a);
+    let overlap = select(0.5 * a, 0.0, ghost_pass);
+    let base = mix(s.start, s.end, along) - drop + dir * (end_sign * overlap);
     let world = base + p * side + v * (0.7 * support);
     out.world = world;
     out.u = side;
@@ -530,6 +585,21 @@ fn vs_ribbon(@builtin(vertex_index) vi: u32, s: SegmentIn) -> RibbonOut {
     let bm = bead_macro(feature_of(s), right, up, a, b, mid);
     out.macro_n = vec4<f32>(bm.normal, bm.pixels);
     return out;
+}
+
+@vertex
+fn vs_ribbon(@builtin(vertex_index) vi: u32, s: SegmentIn) -> RibbonOut {
+    return ribbon_vertex(vi, s, false);
+}
+
+@vertex
+fn vs_ribbon_ghost(@builtin(vertex_index) vi: u32, s: SegmentIn) -> FlatOut {
+    if (!in_pass(s, true)) {
+        return hidden_flat();
+    }
+    let r = ribbon_vertex(vi, s, true);
+    // Ribbons only exist for thin beads: the macro normal is enough.
+    return ghost_vertex(r.clip, r.world, r.macro_n.xyz, r.macro_n, r.color);
 }
 
 @fragment
@@ -549,16 +619,21 @@ struct FlatOut {
     @location(0) color: vec4<f32>,
 };
 
+fn hidden_flat() -> FlatOut {
+    var out: FlatOut;
+    out.clip = HIDDEN_POS;
+    return out;
+}
+
 @fragment
 fn fs_flat(in: FlatOut) -> @location(0) vec4<f32> {
     return finish(in.color);
 }
 
 // Extrusions drawn as lines (RenderStyle::Lines), two vertices per instance.
-@vertex
-fn vs_extrusion_line(@builtin(vertex_index) vi: u32, s: SegmentIn) -> FlatOut {
+fn extrusion_line(vi: u32, s: SegmentIn, ghost_pass: bool) -> FlatOut {
     var out: FlatOut;
-    if (!extrusion_visible(s)) {
+    if (!in_pass(s, ghost_pass)) {
         out.clip = HIDDEN_POS;
         return out;
     }
@@ -577,8 +652,18 @@ fn vs_extrusion_line(@builtin(vertex_index) vi: u32, s: SegmentIn) -> FlatOut {
     let up = cross(right, dir);
     let bm = bead_macro(feature_of(s), right, up, 0.5 * s.width, 0.5 * s.height, (s.start + s.end) * 0.5 - drop);
     let lit = light(p, bm.normal, c.rgb, c.a, 0.3) * (1.0 - 0.18 * g.shading.x);
-    out.color = vec4<f32>(post(p, lit), 1.0);
+    out.color = vec4<f32>(post(p, lit), select(1.0, g.ghost.x, ghost_pass));
     return out;
+}
+
+@vertex
+fn vs_extrusion_line(@builtin(vertex_index) vi: u32, s: SegmentIn) -> FlatOut {
+    return extrusion_line(vi, s, false);
+}
+
+@vertex
+fn vs_extrusion_line_ghost(@builtin(vertex_index) vi: u32, s: SegmentIn) -> FlatOut {
+    return extrusion_line(vi, s, true);
 }
 
 // Travel moves: thin translucent lines.

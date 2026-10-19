@@ -11,7 +11,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use sprint_viewer::{GcodeViewer, RenderStyle, ViewMode, ViewPreset, demo, wgpu};
+use sprint_viewer::{GcodeViewer, GhostStyle, RenderStyle, ViewMode, ViewPreset, demo, wgpu};
 
 const W: u32 = 1920;
 const H: u32 = 1080;
@@ -134,8 +134,25 @@ fn main() {
         "layer view (ortho, ghosted)",
         frame_time(&mut viewer, &device, 30),
     );
+    viewer.options_mut().ghost_style = GhostStyle::Translucent;
+    report("  translucent ghosts", frame_time(&mut viewer, &device, 30));
+    viewer.options_mut().ghost_style = GhostStyle::Opaque;
     viewer.options_mut().view_mode = ViewMode::Perspective;
     viewer.options_mut().layer_range = (0, usize::MAX);
+    // A print half done: the rest ghosted, solid and translucent.
+    let half = toolpath
+        .layers
+        .get(toolpath.layers.len() / 2)
+        .map(|l| l.lines.start);
+    viewer.options_mut().progress_line = half;
+    report(
+        "progress at half, solid ghosts",
+        frame_time(&mut viewer, &device, 30),
+    );
+    viewer.options_mut().ghost_style = GhostStyle::Translucent;
+    report("  translucent ghosts", frame_time(&mut viewer, &device, 30));
+    viewer.options_mut().ghost_style = GhostStyle::Opaque;
+    viewer.options_mut().progress_line = None;
 
     // Picking latency over a grid of screen positions, beads only and with
     // travels shown (which also searches the travel index).

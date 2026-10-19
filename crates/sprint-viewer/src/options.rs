@@ -129,6 +129,32 @@ impl ViewMode {
     }
 }
 
+/// How ghosted geometry is drawn: moves not printed yet (beyond
+/// [`ViewerOptions::progress_line`]) and, in [`ViewMode::LayerTop`], the
+/// layers below the current one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum GhostStyle {
+    /// Dim, nearly grey solid beads.
+    #[default]
+    Opaque,
+    /// See-through beads drawn after everything else (about 25 % opaque):
+    /// the printed part shows through what is still to come.
+    Translucent,
+}
+
+impl GhostStyle {
+    /// Every style, in menu order.
+    pub const ALL: [GhostStyle; 2] = [GhostStyle::Opaque, GhostStyle::Translucent];
+
+    /// Human-readable name.
+    pub fn name(self) -> &'static str {
+        match self {
+            GhostStyle::Opaque => "Solid",
+            GhostStyle::Translucent => "Translucent",
+        }
+    }
+}
+
 /// Standard camera orientations.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ViewPreset {
@@ -224,6 +250,8 @@ pub struct ViewerOptions {
     pub show_tool_head: bool,
     /// Background color (sRGB).
     pub background: [u8; 3],
+    /// How ghosted (not yet printed / lower layer) geometry is drawn.
+    pub ghost_style: GhostStyle,
 }
 
 impl Default for ViewerOptions {
@@ -244,6 +272,7 @@ impl Default for ViewerOptions {
             highlight_line: None,
             show_tool_head: true,
             background: crate::color::BACKGROUND,
+            ghost_style: GhostStyle::Opaque,
         }
     }
 }
@@ -402,6 +431,14 @@ mod tests {
             origin_center: false,
         };
         assert_eq!(bad.sanitized(), BedSpec::default());
+    }
+
+    #[test]
+    fn ghosts_are_solid_by_default() {
+        assert_eq!(ViewerOptions::default().ghost_style, GhostStyle::Opaque);
+        assert_eq!(GhostStyle::default(), GhostStyle::Opaque);
+        let names: Vec<_> = GhostStyle::ALL.iter().map(|g| g.name()).collect();
+        assert_eq!(names, ["Solid", "Translucent"]);
     }
 
     #[test]

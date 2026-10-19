@@ -15,7 +15,9 @@ use crate::color::{
 };
 use crate::gpu::{self, DrawParams, Globals, Renderer, Slot, flags};
 use crate::instance::{self, CLUSTER_SIZE, Cluster, LayerRanges, MAX_COORD, SceneData};
-use crate::options::{BedSpec, ColorMode, RenderStyle, ViewMode, ViewPreset, ViewerOptions};
+use crate::options::{
+    BedSpec, ColorMode, GhostStyle, RenderStyle, ViewMode, ViewPreset, ViewerOptions,
+};
 use crate::pick::{PickFilter, PickHit, PickIndex, PickKind};
 
 /// Bytes of instance data uploaded per frame while a toolpath streams in
@@ -44,6 +46,8 @@ const DETAIL_PIXELS: (f32, f32) = (1.2, 4.5);
 const DEPTH_CUE: f32 = 0.35;
 /// Exposure applied to lit surfaces before the highlight shoulder.
 const EXPOSURE: f32 = 1.18;
+/// Opacity of translucent ghosts.
+const GHOST_ALPHA: f32 = 0.24;
 
 /// Camera-relative studio lights: direction towards the light (xyz) and
 /// intensity (w).
@@ -86,7 +90,7 @@ pub struct ViewerResponse {
 }
 
 enum Loaded {
-    Scene(Box<SceneData>),
+    Scene(Box<(SceneData, LayerLines)>),
     /// A pick index over extrusions or travels (see [`PickIndex::kind`]).
     Pick(Box<PickIndex>),
 }
@@ -96,9 +100,95 @@ struct Loader {
     cancel: Arc<AtomicBool>,
 }
 
+/// Source line bounds of each layer's extrusions, to tell which layers can
+/// hold printed and which not-yet-printed beads for a progress line.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct LayerLines {
+    /// `(first, last)` line of each layer's extrusions; empty layers repeat
+    /// the previous layer's last line.
+    bounds: Vec<(u32, u32)>,
+    /// Both bounds never decrease from layer to layer (true for every sane
+    /// file); otherwise any layer may hold anything.
+    monotonic: bool,
+}
+
+impl LayerLines {
+    fn build(toolpath: &Toolpath) -> LayerLines {
+        let mut bounds = Vec::new();
+        let mut monotonic = true;
+        let mut prev = (0u32, 0u32);
+        for range in instance::layer_segment_ranges(toolpath) {
+            let lines = toolpath
+                .segments
+                .get(range)
+                .unwrap_or_default()
+                .iter()
+                .filter(|s| s.is_extrusion())
+                .map(|s| s.line);
+            let b = lines
+                .fold(None, |acc: Option<(u32, u32)>, l| {
+                    Some(acc.map_or((l, l), |(lo, hi)| (lo.min(l), hi.max(l))))
+                })
+                .unwrap_or((prev.1, prev.1));
+            monotonic &= b.0 >= prev.0 && b.1 >= prev.1;
+            bounds.push(b);
+            prev = b;
+        }
+        LayerLines { bounds, monotonic }
+    }
+
+    /// Inclusive layer ranges within `a..=b` that may hold printed beads
+    /// and beads not printed yet when everything after `progress` is still
+    /// to come.
+    fn split(&self, (a, b): (usize, usize), progress: u32) -> PassLayers {
+        if !self.monotonic || self.bounds.len() <= b {
+            return PassLayers {
+                opaque: Some((a, b)),
+                ghost: Some((a, b)),
+            };
+        }
+        // Last layer starting at or before the progress line, first layer
+        // ending after it.
+        let printed_end = self.bounds.partition_point(|l| l.0 <= progress);
+        let unprinted_start = self.bounds.partition_point(|l| l.1 <= progress);
+        let opaque = printed_end
+            .checked_sub(1)
+            .map(|last| (a, last.min(b)))
+            .filter(|(lo, hi)| lo <= hi);
+        let ghost = Some((unprinted_start.max(a), b)).filter(|(lo, hi)| lo <= hi);
+        PassLayers { opaque, ghost }
+    }
+}
+
+/// Inclusive layer ranges drawn by the opaque and the translucent ghost
+/// pass.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct PassLayers {
+    opaque: Option<(usize, usize)>,
+    ghost: Option<(usize, usize)>,
+}
+
+impl PassLayers {
+    /// Hull of two optional ranges.
+    fn hull(x: Option<(usize, usize)>, y: Option<(usize, usize)>) -> Option<(usize, usize)> {
+        match (x, y) {
+            (Some(x), Some(y)) => Some((x.0.min(y.0), x.1.max(y.1))),
+            (x, y) => x.or(y),
+        }
+    }
+
+    /// Intersection of two optional ranges.
+    fn meet(x: Option<(usize, usize)>, y: Option<(usize, usize)>) -> Option<(usize, usize)> {
+        let (x, y) = (x?, y?);
+        let r = (x.0.max(y.0), x.1.min(y.1));
+        (r.0 <= r.1).then_some(r)
+    }
+}
+
 /// CPU-side information about the loaded scene.
 struct SceneInfo {
     layers: Vec<LayerRanges>,
+    layer_lines: LayerLines,
     clusters: Vec<Cluster>,
     legend: LegendData,
     bounds: Option<([f32; 3], [f32; 3])>,
@@ -232,7 +322,8 @@ impl GcodeViewer {
                 let Some(scene) = instance::build_scene(&tp, &job_cancel) else {
                     return;
                 };
-                if tx.send(Loaded::Scene(Box::new(scene))).is_err() {
+                let lines = LayerLines::build(&tp);
+                if tx.send(Loaded::Scene(Box::new((scene, lines)))).is_err() {
                     return;
                 }
                 if let Some(ctx) = &ctx {
@@ -256,7 +347,7 @@ impl GcodeViewer {
                 log::warn!("sprint-viewer: cannot spawn the build thread ({err}); building inline");
                 let never = AtomicBool::new(false);
                 if let Some(scene) = instance::build_scene(&toolpath, &never) {
-                    self.accept_scene(scene);
+                    self.accept_scene(scene, LayerLines::build(&toolpath));
                 }
                 for kind in [PickKind::Extrusions, PickKind::Travels] {
                     if let Some(pick) = PickIndex::build_kind(&toolpath, kind, &never) {
@@ -718,7 +809,10 @@ impl GcodeViewer {
 
     fn handle_loaded(&mut self, msg: Loaded) {
         match msg {
-            Loaded::Scene(scene) => self.accept_scene(*scene),
+            Loaded::Scene(built) => {
+                let (scene, lines) = *built;
+                self.accept_scene(scene, lines);
+            }
             Loaded::Pick(pick) => {
                 if let Some(info) = self.info.as_mut() {
                     match pick.kind() {
@@ -731,7 +825,7 @@ impl GcodeViewer {
         }
     }
 
-    fn accept_scene(&mut self, scene: SceneData) {
+    fn accept_scene(&mut self, scene: SceneData, layer_lines: LayerLines) {
         let SceneData {
             extrusions,
             travels,
@@ -744,6 +838,7 @@ impl GcodeViewer {
         self.renderer.set_scene(extrusions, travels, retractions);
         self.info = Some(SceneInfo {
             layers,
+            layer_lines,
             clusters,
             legend,
             bounds,
@@ -1112,6 +1207,34 @@ impl GcodeViewer {
         }
     }
 
+    /// Which of the visible layers `a..=b` the opaque and the translucent
+    /// ghost pass draw. With opaque ghosts everything is one pass; with
+    /// translucent ones each pass gets only the layers that can hold its
+    /// beads (the shader sorts out the layer in progress).
+    fn pass_layers(&self, info: &SceneInfo, (a, b): (usize, usize)) -> PassLayers {
+        let o = &self.options;
+        if o.ghost_style == GhostStyle::Opaque {
+            return PassLayers {
+                opaque: Some((a, b)),
+                ghost: None,
+            };
+        }
+        let mut passes = PassLayers {
+            opaque: Some((a, b)),
+            ghost: None,
+        };
+        if o.view_mode == ViewMode::LayerTop {
+            passes.opaque = Some((b, b));
+            passes.ghost = (a < b).then(|| (a, b - 1));
+        }
+        if let Some(progress) = o.progress_line {
+            let split = info.layer_lines.split((a, b), progress);
+            passes.opaque = PassLayers::meet(passes.opaque, split.opaque);
+            passes.ghost = PassLayers::hull(passes.ghost, split.ghost);
+        }
+        passes
+    }
+
     fn build_params(&self, size: (u32, u32)) -> DrawParams {
         let o = &self.options;
         let cam = self.active_camera();
@@ -1173,6 +1296,9 @@ impl GcodeViewer {
         if self.renderer.encodes_gamma() {
             flag_bits |= flags::ENCODE_GAMMA;
         }
+        if o.ghost_style == GhostStyle::Translucent {
+            flag_bits |= flags::TRANSLUCENT_GHOSTS;
+        }
 
         let scalar = self
             .info
@@ -1225,26 +1351,25 @@ impl GcodeViewer {
             },
             fog_range: [fog_start, fog_inv_span, 0.0, 0.0],
             shading: [CAVITY, DETAIL_PIXELS.0, DETAIL_PIXELS.1, EXPOSURE],
+            ghost: [GHOST_ALPHA, 0.0, 0.0, 0.0],
         };
 
-        let (prisms, ribbons) = match (range, &self.info) {
-            (Some((a, b)), Some(info)) => {
-                let lod = if o.style == RenderStyle::Lines {
-                    0.0
-                } else {
-                    self.lod_pixels
-                };
-                select_clusters(
-                    info,
-                    (a, b),
-                    &Frustum::from_matrix(Mat4::from_cols_array_2d(&globals.view_proj)),
-                    cam,
-                    pixel,
-                    lod,
-                )
-            }
+        let passes = match (range, &self.info) {
+            (Some(range), Some(info)) => self.pass_layers(info, range),
+            _ => PassLayers::default(),
+        };
+        let lod = if o.style == RenderStyle::Lines {
+            0.0
+        } else {
+            self.lod_pixels
+        };
+        let frustum = Frustum::from_matrix(Mat4::from_cols_array_2d(&globals.view_proj));
+        let draw_lists = |layers: Option<(usize, usize)>| match (layers, &self.info) {
+            (Some(layers), Some(info)) => select_clusters(info, layers, &frustum, cam, pixel, lod),
             _ => (Vec::new(), Vec::new()),
         };
+        let (prisms, ribbons) = draw_lists(passes.opaque);
+        let (ghost_prisms, ghost_ribbons) = draw_lists(passes.ghost);
         // Travels of the visible layers (only the top one in the layer view).
         let travels = match (o.show_travel, range, &self.info) {
             (true, Some((a, b)), Some(info)) => {
@@ -1277,6 +1402,8 @@ impl GcodeViewer {
             style: o.style,
             prisms,
             ribbons,
+            ghost_prisms,
+            ghost_ribbons,
             travels,
             retractions: o.show_retractions && range.is_some(),
             bed: o.show_bed,
@@ -1711,6 +1838,7 @@ mod tests {
         let s = build_scene(tp, &AtomicBool::new(false)).expect("not cancelled");
         SceneInfo {
             layers: s.layers,
+            layer_lines: LayerLines::build(tp),
             clusters: s.clusters,
             legend: s.legend,
             bounds: s.bounds,
@@ -1806,6 +1934,97 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn layer_lines(bounds: &[(u32, u32)]) -> LayerLines {
+        LayerLines {
+            bounds: bounds.to_vec(),
+            monotonic: true,
+        }
+    }
+
+    #[test]
+    fn layer_line_bounds_follow_the_extrusions() {
+        let tp = crate::demo::demo_toolpath();
+        let lines = LayerLines::build(&tp);
+        assert_eq!(lines.bounds.len(), tp.layers.len());
+        assert!(lines.monotonic);
+        for (layer, (lo, hi)) in tp.layers.iter().zip(&lines.bounds) {
+            let ext: Vec<u32> = tp.segments[layer.segments.clone()]
+                .iter()
+                .filter(|s| s.is_extrusion())
+                .map(|s| s.line)
+                .collect();
+            if let (Some(min), Some(max)) = (ext.iter().min(), ext.iter().max()) {
+                assert_eq!((*lo, *hi), (*min, *max));
+            }
+        }
+        // Out-of-order layers are detected.
+        let mut shuffled = tp.clone();
+        shuffled.layers.swap(3, 7);
+        assert!(!LayerLines::build(&shuffled).monotonic);
+        // Empty toolpaths and layers.
+        assert!(LayerLines::build(&Toolpath::default()).bounds.is_empty());
+    }
+
+    #[test]
+    fn progress_splits_layers_between_the_passes() {
+        // Layers of lines 0-9, 10-19, 20-29, 30-39.
+        let lines = layer_lines(&[(0, 9), (10, 19), (20, 29), (30, 39)]);
+        let split = |range, progress| lines.split(range, progress);
+        // Inside layer 1: layers 0-1 hold printed beads, 1-3 unprinted.
+        assert_eq!(
+            split((0, 3), 15),
+            PassLayers {
+                opaque: Some((0, 1)),
+                ghost: Some((1, 3)),
+            }
+        );
+        // At the last line of a layer it is complete.
+        assert_eq!(
+            split((0, 3), 19),
+            PassLayers {
+                opaque: Some((0, 1)),
+                ghost: Some((2, 3)),
+            }
+        );
+        // Before anything / after everything.
+        assert_eq!(split((0, 3), 0).opaque, Some((0, 0)));
+        assert_eq!(split((1, 3), 5).opaque, None);
+        assert_eq!(split((0, 3), 99).ghost, None);
+        assert_eq!(split((0, 3), 99).opaque, Some((0, 3)));
+        // Limited to the visible layers.
+        assert_eq!(
+            split((2, 2), 25),
+            PassLayers {
+                opaque: Some((2, 2)),
+                ghost: Some((2, 2)),
+            }
+        );
+        // Unordered files: both passes draw everything.
+        let odd = LayerLines {
+            monotonic: false,
+            ..lines.clone()
+        };
+        assert_eq!(
+            odd.split((0, 3), 15),
+            PassLayers {
+                opaque: Some((0, 3)),
+                ghost: Some((0, 3)),
+            }
+        );
+        // Bounds shorter than the range (should not happen): same.
+        assert_eq!(lines.split((0, 9), 15).ghost, Some((0, 9)));
+    }
+
+    #[test]
+    fn pass_layer_ranges_combine() {
+        assert_eq!(PassLayers::hull(Some((2, 5)), Some((4, 9))), Some((2, 9)));
+        assert_eq!(PassLayers::hull(None, Some((4, 9))), Some((4, 9)));
+        assert_eq!(PassLayers::hull(None, None), None);
+        assert_eq!(PassLayers::meet(Some((2, 5)), Some((4, 9))), Some((4, 5)));
+        assert_eq!(PassLayers::meet(Some((2, 3)), Some((4, 9))), None);
+        assert_eq!(PassLayers::meet(Some((2, 3)), None), None);
     }
 
     #[test]

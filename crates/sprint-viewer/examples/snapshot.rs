@@ -14,7 +14,8 @@ use std::time::Instant;
 
 use glam::Vec3;
 use sprint_viewer::{
-    BedSpec, ColorMode, GcodeViewer, RenderStyle, ViewMode, ViewPreset, ViewerOptions, demo,
+    BedSpec, ColorMode, GcodeViewer, GhostStyle, RenderStyle, ViewMode, ViewPreset, ViewerOptions,
+    demo,
 };
 
 const WIDTH: u32 = 1280;
@@ -121,7 +122,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mid = toolpath.layers.get(60).map(|l| l.lines.start);
         o.progress_line = mid;
         save(&mut viewer, &dir, "10_progress.png")?;
-        viewer.options_mut().progress_line = None;
+        // Translucent ghosts: the printed part shows through.
+        viewer.options_mut().ghost_style = GhostStyle::Translucent;
+        save(&mut viewer, &dir, "10b_progress_translucent.png")?;
+        let o = viewer.options_mut();
+        o.ghost_style = GhostStyle::Opaque;
+        o.progress_line = None;
     }
 
     // Layer view of layer 20 with lower layers ghosted, travels and
@@ -133,7 +139,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         o.show_travel = true;
         o.show_retractions = true;
         save(&mut viewer, &dir, "11_layer_top.png")?;
+        viewer.options_mut().ghost_style = GhostStyle::Translucent;
+        save(&mut viewer, &dir, "11b_layer_top_translucent.png")?;
         let o = viewer.options_mut();
+        o.ghost_style = GhostStyle::Opaque;
         o.view_mode = ViewMode::Perspective;
         o.layer_range = (0, usize::MAX);
     }

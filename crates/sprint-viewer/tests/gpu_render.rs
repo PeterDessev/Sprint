@@ -6,7 +6,8 @@ use std::sync::Arc;
 use glam::{Vec2, Vec3};
 use sprint_gcode::{Feature, Layer, MoveKind, Segment, Toolpath};
 use sprint_viewer::{
-    BedSpec, ColorMode, GcodeViewer, RenderStyle, ViewMode, ViewPreset, demo, headless_device, wgpu,
+    BedSpec, ColorMode, GcodeViewer, GhostStyle, RenderStyle, ViewMode, ViewPreset, demo,
+    headless_device, wgpu,
 };
 
 const W: u32 = 320;
@@ -749,4 +750,78 @@ fn prisms_and_ribbons_agree_at_middle_distances() {
             "{distance} mm: mean luminance difference {mean:.2}"
         );
     }
+}
+
+#[test]
+fn translucent_ghosts_let_the_printed_part_show_through() {
+    let Some((device, queue)) = device() else {
+        return;
+    };
+    let tp = block();
+    // Layers 0..=4 printed, 5..=9 still to come.
+    let progress = tp.layers[5].lines.start - 1;
+    let mut viewer = loaded_viewer(&device, &queue, tp);
+    viewer.set_view(ViewPreset::Top);
+    viewer.options_mut().show_bed = false;
+    let (cx, cy) = block_centre(&viewer);
+    let printed = px(&render(&mut viewer), cx, cy);
+
+    viewer.options_mut().progress_line = Some(progress);
+    let solid = px(&render(&mut viewer), cx, cy);
+    assert_eq!(viewer.options().ghost_style, GhostStyle::Opaque);
+
+    viewer.options_mut().ghost_style = GhostStyle::Translucent;
+    let glass = render(&mut viewer);
+    let through = px(&glass, cx, cy);
+    let warmth = |p: [u8; 4]| p[0] as i32 - p[2] as i32;
+    // Solid ghosts hide the orange part; translucent ones show it, muted.
+    assert!(warmth(solid) < 30, "solid ghost {solid:?}");
+    assert!(
+        warmth(through) > warmth(solid) + 25 && warmth(through) < warmth(printed),
+        "printed {printed:?}, solid ghost {solid:?}, translucent ghost {through:?}"
+    );
+    // Without any printed beads behind, the ghost is a light veil over the
+    // background, not the background itself.
+    viewer.options_mut().progress_line = Some(0);
+    let veil = px(&render(&mut viewer), cx, cy);
+    assert!(
+        !near(veil, BACKGROUND, 6) && warmth(veil) < warmth(through),
+        "{veil:?}"
+    );
+    // Lines style has a ghost pass too.
+    viewer.options_mut().style = RenderStyle::Lines;
+    viewer.options_mut().progress_line = Some(progress);
+    let lines = render(&mut viewer);
+    assert!(
+        lines
+            .chunks_exact(4)
+            .any(|p| p[0] > 120 && p[0] as i32 > p[2] as i32 + 60)
+    );
+}
+
+#[test]
+fn translucent_ghosts_in_the_layer_view_raise_no_gpu_errors() {
+    let Some((device, queue)) = device() else {
+        return;
+    };
+    let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let mut viewer = loaded_viewer(&device, &queue, demo::demo_toolpath());
+    let o = viewer.options_mut();
+    o.ghost_style = GhostStyle::Translucent;
+    o.view_mode = ViewMode::LayerTop;
+    o.layer_range = (0, 30);
+    o.progress_line = Some(9000);
+    let img = render(&mut viewer);
+    assert!(
+        img.chunks_exact(4)
+            .any(|p| !near([p[0], p[1], p[2], 255], BACKGROUND, 6))
+    );
+    for style in RenderStyle::ALL {
+        viewer.options_mut().style = style;
+        viewer.options_mut().view_mode = ViewMode::Perspective;
+        render(&mut viewer);
+    }
+    drop(viewer);
+    let error = pollster::block_on(validation.pop());
+    assert!(error.is_none(), "{error:?}");
 }

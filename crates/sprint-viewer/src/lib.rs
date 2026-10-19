@@ -31,7 +31,9 @@ pub mod pick;
 pub mod scene;
 mod viewer;
 
-pub use options::{BedSpec, ColorMode, RenderStyle, ViewMode, ViewPreset, ViewerOptions};
+pub use options::{
+    BedSpec, ColorMode, GhostStyle, RenderStyle, ViewMode, ViewPreset, ViewerOptions,
+};
 pub use viewer::{DEFAULT_LOD_PIXELS, GcodeViewer, ViewerResponse, headless_device};
 
 /// Re-export of the wgpu crate used by the viewer (via egui-wgpu).

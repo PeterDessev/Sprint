@@ -58,6 +58,8 @@ pub(crate) struct Globals {
     /// Cavity darkening (x), projected bead thickness in pixels where
     /// shading detail starts (y) and is complete (z), exposure (w).
     pub shading: [f32; 4],
+    /// Opacity of translucent ghosts (x); yzw unused.
+    pub ghost: [f32; 4],
 }
 
 /// Bits of `Globals::mode[2]`.
@@ -68,6 +70,7 @@ pub(crate) mod flags {
     pub const HOVER: u32 = 8;
     pub const LAYER_TOP: u32 = 16;
     pub const ENCODE_GAMMA: u32 = 32;
+    pub const TRANSLUCENT_GHOSTS: u32 = 64;
 }
 
 /// Everything needed to draw one frame.
@@ -82,6 +85,11 @@ pub(crate) struct DrawParams {
     pub prisms: Vec<Range<u32>>,
     /// Extrusion instance ranges drawn as ribbon impostors.
     pub ribbons: Vec<Range<u32>>,
+    /// Ranges drawn again, after everything opaque, as translucent ghosts
+    /// (prisms / lines). Empty unless ghosts are translucent.
+    pub ghost_prisms: Vec<Range<u32>>,
+    /// Ribbon ranges of the ghost pass.
+    pub ghost_ribbons: Vec<Range<u32>>,
     pub travels: Option<Range<u32>>,
     pub retractions: bool,
     pub bed: bool,
@@ -241,6 +249,9 @@ struct Pipelines {
     tube: wgpu::RenderPipeline,
     ribbon: wgpu::RenderPipeline,
     extrusion_lines: wgpu::RenderPipeline,
+    tube_ghost: wgpu::RenderPipeline,
+    ribbon_ghost: wgpu::RenderPipeline,
+    extrusion_lines_ghost: wgpu::RenderPipeline,
     travel: wgpu::RenderPipeline,
     marker: wgpu::RenderPipeline,
     mesh: wgpu::RenderPipeline,
@@ -762,46 +773,78 @@ impl Renderer {
         self.queue.submit(std::iter::once(encoder.finish()));
     }
 
-    fn draw_scene(&self, pass: &mut wgpu::RenderPass<'_>, params: &DrawParams) {
-        let p = &self.pipelines;
-        if let Some(scene) = &self.scene {
-            match params.style {
-                RenderStyle::Tubes => {
-                    pass.set_pipeline(&p.tube);
+    /// Draw extrusion ranges as prisms and ribbons (or all as lines) with
+    /// the given pipelines.
+    fn draw_extrusions(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        style: RenderStyle,
+        (prisms, ribbons): (&[Range<u32>], &[Range<u32>]),
+        (tube, ribbon, lines): (
+            &wgpu::RenderPipeline,
+            &wgpu::RenderPipeline,
+            &wgpu::RenderPipeline,
+        ),
+    ) {
+        let Some(scene) = &self.scene else {
+            return;
+        };
+        match style {
+            RenderStyle::Tubes => {
+                if !prisms.is_empty() {
+                    pass.set_pipeline(tube);
                     pass.set_vertex_buffer(0, self.tube.vertices.slice(..));
                     pass.set_index_buffer(self.tube.indices.slice(..), wgpu::IndexFormat::Uint32);
-                    for batch in &params.prisms {
+                    for batch in prisms {
                         for (buffer, range) in scene.extrusions.draws(batch.clone()) {
                             pass.set_vertex_buffer(1, buffer.slice(..));
                             pass.draw_indexed(0..self.tube.count, 0, range);
                         }
                     }
-                    pass.set_pipeline(&p.ribbon);
-                    for batch in &params.ribbons {
+                }
+                if !ribbons.is_empty() {
+                    pass.set_pipeline(ribbon);
+                    for batch in ribbons {
                         for (buffer, range) in scene.extrusions.draws(batch.clone()) {
                             pass.set_vertex_buffer(0, buffer.slice(..));
                             pass.draw(0..4, range);
                         }
                     }
                 }
-                RenderStyle::Lines => {
-                    pass.set_pipeline(&p.extrusion_lines);
-                    for batch in params.prisms.iter().chain(&params.ribbons) {
-                        for (buffer, range) in scene.extrusions.draws(batch.clone()) {
-                            pass.set_vertex_buffer(0, buffer.slice(..));
-                            pass.draw(0..2, range);
-                        }
+            }
+            RenderStyle::Lines => {
+                if prisms.is_empty() && ribbons.is_empty() {
+                    return;
+                }
+                pass.set_pipeline(lines);
+                for batch in prisms.iter().chain(ribbons) {
+                    for (buffer, range) in scene.extrusions.draws(batch.clone()) {
+                        pass.set_vertex_buffer(0, buffer.slice(..));
+                        pass.draw(0..2, range);
                     }
                 }
             }
-            if params.retractions && scene.retractions.uploaded > 0 {
-                pass.set_pipeline(&p.marker);
-                pass.set_vertex_buffer(0, self.marker.vertices.slice(..));
-                pass.set_index_buffer(self.marker.indices.slice(..), wgpu::IndexFormat::Uint32);
-                for (buffer, range) in scene.retractions.draws(0..u32::MAX) {
-                    pass.set_vertex_buffer(1, buffer.slice(..));
-                    pass.draw_indexed(0..self.marker.count, 0, range);
-                }
+        }
+    }
+
+    fn draw_scene(&self, pass: &mut wgpu::RenderPass<'_>, params: &DrawParams) {
+        let p = &self.pipelines;
+        self.draw_extrusions(
+            pass,
+            params.style,
+            (&params.prisms, &params.ribbons),
+            (&p.tube, &p.ribbon, &p.extrusion_lines),
+        );
+        if let Some(scene) = &self.scene
+            && params.retractions
+            && scene.retractions.uploaded > 0
+        {
+            pass.set_pipeline(&p.marker);
+            pass.set_vertex_buffer(0, self.marker.vertices.slice(..));
+            pass.set_index_buffer(self.marker.indices.slice(..), wgpu::IndexFormat::Uint32);
+            for (buffer, range) in scene.retractions.draws(0..u32::MAX) {
+                pass.set_vertex_buffer(1, buffer.slice(..));
+                pass.draw_indexed(0..self.marker.count, 0, range);
             }
         }
         if params.tool_head.is_some() || params.axes {
@@ -828,6 +871,14 @@ impl Renderer {
             pass.set_vertex_buffer(0, self.volume.slice(..));
             pass.draw(0..self.volume_count, 0..1);
         }
+        // Translucent ghosts after everything opaque (the bed included):
+        // depth tested against the printed part, not hiding each other.
+        self.draw_extrusions(
+            pass,
+            params.style,
+            (&params.ghost_prisms, &params.ghost_ribbons),
+            (&p.tube_ghost, &p.ribbon_ghost, &p.extrusion_lines_ghost),
+        );
         if let (Some(scene), Some(range)) = (&self.scene, params.travels.clone()) {
             pass.set_pipeline(&p.travel);
             for (buffer, r) in scene.travels.draws(range) {
@@ -1044,7 +1095,7 @@ fn create_pipelines(
             "sprint-viewer tubes",
             "vs_tube",
             "fs_tube",
-            &[Some(tube_vertices), Some(segment_instances.clone())],
+            &[Some(tube_vertices.clone()), Some(segment_instances.clone())],
             TriangleList,
             Some(wgpu::Face::Back),
             true,
@@ -1071,6 +1122,39 @@ fn create_pipelines(
             None,
             true,
             false,
+            GreaterEqual,
+        ),
+        tube_ghost: make(
+            "sprint-viewer tubes (ghosts)",
+            "vs_tube_ghost",
+            "fs_flat",
+            &[Some(tube_vertices.clone()), Some(segment_instances.clone())],
+            TriangleList,
+            Some(wgpu::Face::Back),
+            false,
+            true,
+            GreaterEqual,
+        ),
+        ribbon_ghost: make(
+            "sprint-viewer ribbons (ghosts)",
+            "vs_ribbon_ghost",
+            "fs_flat",
+            &[Some(segment_instances.clone())],
+            TriangleStrip,
+            None,
+            false,
+            true,
+            GreaterEqual,
+        ),
+        extrusion_lines_ghost: make(
+            "sprint-viewer extrusion lines (ghosts)",
+            "vs_extrusion_line_ghost",
+            "fs_flat",
+            &[Some(segment_instances.clone())],
+            LineList,
+            None,
+            false,
+            true,
             GreaterEqual,
         ),
         travel: make(
