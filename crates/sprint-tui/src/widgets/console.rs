@@ -506,9 +506,13 @@ impl StatefulWidget for ConsoleView<'_> {
             let Ok(dy) = u16::try_from(row) else { break };
             let y = inner.y + dy;
             let (spans, cols) = self.line_spans(line);
-            buf.set_line(inner.x, y, &Line::from(spans), inner.width);
             if cols > width {
+                // Keep the last column free for the mark: written over the
+                // hidden half of a wide character it would not show.
+                buf.set_line(inner.x, y, &Line::from(spans), inner.width - 1);
                 buf.set_string(inner.right() - 1, y, "…", self.theme.dim());
+            } else {
+                buf.set_line(inner.x, y, &Line::from(spans), inner.width);
             }
         }
         if offset > 0 {
@@ -649,6 +653,18 @@ mod tests {
         )];
         let buf = render(ConsoleView::new(&log), 16, 1);
         assert_eq!(lines(&buf)[0], "echo:·[2Jhello …");
+    }
+
+    #[test]
+    fn the_cut_mark_shows_after_wide_characters() {
+        let log = vec![ConsoleLine::received("ab日本語日本語")];
+        // 本 would end exactly at the edge and hide the mark.
+        let buf = render(ConsoleView::new(&log), 6, 1);
+        assert_eq!(lines(&buf)[0], "ab日 …");
+        let buf = render(ConsoleView::new(&log), 7, 1);
+        assert_eq!(lines(&buf)[0], "ab日本…");
+        let buf = render(ConsoleView::new(&log), 1, 1);
+        assert_eq!(lines(&buf)[0], "…");
     }
 
     #[test]
