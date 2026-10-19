@@ -940,3 +940,29 @@ fn reconnect_reopens_the_same_connection() {
     assert_eq!(h.state().state().target.as_deref(), Some("Virtual printer"));
     assert!(h.state().state().is_connected());
 }
+
+#[test]
+fn the_start_dialog_closes_when_another_file_loads() {
+    let options = with_file(AppOptions::headless(), sample("calibration-cube.gcode"));
+    let mut h = app(options, WINDOW);
+    expect(&mut h, "the cube to be analyzed", analyzed);
+    h.state_mut().set_state_override(Some(PrinterState {
+        status: ConnectionStatus::Connected,
+        ..PrinterState::default()
+    }));
+    h.state_mut()
+        .push_action(AppAction::StartPrintDialog { start_line: 8000 });
+    settle(&mut h);
+    assert_eq!(h.state().dialog(), Some(DialogKind::StartPrint));
+    // A three-line file replaces the cube: line 8,001 means nothing there.
+    let dir = temp_dir("replace");
+    let small = dir.join("small.gcode");
+    std::fs::write(&small, "G28\nG1 Z0.2 F600\nG1 X10 Y0 E1 F1200\n").expect("write");
+    h.state_mut().push_action(AppAction::LoadFile(small));
+    expect(&mut h, "the small file to load", |app| {
+        analyzed(app) && app.file().is_some_and(|f| f.file.len() == 3)
+    });
+    settle(&mut h);
+    assert_eq!(h.state().dialog(), None);
+    let _ = std::fs::remove_dir_all(dir);
+}

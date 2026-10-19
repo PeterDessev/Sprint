@@ -7,7 +7,7 @@ use std::sync::Arc;
 use egui::{
     Align, Color32, CornerRadius, Frame, Id, Key, Layout, Margin, Modal, RichText, Stroke, Ui, vec2,
 };
-use sprint_gcode::{ResumeOptions, Toolpath, resume_preamble};
+use sprint_gcode::{GcodeFile, ResumeOptions, Toolpath, resume_preamble};
 use sprint_host::{HostPrompt, PrintOptions};
 
 use crate::context::{AppAction, AppCtx, LoadedFile};
@@ -89,6 +89,9 @@ struct PendingPreamble {
 
 /// The start-print dialog.
 pub struct StartPrintDialog {
+    /// The file it was opened for (a weak handle keeps its address
+    /// unique, see [`StartPrintDialog::is_for`]).
+    file: std::sync::Weak<GcodeFile>,
     mode: StartMode,
     layer: usize,
     line: usize,
@@ -118,6 +121,7 @@ impl StartPrintDialog {
             StartMode::Line
         };
         StartPrintDialog {
+            file: Arc::downgrade(&file.file),
             mode,
             layer,
             line,
@@ -130,6 +134,12 @@ impl StartPrintDialog {
             emit_m73: false,
             error: None,
         }
+    }
+
+    /// Whether the dialog was opened for `file` (and not for a file that
+    /// was replaced or reloaded since: its lines and layers would not fit).
+    pub fn is_for(&self, file: &LoadedFile) -> bool {
+        std::ptr::eq(self.file.as_ptr(), Arc::as_ptr(&file.file))
     }
 
     /// The 0-based line the print would start at.

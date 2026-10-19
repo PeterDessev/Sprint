@@ -1493,6 +1493,11 @@ impl SprintApp {
         match modal {
             Modal::StartPrint(mut dialog) => {
                 let file = self.core.file.clone()?;
+                // Another file (or a reload) replaced the one it was opened
+                // for: its start line and layer mean nothing there.
+                if !dialog.is_for(&file) {
+                    return None;
+                }
                 let mut c = self.core.ctx();
                 match dialog.show(ctx, &mut c, &file) {
                     Some(_) => None,
