@@ -477,13 +477,14 @@ fn any_size_draws_without_panicking() {
 
 // ----- key handling against the simulator -----
 
-/// A slow job: many real-time moves, so it is still running while keys
-/// are pressed.
+/// A slow job: many short real-time moves, so it is still running while
+/// keys are pressed, and pausing (which waits for the planned moves) is
+/// quick.
 fn slow_file(dir: &std::path::Path) -> PathBuf {
     let mut gcode = String::from("G28\nG90\nM83\nG1 Z0.3 F600\n");
     for i in 0..400 {
-        let x = 20 + (i % 2) * 150;
-        gcode.push_str(&format!("G1 X{x} Y{} E1 F1200\n", 20 + i % 150));
+        let x = 20 + (i % 2) * 5;
+        gcode.push_str(&format!("G1 X{x} Y{} E0.2 F600\n", 20 + i % 5));
     }
     let path = dir.join("slow.gcode");
     std::fs::write(&path, gcode).expect("write slow file");
