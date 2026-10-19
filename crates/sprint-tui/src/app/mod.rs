@@ -208,6 +208,8 @@ pub(crate) struct App {
     continued_at: Option<Instant>,
     /// A `source` file being read: its name and lines.
     sourcing: Option<Receiver<SourceRead>>,
+    /// Axes asked to be homed whose G28 may not be acknowledged yet.
+    homing: actions::HomingRequests,
 }
 
 /// Completion for the command palette: command names, then G-codes.
@@ -296,6 +298,7 @@ impl App {
             pending_sd_delete: None,
             continued_at: None,
             sourcing: None,
+            homing: actions::HomingRequests::default(),
         };
         app.sync();
         app
@@ -966,6 +969,16 @@ impl App {
         (rows, false, format!("Objects · {}", file.name()))
     }
 
+    /// [`actions::homing_warning`] for `axes`, counting the homing just
+    /// asked for.
+    fn homing_warning(&mut self, axes: Axes, consequence: &str) -> Option<String> {
+        let requests = &mut self.homing;
+        self.printer.with_state(|s| {
+            let pending = requests.pending(s);
+            actions::homing_warning(s, axes, pending, consequence)
+        })
+    }
+
     /// `o` / `:objects`: the objects dialog, when there are objects.
     fn open_objects(&mut self) {
         if self.object_rows().0.is_empty() {
@@ -1446,7 +1459,13 @@ impl App {
                 self.guard(&safety, guard, Action::SetTempsAnyway(targets));
             }
             Action::Motion(motion) => {
+                if let Some(warning) =
+                    self.homing_warning(motion.moves_axes(), actions::UNHOMED_MOVE)
+                {
+                    self.warn(warning);
+                }
                 motion.run(&self.printer);
+                self.homing.sent(&motion.gcode());
                 match motion {
                     Motion::Tool(t) => self.info(format!("Tool T{t}")),
                     Motion::Home { zero_e: true, .. } => {
@@ -1503,7 +1522,10 @@ impl App {
                 self.printer.factory_reset_settings();
                 self.warn("Settings reset to factory defaults (M502); eeprom save keeps them");
             }
-            Action::Send(gcode) => self.printer.send(&gcode),
+            Action::Send(gcode) => {
+                self.printer.send(&gcode);
+                self.homing.sent(&gcode);
+            }
             Action::RunMacro(name, args) => {
                 let found = actions::find_macro(&self.config.macros, &name).and_then(|m| {
                     let gcode = actions::macro_gcode(m, &args)?;
@@ -2378,7 +2400,17 @@ impl App {
             }
             Command::Speed(pct) => printer.set_feedrate_override(pct),
             Command::Flow(pct) => printer.set_flow(self.view.active_tool, pct),
-            Command::Babystep(mm) => printer.babystep_z(mm),
+            Command::Babystep(mm) => {
+                let warning = self.homing_warning(Axes::Z, actions::UNHOMED_BABYSTEP);
+                printer.babystep_z(mm);
+                match warning {
+                    Some(warning) => self.warn(warning),
+                    None => self.info(format!(
+                        "Z nudged by {} mm",
+                        format::trimmed(f64::from(mm), 3)
+                    )),
+                }
+            }
             Command::Settings(filter) => {
                 printer.request_settings();
                 let pending = Pending::new(REPORT_TIMEOUT, false);

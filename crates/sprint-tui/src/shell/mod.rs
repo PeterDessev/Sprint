@@ -22,8 +22,8 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::Receiver;
 use sprint_host::sprint_proto::{JobContext, gcode_doc, setting_def};
 use sprint_host::{
-    AppConfig, Axis, ConnectTarget, ConnectionStatus, Heater, JobKind, Printer, PrinterProfile,
-    list_ports,
+    AppConfig, Axes, Axis, ConnectTarget, ConnectionStatus, Heater, JobKind, Printer,
+    PrinterProfile, list_ports,
 };
 
 use crate::TuiOptions;
@@ -175,6 +175,8 @@ pub(crate) struct Shell {
     /// started or was last resumed: a pause at one of them is the
     /// script's, like `pause`.
     layer_pauses_ahead: usize,
+    /// Axes asked to be homed whose G28 may not be acknowledged yet.
+    homing: std::cell::Cell<actions::HomingRequests>,
 }
 
 impl Shell {
@@ -201,6 +203,7 @@ impl Shell {
             sourcing: 0,
             pause_asked: None,
             layer_pauses_ahead: 0,
+            homing: std::cell::Cell::default(),
         }
     }
 
@@ -370,9 +373,32 @@ impl Shell {
     fn motion(&self, motion: Motion, input: &mut dyn LineSource) -> bool {
         let allowed = self.motion_allowed(&motion, input);
         if allowed {
+            if let Some(warning) = self.homing_warning(motion.moves_axes(), actions::UNHOMED_MOVE) {
+                self.out.warn(warning);
+            }
             motion.run(&self.printer);
+            self.sent_homing(&motion.gcode());
         }
         allowed
+    }
+
+    /// [`actions::homing_warning`] for `axes`, counting the homing just
+    /// asked for.
+    fn homing_warning(&self, axes: Axes, consequence: &str) -> Option<String> {
+        let mut requests = self.homing.get();
+        let warning = self.printer.with_state(|s| {
+            let pending = requests.pending(s);
+            actions::homing_warning(s, axes, pending, consequence)
+        });
+        self.homing.set(requests);
+        warning
+    }
+
+    /// Remember what `gcode`, just sent, homes.
+    fn sent_homing(&self, gcode: &str) {
+        let mut requests = self.homing.get();
+        requests.sent(gcode);
+        self.homing.set(requests);
     }
 
     /// Wait for an expected answer: Ok when it arrived, or why not.
@@ -557,6 +583,7 @@ impl Shell {
         };
         if self.safe_to_send(gcode, &check, input) {
             self.printer.send(gcode);
+            self.sent_homing(gcode);
             // After an emergency stop, say how to get the printer back.
             if actions::check_gcode(gcode, JobContext::Idle).emergency_stop {
                 self.out.warn(
@@ -1458,6 +1485,9 @@ impl Shell {
                 ));
             }
             Command::Babystep(mm) => {
+                if let Some(warning) = self.homing_warning(Axes::Z, actions::UNHOMED_BABYSTEP) {
+                    self.out.warn(warning);
+                }
                 printer.babystep_z(mm);
                 self.out.dim(format!(
                     "Z nudged by {} mm",

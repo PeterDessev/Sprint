@@ -1780,3 +1780,33 @@ fn objects_of_a_print_are_listed_excluded_and_included() {
     shell.printer.cancel();
     wait_for(&shell, "the cancel", |s| !s.job_active());
 }
+
+#[test]
+fn moves_and_babysteps_warn_while_axes_are_not_homed() {
+    let (mut shell, buffer) = connected();
+    // Nothing homed since connecting: warned, and still done.
+    script(&mut shell, &["move x 5", "babystep 0.05", "extrude 1"]);
+    let text = buffer.text();
+    assert!(
+        text.contains(
+            "X not homed: the move starts from where the printer believes it is (home x first)"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("Z not homed: babysteps shift a Z the printer does not know"),
+        "{text}"
+    );
+    // Extrusion needs no homing.
+    assert_eq!(text.matches("not homed").count(), 2, "{text}");
+    let got = received(&shell);
+    assert!(got.iter().any(|c| c == "G1 X5 F3000"), "{got:?}");
+    assert!(got.iter().any(|c| c.starts_with("M290 Z")), "{got:?}");
+    buffer.clear();
+    script(
+        &mut shell,
+        &["home", "move x 5", "move z 1", "babystep 0.05"],
+    );
+    let text = buffer.text();
+    assert!(!text.contains("not homed"), "{text}");
+}

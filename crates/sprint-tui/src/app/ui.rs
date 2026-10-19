@@ -966,6 +966,24 @@ impl App {
             ),
             None => "position unknown".to_string(),
         };
+        // Moves of axes that are not homed start from wherever the
+        // printer believes it is.
+        let missing = match self.view.homed {
+            None => sprint_host::Axes::ALL,
+            Some(homed) => sprint_host::Axes::ALL.without(homed),
+        };
+        let homing = if missing.is_empty() {
+            Line::default()
+        } else {
+            Line::from(vec![
+                Span::styled(
+                    format!(" {} not homed · ", missing.letters()),
+                    theme.warning(),
+                ),
+                key("h"),
+                Span::styled(" homes", theme.warning()),
+            ])
+        };
         let lines = vec![
             Line::from(vec![dim("        "), key("↑"), dim(" Y+")]),
             Line::from(vec![
@@ -992,7 +1010,7 @@ impl App {
                 key("Esc"),
                 dim(" done"),
             ]),
-            Line::default(),
+            homing,
             Line::from(Span::styled(format!(" {position}"), theme.text())),
         ];
         frame.render_widget(Paragraph::new(lines), inner);

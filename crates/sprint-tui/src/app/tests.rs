@@ -1024,8 +1024,18 @@ fn jog_mode_moves_and_homes() {
         text.contains("Jog") && text.contains("step 10 mm"),
         "{text}"
     );
+    // Nothing is homed since connecting: the overlay says so, and so does
+    // the first move.
+    assert!(text.contains("X Y Z not homed · h homes"), "{text}");
     crate::snapshot::save(&render(&mut app, 120, 40), "tui-jog-120x40");
     press(&mut app, KeyCode::Right);
+    assert!(
+        app.toast
+            .as_ref()
+            .is_some_and(|t| t.tone == Tone::Warn && t.text.starts_with("X not homed")),
+        "{:?}",
+        app.toast
+    );
     press(&mut app, KeyCode::Char('+'));
     press(&mut app, KeyCode::Up);
     press(&mut app, KeyCode::PageUp);
@@ -1048,6 +1058,12 @@ fn jog_mode_moves_and_homes() {
         assert!(got.iter().any(|c| c == want), "missing {want} in {got:?}");
     }
     assert!(got.iter().filter(|c| *c == "G91").count() >= 4, "{got:?}");
+    // Homed: no more warning in the overlay.
+    app.sync();
+    press(&mut app, KeyCode::Char('j'));
+    let text = screen(&mut app, 120, 40);
+    assert!(!text.contains("not homed · h homes"), "{text}");
+    press(&mut app, KeyCode::Esc);
     // Without a connection, jog mode does not start.
     let mut offline = super::tests::app();
     press(&mut offline, KeyCode::Char('j'));

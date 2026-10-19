@@ -6,7 +6,7 @@ use std::collections::VecDeque;
 
 use sprint_host::sprint_proto::{JobContext, PositionReport, TempReport};
 use sprint_host::{
-    AutotuneState, ConnectionStatus, HostPrompt, JobInfo, LinkStats, PrinterState,
+    AutotuneState, Axes, ConnectionStatus, HostPrompt, JobInfo, LinkStats, PrinterState,
     TEMP_HISTORY_LEN, TempSample,
 };
 
@@ -41,6 +41,8 @@ pub(crate) struct PrinterView {
     /// printer).
     pub sd_printing: bool,
     pub active_tool: u8,
+    /// Axes homed since connecting (`None`: unknown).
+    pub homed: Option<Axes>,
     pub link: LinkStats,
     pub autotune: Option<AutotuneState>,
     /// Newest firmware message (`M117`, `echo:`).
@@ -78,6 +80,7 @@ impl PrinterView {
             restartable: s.restartable,
             sd_printing: s.sd.printing.is_some(),
             active_tool: s.active_tool,
+            homed: s.homed,
             link: s.link.clone(),
             autotune: s.autotune.clone(),
             message: s.firmware_messages.back().cloned(),

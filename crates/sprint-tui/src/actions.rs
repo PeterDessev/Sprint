@@ -891,6 +891,18 @@ impl Motion {
         }
     }
 
+    /// The axes it moves, which should be homed first: a jog of X, Y or
+    /// Z (not E, homing itself, a tool change or probing, which homes
+    /// first).
+    pub fn moves_axes(&self) -> Axes {
+        match *self {
+            Motion::Jog { axis: Axis::X, .. } => Axes::X,
+            Motion::Jog { axis: Axis::Y, .. } => Axes::Y,
+            Motion::Jog { axis: Axis::Z, .. } => Axes::Z,
+            _ => Axes::NONE,
+        }
+    }
+
     /// Send it.
     pub fn run(&self, printer: &Printer) {
         match *self {
@@ -909,6 +921,94 @@ impl Motion {
         }
     }
 }
+
+/// The axes of `axes` not known to be homed: all of them while homing
+/// is unknown (since connecting), else those no acknowledged G28 homed
+/// since a halt, a reset or the motors going off
+/// ([`PrinterState::homed`]).
+pub fn not_homed(state: &PrinterState, axes: Axes) -> Axes {
+    match state.homed {
+        None => axes,
+        Some(homed) => axes.without(homed),
+    }
+}
+
+/// The axes a line of G-code homes: those a `G28` names, or all of them
+/// for a bare `G28`.
+pub fn homed_by(gcode: &str) -> Axes {
+    gcode
+        .lines()
+        .map(sprint_host::sprint_gcode::parse_line)
+        .filter(|line| line.code.is_some_and(|c| c.is('G', 28)))
+        .fold(Axes::NONE, |all, line| {
+            let named = Axes {
+                x: line.has('X'),
+                y: line.has('Y'),
+                z: line.has('Z'),
+            };
+            all.union(if named.is_empty() { Axes::ALL } else { named })
+        })
+}
+
+/// Axes the user asked to home whose `G28` may not be acknowledged yet:
+/// they count as homed while the link is busy (the move typed after
+/// `home` runs after it), and are forgotten once it has been idle for a
+/// moment ([`crate::session::IDLE_SETTLE`]: a command sent a moment ago
+/// may not show as queued yet), when [`PrinterState::homed`] says what
+/// happened.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HomingRequests {
+    axes: Axes,
+    /// When the last homing was sent.
+    since: Option<std::time::Instant>,
+}
+
+impl HomingRequests {
+    /// `gcode` went to the printer: remember what it homes.
+    pub fn sent(&mut self, gcode: &str) {
+        let axes = homed_by(gcode);
+        if !axes.is_empty() {
+            self.axes = self.axes.union(axes);
+            self.since = Some(std::time::Instant::now());
+        }
+    }
+
+    /// The axes still on their way to being homed.
+    pub fn pending(&mut self, state: &PrinterState) -> Axes {
+        let settled = self
+            .since
+            .is_none_or(|t| t.elapsed() >= crate::session::IDLE_SETTLE);
+        if settled && crate::session::link_idle(state) {
+            *self = HomingRequests::default();
+        }
+        self.axes
+    }
+}
+
+/// The warning for something that needs `axes` homed when some are not
+/// (counting the `homing` ones as homed): "X Z not homed: <consequence>
+/// (home x z first)".
+pub fn homing_warning(
+    state: &PrinterState,
+    axes: Axes,
+    homing: Axes,
+    consequence: &str,
+) -> Option<String> {
+    let missing = not_homed(state, axes).without(homing);
+    (!missing.is_empty()).then(|| {
+        format!(
+            "{} not homed: {consequence} (home {} first)",
+            missing.letters(),
+            missing.letters().to_lowercase()
+        )
+    })
+}
+
+/// What a move of axes that are not homed does.
+pub const UNHOMED_MOVE: &str = "the move starts from where the printer believes it is";
+
+/// What a babystep while Z is not homed does.
+pub const UNHOMED_BABYSTEP: &str = "babysteps shift a Z the printer does not know";
 
 /// "cube.gcode is printing." / "cube.gcode is paused." for messages about
 /// the running job, or `None` when idle.
@@ -1455,6 +1555,52 @@ mod tests {
         job.kind = JobKind::SdPrint;
         state.job = Some(job);
         assert!(excludable_job(&state).is_none());
+    }
+
+    #[test]
+    fn moves_of_axes_not_homed_are_pointed_out() {
+        let jog = |axis| Motion::Jog {
+            axis,
+            mm: 1.0,
+            feedrate: 600.0,
+        };
+        assert_eq!(jog(Axis::Z).moves_axes(), Axes::Z);
+        assert_eq!(jog(Axis::E).moves_axes(), Axes::NONE);
+        assert_eq!(Motion::ProbeMesh.moves_axes(), Axes::NONE);
+        // Unknown since connecting: every axis.
+        let mut state = PrinterState::default();
+        assert_eq!(not_homed(&state, Axes::XY), Axes::XY);
+        assert_eq!(
+            homing_warning(&state, Axes::Z, Axes::NONE, UNHOMED_BABYSTEP).as_deref(),
+            Some("Z not homed: babysteps shift a Z the printer does not know (home z first)")
+        );
+        state.homed = Some(Axes::XY);
+        assert_eq!(
+            homing_warning(&state, Axes::XY, Axes::NONE, UNHOMED_MOVE),
+            None
+        );
+        assert_eq!(not_homed(&state, Axes::ALL), Axes::Z);
+        // A G28 Z on its way counts while the link is busy.
+        assert_eq!(homing_warning(&state, Axes::Z, Axes::Z, UNHOMED_MOVE), None);
+        let mut requests = HomingRequests::default();
+        requests.sent("M105\ng28 z ; home Z\n");
+        // Sent a moment ago: not queued yet, still counted.
+        assert_eq!(requests.pending(&state), Axes::Z);
+        state.link.queue_len = 1;
+        std::thread::sleep(crate::session::IDLE_SETTLE);
+        assert_eq!(requests.pending(&state), Axes::Z);
+        // Done (idle, and long enough ago): the state says.
+        state.link.queue_len = 0;
+        assert_eq!(requests.pending(&state), Axes::NONE);
+        assert_eq!(homed_by("G28"), Axes::ALL);
+        assert_eq!(homed_by("G28 X Y\nG1 X1"), Axes::XY);
+        assert_eq!(homed_by("G1 X1"), Axes::NONE);
+        state.homed = Some(Axes::NONE);
+        assert!(
+            homing_warning(&state, Axes::ALL, Axes::NONE, UNHOMED_MOVE).is_some_and(|w| w
+                .starts_with("X Y Z not homed: ")
+                && w.ends_with("(home x y z first)"))
+        );
     }
 
     #[test]
