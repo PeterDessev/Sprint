@@ -356,6 +356,80 @@ pub fn cold_state() -> PrinterState {
     state
 }
 
+/// A PID-like heat-up: approach `target` from `start` from time `t0` with
+/// a damped overshoot.
+fn heat(start: f32, target: f32, t: f32, t0: f32, tau: f32) -> f32 {
+    if t < t0 {
+        return start;
+    }
+    let dt = t - t0;
+    let base = approach(start, target, dt, tau);
+    let overshoot = (target - start) * 0.035 * (dt / tau).min(6.0) * (-dt / (tau * 1.6)).exp();
+    base + overshoot * (dt / (tau * 0.9)).sin().max(0.0)
+}
+
+/// Ten minutes of history: the bed heats to 60, the hotend to 215 with a
+/// little overshoot, and later to 230; optionally a second hotend and a
+/// chamber. Deterministic (a fixed pseudo-noise).
+pub fn graph_state(two_hotends: bool, chamber: bool) -> PrinterState {
+    let mut state = heating_state();
+    state.temp_history.clear();
+    let noise = |i: u32| ((i.wrapping_mul(2_654_435_761) >> 16) % 1000) as f32 / 1000.0 - 0.5;
+    for i in 0..=600u32 {
+        let t = i as f32;
+        let (hot_target, hot) = if t < 420.0 {
+            (
+                if t >= 30.0 { 215.0 } else { 0.0 },
+                heat(24.0, 215.0, t, 30.0, 34.0),
+            )
+        } else {
+            (230.0, heat(215.0, 230.0, t, 420.0, 20.0))
+        };
+        let hot = hot + 0.25 * noise(i);
+        let bed = heat(22.0, 60.0, t, 0.0, 75.0) + 0.1 * noise(i + 7);
+        let mut hotends = vec![(hot, hot_target)];
+        let mut power = vec![
+            ((hot_target - hot) / 50.0 + 0.32).clamp(0.0, 1.0)
+                * f32::from(u8::from(hot_target > 0.0)),
+        ];
+        if two_hotends {
+            let target = if t >= 200.0 { 240.0 } else { 0.0 };
+            let second = heat(25.0, 240.0, t, 200.0, 40.0) + 0.25 * noise(i + 3);
+            hotends.push((second, target));
+            power.push(
+                ((target - second) / 50.0 + 0.35).clamp(0.0, 1.0)
+                    * f32::from(u8::from(target > 0.0)),
+            );
+        }
+        state.temp_history.push_back(TempSample {
+            t: f64::from(t),
+            hotends,
+            bed: Some((bed, 60.0)),
+            chamber: chamber.then(|| (heat(21.0, 40.0, t, 60.0, 160.0), 40.0)),
+            hotend_power: power,
+            bed_power: Some(((60.0 - bed) / 15.0 + 0.18).clamp(0.0, 1.0)),
+        });
+    }
+    if let Some(last) = state.temp_history.back() {
+        state.temps.hotends = last
+            .hotends
+            .iter()
+            .zip(&last.hotend_power)
+            .map(|(&(current, target), &power)| HeaterReading {
+                current,
+                target: Some(target),
+                power: Some(power),
+            })
+            .collect();
+        state.temps.chamber = last.chamber.map(|(current, target)| HeaterReading {
+            current,
+            target: Some(target),
+            power: None,
+        });
+    }
+    state
+}
+
 /// Mark `state` as printing a host job.
 pub fn printing(state: &mut PrinterState) {
     let mut job = JobInfo::new(JobKind::HostPrint, "benchy.gcode", 120_000, 4_000_000);
