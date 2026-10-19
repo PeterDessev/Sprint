@@ -4,6 +4,7 @@
 //! Exit codes: 0 success, 1 the command failed, 2 usage errors and
 //! commands that are not available yet.
 
+mod analyze;
 mod cli;
 
 use std::process::ExitCode;
@@ -43,6 +44,7 @@ fn init_logging(command: &Command) {
 fn run(command: Command) -> Result<ExitCode> {
     match command {
         Command::Gui(args) => run_gui(args),
+        Command::Analyze(args) => analyze::run(&args).map(|()| ExitCode::SUCCESS),
         other => Ok(not_implemented(other.name())),
     }
 }
