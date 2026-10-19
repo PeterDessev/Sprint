@@ -14,6 +14,7 @@ pub mod loader;
 pub mod notify;
 pub mod panels;
 pub mod prefs;
+pub mod settings;
 pub mod theme;
 pub mod widgets;
 
