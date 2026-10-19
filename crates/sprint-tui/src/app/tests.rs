@@ -173,6 +173,30 @@ fn load(app: &mut App, name: &str) {
 }
 
 #[test]
+fn configuration_problems_show_in_the_console() {
+    let mut app = app();
+    app.config_warnings(Vec::new());
+    assert!(app.toast.is_none() && app.console.is_empty());
+    app.config_warnings(vec![
+        "Configuration c.toml: profiles[0].options.checksum: ignored \"always\"".into(),
+        "The configuration file as it was is kept in c.toml.bak".into(),
+    ]);
+    assert_eq!(app.console.len(), 2);
+    assert!(app.console.iter().all(|l| l.kind == ConsoleKind::Warning));
+    assert!(app.console[0].text.contains("checksum"));
+    let toast = app.toast.as_ref().expect("a status message");
+    assert_eq!(toast.tone, Tone::Warn);
+    assert!(
+        toast.text.contains("2 lines in the console"),
+        "{}",
+        toast.text
+    );
+    // The printer's console lines still follow.
+    app.sync();
+    assert_eq!(app.console.len(), 2);
+}
+
+#[test]
 fn starts_disconnected_and_draws() {
     let mut app = app();
     let text = screen(&mut app, 120, 40);
@@ -1824,6 +1848,15 @@ fn the_palette_lists_and_switches_profiles() {
         text[1].contains("Bench") && text[1].contains("tcp://127.0.0.1:1"),
         "{text:?}"
     );
+    // The list names the file its changes are saved to.
+    let file_line = format!("Configuration file: {}", path.display());
+    assert_eq!(text.last(), Some(&file_line), "{text:?}");
+    app.modal = None;
+    app.run_line("macro");
+    let Some(Modal::Report(report)) = &app.modal else {
+        panic!("no list: {:?}", app.toast);
+    };
+    assert_eq!(report.lines.last().map(ReportLine::text), Some(file_line));
     app.modal = None;
     app.run_line("profile bench");
     assert_eq!(app.profile.name, "Bench");

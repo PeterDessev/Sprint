@@ -1,49 +1,66 @@
 //! Where the terminal interfaces keep their configuration and history.
 //!
-//! The configuration file is [`AppConfig::path`] unless the `SPRINT_CONFIG`
-//! environment variable names another file (a portable setup, or a test
-//! that must not touch the user's configuration); the GUI honours the same
-//! variable, so every front end edits the same file. The shell's history
-//! sits next to it.
+//! The configuration file is [`AppConfig::path`]: the file `SPRINT_CONFIG`
+//! names (a portable setup, or a test that must not touch the user's
+//! configuration), else the platform location; every front end, the GUI
+//! included, uses the same file. A file that does not fully parse loads
+//! leniently ([`AppConfig::load_checked`]): what is broken is left out and
+//! reported, and the file as it was is kept as a backup. The shell's
+//! history sits next to it.
 
-use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use sprint_host::{AppConfig, HostError};
+use sprint_host::{AppConfig, ConfigReport, HostError};
 
 use crate::actions::find_profile;
 
-/// Environment variable that overrides the configuration file.
-pub const CONFIG_ENV: &str = "SPRINT_CONFIG";
+/// Environment variable that names another configuration file (see
+/// [`AppConfig::path`]).
+pub use sprint_host::CONFIG_ENV;
 
 /// File name of the shell history, next to the configuration file.
 pub const HISTORY_FILE: &str = "shell-history.txt";
 
-/// The configuration file in use: `$SPRINT_CONFIG` when set (and not
-/// blank), else [`AppConfig::path`].
+/// The configuration file in use: [`AppConfig::path`] (`$SPRINT_CONFIG`
+/// when set and not blank).
 pub fn config_path() -> PathBuf {
-    path_from(std::env::var_os(CONFIG_ENV))
-}
-
-fn path_from(value: Option<OsString>) -> PathBuf {
-    value
-        .filter(|v| !v.to_string_lossy().trim().is_empty())
-        .map_or_else(AppConfig::path, PathBuf::from)
+    AppConfig::path()
 }
 
 /// Load the configuration from [`config_path`]: defaults when the file is
-/// missing, and a corrupt file is kept as `<name>.bak` (see
-/// [`AppConfig::load_or_default`]).
-pub fn load_config() -> (AppConfig, PathBuf) {
+/// missing; from a file that does not fully parse, everything that is
+/// valid, with the report of what was left out (show it with
+/// [`report_messages`]), the file as it was kept as a backup.
+pub fn load_config() -> (AppConfig, PathBuf, ConfigReport) {
     let path = config_path();
-    (AppConfig::load_or_default(&path), path)
+    let (config, report) = AppConfig::load_checked(&path);
+    (config, path, report)
+}
+
+/// What the user should read about loading the configuration at `path`:
+/// one message per value or line left out, then where the original file
+/// is kept. Empty when it loaded as written.
+pub fn report_messages(path: &Path, report: &ConfigReport) -> Vec<String> {
+    let mut out: Vec<String> = report
+        .warnings
+        .iter()
+        .map(|w| format!("Configuration {}: {w}", path.display()))
+        .collect();
+    if let Some(backup) = &report.backup {
+        out.push(format!(
+            "The configuration file as it was is kept in {}",
+            backup.display()
+        ));
+    }
+    out
 }
 
 /// Add `file` to the recent files of the configuration at `path` and save
 /// it, starting from what the file holds now: the GUI or a hand edit may
 /// have changed it since it was loaded, and writing the copy loaded at
 /// startup would undo that. Without a file, `current` is written. A file
-/// that cannot be read or parsed is left alone (an error). Returns the
+/// that does not fully parse is read leniently (see [`on_disk`]), so one
+/// broken value does not stop recent files from being saved. Returns the
 /// configuration saved.
 pub fn save_recent(
     path: &Path,
@@ -55,20 +72,44 @@ pub fn save_recent(
 
 /// Change the configuration at `path` with `edit` and save it, starting
 /// from what the file holds now (see [`save_recent`]); without a file,
-/// `current` is edited and written. A file that cannot be read or parsed
-/// is left alone (an error). Returns the configuration saved.
+/// `current` is edited and written. Returns the configuration saved.
 pub fn update(
     path: &Path,
     current: &AppConfig,
     edit: impl FnOnce(&mut AppConfig),
 ) -> Result<AppConfig, HostError> {
-    let mut config = match AppConfig::load_from(path) {
-        Ok(on_disk) => on_disk,
-        Err(HostError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => current.clone(),
-        Err(e) => return Err(e),
-    };
+    let mut config = on_disk(path, current)?;
     edit(&mut config);
     config.save_to(path)?;
+    Ok(config)
+}
+
+/// The configuration the file at `path` holds now, to be changed and saved
+/// again: `current` when there is no file. A file that does not fully
+/// parse gives everything valid in it ([`AppConfig::load_checked`], which
+/// keeps the original as a backup first). A file that cannot be read, or
+/// whose original could not be backed up, is an error: saving over it
+/// would lose it.
+pub fn on_disk(path: &Path, current: &AppConfig) -> Result<AppConfig, HostError> {
+    match std::fs::metadata(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(current.clone()),
+        Err(e) => return Err(HostError::Io(e)),
+        Ok(meta) if meta.is_dir() => {
+            return Err(HostError::Config(format!(
+                "{} is a directory, not a configuration file",
+                path.display()
+            )));
+        }
+        Ok(_) => {}
+    }
+    let (config, report) = AppConfig::load_checked(path);
+    if !report.is_clean() && report.backup.is_none() {
+        return Err(HostError::Config(format!(
+            "{}: {}",
+            path.display(),
+            report.warnings.join("; ")
+        )));
+    }
     Ok(config)
 }
 
@@ -103,11 +144,11 @@ pub fn select_profile(config: &mut AppConfig, name: Option<&str>) -> Result<(), 
 
 /// Change the profile called `name` with `edit` (which gets the
 /// configuration and the profile's index) in the configuration file at
-/// `path` as it is now, and save it; without a path (tests) `current` is
-/// changed in memory. The file's own active profile is kept unless `edit`
-/// changes it. Returns the configuration saved and the profile's index in
-/// it, or why it could not be saved (the file cannot be read or written,
-/// or no longer has the profile).
+/// `path` as it is now ([`on_disk`]), and save it; without a path (tests)
+/// `current` is changed in memory. The file's own active profile is kept
+/// unless `edit` changes it. Returns the configuration saved and the
+/// profile's index in it, or why it could not be saved (the file cannot be
+/// read or written, or no longer has the profile).
 pub fn edit_profile(
     path: Option<&Path>,
     current: &AppConfig,
@@ -115,11 +156,9 @@ pub fn edit_profile(
     edit: impl FnOnce(&mut AppConfig, usize),
 ) -> Result<(AppConfig, usize), String> {
     let mut config = match path {
-        Some(path) => match AppConfig::load_from(path) {
-            Ok(on_disk) => on_disk,
-            Err(HostError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => current.clone(),
-            Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
-        },
+        Some(path) => {
+            on_disk(path, current).map_err(|e| format!("cannot read {}: {e}", path.display()))?
+        }
         None => current.clone(),
     };
     let Some(index) = config.profiles.iter().position(|p| p.name == name) else {
@@ -171,6 +210,15 @@ mod tests {
         }
     }
 
+    fn named_macro(name: &str) -> Macro {
+        Macro {
+            name: name.into(),
+            gcode: "M117 hi".into(),
+            color: None,
+            confirm: false,
+        }
+    }
+
     #[test]
     fn recent_files_are_added_to_the_file_as_it_is_now() {
         let scratch = Scratch::new("recent");
@@ -179,12 +227,7 @@ mod tests {
         // macro to the file.
         let loaded = AppConfig::default();
         let mut edited = AppConfig::default();
-        edited.macros.push(Macro {
-            name: "Added elsewhere".into(),
-            gcode: "M117 hi".into(),
-            color: None,
-            confirm: false,
-        });
+        edited.macros.push(named_macro("Added elsewhere"));
         edited.save_to(&path).expect("save");
         let saved = save_recent(&path, PathBuf::from("a.gcode"), &loaded).expect("saved");
         let on_disk = AppConfig::load_from(&path).expect("load");
@@ -196,14 +239,65 @@ mod tests {
         let saved = save_recent(&path, PathBuf::from("b.gcode"), &loaded).expect("saved");
         assert_eq!(saved.recent_files, [PathBuf::from("b.gcode")]);
         assert!(path.exists());
-        // A file that does not parse is left alone (not replaced by
-        // defaults).
-        std::fs::write(&path, "not = [valid").expect("write");
-        assert!(save_recent(&path, PathBuf::from("c.gcode"), &loaded).is_err());
-        assert_eq!(
-            std::fs::read_to_string(&path).expect("read"),
-            "not = [valid"
+    }
+
+    #[test]
+    fn a_partly_broken_file_still_takes_recent_files() {
+        let scratch = Scratch::new("broken");
+        let path = scratch.file();
+        let mut good = AppConfig::default();
+        good.macros.push(named_macro("Kept"));
+        good.save_to(&path).expect("save");
+        let text = std::fs::read_to_string(&path).expect("read");
+        // A decimal comma (a hand edit) breaks one line.
+        let broken = text.replacen("console_max_lines = 5000", "console_max_lines = 5,5", 1);
+        assert_ne!(broken, text, "the line to break is in the file");
+        std::fs::write(&path, &broken).expect("write");
+        let saved = save_recent(&path, PathBuf::from("c.gcode"), &AppConfig::default())
+            .expect("saved despite the broken line");
+        assert_eq!(saved.recent_files, [PathBuf::from("c.gcode")]);
+        assert!(saved.macros.iter().any(|m| m.name == "Kept"), "{saved:?}");
+        assert_eq!(AppConfig::load_from(&path).expect("now valid"), saved);
+        // The file as it was is kept.
+        let backup = scratch.0.join("config.toml.bak");
+        assert_eq!(std::fs::read_to_string(&backup).expect("backup"), broken);
+        // The report names the line and the backup.
+        std::fs::write(&path, &broken).expect("write");
+        let (_, report) = AppConfig::load_checked(&path);
+        let messages = report_messages(&path, &report);
+        assert!(
+            messages
+                .first()
+                .is_some_and(|m| m.starts_with("Configuration ") && m.contains("config.toml: ")),
+            "{messages:?}"
         );
+        assert!(
+            messages
+                .last()
+                .is_some_and(|m| m.ends_with("config.toml.bak")),
+            "{messages:?}"
+        );
+        assert!(report_messages(&path, &ConfigReport::default()).is_empty());
+    }
+
+    #[test]
+    fn a_configuration_that_cannot_be_read_is_not_replaced() {
+        let scratch = Scratch::new("unreadable");
+        // A directory where the file should be.
+        let path = scratch.file();
+        std::fs::create_dir_all(&path).expect("directory");
+        let err = save_recent(&path, PathBuf::from("d.gcode"), &AppConfig::default())
+            .expect_err("not a file");
+        assert!(err.to_string().contains("is a directory"), "{err}");
+        assert!(path.is_dir());
+        let why = edit_profile(
+            Some(&path),
+            &AppConfig::default(),
+            "Virtual printer",
+            |_, _| {},
+        )
+        .expect_err("not a file");
+        assert!(why.starts_with("cannot read"), "{why}");
     }
 
     #[test]
@@ -249,13 +343,9 @@ mod tests {
     }
 
     #[test]
-    fn the_environment_overrides_the_path() {
-        assert_eq!(
-            path_from(Some(OsString::from("x/my.toml"))),
-            PathBuf::from("x/my.toml")
-        );
-        assert_eq!(path_from(Some(OsString::from("  "))), AppConfig::path());
-        assert_eq!(path_from(None), AppConfig::path());
+    fn the_path_is_the_hosts() {
+        assert_eq!(config_path(), AppConfig::path());
+        assert_eq!(CONFIG_ENV, "SPRINT_CONFIG");
     }
 
     #[test]

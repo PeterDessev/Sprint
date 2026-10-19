@@ -422,3 +422,46 @@ fn the_shell_runs_execute_commands_instead_of_its_input() {
     // Standard input is not read.
     assert!(!text.contains("bogus"), "{text}");
 }
+
+/// A configuration file with one broken line (a decimal comma) and a
+/// macro that must survive it.
+const BROKEN_CONFIG: &str = "console_max_lines = 5,5\n\n[[macros]]\nname = \"Kept\"\n\
+                             gcode = \"M117 kept\"\nconfirm = false\n";
+
+#[test]
+fn a_partly_broken_configuration_is_reported_and_still_saved() {
+    let scratch = Scratch::new("broken-config");
+    let config = scratch.0.join("config.toml");
+    std::fs::write(&config, BROKEN_CONFIG).expect("write config");
+    let cube = sample("calibration-cube.gcode");
+    let output = scratch.run_with_input(&["shell"], &format!("macro\nload {cube}\n"));
+    let text = stdout(&output);
+    assert!(output.status.success(), "{text}\n{}", stderr(&output));
+    // What was left out, where the original is, and which file is used.
+    assert!(
+        text.contains(&format!("Configuration {}: ", config.display())),
+        "{text}"
+    );
+    assert!(text.contains("config.toml.bak"), "{text}");
+    assert!(text.contains("Kept"), "{text}");
+    assert!(
+        text.contains(&format!("Configuration file: {}", config.display())),
+        "{text}"
+    );
+    // The broken line did not stop the recent file from being saved, and
+    // the macro is still there.
+    let saved = std::fs::read_to_string(&config).expect("read config");
+    assert!(saved.contains("calibration-cube.gcode"), "{saved}");
+    assert!(saved.contains("M117 kept"), "{saved}");
+    let backup = std::fs::read_to_string(scratch.0.join("config.toml.bak")).expect("backup");
+    assert_eq!(backup, BROKEN_CONFIG);
+    // The headless commands say it on stderr.
+    std::fs::write(&config, BROKEN_CONFIG).expect("write config");
+    let output = scratch.run(&["send", "--connect", FAST_SIM, "M105"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(
+        stderr(&output).contains("sprint: warning: Configuration "),
+        "{}",
+        stderr(&output)
+    );
+}

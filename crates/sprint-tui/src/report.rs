@@ -1158,6 +1158,19 @@ pub fn gcode_help(doc: &GcodeDoc) -> Vec<ReportLine> {
     ]
 }
 
+/// "Configuration file: <path>", under the lists of what is saved in it
+/// (profiles, macros), so the user knows which file the edits go to
+/// (`SPRINT_CONFIG` may name another one).
+pub fn config_file_line(path: &std::path::Path) -> ReportLine {
+    ReportLine::toned(
+        format!(
+            "Configuration file: {}",
+            sanitize(&path.display().to_string())
+        ),
+        Tone::Dim,
+    )
+}
+
 /// The `macro` list.
 pub fn macro_lines(macros: &[Macro]) -> Vec<ReportLine> {
     if macros.is_empty() {

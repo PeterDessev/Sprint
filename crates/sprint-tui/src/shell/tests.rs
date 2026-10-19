@@ -741,11 +741,14 @@ fn profiles_are_listed_switched_and_saved() {
     });
     config.save_to(&path).expect("save");
     let (mut shell, buffer) = shell_with(config, Some(path.clone()));
-    script(&mut shell, &["profile"]);
+    script(&mut shell, &["profile", "macro"]);
     let text = buffer.text();
     assert!(text.contains("*  1  Virtual printer"), "{text}");
     assert!(text.contains("   2  Bench"), "{text}");
     assert!(text.contains("tcp://127.0.0.1:1"), "{text}");
+    // Both lists name the file their changes are saved to.
+    let file_line = format!("Configuration file: {}", path.display());
+    assert_eq!(text.matches(&file_line).count(), 2, "{text}");
     buffer.clear();
     script(&mut shell, &["profile ben"]);
     assert!(

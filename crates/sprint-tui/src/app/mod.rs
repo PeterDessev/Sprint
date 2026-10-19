@@ -318,6 +318,22 @@ impl App {
         self.notify(text, Tone::Bad);
     }
 
+    /// Show what loading the configuration file left out
+    /// ([`crate::config::report_messages`]): in the console, and a status
+    /// message pointing there.
+    pub(crate) fn config_warnings(&mut self, messages: Vec<String>) {
+        if messages.is_empty() {
+            return;
+        }
+        let count = messages.len();
+        self.console
+            .extend(messages.into_iter().map(ConsoleLine::warning));
+        self.warn(format!(
+            "The configuration file has problems: {count} line{} in the console",
+            if count == 1 { "" } else { "s" }
+        ));
+    }
+
     // ----- printer sync -----
 
     /// Copy the printer state, new console lines and events.
@@ -1901,7 +1917,8 @@ impl App {
                 }
             }
             Command::Profile(None) => {
-                let lines = report::profile_lines(&self.config);
+                let mut lines = report::profile_lines(&self.config);
+                lines.extend(self.config_path.as_deref().map(report::config_file_line));
                 self.show_report("Printer profiles", lines);
             }
             Command::Eta => {
@@ -1979,7 +1996,8 @@ impl App {
             }
             Command::Exit => self.request_quit(),
             Command::Macro(None) => {
-                let lines = report::macro_lines(&self.config.macros);
+                let mut lines = report::macro_lines(&self.config.macros);
+                lines.extend(self.config_path.as_deref().map(report::config_file_line));
                 self.show_report("Macros", lines);
             }
             Command::MacroDefine { name, gcode, edit } => self.define_macro(&name, gcode, edit),

@@ -15,9 +15,13 @@ pub const EXIT_INTERRUPTED: u8 = 130;
 const SETUP_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// The configuration and the printer profile to use: the one `--profile`
-/// names, else the active one.
+/// names, else the active one. What a configuration file that does not
+/// fully parse lost is said on stderr.
 pub fn load_profile(name: Option<&str>) -> Result<(AppConfig, PrinterProfile)> {
-    let (mut config, _) = sprint_tui::config::load_config();
+    let (mut config, path, report) = sprint_tui::config::load_config();
+    for message in sprint_tui::config::report_messages(&path, &report) {
+        eprintln!("sprint: warning: {message}");
+    }
     sprint_tui::config::select_profile(&mut config, name).map_err(|e| anyhow!("--profile: {e}"))?;
     let profile = config.active().clone();
     Ok((config, profile))

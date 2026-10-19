@@ -145,7 +145,7 @@ pub fn run_tui(options: TuiOptions) -> Result<()> {
              (sprint shell reads commands from a pipe, sprint print prints without a UI)"
         );
     }
-    let (mut config, config_path) = crate::config::load_config();
+    let (mut config, config_path, report) = crate::config::load_config();
     crate::config::select_profile(&mut config, options.profile.as_deref())
         .map_err(anyhow::Error::msg)?;
     let profile = config.active().clone();
@@ -155,7 +155,9 @@ pub fn run_tui(options: TuiOptions) -> Result<()> {
         let wake = Arc::clone(&wake);
         printer.set_waker(move || wake.store(true, Ordering::Release));
     }
+    let warnings = crate::config::report_messages(&config_path, &report);
     let mut app = App::new(printer.clone(), config, Some(config_path), Theme::detect());
+    app.config_warnings(warnings);
     if let Some(file) = options.file {
         app.open_file(file);
     }

@@ -66,7 +66,7 @@ const MAX_SOURCE_DEPTH: usize = 8;
 /// `auto_connect`. With `options.execute` those commands run as a script
 /// instead of the input.
 pub fn run_shell(mut options: TuiOptions) -> anyhow::Result<()> {
-    let (mut config, config_path) = crate::config::load_config();
+    let (mut config, config_path, report) = crate::config::load_config();
     crate::config::select_profile(&mut config, options.profile.as_deref())
         .map_err(anyhow::Error::msg)?;
     let commands = std::mem::take(&mut options.execute);
@@ -104,6 +104,10 @@ pub fn run_shell(mut options: TuiOptions) -> anyhow::Result<()> {
         )
     };
     let out = Out::new(sink, support, interactive);
+    // What the configuration file lost is said first, scripts included.
+    for message in crate::config::report_messages(&config_path, &report) {
+        out.warn(message);
+    }
     let printer = Printer::with_console_capacity(config.console_max_lines);
     let mut shell = Shell::new(
         printer,
@@ -575,7 +579,11 @@ impl Shell {
                     Err(why) => self.out.error(why),
                 }
             }
-            Command::Profile(None) => self.out.lines(&report::profile_lines(&self.config)),
+            Command::Profile(None) => {
+                let mut lines = report::profile_lines(&self.config);
+                lines.extend(self.config_path.as_deref().map(report::config_file_line));
+                self.out.lines(&lines);
+            }
             Command::Eta => self.eta(),
             Command::Source(path) => return self.source(&path, input),
             Command::WaitOnline => self.wait_online(),
@@ -686,7 +694,11 @@ impl Shell {
                     "Echoing printer replies and messages only"
                 });
             }
-            Command::Macro(None) => self.out.lines(&report::macro_lines(&self.config.macros)),
+            Command::Macro(None) => {
+                let mut lines = report::macro_lines(&self.config.macros);
+                lines.extend(self.config_path.as_deref().map(report::config_file_line));
+                self.out.lines(&lines);
+            }
             Command::MacroDefine { name, gcode, edit } => {
                 self.define_macro(&name, gcode, edit, input);
             }
