@@ -73,9 +73,18 @@ pub struct PrinterState {
     pub autotune: Option<AutotuneState>,
     /// Link statistics.
     pub link: LinkStats,
-    /// Firmware halted/killed (M112, thermal runaway, ...): restart it
-    /// (M999) or reset the board.
+    /// Firmware halted/killed (M112, thermal runaway, ...): reset the board
+    /// ([`Printer::reset_board`](crate::Printer::reset_board)), or restart
+    /// it when [`PrinterState::restartable`].
     pub halted: bool,
+    /// While [`PrinterState::halted`]: the firmware can be restarted in
+    /// place ([`Printer::firmware_restart`](crate::Printer::firmware_restart):
+    /// M999 after Marlin's "Printer stopped ... use M999", FIRMWARE_RESTART
+    /// on Klipper). False after a kill (M112, thermal runaway, "Printer
+    /// halted. kill() called!"): Marlin then ignores everything, M999
+    /// included, until the board is reset or power-cycled, so UIs should
+    /// offer [`Printer::reset_board`](crate::Printer::reset_board) first.
+    pub restartable: bool,
     /// Last error reported by the firmware or the host.
     pub last_error: Option<String>,
     /// Recent `echo:` / action notification messages (last 50).
@@ -108,6 +117,7 @@ impl Default for PrinterState {
             autotune: None,
             link: LinkStats::default(),
             halted: false,
+            restartable: false,
             last_error: None,
             firmware_messages: VecDeque::new(),
         }

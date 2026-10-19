@@ -812,7 +812,11 @@ impl Printer {
     pub fn probe_bed_mesh(&self);                        // G28 (if needed) + G29, then report
     pub fn request_stats(&self);                         // M78
     pub fn start_pid_autotune(&self, heater: Heater, target: f32, cycles: u32); // M303 E<n|-1> S C U1
-    pub fn firmware_restart(&self);                      // M999 (+ reconnect logic if board resets)
+    pub fn firmware_restart(&self);                      // M999 (FIRMWARE_RESTART on Klipper) (+ reconnect logic if board resets)
+    /// Reset the board (E-stop recovery: M999 alone does not recover Marlin after M112/kill()).
+    /// Serial: reopen the port with a DTR pulse and handshake again; simulator: SimControl::reset();
+    /// TCP and custom links: Err(HostError::Unsupported) (reset button or power cycle needed).
+    pub fn reset_board(&self) -> Result<(), HostError>;
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Heater { Hotend(u8), Bed, Chamber }
@@ -860,6 +864,7 @@ pub struct PrinterState {
     pub autotune: Option<AutotuneState>,
     pub link: LinkStats,
     pub halted: bool,                           // firmware halted/killed (M112, thermal runaway...)
+    pub restartable: bool,                      // while halted: firmware_restart() can recover (Marlin "stopped ... M999", Klipper); false after kill() -> offer reset_board()
     pub last_error: Option<String>,
     pub firmware_messages: std::collections::VecDeque<String>, // recent echo:/M117 messages (last 50)
 }
@@ -989,7 +994,8 @@ pub fn render_script_with(template: &str, ctx: &ScriptContext<'_>) -> Vec<String
 pub fn heaters_off(hotends: u8, bed: bool, chamber: bool) -> Vec<String>;
 
 #[derive(Debug, thiserror::Error)]
-pub enum HostError { /* NotConnected, AlreadyConnected, Busy(String), Io(std::io::Error), InvalidTarget(String), Config(String), ... */ }
+pub enum HostError { /* NotConnected, AlreadyConnected, Busy(String), Halted, Io(std::io::Error), Serial(String), InvalidTarget(String), Config(String),
+                        InvalidArgument(String), Timeout(String), Unsupported(String), ... */ }
 ```
 
 Engine design (inside sprint-host):
@@ -1141,7 +1147,11 @@ Every public item is also re-exported at the crate root.
   Nothing but the upload reaches the printer while it writes to the card.
 * Halt: a fatal error or `emergency_stop` sets `halted`, fails the job and
   frees the window (E-stop also drops the queues); the link stays open and
-  commands are sent unnumbered meanwhile. `firmware_restart` sends M999;
+  commands are sent unnumbered meanwhile. `restartable` tells a Marlin
+  stop() ("Printer stopped ... use M999", or Klipper) from a kill() (M112,
+  thermal runaway, "kill() called"), which ignores everything until the
+  board resets: UIs offer `reset_board` first then. `firmware_restart`
+  sends M999 (FIRMWARE_RESTART on Klipper);
   the next `ok`/resend clears `halted` and the counter is reset. A `start` while connected re-runs the handshake and
   setup (status `Handshaking`, then `Connected`) and fails a job with
   "printer reset".

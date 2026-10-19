@@ -13,10 +13,16 @@ pub enum HostError {
     /// (for example a print job is already running).
     #[error("busy: {0}")]
     Busy(String),
-    /// The firmware is halted (M112, thermal runaway, ...). Send M999 or
-    /// reconnect first.
-    #[error("the printer is halted; restart the firmware (M999) or reconnect")]
+    /// The firmware is halted (M112, thermal runaway, ...). Reset the board
+    /// ([`Printer::reset_board`](crate::Printer::reset_board)) or reconnect
+    /// first; M999 only restarts a firmware that stopped without being
+    /// killed ([`PrinterState::restartable`](crate::PrinterState::restartable)).
+    #[error("the printer is halted; reset the board or reconnect")]
     Halted,
+    /// The connection cannot do this (for example reset a board behind a
+    /// network bridge); the message says what to do instead.
+    #[error("not supported: {0}")]
+    Unsupported(String),
     /// An I/O error from a link or a file.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),

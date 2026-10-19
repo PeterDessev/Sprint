@@ -738,7 +738,10 @@ impl Engine {
         self.halted = false;
         self.restarting = false;
         self.next_temp_poll = now;
-        self.shared.update(|s| s.halted = false);
+        self.shared.update(|s| {
+            s.halted = false;
+            s.restartable = false;
+        });
         self.set_status(ConnectionStatus::Connected);
         self.info(format!("Connected to {}", self.target));
         if self.options.query_on_connect {
@@ -802,6 +805,7 @@ impl Engine {
         self.prompt = None;
         let had_prompt = self.shared.update(|s| {
             s.halted = false;
+            s.restartable = false;
             s.busy = None;
             s.sd.printing = None;
             s.sd.listing = false;
@@ -1160,13 +1164,38 @@ impl Engine {
     }
 
     fn firmware_restart(&mut self) {
+        if self.is_klipper() {
+            // Klipper has no M999; FIRMWARE_RESTART leaves a shutdown.
+            self.send_immediate("FIRMWARE_RESTART", Source::User);
+            if self.halted {
+                self.restarting = true;
+                self.info("Restart requested (FIRMWARE_RESTART)");
+            }
+            return;
+        }
         // M999 answers with a resend request (and its ok) rather than an ok
         // of its own, so it is not tracked.
         self.send_immediate("M999", Source::User);
         if self.halted {
             self.restarting = true;
-            self.info("Restart requested (M999)");
+            if self.shared.state.read().restartable {
+                self.info("Restart requested (M999)");
+            } else {
+                self.warn(
+                    "Restart requested (M999), but the firmware was killed: it ignores M999 \
+                     until the board is reset or power-cycled",
+                );
+            }
         }
+    }
+
+    fn is_klipper(&self) -> bool {
+        self.shared
+            .state
+            .read()
+            .firmware
+            .as_ref()
+            .is_some_and(|f| f.flavor == FirmwareFlavor::Klipper)
     }
 
     fn emergency_stop(&mut self) {
@@ -1184,6 +1213,13 @@ impl Engine {
     /// restarted or reset.
     fn enter_halt(&mut self, message: &str, now: Instant) {
         let first = !self.halted;
+        // Marlin's stop() ("Printer stopped ... use M999") can be restarted
+        // in place; kill() (M112, thermal runaway, "kill() called") ignores
+        // everything until the board is reset. Klipper restarts with
+        // FIRMWARE_RESTART either way.
+        let lower = message.to_ascii_lowercase();
+        let killed = lower.contains("kill") || lower.contains("halted") || lower.contains("m112");
+        let restartable = self.is_klipper() || (lower.contains("m999") && !killed);
         self.halted = true;
         self.restarting = false;
         self.renumber_pending = true;
@@ -1193,6 +1229,12 @@ impl Engine {
         // Lines waiting for retransmission are dropped with the counter.
         self.flow.reset(now);
         self.shared.update(|s| {
+            // A kill reported after a stop still needs a reset.
+            s.restartable = if first {
+                restartable
+            } else {
+                s.restartable && !killed
+            };
             s.halted = true;
             s.last_error = Some(message.to_string());
             s.busy = None;
@@ -1211,7 +1253,10 @@ impl Engine {
         self.restarting = false;
         self.halted = false;
         self.renumber_pending = true;
-        self.shared.update(|s| s.halted = false);
+        self.shared.update(|s| {
+            s.halted = false;
+            s.restartable = false;
+        });
         self.info("The printer restarted");
         if self.temp_autoreport {
             let interval = self.options.autoreport_interval_secs;

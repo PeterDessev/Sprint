@@ -59,6 +59,9 @@ struct Slot {
     connecting: bool,
     /// Incremented by `disconnect` so a connect in progress gives up.
     generation: u64,
+    /// Target and options of the last [`Printer::connect`] (None for
+    /// [`Printer::connect_link`]), for [`Printer::reset_board`].
+    target: Option<(ConnectTarget, ConnectOptions)>,
 }
 
 impl Drop for Inner {
@@ -131,7 +134,7 @@ impl Printer {
             shared.log(ConsoleKind::Info, message, false, None);
         });
         match link {
-            Ok(link) => self.finish_connect(link, label, options, generation),
+            Ok(link) => self.finish_connect(link, label, options, generation, Some(target)),
             Err(e) => {
                 self.connect_failed(&e);
                 Err(e)
@@ -155,7 +158,7 @@ impl Printer {
         options: ConnectOptions,
     ) -> Result<(), HostError> {
         let generation = self.begin_connect(label)?;
-        self.finish_connect(link, label.to_string(), options, generation)
+        self.finish_connect(link, label.to_string(), options, generation, None)
     }
 
     /// Claim the slot for a new connection and set the status to
@@ -195,6 +198,7 @@ impl Printer {
         label: String,
         options: ConnectOptions,
         generation: u64,
+        target: Option<ConnectTarget>,
     ) -> Result<(), HostError> {
         let mut slot = self.inner.slot.lock();
         slot.connecting = false;
@@ -214,6 +218,7 @@ impl Printer {
         ) {
             Ok(handle) => {
                 slot.engine = Some(handle);
+                slot.target = target.map(|t| (t, options));
                 Ok(())
             }
             Err(e) => {
@@ -269,6 +274,67 @@ impl Printer {
     /// The handshake has completed and the printer answers.
     pub fn is_connected(&self) -> bool {
         self.with_state(|s| s.status == ConnectionStatus::Connected)
+    }
+
+    /// Reset the printer's board, the way to recover after an emergency
+    /// stop or a thermal runaway: Marlin's kill() ignores everything, M999
+    /// included, until the board restarts (see
+    /// [`PrinterState::restartable`](crate::PrinterState::restartable)).
+    ///
+    /// * Serial: the port is closed and opened again with a DTR pulse (as
+    ///   [`ConnectOptions::reset_on_connect`] does), then the handshake
+    ///   runs again; like [`Printer::connect`] this returns once the port
+    ///   is open.
+    /// * Simulator: the virtual board resets; the engine notices its
+    ///   `start` and handshakes again.
+    /// * TCP and custom links: [`HostError::Unsupported`]; such a board
+    ///   needs its reset button or a power cycle.
+    ///
+    /// A running job fails. Commands queued before the reset are dropped.
+    pub fn reset_board(&self) -> Result<(), HostError> {
+        let (target, sim) = {
+            let slot = self.inner.slot.lock();
+            let Some(engine) = slot.engine.as_ref().filter(|e| !e.is_finished()) else {
+                return Err(HostError::NotConnected);
+            };
+            (slot.target.clone(), engine.sim.clone())
+        };
+        let log = |text: &str| {
+            self.shared().log(ConsoleKind::Info, text, false, None);
+            self.shared().wake_now();
+        };
+        match (target, sim) {
+            (_, Some(sim)) => {
+                log("Resetting the board");
+                sim.reset();
+                Ok(())
+            }
+            (Some((target @ ConnectTarget::Serial { .. }, options)), None) => {
+                log("Resetting the board: reopening the port with a DTR pulse");
+                self.disconnect();
+                let reset = ConnectOptions {
+                    reset_on_connect: true,
+                    ..options.clone()
+                };
+                self.connect(target.clone(), reset)?;
+                // Later resets (and the remembered options) keep the
+                // profile's own setting.
+                if let Some(slot) = self.inner.slot.lock().target.as_mut() {
+                    *slot = (target, options);
+                }
+                Ok(())
+            }
+            (Some((ConnectTarget::Tcp { .. }, _)), None) => Err(HostError::Unsupported(
+                "a board behind a network bridge cannot be reset from here; press its reset \
+                 button or power-cycle it, then reconnect"
+                    .to_string(),
+            )),
+            _ => Err(HostError::Unsupported(
+                "this connection cannot reset the board; press its reset button or \
+                 power-cycle it, then reconnect"
+                    .to_string(),
+            )),
+        }
     }
 
     /// The control handle of the virtual printer, while connected to one
@@ -675,8 +741,13 @@ impl Printer {
         });
     }
 
-    /// `M999`: restart a halted firmware. If the board resets instead, the
-    /// engine reconnects by itself.
+    /// `M999` (`FIRMWARE_RESTART` on Klipper): restart a halted firmware.
+    /// If the board resets instead, the engine reconnects by itself.
+    ///
+    /// M999 alone does not recover Marlin after M112 or a thermal runaway
+    /// (kill() ignores it); check
+    /// [`PrinterState::restartable`](crate::PrinterState::restartable) and
+    /// offer [`Printer::reset_board`] otherwise.
     pub fn firmware_restart(&self) {
         self.command(Command::FirmwareRestart);
     }
