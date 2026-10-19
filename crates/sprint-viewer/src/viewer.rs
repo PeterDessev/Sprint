@@ -28,14 +28,15 @@ const UPLOAD_BUDGET: usize = 16 << 20;
 const ANIM_SECONDS: f32 = 0.35;
 /// Orbit speed in radians per point dragged.
 const ORBIT_SPEED: f32 = 0.0085;
-/// Retraction marker radius in pixels.
-const MARKER_PX: f32 = 3.5;
+/// Retraction marker radius in logical points.
+const MARKER_POINTS: f32 = 3.5;
 /// Default bead width (pixels) below which beads are drawn as ribbons.
 pub const DEFAULT_LOD_PIXELS: f32 = 3.0;
-/// Pick tolerance in pixels for thin beads.
-const PICK_TOLERANCE_PX: f32 = 2.5;
-/// Pick tolerance in pixels around travel lines.
-const TRAVEL_PICK_PX: f32 = 4.0;
+/// Pick tolerance for thin beads, in the units of
+/// [`GcodeViewer::pick_screen`] (logical points in [`GcodeViewer::ui`]).
+const PICK_TOLERANCE_POINTS: f32 = 2.5;
+/// Pick tolerance around travel lines, in the same units.
+const TRAVEL_PICK_POINTS: f32 = 4.0;
 /// How far (mm) in front of a travel's point a bead must be hit to hide
 /// it. Travels lie on the beads of their own layer (exactly touching their
 /// crests) and under the beads of the next, a layer height deeper.
@@ -57,8 +58,8 @@ const DEPTH_CUE: f32 = 0.35;
 const EXPOSURE: f32 = 1.18;
 /// Opacity of translucent ghosts.
 const GHOST_ALPHA: f32 = 0.24;
-/// On-screen height the tool head marker aims for (pixels).
-const HEAD_PIXELS: f32 = 46.0;
+/// On-screen height the tool head marker aims for (logical points).
+const HEAD_POINTS: f32 = 46.0;
 /// Limits of the tool head scale (1 = real size, about 7 mm tall).
 const HEAD_SCALE: (f32, f32) = (0.7, 12.0);
 /// Darkness of the nozzle's contact shadow at its centre (0..1).
@@ -262,6 +263,9 @@ pub struct GcodeViewer {
     hover: Option<Hover>,
     hover_query: Option<HoverQuery>,
     lod_pixels: f32,
+    /// Physical pixels per logical point of the last [`GcodeViewer::ui`]
+    /// (or [`GcodeViewer::set_pixels_per_point`]).
+    pixels_per_point: f32,
 }
 
 impl GcodeViewer {
@@ -303,6 +307,7 @@ impl GcodeViewer {
             hover: None,
             hover_query: None,
             lod_pixels: DEFAULT_LOD_PIXELS,
+            pixels_per_point: 1.0,
         };
         viewer.fit_now(viewer.fit_aspect);
         viewer
@@ -477,6 +482,26 @@ impl GcodeViewer {
         self.lod_pixels
     }
 
+    /// Physical pixels per logical point. The tool head and retraction
+    /// markers keep a steady size in logical points, like the pick
+    /// tolerance, so they look the same on high-DPI screens.
+    /// [`GcodeViewer::ui`] takes this from the egui context; set it for
+    /// [`GcodeViewer::render_to_image`] at a display scale (default 1).
+    /// Values outside 0.25..=8 are clamped; non-finite ones reset it to 1.
+    pub fn set_pixels_per_point(&mut self, pixels_per_point: f32) {
+        self.pixels_per_point = if pixels_per_point.is_finite() {
+            pixels_per_point.clamp(0.25, 8.0)
+        } else {
+            1.0
+        };
+    }
+
+    /// Physical pixels per logical point (see
+    /// [`GcodeViewer::set_pixels_per_point`]).
+    pub fn pixels_per_point(&self) -> f32 {
+        self.pixels_per_point
+    }
+
     /// True while the toolpath is still being prepared or uploaded.
     pub fn is_loading(&self) -> bool {
         self.loader.is_some() || self.renderer.is_uploading()
@@ -613,8 +638,8 @@ impl GcodeViewer {
         let view = Vec2::from(size).max(Vec2::ONE);
         let ray = cam.ray_from_screen(Vec2::from(pos), view);
         let world_px = cam.world_per_pixel(cam.distance, view.y);
-        let tolerance = PICK_TOLERANCE_PX * world_px;
-        let radius = TRAVEL_PICK_PX * world_px;
+        let tolerance = PICK_TOLERANCE_POINTS * world_px;
+        let radius = TRAVEL_PICK_POINTS * world_px;
         let bead = self.pick(&ray, tolerance);
         // Travel lines are drawn over the beads they pass in front of or
         // lie on.
@@ -640,6 +665,7 @@ impl GcodeViewer {
         }
         let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
         let ppp = ui.ctx().pixels_per_point().max(0.1);
+        self.set_pixels_per_point(ppp);
         let rect = egui::Rect::from_min_max(
             ((rect.min.to_vec2() * ppp).round() / ppp).to_pos2(),
             ((rect.max.to_vec2() * ppp).round() / ppp).to_pos2(),
@@ -1377,12 +1403,14 @@ impl GcodeViewer {
         }
         let head = self.tool_head_position();
         // Scale the nozzle to a steady size on screen, within reason.
+        let ppp = self.pixels_per_point;
         let head_scale = head.map_or(0.0, |tip| {
             let world_px = match cam.projection {
                 Projection::Perspective => (tip - eye).dot(f).max(cam.near()) * pixel,
                 Projection::Orthographic => pixel,
             };
-            (HEAD_PIXELS * world_px / scene::TOOL_HEAD_HEIGHT).clamp(HEAD_SCALE.0, HEAD_SCALE.1)
+            (HEAD_POINTS * ppp * world_px / scene::TOOL_HEAD_HEIGHT)
+                .clamp(HEAD_SCALE.0, HEAD_SCALE.1)
         });
         let tip = head.unwrap_or(Vec3::ZERO);
         if head.is_some() {
@@ -1434,7 +1462,7 @@ impl GcodeViewer {
                 hi.min(u32::MAX as usize) as u32,
                 current_layer.map_or(u32::MAX, |l| l.min(u32::MAX as usize) as u32),
             ],
-            range: [scalar.0, scalar.1, MARKER_PX, 0.0],
+            range: [scalar.0, scalar.1, MARKER_POINTS * ppp, 0.0],
             fill_light: rig.fill,
             rim_light: rig.rim,
             fog: {

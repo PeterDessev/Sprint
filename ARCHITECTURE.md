@@ -1511,6 +1511,12 @@ impl GcodeViewer {
     pub fn legend_ui(&mut self, ui: &mut egui::Ui);
     /// Render one frame offscreen and return RGBA8 pixels (tests, thumbnails).
     pub fn render_to_image(&mut self, width: u32, height: u32) -> Option<(u32, u32, Vec<u8>)>;
+    /// Physical pixels per logical point: the tool head (46 pt tall) and the
+    /// retraction markers keep their size in points, like the pick
+    /// tolerance. ui() takes it from the egui context; set it before
+    /// render_to_image for a high-DPI image (default 1, clamped 0.25..=8).
+    pub fn set_pixels_per_point(&mut self, pixels_per_point: f32);
+    pub fn pixels_per_point(&self) -> f32;
 }
 pub struct ViewerResponse { pub response: egui::Response, pub clicked_line: Option<u32>, pub hovered_line: Option<u32> }
 ```

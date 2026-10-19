@@ -877,6 +877,54 @@ fn the_nozzle_casts_a_soft_shadow_on_the_part() {
 }
 
 #[test]
+fn the_nozzle_keeps_its_size_in_logical_points() {
+    // Known issue K18: the head was sized in physical pixels, so on a 2x
+    // display it looked half as big as on a 1x one (while the pick
+    // tolerance is in points).
+    let Some((device, queue)) = device() else {
+        return;
+    };
+    let tp = block();
+    let line = 9 * 45 + 22;
+    let tip = Vec3::from(tp.segments[line as usize].end);
+    let mut viewer = loaded_viewer(&device, &queue, tp);
+    viewer.options_mut().show_bed = false;
+    viewer.options_mut().line_limit = Some(line);
+    let cam = viewer.camera_mut();
+    cam.target = tip;
+    cam.distance = 120.0;
+    cam.yaw = 0.3;
+    cam.pitch = 0.9;
+    // Pixels the head (and its shadow) changes at a scale and image size.
+    let mut footprint = |ppp: f32, scale: u32| {
+        viewer.set_pixels_per_point(ppp);
+        let (w, h) = (W * scale, H * scale);
+        viewer.options_mut().show_tool_head = false;
+        let (_, _, bare) = viewer.render_to_image(w, h).expect("rendered");
+        viewer.options_mut().show_tool_head = true;
+        let (_, _, head) = viewer.render_to_image(w, h).expect("rendered");
+        bare.chunks_exact(4)
+            .zip(head.chunks_exact(4))
+            .filter(|(a, b)| (0..3).any(|k| (a[k] as i32 - b[k] as i32).abs() > 24))
+            .count() as f32
+    };
+    let one = footprint(1.0, 1);
+    let two = footprint(2.0, 2);
+    assert!(one > 100.0, "the head is drawn: {one} pixels");
+    // Twice the pixels each way at 2x: the same size in points.
+    let ratio = two / one;
+    assert!(
+        (3.2..4.8).contains(&ratio),
+        "{one} -> {two} pixels ({ratio:.2}x)"
+    );
+    assert_eq!(viewer.pixels_per_point(), 2.0);
+    viewer.set_pixels_per_point(f32::NAN);
+    assert_eq!(viewer.pixels_per_point(), 1.0);
+    viewer.set_pixels_per_point(100.0);
+    assert_eq!(viewer.pixels_per_point(), 8.0);
+}
+
+#[test]
 fn the_layer_being_printed_is_highlighted() {
     let Some((device, queue)) = device() else {
         return;
