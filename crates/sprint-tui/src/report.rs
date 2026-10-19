@@ -136,6 +136,21 @@ impl ReportLine {
     }
 }
 
+/// The colors to print reports with on standard output: none when it is
+/// not a terminal (pipes, files) or `NO_COLOR` is set; on Windows the
+/// console's escape-sequence processing is switched on first.
+pub fn stdout_colors() -> ColorSupport {
+    use std::io::IsTerminal;
+    if !std::io::stdout().is_terminal() {
+        return ColorSupport::None;
+    }
+    #[cfg(windows)]
+    if !crossterm::ansi_support::supports_ansi() {
+        return ColorSupport::None;
+    }
+    ColorSupport::detect()
+}
+
 /// Lines joined with newlines (ANSI-styled for `support`), with a final
 /// newline when there are any lines.
 pub fn render(lines: &[ReportLine], support: ColorSupport) -> String {
@@ -859,7 +874,7 @@ pub fn ports_lines(ports: &[PortInfo]) -> Vec<ReportLine> {
             (Some(v), Some(pid)) => format!("{v:04X}:{pid:04X}"),
             _ => "--".to_string(),
         };
-        let desc: String = p.description.chars().take(desc_w).collect();
+        let desc = crate::widgets::util::truncate(&p.description, desc_w);
         let mut line = ReportLine::new()
             .with(
                 format!("{:<name_w$}  ", p.name),
@@ -872,7 +887,7 @@ pub fn ports_lines(ports: &[PortInfo]) -> Vec<ReportLine> {
             .with(format!("{desc:<desc_w$}  "), Tone::Plain)
             .with(format!("{ids:<9}  "), Tone::Dim);
         if p.likely_printer {
-            line.push("★ likely printer", Tone::Good);
+            line.push("● likely printer", Tone::Good);
         }
         lines.push(line);
     }
@@ -1475,7 +1490,7 @@ mod tests {
         let rows: Vec<&str> = text.lines().collect();
         assert!(rows[0].starts_with("PORT  DESCRIPTION"), "{text}");
         assert!(rows[1].starts_with("COM3  USB-SERIAL CH340") && rows[1].contains("1A86:7523"));
-        assert!(rows[1].ends_with("★ likely printer"), "{text}");
+        assert!(rows[1].ends_with("● likely printer"), "{text}");
         assert!(rows[2].contains("--") && !rows[2].contains('★'), "{text}");
         assert!(joined(&ports_lines(&[])).starts_with("No serial ports found."));
 

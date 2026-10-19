@@ -31,7 +31,6 @@ use crate::interrupt::Interrupt;
 use crate::loader::{self, LoadedFile};
 use crate::report::{self, ReportLine, Tone};
 use crate::session::{self, ConnectError, WaitError};
-use crate::theme::ColorSupport;
 
 use echo::{Awaited, Echo};
 use input::{LineSource, Read, ShellHelper, Stdin, Terminal};
@@ -57,13 +56,8 @@ const MONITOR_INTERVAL: f32 = 2.0;
 /// `auto_connect`.
 pub fn run_shell(options: TuiOptions) -> anyhow::Result<()> {
     let (config, config_path) = crate::config::load_config();
-    let terminal_out = std::io::stdout().is_terminal();
-    let interactive = std::io::stdin().is_terminal() && terminal_out;
-    let support = if terminal_out {
-        terminal_colors()
-    } else {
-        ColorSupport::None
-    };
+    let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    let support = report::stdout_colors();
     let base_dir = std::env::current_dir().unwrap_or_default();
     let (mut source, sink): (Box<dyn LineSource>, Box<dyn Sink>) = if interactive {
         let helper = ShellHelper {
@@ -113,15 +107,6 @@ pub fn run_shell(options: TuiOptions) -> anyhow::Result<()> {
     shell.run(source.as_mut());
     source.save_history();
     Ok(())
-}
-
-/// Colors the terminal shows (Windows consoles need VT processing).
-fn terminal_colors() -> ColorSupport {
-    #[cfg(windows)]
-    if !crossterm::ansi_support::supports_ansi() {
-        return ColorSupport::None;
-    }
-    ColorSupport::detect()
 }
 
 /// Whether the shell goes on after a line.

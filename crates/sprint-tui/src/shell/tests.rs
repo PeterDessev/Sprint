@@ -8,6 +8,7 @@ use sprint_host::{AppConfig, ConnectTarget, JobStatus, Printer};
 use super::input::Script;
 use super::output::{Buffer, Out, WriterSink};
 use super::*;
+use crate::theme::ColorSupport;
 
 /// Generous bound for anything a test waits for.
 const PATIENCE: Duration = Duration::from_secs(30);
