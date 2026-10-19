@@ -317,3 +317,105 @@ fn blocked_extruder_ignores_clicks_and_repairs_bad_values() {
     assert!(length.is_finite() && length > 0.0);
     assert!(speed.is_finite() && speed > 0.0);
 }
+
+fn temperature_harness(target: f32) -> egui_kittest::Harness<'static, Vec<TemperatureAction>> {
+    harness_state(
+        Theme::Dark,
+        (380.0, 220.0),
+        Vec::new(),
+        move |ui, actions| {
+            let r = TemperatureCard::new("Hotend", sprint_gui::theme::HeaterKind::Hotend)
+                .current(150.0)
+                .target(target)
+                .presets(&[("PLA", 210.0), ("Silly", 999.0)])
+                .show(ui);
+            if let Some(a) = r.action {
+                actions.push(a);
+            }
+        },
+    )
+}
+
+fn type_target(
+    h: &mut egui_kittest::Harness<'_, Vec<TemperatureAction>>,
+    text: &str,
+    key: egui::Key,
+) {
+    h.get_by_role(egui::accesskit::Role::TextInput).click();
+    h.run_ok();
+    // Replace whatever the field showed.
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.run_ok();
+    h.key_press(egui::Key::Backspace);
+    h.run_ok();
+    h.get_by_role(egui::accesskit::Role::TextInput)
+        .type_text(text);
+    h.run_ok();
+    h.key_press(key);
+    h.run_ok();
+}
+
+#[test]
+fn temperature_target_applies_on_enter_only() {
+    let mut h = temperature_harness(200.0);
+    type_target(&mut h, "215", egui::Key::Escape);
+    assert!(h.state().is_empty(), "Escape must not apply");
+    type_target(&mut h, "hot", egui::Key::Enter);
+    assert!(h.state().is_empty(), "invalid text must not apply");
+    type_target(&mut h, "215.5", egui::Key::Enter);
+    assert_eq!(h.state().as_slice(), &[TemperatureAction::SetTarget(215.5)]);
+    // The field shows the real target again afterwards.
+    assert_eq!(
+        h.get_by_role(egui::accesskit::Role::TextInput)
+            .value()
+            .as_deref(),
+        Some("200")
+    );
+}
+
+#[test]
+fn temperature_target_is_clamped_and_empty_means_off() {
+    let mut h = temperature_harness(200.0);
+    type_target(&mut h, "5000", egui::Key::Enter);
+    type_target(&mut h, "", egui::Key::Enter);
+    type_target(&mut h, "-20", egui::Key::Enter);
+    assert_eq!(
+        h.state().as_slice(),
+        &[
+            TemperatureAction::SetTarget(300.0),
+            TemperatureAction::SetTarget(0.0),
+            TemperatureAction::SetTarget(0.0),
+        ]
+    );
+}
+
+#[test]
+fn temperature_presets_and_off() {
+    let mut h = temperature_harness(200.0);
+    h.get_by_label("Presets").click();
+    h.run_ok();
+    h.get_by_label_contains("PLA").click();
+    h.run_ok();
+    h.get_by_label("Presets").click();
+    h.run_ok();
+    h.get_by_label_contains("Silly").click();
+    h.run_ok();
+    h.get_by_label("Turn hotend off").click();
+    h.run_ok();
+    assert_eq!(
+        h.state().as_slice(),
+        &[
+            TemperatureAction::SetTarget(210.0),
+            TemperatureAction::SetTarget(300.0),
+            TemperatureAction::Off,
+        ]
+    );
+}
+
+#[test]
+fn temperature_off_button_is_disabled_when_off() {
+    let mut h = temperature_harness(0.0);
+    h.get_by_label("Turn hotend off").click();
+    h.run_ok();
+    assert!(h.state().is_empty());
+}

@@ -144,13 +144,25 @@ impl<'a> Badge<'a> {
     }
 }
 
+impl Badge<'_> {
+    const HEIGHT: f32 = 18.0;
+
+    fn galley(&self, ui: &Ui) -> std::sync::Arc<egui::Galley> {
+        let font = FontId::new(11.0, theme::font(ui, TextRole::Section).family);
+        ui.painter()
+            .layout_no_wrap(self.text.to_owned(), font, Color32::PLACEHOLDER)
+    }
+
+    /// The width the badge will take in `ui`, for layout decisions.
+    pub fn width(&self, ui: &Ui) -> f32 {
+        (self.galley(ui).size().x + 12.0).max(Self::HEIGHT)
+    }
+}
+
 impl Widget for Badge<'_> {
     fn ui(self, ui: &mut Ui) -> Response {
-        let font = FontId::new(11.0, theme::font(ui, TextRole::Section).family);
-        let galley = ui
-            .painter()
-            .layout_no_wrap(self.text.to_owned(), font, Color32::PLACEHOLDER);
-        let height = 18.0;
+        let galley = self.galley(ui);
+        let height = Self::HEIGHT;
         let width = (galley.size().x + 12.0).max(height);
         let (rect, response) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
         response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, self.text));

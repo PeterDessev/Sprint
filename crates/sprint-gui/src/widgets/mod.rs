@@ -43,6 +43,7 @@ mod keyvalue;
 mod numeric;
 mod progress;
 mod status;
+mod temperature;
 mod toggle;
 
 pub use button::{ActionButton, ButtonKind, ButtonSize, EStopButton, EStopStyle, IconButton};
@@ -58,6 +59,10 @@ pub use keyvalue::{KeyValueGrid, KeyValueRows};
 pub use numeric::{NumericField, format_number, is_modified};
 pub use progress::{LinearProgress, ProgressRing, percent_label};
 pub use status::{Badge, Chip, StatusPill, status_dot};
+pub use temperature::{
+    HOT_THRESHOLD, HeaterState, TemperatureAction, TemperatureCard, format_temperature,
+    parse_temperature,
+};
 pub use toggle::{SegmentedControl, Toggle};
 
 use egui::{CornerRadius, FontId, Rect, Response, Stroke, StrokeKind, Ui};

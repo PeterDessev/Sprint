@@ -416,3 +416,53 @@ fn jog_snapshot() {
         snapshot(&mut h, &name("jog_hover", theme));
     }
 }
+
+fn temperatures(ui: &mut egui::Ui) {
+    use sprint_gui::theme::HeaterKind;
+    let hot = heating_curve(24.0, 215.0, 40);
+    let bed = heating_curve(22.0, 60.0, 120);
+    let presets = [("PLA", 210.0), ("PETG", 240.0), ("ABS", 250.0)];
+    let _ = TemperatureCard::new("Hotend", HeaterKind::Hotend)
+        .current(*hot.last().unwrap_or(&0.0))
+        .target(215.0)
+        .power(Some(0.82))
+        .history(&hot)
+        .presets(&presets)
+        .show(ui);
+    ui.add_space(8.0);
+    let _ = TemperatureCard::new("Bed", HeaterKind::Bed)
+        .current(59.6)
+        .target(60.0)
+        .power(Some(0.31))
+        .history(&bed)
+        .presets(&[("PLA", 60.0), ("PETG", 80.0)])
+        .show(ui);
+    ui.add_space(8.0);
+    ui.columns(2, |cols| {
+        let _ = TemperatureCard::new("Chamber", HeaterKind::Chamber)
+            .current(31.0)
+            .target(0.0)
+            .show(&mut cols[0]);
+        let _ = TemperatureCard::new("Hotend 2", HeaterKind::Hotend)
+            .current(f32::NAN)
+            .target(0.0)
+            .show(&mut cols[1]);
+    });
+    ui.add_space(8.0);
+    let cooling: Vec<f32> = (0..60).map(|i| 180.0 - i as f32 * 1.5).collect();
+    let _ = TemperatureCard::new("Hotend", HeaterKind::Hotend)
+        .id_salt("cooling")
+        .current(91.0)
+        .target(0.0)
+        .power(Some(0.0))
+        .history(&cooling)
+        .show(ui);
+}
+
+#[test]
+fn temperatures_snapshot() {
+    for theme in Theme::ALL {
+        let mut h = fit(theme, 400.0, temperatures);
+        snapshot(&mut h, &name("temperatures", theme));
+    }
+}
