@@ -917,7 +917,7 @@ pub struct AutotuneState { pub heater: Heater, pub target: f32, pub cycles: u32,
 pub struct LinkStats {
     pub connected_secs: f64, pub lines_sent: u64, pub bytes_sent: u64, pub bytes_received: u64,
     pub oks: u64, pub resends: u64, pub errors: u64, pub timeouts: u64,
-    pub rtt_last_ms: f32, pub rtt_avg_ms: f32, pub rtt_max_ms: f32,
+    pub rtt_last_ms: f32, pub rtt_avg_ms: f32, pub rtt_max_ms: f32, // without commands that block in the firmware (G28/G29/G4/M400/heat and user waits/M303)
     pub queue_len: usize, pub in_flight: usize, pub lines_per_sec: f32,
 }
 

@@ -550,3 +550,15 @@ fn replies_to_the_hosts_own_queries_are_not_messages() {
             .any(|e| matches!(e, Event::FirmwareMessage(m) if m.starts_with("Bed Leveling")))
     );
 }
+
+#[test]
+fn blocking_commands_stay_out_of_the_round_trip_statistics() {
+    // A heat-up or a dwell is not link latency.
+    let printer = connect(fast_sim(1.0), options());
+    printer.send("G4 P800\nM105\nG28");
+    wait_idle(&printer);
+    let link = printer.with_state(|s| s.link.clone());
+    assert!(link.rtt_max_ms < 400.0, "{link:?}");
+    assert!(link.rtt_avg_ms < 400.0, "{link:?}");
+    assert!(link.rtt_last_ms > 0.0, "{link:?}");
+}

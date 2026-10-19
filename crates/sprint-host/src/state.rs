@@ -287,6 +287,9 @@ pub struct LinkStats {
     /// `ok` timeouts recovered from.
     pub timeouts: u64,
     /// Round trip (send to `ok`) of the last acknowledged command, ms.
+    /// Commands that block in the firmware by design (homing, probing,
+    /// heat waits, dwells, `M400`, user waits, autotune) are left out of
+    /// the round-trip statistics.
     pub rtt_last_ms: f32,
     /// Smoothed round trip, ms.
     pub rtt_avg_ms: f32,

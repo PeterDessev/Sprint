@@ -197,14 +197,19 @@ impl Engine {
         match self.flow.on_ok(line, now) {
             OkOutcome::Acked(acked) => {
                 for a in acked {
-                    let ms = a.rtt.as_secs_f32() * 1000.0;
-                    self.stats.rtt_last_ms = ms;
-                    self.stats.rtt_max_ms = self.stats.rtt_max_ms.max(ms);
-                    self.stats.rtt_avg_ms = if self.stats.oks <= 1 || self.stats.rtt_avg_ms == 0.0 {
-                        ms
-                    } else {
-                        self.stats.rtt_avg_ms * 0.9 + ms * 0.1
-                    };
+                    // Homing, heat waits, dwells, M400 ... block in the
+                    // firmware by design: their time says nothing about
+                    // the link.
+                    if !a.meta.long {
+                        let ms = a.rtt.as_secs_f32() * 1000.0;
+                        self.stats.rtt_last_ms = ms;
+                        self.stats.rtt_max_ms = self.stats.rtt_max_ms.max(ms);
+                        self.stats.rtt_avg_ms = if self.stats.rtt_avg_ms == 0.0 {
+                            ms
+                        } else {
+                            self.stats.rtt_avg_ms * 0.9 + ms * 0.1
+                        };
+                    }
                     self.ack_times.push_back(now);
                     self.complete_with_rtt(&a.meta, Some(a.rtt), now);
                 }
