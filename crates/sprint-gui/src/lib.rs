@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 pub mod context;
 pub mod fonts;
+pub mod format;
 pub mod icons;
 pub mod panels;
 pub mod theme;

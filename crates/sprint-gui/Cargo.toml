@@ -28,6 +28,8 @@ log.workspace = true
 # panics on unparsable fonts). Same version and a subset of the features
 # epaint already uses, so it adds nothing to the build.
 skrifa = { version = "0.44", default-features = false, features = ["std"] }
+# The local UTC offset for "finishes at 14:32" (already in the lockfile).
+time = { version = "0.3", default-features = false, features = ["std", "local-offset"] }
 
 [dev-dependencies]
 egui_kittest.workspace = true

@@ -4369,6 +4369,7 @@ dependencies = [
  "sprint-host",
  "sprint-proto",
  "sprint-viewer",
+ "time",
 ]
 
 [[package]]
