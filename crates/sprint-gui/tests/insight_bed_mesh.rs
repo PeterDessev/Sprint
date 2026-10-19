@@ -6,7 +6,7 @@ mod insight_common;
 
 use common::{harness_state, snapshot};
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable as _;
+use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use insight_common::*;
 use sprint_gui::panels::BedMeshTab;
 use sprint_gui::theme::Theme;
@@ -158,6 +158,31 @@ fn bed_mesh_empty_states() {
         h.query_by_label_contains("reports no automatic bed leveling")
             .is_some()
     );
+}
+
+#[test]
+fn a_probe_without_a_new_mesh_ends() {
+    let mut h = tab(Theme::Dark, (1180.0, 1060.0), demo_state());
+    h.get_by_label("Probe bed").click();
+    h.run_ok();
+    h.get_by_label("Home and probe").click();
+    h.run_ok();
+    assert!(h.state().tab.is_probing());
+    // G28, G29 and M420 V go out and are answered (the demo link has a
+    // command in flight)...
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    h.run_ok();
+    assert!(h.state().tab.is_probing(), "still waiting for the answers");
+    // ...but G29 failed: the same mesh comes back. Probing must not block
+    // the tab for the 15-minute timeout.
+    if let Some(s) = h.state_mut().state.as_mut() {
+        s.link.in_flight = 0;
+        s.link.queue_len = 0;
+    }
+    h.run_ok();
+    assert!(!h.state().tab.is_probing());
+    assert!(h.state().toasts.iter().any(|t| t.title() == "No new mesh"));
+    assert!(!h.get_by_label("Probe bed").accesskit_node().is_disabled());
 }
 
 #[test]

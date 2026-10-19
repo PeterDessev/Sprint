@@ -56,6 +56,17 @@ const TWO_COLUMNS: f32 = 900.0;
 const PROBE_TIMEOUT: f64 = 900.0;
 /// Fade height when the firmware reports none (Marlin's default, mm).
 const DEFAULT_FADE: f32 = 10.0;
+/// A probe whose commands went out and were all answered without a new
+/// mesh (G29 failed, or the firmware has no G29) ends after this long
+/// (seconds); without ever seeing them go out, after the longer one.
+const PROBE_SETTLE: std::time::Duration = std::time::Duration::from_secs(1);
+const PROBE_UNSEEN: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Toast when a probe ended without a mesh.
+const NO_NEW_MESH: &str = concat!(
+    "The printer answered G29 without reporting a new mesh. Check the console for ",
+    "its error (no probe, probing failed, G29 not available).",
+);
 
 /// A probe started from this tab.
 #[derive(Clone, Debug)]
@@ -64,6 +75,10 @@ struct Probing {
     started: f64,
     /// The mesh before probing (to notice the new one).
     before: Option<BedMesh>,
+    /// When it was sent (wall clock; the UI clock may stand still).
+    sent: std::time::Instant,
+    /// The host was seen sending or waiting for commands since.
+    seen_busy: bool,
 }
 
 /// Bed mesh tab: heatmap, statistics, probing and bed screw adjustment.
@@ -186,8 +201,12 @@ impl BedMeshTab {
             ctx.printer.request_bed_mesh();
             self.auto_requested = true;
         }
-        if let Some(p) = &self.probing {
+        if let Some(p) = &mut self.probing {
             let now = ui.input(|i| i.time);
+            let link = &ctx.state.link;
+            let idle = link.queue_len == 0 && link.in_flight == 0 && ctx.state.busy.is_none();
+            p.seen_busy |= !idle;
+            let waited = p.sent.elapsed();
             if ctx.state.mesh.is_some() && ctx.state.mesh != p.before {
                 let range = ctx.state.mesh.as_ref().and_then(BedMesh::range);
                 let toast = ctx.toasts.success("Bed probed");
@@ -207,6 +226,10 @@ impl BedMeshTab {
                 if m503 {
                     ctx.printer.request_settings();
                 }
+                self.probing = None;
+            } else if idle && ((p.seen_busy && waited >= PROBE_SETTLE) || waited >= PROBE_UNSEEN) {
+                // Everything was answered, but no new mesh came back.
+                ctx.toasts.warning("No new mesh").message(NO_NEW_MESH);
                 self.probing = None;
             } else if now - p.started > PROBE_TIMEOUT || now < p.started {
                 self.probing = None;
@@ -563,6 +586,8 @@ impl BedMeshTab {
                     self.probing = Some(Probing {
                         started: ui.input(|i| i.time),
                         before: ctx.state.mesh.clone(),
+                        sent: std::time::Instant::now(),
+                        seen_busy: false,
                     });
                 }
             }
