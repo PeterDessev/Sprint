@@ -539,17 +539,24 @@ impl<'a> EStopButton<'a> {
     /// # }
     /// ```
     pub fn show_above_modals(self, ui: &mut Ui) -> Response {
-        let (rect, _) = ui.allocate_exact_size(self.size(ui), Sense::hover());
+        let (rect, placeholder) = ui.allocate_exact_size(self.size(ui), Sense::hover());
+        // Scrolled out of view: nothing to show or click.
+        if !ui.is_rect_visible(rect) {
+            return placeholder;
+        }
         let style = ui.style().clone();
         let enabled = ui.is_enabled();
+        let clip = ui.clip_rect();
         egui::Area::new(super::widget_id(ui, ("sprint-estop-layer", self.label)))
             .order(egui::Order::Tooltip)
             .fixed_pos(rect.min)
             .constrain(false)
             .show(ui.ctx(), |area| {
-                // Keep the parent's theme (e.g. inside `theme::scope`) and
-                // its disabled state.
+                // Keep the parent's theme (e.g. inside `theme::scope`), its
+                // disabled state and its clipping (a partly scrolled-away
+                // button must not float over neighbouring panels).
                 area.set_style(style);
+                area.set_clip_rect(clip);
                 if !enabled {
                     area.disable();
                 }

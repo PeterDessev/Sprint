@@ -889,3 +889,21 @@ fn key_width_widens_only_the_label_column() {
     // (16 + 8 pt margins on each side).
     assert!(grid.max.x <= 296.5, "grid overflows: {grid:?}");
 }
+
+#[test]
+fn estop_above_modals_respects_the_parent_clip() {
+    // Scrolled out of view (here: clipped away), the floating E-STOP must
+    // neither show over other content nor take its clicks.
+    let mut h = harness_state(Theme::Dark, (360.0, 200.0), 0_usize, |ui, fired| {
+        ui.scope(|ui| {
+            let corner = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(4.0, 4.0));
+            ui.set_clip_rect(corner);
+            if EStopButton::new().show_above_modals(ui).changed() {
+                *fired += 1;
+            }
+        });
+    });
+    let rect = h.get_by_label("E-STOP").rect();
+    click_at(&mut h, rect.center());
+    assert_eq!(*h.state(), 0);
+}
