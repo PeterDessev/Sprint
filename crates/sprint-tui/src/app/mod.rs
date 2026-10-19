@@ -70,6 +70,8 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(600);
 const REPORT_IDLE_AFTER: Duration = Duration::from_millis(250);
 /// Console entries fetched per call.
 const CONSOLE_FETCH: usize = 4096;
+/// What to do after an emergency stop.
+const RESET_HINT: &str = "Restart the firmware (M999) or reconnect.";
 
 /// A `source` file read off the UI thread: its name and command lines,
 /// or why it could not be read.
@@ -113,6 +115,22 @@ pub(crate) enum Modal {
     Confirm(Confirm),
     Report(ReportView),
     Prompt(PromptDialog),
+}
+
+/// How [`App::guard`] asks before sending.
+pub(crate) struct Guard {
+    /// The question's title ("Send G28?", "Run Bed mesh?").
+    pub title: String,
+    /// Lines shown under the reasons (a macro's G-code, a pasted block).
+    pub preview: Vec<String>,
+    /// The answer that sends.
+    pub yes: &'static str,
+    /// The answer that does not.
+    pub no: &'static str,
+    /// Starts the message when a line is blocked ("Not sent").
+    pub refused: &'static str,
+    /// Ask even when the classifier lets everything through.
+    pub always_ask: bool,
 }
 
 /// A resume waiting for the link to settle (see [`App::resume`]).
@@ -669,22 +687,26 @@ impl App {
         match read {
             Ok((name, lines)) if lines.is_empty() => self.warn(format!("{name} has no commands")),
             Ok((name, lines)) => {
-                let job_active = self.view.job_active();
-                let mut message = Vec::new();
-                if job_active {
-                    message.push(
-                        "A job is running: G-code goes between the print's lines.".to_string(),
-                    );
-                }
-                message.extend(macro_preview(&lines.join("\n")));
-                self.modal = Some(Modal::Confirm(Confirm::new(
-                    format!("Run {} lines of {name}?", lines.len()),
-                    message,
-                    "Run",
-                    "Not now",
-                    job_active,
-                    Action::RunLines(lines),
-                )));
+                // Its G-code lines go through the classifier together, so
+                // one question covers them.
+                let gcode: Vec<String> = lines
+                    .iter()
+                    .filter_map(|l| match commands::parse(l) {
+                        Ok(Input::Gcode(g)) => Some(g),
+                        _ => None,
+                    })
+                    .collect();
+                let ctx = self.view.job_context();
+                let safety = actions::check_gcode(&gcode.join("\n"), ctx);
+                let guard = Guard {
+                    title: format!("Run {} lines of {name}?", lines.len()),
+                    preview: macro_preview(&lines.join("\n")),
+                    yes: "Run",
+                    no: "Not now",
+                    refused: "Not run",
+                    always_ask: true,
+                };
+                self.guard(&safety, guard, Action::RunLines(lines, ctx));
             }
             Err(why) => self.error(why),
         }
@@ -1034,7 +1056,7 @@ impl App {
             }
             self.estop_armed = None;
             self.printer.emergency_stop();
-            self.error("EMERGENCY STOP sent (M112). Restart the firmware (M999) or reconnect.");
+            self.error(format!("EMERGENCY STOP sent (M112). {RESET_HINT}"));
         } else {
             self.estop_armed = Some(Instant::now());
             self.estop_released = false;
@@ -1229,26 +1251,6 @@ impl App {
         self.info(actions::targets_text(targets));
     }
 
-    /// The heaters that `targets` turn off while they are heating.
-    fn heaters_turned_off(&self, targets: &[(Heater, f32)]) -> Vec<Heater> {
-        let temps = &self.view.temps;
-        targets
-            .iter()
-            .filter(|&&(_, celsius)| celsius <= 0.0)
-            .filter(|&&(heater, _)| {
-                let reading = match heater {
-                    Heater::Hotend(t) => temps.hotends.get(usize::from(t)),
-                    Heater::Bed => temps.bed.as_ref(),
-                    Heater::Chamber => temps.chamber.as_ref(),
-                };
-                reading
-                    .and_then(|r| r.target)
-                    .is_some_and(|t| t.is_finite() && t > 0.0)
-            })
-            .map(|&(heater, _)| heater)
-            .collect()
-    }
-
     /// Run what a dialog asked for.
     fn run_action(&mut self, action: Action) {
         match action {
@@ -1278,30 +1280,36 @@ impl App {
             Action::DisconnectAnyway => self.disconnect(),
             Action::Open(path) => self.open_file(path),
             Action::SetTemps(targets) => {
+                // As the classifier allows the targets for the running job
+                // (a heater switched off while printing asks; one that is
+                // off already is not asked about).
                 let targets = actions::safe_targets(&targets);
-                let off = self.heaters_turned_off(&targets);
-                if self.view.job_active() && !off.is_empty() {
-                    let name = self
-                        .view
-                        .job
-                        .as_ref()
-                        .map(|j| j.name.clone())
-                        .unwrap_or_default();
-                    let names: Vec<String> = off.into_iter().map(actions::heater_label).collect();
-                    self.modal = Some(Modal::Confirm(Confirm::new(
-                        "Turn heaters off while printing?",
-                        vec![
-                            format!("{} off while {name} prints.", names.join(" and ")),
-                            "The print will most likely fail.".to_string(),
-                        ],
-                        "Turn off",
-                        "Keep heating",
-                        true,
-                        Action::SetTempsAnyway(targets),
-                    )));
-                    return;
-                }
-                self.set_temps(&targets);
+                let gcode = actions::targets_gcode(&self.view.temps, &targets);
+                let safety = actions::check_gcode(&gcode, self.view.job_context());
+                let guard = Guard {
+                    title: "Change temperatures during the job?".to_string(),
+                    preview: vec![format!("Set {}.", actions::targets_text(&targets))],
+                    yes: "Set them",
+                    no: "Keep them",
+                    refused: "Temperatures not set",
+                    always_ask: false,
+                };
+                self.guard(&safety, guard, Action::SetTempsAnyway(targets));
+            }
+            Action::ApplySetting(setting) => {
+                self.printer.apply_setting(&setting);
+                self.info(format!(
+                    "Sent {} (eeprom save keeps it)",
+                    setting.to_gcode()
+                ));
+            }
+            Action::Autotune(heater, celsius, cycles) => {
+                self.printer.start_pid_autotune(heater, celsius, cycles);
+                self.info(format!(
+                    "PID autotune of {} at {} °C, {cycles} cycles",
+                    heater.name(),
+                    format::trimmed(f64::from(celsius), 1)
+                ));
             }
             Action::SetTempsAnyway(targets) => {
                 self.set_temps(&actions::safe_targets(&targets));
@@ -1372,10 +1380,17 @@ impl App {
                     ));
                 }
             }
-            Action::RunLines(lines) => {
+            Action::RunLines(lines, confirmed) => {
                 let total = lines.len();
+                // The question before the run covered its G-code for the
+                // job as it was then; if that changed, each line is
+                // checked again.
+                let covered = self.view.job_context() == confirmed;
                 for (i, line) in lines.iter().enumerate() {
-                    self.run_line(line);
+                    match commands::parse(line) {
+                        Ok(Input::Gcode(gcode)) if covered => self.printer.send(&gcode),
+                        _ => self.run_line(line),
+                    }
                     // A question stops the run: its answer must come first.
                     if self.modal.is_some() && i + 1 < total {
                         self.warn(format!(
@@ -1437,31 +1452,36 @@ impl App {
         }
     }
 
-    /// Ask before sending a pasted block, one command per line.
+    /// Ask before sending a pasted block, one command per line; the
+    /// classifier's reasons come first, and a blocked line refuses the
+    /// block. An M112 in it is an emergency stop: sent at once, without a
+    /// question, and the rest of the block is dropped (the halted firmware
+    /// would ignore it).
     fn confirm_pasted(&mut self, commands: &[&str]) {
         if !self.connected_or_warn() {
             return;
         }
-        let dangerous: Vec<String> = commands
-            .iter()
-            .filter_map(|c| actions::dangerous_gcode(c))
-            .map(|doc| format!("{} ({}) is among them.", doc.code, doc.name))
-            .collect();
-        let job_active = self.view.job_active();
-        let mut message = Vec::new();
-        if job_active {
-            message.push("A job is running: these commands go between the print's lines.".into());
+        let gcode = commands.join("\n");
+        let safety = actions::check_gcode(&gcode, self.view.job_context());
+        if safety.emergency_stop {
+            self.printer.emergency_stop();
+            self.error(format!(
+                "EMERGENCY STOP sent (M112 in the pasted lines; the other {} were not sent). \
+                 {}",
+                commands.len().saturating_sub(1),
+                RESET_HINT
+            ));
+            return;
         }
-        message.extend(macro_preview(&commands.join("\n")));
-        message.extend(dangerous.iter().cloned());
-        self.modal = Some(Modal::Confirm(Confirm::new(
-            format!("Send {} pasted lines?", commands.len()),
-            message,
-            "Send",
-            "Don't send",
-            job_active || !dangerous.is_empty(),
-            Action::Send(commands.join("\n")),
-        )));
+        let guard = Guard {
+            title: format!("Send {} pasted lines?", commands.len()),
+            preview: macro_preview(&gcode),
+            yes: "Send",
+            no: "Don't send",
+            refused: "Pasted lines not sent",
+            always_ask: true,
+        };
+        self.guard(&safety, guard, Action::Send(gcode));
     }
 
     fn on_mouse(&mut self, mouse: MouseEvent) {
@@ -1833,45 +1853,78 @@ impl App {
 
     // ----- commands -----
 
-    /// Send G-code typed into the input line. Dangerous codes ask first,
-    /// and so does what would ruin a running job (homing, moves).
+    /// Send G-code typed into the input line, as the shared command-safety
+    /// classifier allows: what it blocks is refused, what needs a
+    /// confirmation (a factory reset, homing onto a paused print, a move
+    /// between the print's lines) asks first. M112 goes out at once.
     pub(crate) fn send_gcode(&mut self, line: &str) {
         if !self.connected_or_warn() {
             return;
         }
-        if let Some(doc) = actions::dangerous_gcode(line) {
-            self.modal = Some(Modal::Confirm(Confirm::new(
-                format!("Send {}?", doc.code),
-                vec![
-                    format!("{}: {}", doc.code, doc.name),
-                    doc.description.to_string(),
-                ],
-                "Send",
-                "Don't send",
-                true,
-                Action::Send(line.to_string()),
-            )));
+        let safety = actions::check_gcode(line, self.view.job_context());
+        let code = safety
+            .confirm
+            .first()
+            .map_or_else(|| line.trim().to_string(), actions::Flagged::code);
+        let during = safety.job_related();
+        let guard = Guard {
+            title: if during {
+                format!("Send {code} during the job?")
+            } else {
+                format!("Send {code}?")
+            },
+            preview: Vec::new(),
+            yes: if during { "Send anyway" } else { "Send" },
+            no: "Don't send",
+            refused: "Not sent",
+            always_ask: false,
+        };
+        self.guard(&safety, guard, Action::Send(line.to_string()));
+    }
+
+    /// Run `action`, which sends G-code that [`actions::check_gcode`]
+    /// judged as `safety`: refused (with why) when a line is blocked;
+    /// asked about, on the safe answer, when a line needs a confirmation
+    /// (or `guard.always_ask`); otherwise at once.
+    fn guard(&mut self, safety: &actions::Safety, guard: Guard, action: Action) {
+        let ctx = self.view.job_context();
+        let job = self
+            .view
+            .job
+            .as_ref()
+            .filter(|j| j.status.is_active())
+            .map(|j| j.name.clone());
+        let sentence = actions::job_sentence(ctx, job.as_deref());
+        if safety.is_blocked() {
+            let mut text = format!("{}: ", guard.refused);
+            if let Some(sentence) = &sentence {
+                text.push_str(&format!("{sentence} "));
+            }
+            text.push_str(&safety.reasons().join("; "));
+            self.error(text);
             return;
         }
-        let conflict = self.view.job.as_ref().and_then(|job| {
-            let paused = job.status == JobStatus::Paused;
-            let (doc, why) =
-                actions::job_conflict(line, paused).filter(|_| job.status.is_active())?;
-            let state = if paused { "paused" } else { "printing" };
-            Some((doc.code, format!("{} is {state}: {why}.", job.name)))
-        });
-        if let Some((code, why)) = conflict {
-            self.modal = Some(Modal::Confirm(Confirm::new(
-                format!("Send {code} during the job?"),
-                vec![why, "The print will most likely fail.".to_string()],
-                "Send anyway",
-                "Don't send",
-                true,
-                Action::Send(line.to_string()),
-            )));
+        let ask = safety.needs_confirmation();
+        if !ask && !guard.always_ask {
+            self.run_action(action);
             return;
         }
-        self.printer.send(line);
+        let mut message = Vec::new();
+        if ask {
+            if safety.job_related() {
+                message.extend(sentence);
+            }
+            message.extend(safety.reasons());
+        }
+        message.extend(guard.preview);
+        self.modal = Some(Modal::Confirm(Confirm::new(
+            guard.title,
+            message,
+            guard.yes,
+            guard.no,
+            ask,
+            action,
+        )));
     }
 
     /// Run one palette line: a command or G-code.
@@ -2059,23 +2112,20 @@ impl App {
                 let pending = Pending::new(REPORT_TIMEOUT, false);
                 self.open_report("Temperatures", ReportSource::Temperatures, pending);
             }
-            Command::Off => match self.view.job.as_ref().filter(|j| j.status.is_active()) {
-                Some(job) => {
-                    let name = job.name.clone();
-                    self.modal = Some(Modal::Confirm(Confirm::new(
-                        "Turn everything off?",
-                        vec![
-                            format!("{name} is printing."),
-                            "Heaters, fans and motors off ruins it.".to_string(),
-                        ],
-                        "Turn off",
-                        "Keep printing",
-                        true,
-                        Action::EverythingOff,
-                    )));
-                }
-                None => self.run_action(Action::EverythingOff),
-            },
+            Command::Off => {
+                let heaters = printer.with_state(|s| actions::heaters(s, &self.profile));
+                let gcode = actions::everything_off_gcode(&heaters);
+                let safety = actions::check_gcode(&gcode, self.view.job_context());
+                let guard = Guard {
+                    title: "Turn everything off?".to_string(),
+                    preview: vec!["Heaters, fans and motors off.".to_string()],
+                    yes: "Turn off",
+                    no: "Keep printing",
+                    refused: "Left on",
+                    always_ask: false,
+                };
+                self.guard(&safety, guard, Action::EverythingOff);
+            }
             Command::Tool(t) => {
                 if self.motion_allowed() {
                     printer.select_tool(t);
@@ -2153,8 +2203,17 @@ impl App {
             }
             Command::Set(edit) => {
                 let merged = printer.with_state(|s| actions::merged_setting(&s.settings, &edit));
-                printer.apply_setting(&merged);
-                self.info(format!("Sent {} (eeprom save keeps it)", merged.to_gcode()));
+                let gcode = merged.to_gcode();
+                let safety = actions::check_gcode(&gcode, self.view.job_context());
+                let guard = Guard {
+                    title: format!("Send {gcode}?"),
+                    preview: Vec::new(),
+                    yes: "Send",
+                    no: "Don't send",
+                    refused: "Not changed",
+                    always_ask: false,
+                };
+                self.guard(&safety, guard, Action::ApplySetting(merged));
             }
             Command::Eeprom(Eeprom::Save) => {
                 printer.save_settings();
@@ -2274,45 +2333,37 @@ impl App {
                 celsius,
                 cycles,
             } => {
-                if self.view.job_active() {
-                    self.warn("Autotune is disabled while a job runs");
-                    return;
-                }
-                printer.start_pid_autotune(heater, celsius, cycles);
-                self.info(format!(
-                    "PID autotune of {} at {} °C, {cycles} cycles",
-                    heater.name(),
-                    format::trimmed(f64::from(celsius), 1)
-                ));
+                let gcode = actions::autotune_gcode(heater, celsius, cycles);
+                let safety = actions::check_gcode(&gcode, self.view.job_context());
+                let guard = Guard {
+                    title: "Start a PID autotune during the job?".to_string(),
+                    preview: Vec::new(),
+                    yes: "Start",
+                    no: "Not now",
+                    refused: "Autotune not started",
+                    always_ask: false,
+                };
+                self.guard(&safety, guard, Action::Autotune(heater, celsius, cycles));
             }
             Command::Macro(Some(text)) => match actions::macro_call(&self.config.macros, &text)
                 .and_then(|(m, args)| actions::macro_gcode(m, &args).map(|gcode| (m, args, gcode)))
             {
-                // While a job runs the commands go between the print's
-                // lines (a G28 there ruins it): always asked, as danger.
-                Ok((m, args, gcode)) if m.confirm || self.view.job_active() => {
+                // Its lines as they will be sent go through the
+                // classifier, like typed ones; a macro marked to ask first
+                // asks anyway.
+                Ok((m, args, gcode)) => {
                     let name = m.name.clone();
-                    let job_active = self.view.job_active();
-                    let mut message = Vec::new();
-                    if job_active {
-                        message.push(
-                            "A job is running: these commands go between the print's lines."
-                                .to_string(),
-                        );
-                    }
-                    message.extend(macro_preview(&gcode));
-                    self.modal = Some(Modal::Confirm(Confirm::new(
-                        format!("Run {name}?"),
-                        message,
-                        "Run",
-                        "Not now",
-                        job_active,
-                        Action::RunMacro(name, args),
-                    )));
-                }
-                Ok((m, args, _)) => {
-                    let name = m.name.clone();
-                    self.run_action(Action::RunMacro(name, args));
+                    let rendered = actions::rendered_gcode(&gcode, &self.profile);
+                    let safety = actions::check_gcode(&rendered, self.view.job_context());
+                    let guard = Guard {
+                        title: format!("Run {name}?"),
+                        preview: macro_preview(&rendered),
+                        yes: "Run",
+                        no: "Not now",
+                        refused: "Macro not run",
+                        always_ask: m.confirm,
+                    };
+                    self.guard(&safety, guard, Action::RunMacro(name, args));
                 }
                 Err(why) => self.error(why),
             },

@@ -10,6 +10,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
+use sprint_host::sprint_proto::{JobContext, SettingCommand};
 use sprint_host::sprint_sim::SimConfig;
 use sprint_host::{
     BAUD_RATES, ConnectTarget, DEFAULT_BAUD, Heater, HostPrompt, PortInfo, PrinterProfile,
@@ -55,8 +56,13 @@ pub(crate) enum Action {
     AnswerPrompt(usize),
     /// Heaters, fans and motors off (`off`).
     EverythingOff,
-    /// Run these command lines, as typed into the palette (`source`).
-    RunLines(Vec<String>),
+    /// Run these command lines, as typed into the palette (`source`); their
+    /// G-code was confirmed for a job in this state.
+    RunLines(Vec<String>, JobContext),
+    /// Send a settings edit (`set`).
+    ApplySetting(SettingCommand),
+    /// Start a PID autotune (heater, target, cycles).
+    Autotune(Heater, f32, u32),
 }
 
 /// The result of a key in a dialog.

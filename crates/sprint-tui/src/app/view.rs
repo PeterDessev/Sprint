@@ -4,7 +4,7 @@
 
 use std::collections::VecDeque;
 
-use sprint_host::sprint_proto::{PositionReport, TempReport};
+use sprint_host::sprint_proto::{JobContext, PositionReport, TempReport};
 use sprint_host::{
     AutotuneState, ConnectionStatus, HostPrompt, JobInfo, LinkStats, PrinterState,
     TEMP_HISTORY_LEN, TempSample,
@@ -34,6 +34,9 @@ pub(crate) struct PrinterView {
     pub waiting_for_user: bool,
     pub prompt: Option<HostPrompt>,
     pub halted: bool,
+    /// The printer prints from its SD card (started here or at the
+    /// printer).
+    pub sd_printing: bool,
     pub active_tool: u8,
     pub link: LinkStats,
     pub autotune: Option<AutotuneState>,
@@ -69,6 +72,7 @@ impl PrinterView {
             waiting_for_user: crate::actions::waiting_for_user(s),
             prompt: s.prompt.clone(),
             halted: s.halted,
+            sd_printing: s.sd.printing.is_some(),
             active_tool: s.active_tool,
             link: s.link.clone(),
             autotune: s.autotune.clone(),
@@ -79,6 +83,12 @@ impl PrinterView {
     /// A job is running (or paused).
     pub(crate) fn job_active(&self) -> bool {
         self.job.as_ref().is_some_and(|j| j.status.is_active())
+    }
+
+    /// What the job is doing, for the command-safety classifier (see
+    /// [`crate::actions::job_context`]).
+    pub(crate) fn job_context(&self) -> JobContext {
+        crate::actions::context_of(self.job.as_ref(), self.sd_printing)
     }
 
     /// The handshake has completed.

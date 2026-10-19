@@ -311,14 +311,48 @@ fn macros_ask_first_while_a_job_runs() {
     );
     assert!(confirm.danger, "asked as a dangerous action");
     assert!(!confirm.on_yes, "the safe answer is the default");
+    // The classifier's reason, then the lines.
+    assert_eq!(
+        confirm.message[0], "calibration-cube.gcode is printing.",
+        "{:?}",
+        confirm.message
+    );
     assert!(
-        confirm.message[0].contains("A job is running"),
+        confirm.message[1].starts_with("G28 (Home axes): "),
         "{:?}",
         confirm.message
     );
     assert!(confirm.message.contains(&"G28".to_string()));
     press(&mut app, KeyCode::Enter);
     assert!(app.modal.is_none());
+    // A harmless macro runs without a question, even during the print;
+    // its placeholders are rendered for the check (and the preview).
+    app.config.macros.push(sprint_host::Macro {
+        name: "Fan".into(),
+        gcode: "M106 S{0=255}".into(),
+        color: None,
+        confirm: false,
+    });
+    app.run_line("macro fan");
+    assert!(app.modal.is_none(), "{:?}", app.toast);
+    app.run_line("macro cool down");
+    let Some(Modal::Confirm(confirm)) = &app.modal else {
+        panic!("no question: {:?}", app.toast);
+    };
+    assert!(
+        confirm
+            .message
+            .iter()
+            .any(|l| l == "M104 S0" || l == "M104 T0 S0"),
+        "{:?}",
+        confirm.message
+    );
+    assert!(
+        !confirm.message.iter().any(|l| l.contains("{heaters_off}")),
+        "{:?}",
+        confirm.message
+    );
+    press(&mut app, KeyCode::Esc);
     // A long macro shows its first lines.
     let long: String = (0..20)
         .map(|i| {
@@ -342,10 +376,17 @@ fn turning_heaters_off_while_printing_asks_first() {
         panic!("no question: {:?}", app.toast);
     };
     assert!(confirm.danger && !confirm.on_yes);
+    assert_eq!(confirm.title, "Change temperatures during the job?");
+    assert_eq!(confirm.message[0], "calibration-cube.gcode is printing.");
     assert!(
-        confirm.message[0].starts_with("Hotend T0 and Bed off while calibration-cube.gcode"),
+        confirm.message[1].starts_with("M104 (")
+            && confirm.message[1].contains("switches a heater off"),
         "{:?}",
         confirm.message
+    );
+    assert_eq!(
+        confirm.message.last().map(String::as_str),
+        Some("Set Hotend T0 off, Bed off.")
     );
     assert!(matches!(&confirm.action, dialogs::Action::SetTempsAnyway(t) if t.len() == 2));
     press(&mut app, KeyCode::Enter);
@@ -355,7 +396,7 @@ fn turning_heaters_off_while_printing_asks_first() {
     press(&mut app, KeyCode::Up);
     press(&mut app, KeyCode::Enter);
     assert!(
-        matches!(&app.modal, Some(Modal::Confirm(c)) if c.title == "Turn heaters off while printing?")
+        matches!(&app.modal, Some(Modal::Confirm(c)) if c.title == "Change temperatures during the job?")
     );
     press(&mut app, KeyCode::Esc);
     // Raising a target or setting one that is already off does not ask.
@@ -1557,6 +1598,19 @@ fn a_pasted_block_sends_one_command_per_line_after_asking() {
     app.handle_event(TermEvent::Paste("; header\nM115\r\n".into()));
     assert!(app.modal.is_none());
     assert_eq!(app.gcode_input.text(), "M115");
+    // An M112 among pasted lines stops the printer at once, unasked.
+    app.gcode_input.clear();
+    app.handle_event(TermEvent::Paste("G28\nM112\nG1 X10\n".into()));
+    assert!(app.modal.is_none());
+    wait(&mut app, "the halt", |s| s.halted);
+    assert!(
+        app.toast
+            .as_ref()
+            .is_some_and(|t| t.text.to_lowercase().contains("emergency stop")),
+        "{:?}",
+        app.toast
+    );
+    assert!(!received(&app).iter().any(|c| c == "G28"));
 }
 
 #[test]
@@ -1628,6 +1682,18 @@ fn typed_moves_during_a_print_ask_first() {
     // What a print is tuned with goes straight out.
     app.send_gcode("M220 S110");
     assert!(app.modal.is_none());
+    // Starting an SD print is refused, with the classifier's reason.
+    app.send_gcode("M24");
+    assert!(app.modal.is_none());
+    let toast = app.toast.clone().expect("refused");
+    assert_eq!(toast.tone, Tone::Bad);
+    assert!(
+        toast
+            .text
+            .starts_with("Not sent: calibration-cube.gcode is printing. M24 ("),
+        "{}",
+        toast.text
+    );
     // While paused a move is fine, homing Z is not.
     if let Some(job) = app.view.job.as_mut() {
         job.status = JobStatus::Paused;
@@ -1924,7 +1990,10 @@ fn the_palette_runs_pronsole_commands() {
     };
     assert_eq!(
         confirm.action,
-        dialogs::Action::RunLines(vec!["bedtemp 55".into(), "M105".into()])
+        dialogs::Action::RunLines(
+            vec!["bedtemp 55".into(), "M105".into()],
+            sprint_host::sprint_proto::JobContext::Idle
+        )
     );
     let action = confirm.action.clone();
     app.modal = None;

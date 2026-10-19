@@ -4,10 +4,13 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use sprint_host::sprint_proto::{GcodeDoc, PrinterSettings, SettingCommand, gcode_doc};
+use sprint_host::sprint_proto::{
+    Decision, JobContext, PrinterSettings, SafetyReason, SettingCommand, TempReport, Verdict,
+    classify,
+};
 use sprint_host::{
-    ConnectTarget, Heater, JobInfo, JobKind, Macro, PrintOptions, PrinterProfile, PrinterState,
-    TempPreset,
+    ConnectTarget, Heater, JobInfo, JobKind, JobStatus, Macro, PrintOptions, PrinterProfile,
+    PrinterState, TempPreset,
 };
 
 use crate::commands::TempTarget;
@@ -340,6 +343,59 @@ pub fn targets_text(targets: &[(Heater, f32)]) -> String {
         .join(", ")
 }
 
+/// The G-code that sets `heater` to `celsius` ("M104 T1 S215", "M140 S0",
+/// "M141 S40"), for the safety check.
+pub fn target_gcode(heater: Heater, celsius: f32) -> String {
+    let value = crate::format::trimmed(f64::from(safe_target(celsius)), 1);
+    match heater {
+        Heater::Hotend(t) => format!("M104 T{t} S{value}"),
+        Heater::Bed => format!("M140 S{value}"),
+        Heater::Chamber => format!("M141 S{value}"),
+    }
+}
+
+/// The G-code of `targets` for the safety check, a line per target that
+/// changes something: switching off a heater whose target in `temps` is
+/// off already is left out (nothing to ask about).
+pub fn targets_gcode(temps: &TempReport, targets: &[(Heater, f32)]) -> String {
+    targets
+        .iter()
+        .filter(|&&(heater, celsius)| safe_target(celsius) > 0.0 || target_set(temps, heater))
+        .map(|&(heater, celsius)| target_gcode(heater, celsius))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Whether `heater` has a target above 0 °C in `temps`.
+fn target_set(temps: &TempReport, heater: Heater) -> bool {
+    let reading = match heater {
+        Heater::Hotend(t) => temps.hotends.get(usize::from(t)),
+        Heater::Bed => temps.bed.as_ref(),
+        Heater::Chamber => temps.chamber.as_ref(),
+    };
+    reading
+        .and_then(|r| r.target)
+        .is_some_and(|t| t.is_finite() && t > 0.0)
+}
+
+/// The M303 a PID autotune of `heater` sends, for the safety check.
+pub fn autotune_gcode(heater: Heater, celsius: f32, cycles: u32) -> String {
+    format!(
+        "M303 E{} S{} C{cycles}",
+        heater.autotune_index(),
+        crate::format::trimmed(f64::from(safe_target(celsius)), 1)
+    )
+}
+
+/// The G-code of `off` ([`crate::session::everything_off`]) for the safety
+/// check: these heaters off, the fan off, the motors off (M84).
+pub fn everything_off_gcode(heaters: &[Heater]) -> String {
+    let mut lines: Vec<String> = heaters.iter().map(|&h| target_gcode(h, 0.0)).collect();
+    lines.push("M107".into());
+    lines.push("M84".into());
+    lines.join("\n")
+}
+
 /// A `set` edit merged into the setting the firmware reported (same key),
 /// so the parameters not given keep their values.
 pub fn merged_setting(settings: &PrinterSettings, edit: &SettingCommand) -> SettingCommand {
@@ -383,61 +439,185 @@ pub fn print_options(loaded: &LoadedFile) -> PrintOptions {
     }
 }
 
-/// The reference entry of a raw line when it is marked dangerous (factory
-/// reset, file deletion, firmware update, ...), so a UI can ask first.
-/// Emergency commands (M112, M108, M410, M876) never ask.
-pub fn dangerous_gcode(line: &str) -> Option<&'static GcodeDoc> {
-    let doc = gcode_doc(line.trim())?;
-    let emergency = ["M112", "M108", "M410", "M876"].contains(&doc.code);
-    (doc.dangerous && !emergency).then_some(doc)
+/// What the job is doing, as the command-safety classifier
+/// ([`classify`]) needs it: `Paused` only for a host print that is
+/// paused (the host restores its position, modes and temperatures on
+/// resume); any other active job, and a print from the SD card that was
+/// started at the printer, is `Printing` (pausing, resuming and cancelling
+/// still run the print's or a script's lines); otherwise `Idle`.
+pub fn job_context(state: &PrinterState) -> JobContext {
+    context_of(state.job.as_ref(), state.sd.printing.is_some())
 }
 
-/// Codes that home Z or probe: the nozzle goes down onto the part.
-const PROBING: &[&str] = &[
-    "G29", "G30", "G32", "G33", "G34", "G35", "G38.2", "G38.3", "G38.4", "G38.5", "G76", "M48",
-];
-/// Codes that switch the motors off: the printer loses its position.
-const MOTORS_OFF: &[&str] = &["M18", "M84"];
-/// Codes that move the nozzle or change how moves are read.
-const MOVES: &[&str] = &[
-    "G0", "G1", "G2", "G3", "G5", "G6", "G27", "G28", "G42", "G60", "G61", "G80", "G90", "G91",
-    "G92", "M82", "M83",
-];
-
-/// Why typed `line` would ruin the running job, if it would, with its
-/// reference entry: homing Z, probing and switching the motors off (even
-/// while the job is `paused`), and while it prints, moves and changes to
-/// positioning or extrusion modes, which run between the print's lines.
-/// What a print is tuned with (temperatures, fan, speed, flow, babysteps,
-/// a filament change) never conflicts.
-pub fn job_conflict(line: &str, paused: bool) -> Option<(&'static GcodeDoc, &'static str)> {
-    let doc = gcode_doc(line.trim())?;
-    let code = doc.code;
-    let why = if PROBING.contains(&code) || (code == "G28" && homes_z(line)) {
-        "homing Z and probing lower the nozzle onto the part"
-    } else if MOTORS_OFF.contains(&code) {
-        "with the motors off the printer loses the position the print goes on from"
-    } else if MOVES.contains(&code) && !paused {
-        "it runs between the print's lines, moving the nozzle or changing how they move"
-    } else {
-        return None;
-    };
-    Some((doc, why))
+/// [`job_context`] from the job record and whether the printer reports
+/// printing from its SD card.
+pub fn context_of(job: Option<&JobInfo>, sd_printing: bool) -> JobContext {
+    match job.filter(|j| j.status.is_active()) {
+        Some(job) if job.kind == JobKind::HostPrint && job.status == JobStatus::Paused => {
+            JobContext::Paused
+        }
+        Some(_) => JobContext::Printing,
+        None if sd_printing => JobContext::Printing,
+        None => JobContext::Idle,
+    }
 }
 
-/// Whether a G28 line homes Z: when it names Z, or no axis at all.
-fn homes_z(line: &str) -> bool {
-    let command = line.split(';').next().unwrap_or_default().trim();
-    // The parameters follow the code ("G28 X Y", "G28X").
-    let params = command.get(1..).map_or("", |rest| {
-        rest.trim_start_matches(|c: char| c.is_ascii_digit())
-    });
-    let axes: Vec<char> = params
-        .chars()
-        .map(|c| c.to_ascii_uppercase())
-        .filter(|c| matches!(c, 'X' | 'Y' | 'Z'))
-        .collect();
-    axes.is_empty() || axes.contains(&'Z')
+/// A command line that [`classify`] does not let through as it is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Flagged {
+    /// The line as given.
+    pub line: String,
+    /// What the classifier said.
+    pub verdict: Verdict,
+}
+
+impl Flagged {
+    /// The command for messages: "G28 (Auto home)", the extended
+    /// command's name, or the line itself.
+    pub fn name(&self) -> String {
+        match (self.verdict.doc, &self.verdict.command) {
+            (Some(doc), _) => format!("{} ({})", doc.code, doc.name),
+            (None, Some(command)) => command.clone(),
+            (None, None) => self.line.trim().to_string(),
+        }
+    }
+
+    /// The short command ("G28", "BED_MESH_CALIBRATE") or the line.
+    pub fn code(&self) -> String {
+        self.verdict
+            .command
+            .clone()
+            .unwrap_or_else(|| self.line.trim().to_string())
+    }
+
+    /// Whether the reason is the running job (not the command itself).
+    pub fn job_related(&self) -> bool {
+        !matches!(
+            self.verdict.reason(),
+            None | Some(SafetyReason::Dangerous | SafetyReason::Restarts)
+                | Some(SafetyReason::ForcesPosition)
+        )
+    }
+
+    /// "G28 (Auto home): homing Z or probing lowers the nozzle …"; for a
+    /// dangerous command its reference description says what it does.
+    pub fn describe(&self) -> String {
+        let why = match (self.verdict.reason(), self.verdict.doc) {
+            (Some(SafetyReason::Dangerous), Some(doc)) => doc.description.to_string(),
+            (Some(reason), _) => reason.message().to_string(),
+            (None, _) => "it may be sent".to_string(),
+        };
+        format!("{}: {why}", self.name())
+    }
+}
+
+/// What [`check_gcode`] found: the lines that need a confirmation and the
+/// lines that must not be sent.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Safety {
+    /// Lines to ask about first.
+    pub confirm: Vec<Flagged>,
+    /// Lines that must not be sent (the whole text is refused).
+    pub blocked: Vec<Flagged>,
+    /// The text has an emergency stop (M112): it goes out at once, never
+    /// asked about.
+    pub emergency_stop: bool,
+}
+
+impl Safety {
+    /// Everything may be sent without asking.
+    pub fn is_allowed(&self) -> bool {
+        self.confirm.is_empty() && self.blocked.is_empty()
+    }
+
+    /// Some line needs a confirmation (and none is blocked).
+    pub fn needs_confirmation(&self) -> bool {
+        self.blocked.is_empty() && !self.confirm.is_empty()
+    }
+
+    /// Some line must not be sent.
+    pub fn is_blocked(&self) -> bool {
+        !self.blocked.is_empty()
+    }
+
+    /// Some line needs a yes because of the running job (not only because
+    /// of what it is).
+    pub fn job_related(&self) -> bool {
+        self.confirm
+            .iter()
+            .chain(&self.blocked)
+            .any(Flagged::job_related)
+    }
+
+    /// Why, a sentence per flagged line (blocked ones first), at most
+    /// [`MAX_FLAGGED_SHOWN`] of them and then how many more there are.
+    pub fn reasons(&self) -> Vec<String> {
+        let all: Vec<&Flagged> = self.blocked.iter().chain(&self.confirm).collect();
+        let mut out: Vec<String> = all
+            .iter()
+            .take(MAX_FLAGGED_SHOWN)
+            .map(|f| f.describe())
+            .collect();
+        if all.len() > MAX_FLAGGED_SHOWN {
+            out.push(format!("… and {} more", all.len() - MAX_FLAGGED_SHOWN));
+        }
+        out
+    }
+}
+
+/// Flagged lines [`Safety::reasons`] lists.
+pub const MAX_FLAGGED_SHOWN: usize = 4;
+
+/// [`classify`] every line of `gcode` (a typed line, a pasted block, a
+/// macro, a script) for a job in `ctx`.
+pub fn check_gcode(gcode: &str, ctx: JobContext) -> Safety {
+    let mut safety = Safety::default();
+    for line in gcode.lines() {
+        let verdict = classify(line, ctx);
+        if verdict.emergency && verdict.command.as_deref() == Some("M112") {
+            safety.emergency_stop = true;
+        }
+        let flagged = || Flagged {
+            line: line.trim().to_string(),
+            verdict: verdict.clone(),
+        };
+        match verdict.decision {
+            Decision::Allow => {}
+            Decision::Confirm(_) => safety.confirm.push(flagged()),
+            Decision::Block(_) => safety.blocked.push(flagged()),
+        }
+    }
+    safety
+}
+
+/// "cube.gcode is printing." / "cube.gcode is paused." for messages about
+/// the running job, or `None` when idle.
+pub fn job_sentence(ctx: JobContext, job: Option<&str>) -> Option<String> {
+    let name = job.unwrap_or("A job");
+    match ctx {
+        JobContext::Idle => None,
+        JobContext::Printing => Some(format!("{name} is printing.")),
+        JobContext::Paused => Some(format!("{name} is paused.")),
+    }
+}
+
+/// The name of the active job, if any.
+pub fn active_job_name(state: &PrinterState) -> Option<String> {
+    state
+        .job
+        .as_ref()
+        .filter(|j| j.status.is_active())
+        .map(|j| j.name.clone())
+}
+
+/// A script or macro's G-code as it will be sent, its `{x}`, `{max_z}`,
+/// `{heaters_off}` ... placeholders rendered with the profile (the host
+/// renders them again with the printer's position when it sends them), so
+/// previews and the safety check see real commands.
+pub fn rendered_gcode(gcode: &str, profile: &PrinterProfile) -> String {
+    let state = sprint_host::sprint_gcode::MachineState::new();
+    let ctx = profile.script_context(&state);
+    sprint_host::script::render_script_with(gcode, &ctx).join("\n")
 }
 
 /// Whether the firmware waits for the user without a host prompt to
@@ -519,9 +699,7 @@ pub fn cancel_question(job: &JobInfo, cancel_script: &str) -> CancelQuestion {
 /// example `{heaters_off}` becomes one `M104` per hotend plus `M140 S0`),
 /// ready for [`cancel_question`].
 pub fn rendered_cancel_script(profile: &PrinterProfile) -> String {
-    let state = sprint_host::sprint_gcode::MachineState::new();
-    let ctx = profile.script_context(&state);
-    sprint_host::script::render_script_with(&profile.cancel_script, &ctx).join("\n")
+    rendered_gcode(&profile.cancel_script, profile)
 }
 
 /// A script's first commands: "M104 S0, M140 S0, M107, G91, … (8
@@ -897,61 +1075,82 @@ mod tests {
         assert_eq!(sd_name(Path::new("---.gcode")), "PRINT.GCO");
     }
 
-    #[test]
-    fn dangerous_codes_but_not_emergencies() {
-        assert_eq!(dangerous_gcode("M502").map(|d| d.code), Some("M502"));
-        assert_eq!(dangerous_gcode("m30 file.gco").map(|d| d.code), Some("M30"));
-        assert!(dangerous_gcode("M112").is_none());
-        assert!(dangerous_gcode("G28").is_none());
-        assert!(dangerous_gcode("BED_MESH_CALIBRATE").is_none());
+    fn job_state(kind: JobKind, status: JobStatus) -> PrinterState {
+        let mut job = JobInfo::new(kind, "cube.gcode", 100, 1000);
+        job.status = status;
+        PrinterState {
+            job: Some(job),
+            ..PrinterState::default()
+        }
     }
 
     #[test]
-    fn typed_gcode_that_conflicts_with_a_job() {
-        // (line, paused) -> conflicts
-        let cases: &[(&str, bool, bool)] = &[
-            // Homing Z and probing put the nozzle on the part, paused or not.
-            ("G28", false, true),
-            ("G28", true, true),
-            ("g28 z", true, true),
-            ("G28 O", true, true),
-            ("G28 X Y", true, false),
-            ("G28 X Y", false, true),
-            ("G29", true, true),
-            ("G38.2 Z-10", true, true),
-            ("M48", true, true),
-            // Motors off loses the position the print continues from.
-            ("M84", true, true),
-            ("M18 X", false, true),
-            // Moves and mode changes go between the print's lines.
-            ("G1 X10", false, true),
-            ("G01X10", false, true),
-            ("G91", false, true),
-            ("G92 E0", false, true),
-            ("M83", false, true),
-            ("G1 Z5", true, false),
-            ("G91", true, false),
-            // What a print is tuned with.
-            ("M220 S120", false, false),
-            ("M221 S95", false, false),
-            ("M290 Z0.05", false, false),
-            ("M104 S215", false, false),
-            ("M106 S255", false, false),
-            ("M600", false, false),
-            ("M105", false, false),
-            ("BED_MESH_CALIBRATE", false, false),
-            ("", false, false),
-        ];
-        for &(line, paused, conflicts) in cases {
-            assert_eq!(
-                job_conflict(line, paused).is_some(),
-                conflicts,
-                "{line:?} paused={paused}"
-            );
-        }
-        let (doc, why) = job_conflict("G28", true).expect("G28");
-        assert_eq!(doc.code, "G28");
-        assert!(why.contains("nozzle"), "{why}");
+    fn the_job_context_comes_from_the_job() {
+        assert_eq!(job_context(&PrinterState::default()), JobContext::Idle);
+        let host = |status| job_context(&job_state(JobKind::HostPrint, status));
+        assert_eq!(host(JobStatus::Printing), JobContext::Printing);
+        assert_eq!(host(JobStatus::Starting), JobContext::Printing);
+        // Pausing still streams (or waits for) the print's lines.
+        assert_eq!(host(JobStatus::Pausing), JobContext::Printing);
+        assert_eq!(host(JobStatus::Paused), JobContext::Paused);
+        assert_eq!(host(JobStatus::Resuming), JobContext::Printing);
+        assert_eq!(host(JobStatus::Completed), JobContext::Idle);
+        assert_eq!(host(JobStatus::Failed("x".into())), JobContext::Idle);
+        // The host does not restore an SD print's position on resume.
+        let sd = job_state(JobKind::SdPrint, JobStatus::Paused);
+        assert_eq!(job_context(&sd), JobContext::Printing);
+        // A card print started at the printer.
+        let mut card = PrinterState::default();
+        card.sd.printing = Some((10, 100));
+        assert_eq!(job_context(&card), JobContext::Printing);
+    }
+
+    #[test]
+    fn lines_are_checked_with_the_shared_classifier() {
+        // Idle: only what is dangerous in itself asks.
+        let idle = check_gcode("G28\nG1 X10\nM502\n; note\n", JobContext::Idle);
+        assert!(idle.needs_confirmation() && !idle.job_related());
+        assert_eq!(idle.confirm.len(), 1);
+        assert_eq!(idle.confirm[0].code(), "M502");
+        assert_eq!(idle.confirm[0].name(), "M502 (Factory reset)");
+        let why = idle.confirm[0].describe();
+        assert!(why.starts_with("M502 (Factory reset): "), "{why}");
+        // Printing: moves and homing ask, an SD print is refused.
+        let printing = check_gcode("G28\nM104 S215\nM24", JobContext::Printing);
+        assert!(printing.is_blocked() && !printing.needs_confirmation());
+        assert!(printing.job_related());
+        assert_eq!(printing.blocked[0].code(), "M24");
+        assert_eq!(printing.confirm[0].code(), "G28");
+        let reasons = printing.reasons();
+        assert_eq!(reasons.len(), 2);
+        assert!(reasons[0].starts_with("M24 "), "{reasons:?}");
+        // Paused: moves are fine, homing Z still asks.
+        assert!(check_gcode("G91\nG1 Z5\nG90", JobContext::Paused).is_allowed());
+        assert!(check_gcode("G28 X Y", JobContext::Paused).is_allowed());
+        assert!(check_gcode("G28", JobContext::Paused).needs_confirmation());
+        // M112 is never asked about, and is noticed.
+        let stop = check_gcode("G28\nM112", JobContext::Idle);
+        assert!(stop.is_allowed() && stop.emergency_stop);
+        // Many flagged lines are summed up.
+        let many = check_gcode(&"G1 X1\n".repeat(9), JobContext::Printing);
+        let reasons = many.reasons();
+        assert_eq!(reasons.len(), MAX_FLAGGED_SHOWN + 1);
+        assert_eq!(reasons.last().map(String::as_str), Some("… and 5 more"));
+        assert_eq!(
+            job_sentence(JobContext::Paused, Some("a.gcode")).as_deref(),
+            Some("a.gcode is paused.")
+        );
+        assert_eq!(job_sentence(JobContext::Idle, Some("a.gcode")), None);
+    }
+
+    #[test]
+    fn scripts_are_rendered_for_previews() {
+        let profile = PrinterProfile {
+            extruders: 2,
+            ..PrinterProfile::default()
+        };
+        let text = rendered_gcode("{heaters_off}\nM107\nG1 Z{max_z}", &profile);
+        assert_eq!(text, "M104 T0 S0\nM104 T1 S0\nM140 S0\nM107\nG1 Z250");
     }
 
     #[test]

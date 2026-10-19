@@ -1390,3 +1390,61 @@ fn monitor_in_a_script_stops_at_a_pause_the_script_made() {
         Some(JobStatus::Cancelled)
     );
 }
+
+#[test]
+fn the_shared_classifier_refuses_and_asks_during_a_print() {
+    let scratch = Scratch::new("classifier");
+    let (mut shell, buffer) = connected_timed();
+    shell.load(&scratch.slow_file());
+    let mut input = Script::new(["print"], false);
+    shell.run_lines_until_eof_without_leaving(&mut input);
+    wait_for(&shell, "the print", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Printing)
+    });
+    received(&shell);
+    // Starting an SD print or writing to the card is refused, `!` or not;
+    // a move asks (here: no); tuning goes straight out; a macro is checked
+    // line by line.
+    let mut input = Script::new(
+        [
+            "M24",
+            "!M28 a.gco",
+            "G1 X10",
+            "n",
+            "M220 S110",
+            "macro home",
+            "no",
+        ],
+        true,
+    );
+    shell.run_lines_until_eof_without_leaving(&mut input);
+    crate::session::wait_idle(&shell.printer, PATIENCE, &Interrupt::new()).ok();
+    let text = buffer.text();
+    assert!(
+        text.contains("Not sent: slow.gcode is printing. M24 (Start or resume SD print): "),
+        "{text}"
+    );
+    assert!(
+        text.contains("Not sent: slow.gcode is printing. M28 "),
+        "{text}"
+    );
+    assert!(text.contains("Not run"), "{text}");
+    let got = received(&shell);
+    assert!(got.iter().any(|c| c == "M220 S110"), "{got:?}");
+    for refused in ["M24", "M28 a.gco", "G1 X10", "G28"] {
+        assert!(!got.iter().any(|c| c == refused), "{refused} in {got:?}");
+    }
+    shell.printer.cancel();
+    wait_for(&shell, "the cancel", |s| !s.job_active());
+}
+
+#[test]
+fn an_emergency_stop_is_never_asked_about() {
+    let (mut shell, buffer) = connected();
+    let mut input = Script::new(["M112"], true);
+    shell.run_lines_until_eof_without_leaving(&mut input);
+    wait_for(&shell, "the halt", |s| s.halted);
+    assert!(!buffer.text().contains("Send it?"), "{}", buffer.text());
+}

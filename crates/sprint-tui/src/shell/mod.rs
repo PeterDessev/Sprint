@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::Receiver;
-use sprint_host::sprint_proto::{gcode_doc, setting_def};
+use sprint_host::sprint_proto::{JobContext, gcode_doc, setting_def};
 use sprint_host::{
     AppConfig, Axis, ConnectTarget, ConnectionStatus, Heater, JobKind, Printer, PrinterProfile,
     list_ports,
@@ -131,6 +131,22 @@ pub fn run_shell(mut options: TuiOptions) -> anyhow::Result<()> {
     shell.run(source.as_mut());
     source.save_history();
     Ok(())
+}
+
+/// How [`Shell::safe_to_send`] words its question and refusals.
+struct SendCheck<'a> {
+    /// The question after the reasons ("Send it?", "Run Home?").
+    question: &'a str,
+    /// Starts the refusal of a blocked line ("Not sent").
+    refused: &'a str,
+    /// Said when the answer is no.
+    declined: &'a str,
+    /// Asked even when the classifier lets everything through (a macro
+    /// marked to ask first).
+    always_ask: Option<&'a str>,
+    /// Typed with `!`: sent without a question (a blocked line is still
+    /// refused).
+    raw: bool,
 }
 
 /// Whether the shell goes on after a line.
@@ -527,41 +543,73 @@ impl Shell {
         }
     }
 
-    /// Send G-code as typed. Unless the line started with `!`, dangerous
-    /// codes ask first on a terminal, and so does what would ruin a running
-    /// job (scripts do not send that).
+    /// Send G-code as typed, as the shared command-safety classifier
+    /// allows ([`actions::check_gcode`]): what it blocks (an SD print or
+    /// M28 during a print) is not sent; what needs a confirmation (a
+    /// factory reset, homing onto a paused print, a move between the
+    /// print's lines) asks first on a terminal, unless the line started
+    /// with `!`. Scripts send what is dangerous in itself but nothing that
+    /// would ruin a running job. M112 always goes out at once.
     pub(crate) fn send_gcode(&mut self, gcode: &str, raw: bool, input: &mut dyn LineSource) {
         if !self.connected_or_warn() {
             return;
         }
-        if !raw && let Some(doc) = actions::dangerous_gcode(gcode) {
-            let question = format!("{} ({}): {} Send it?", doc.code, doc.name, doc.description);
-            if !self.confirm(input, &question, true) {
-                self.out.dim("Not sent");
-                return;
+        let check = SendCheck {
+            question: "Send it?",
+            refused: "Not sent",
+            declined: "Not sent (a line starting with ! is sent as typed)",
+            always_ask: None,
+            raw,
+        };
+        if self.safe_to_send(gcode, &check, input) {
+            self.printer.send(gcode);
+        }
+    }
+
+    /// Whether `gcode` (one or more lines: typed, a macro) may go to the
+    /// printer now, as the shared classifier says: refused when it blocks
+    /// a line; asked about when one needs a confirmation (or
+    /// `check.always_ask` asks anyway): on a terminal, while scripts get
+    /// no while a job runs and yes otherwise.
+    fn safe_to_send(&self, gcode: &str, check: &SendCheck, input: &mut dyn LineSource) -> bool {
+        let (ctx, job) = self
+            .printer
+            .with_state(|s| (actions::job_context(s), actions::active_job_name(s)));
+        let safety = actions::check_gcode(gcode, ctx);
+        let sentence = actions::job_sentence(ctx, job.as_deref());
+        if safety.is_blocked() {
+            let mut text = format!("{}: ", check.refused);
+            if let Some(sentence) = &sentence {
+                text.push_str(&format!("{sentence} "));
             }
+            text.push_str(&safety.reasons().join("; "));
+            self.out.error(text);
+            return false;
         }
-        // What would ruin a running job (homing Z onto the part, moves
-        // between its lines) is asked about, and not sent by a script.
-        let conflict = self.printer.with_state(|s| {
-            let job = s.job.as_ref().filter(|j| j.status.is_active())?;
-            let paused = job.status == sprint_host::JobStatus::Paused;
-            let (doc, why) = actions::job_conflict(gcode, paused)?;
-            let state = if paused { "paused" } else { "printing" };
-            Some(format!(
-                "{} is {state}: {why}. Send {} anyway?",
-                job.name, doc.code
-            ))
-        });
-        if !raw
-            && let Some(question) = conflict
-            && !self.confirm(input, &question, false)
-        {
-            self.out
-                .dim("Not sent (a line starting with ! is sent as typed)");
-            return;
+        if check.raw {
+            return true;
         }
-        self.printer.send(gcode);
+        let question = if safety.needs_confirmation() {
+            let mut question = String::new();
+            if safety.job_related()
+                && let Some(sentence) = &sentence
+            {
+                question.push_str(&format!("{sentence} "));
+            }
+            question.push_str(safety.reasons().join("; ").trim_end_matches('.'));
+            question.push_str(&format!(". {}", check.question));
+            question
+        } else if let Some(always) = check.always_ask {
+            always.to_string()
+        } else {
+            return true;
+        };
+        let default = ctx == JobContext::Idle || !safety.needs_confirmation();
+        if self.confirm(input, &question, default) {
+            return true;
+        }
+        self.out.dim(check.declined);
+        false
     }
 
     /// Run a command.
@@ -1221,17 +1269,18 @@ impl Shell {
                 }
             }
             Command::Off => {
-                let job = printer.with_state(|s| {
-                    s.job
-                        .as_ref()
-                        .filter(|j| j.status.is_active())
-                        .map(|j| j.name.clone())
-                });
-                let question = job.map(|name| {
-                    format!("{name} is printing; off turns the heaters and motors off and ruins it. Turn everything off?")
+                let gcode = printer.with_state(|s| {
+                    actions::everything_off_gcode(&actions::heaters(s, &self.profile))
                 });
                 // A script does not ruin a print by itself.
-                if question.is_none_or(|q| self.confirm(input, &q, false)) {
+                let check = SendCheck {
+                    question: "Turn everything off?",
+                    refused: "Left on",
+                    declined: "Left on",
+                    always_ask: None,
+                    raw: false,
+                };
+                if self.safe_to_send(&gcode, &check, input) {
                     let heaters = session::everything_off(&printer);
                     let names: Vec<String> =
                         heaters.into_iter().map(actions::heater_label).collect();
@@ -1239,8 +1288,6 @@ impl Shell {
                         "{} off, fans off, motors off (M84)",
                         names.join(", ")
                     ));
-                } else {
-                    self.out.dim("Left on");
                 }
             }
             Command::Tool(t) => {
@@ -1337,9 +1384,18 @@ impl Shell {
             }
             Command::Set(edit) => {
                 let merged = printer.with_state(|s| actions::merged_setting(&s.settings, &edit));
-                printer.apply_setting(&merged);
-                self.out
-                    .dim(format!("Sent {} (eeprom save keeps it)", merged.to_gcode()));
+                let gcode = merged.to_gcode();
+                let check = SendCheck {
+                    question: "Change it?",
+                    refused: "Not changed",
+                    declined: "Not changed",
+                    always_ask: None,
+                    raw: false,
+                };
+                if self.safe_to_send(&gcode, &check, input) {
+                    printer.apply_setting(&merged);
+                    self.out.dim(format!("Sent {gcode} (eeprom save keeps it)"));
+                }
             }
             Command::Eeprom(Eeprom::Save) => {
                 printer.save_settings();
@@ -1477,8 +1533,15 @@ impl Shell {
                 celsius,
                 cycles,
             } => {
-                if self.job_active() {
-                    self.out.warn("Not while a job runs");
+                let gcode = actions::autotune_gcode(heater, celsius, cycles);
+                let check = SendCheck {
+                    question: "Start the autotune?",
+                    refused: "Not started",
+                    declined: "Not started",
+                    always_ask: None,
+                    raw: false,
+                };
+                if !self.safe_to_send(&gcode, &check, input) {
                     return;
                 }
                 printer.start_pid_autotune(heater, celsius, cycles);
@@ -1494,22 +1557,22 @@ impl Shell {
                     Ok(sprint_host::Macro { gcode, ..m.clone() })
                 }) {
                 Ok(m) => {
-                    // While a job runs the commands go between the print's
-                    // lines (a G28 there ruins it): asked on a terminal.
-                    let question = if self.job_active() {
-                        Some(format!(
-                            "A job is running; run {} between its lines?",
-                            m.name
-                        ))
-                    } else {
-                        m.confirm.then(|| format!("Run {}?", m.name))
+                    // Its lines as they will be sent go through the
+                    // classifier, like typed ones; a macro marked to ask
+                    // first asks anyway.
+                    let gcode = actions::rendered_gcode(&m.gcode, &self.profile);
+                    let question = format!("Run {}?", m.name);
+                    let refused = format!("Macro {} not run", m.name);
+                    let check = SendCheck {
+                        question: &question,
+                        refused: &refused,
+                        declined: "Not run",
+                        always_ask: m.confirm.then_some(question.as_str()),
+                        raw: false,
                     };
-                    let go = question.is_none_or(|q| self.confirm(input, &q, true));
-                    if go {
+                    if self.safe_to_send(&gcode, &check, input) {
                         printer.run_macro(&m);
                         self.out.dim(format!("Macro {}", m.name));
-                    } else {
-                        self.out.dim("Not run");
                     }
                 }
                 Err(why) => self.out.error(why),
@@ -1540,34 +1603,24 @@ impl Shell {
         }
     }
 
-    /// Send heater targets; turning a heating heater off while a job runs
-    /// asks first on a terminal.
+    /// Send heater targets, as the classifier allows them for the running
+    /// job (turning a heater off while printing asks first on a terminal;
+    /// one that is off already is not asked about).
     fn set_temps(&self, targets: &[(Heater, f32)], input: &mut dyn LineSource) {
         let targets = actions::safe_targets(targets);
-        let (off, job) = self.printer.with_state(|s| {
-            let off: Vec<String> = targets
-                .iter()
-                .filter(|&&(heater, celsius)| celsius <= 0.0 && heating(s, heater))
-                .map(|&(heater, _)| actions::heater_label(heater))
-                .collect();
-            let job = s
-                .job
-                .as_ref()
-                .filter(|j| j.status.is_active())
-                .map(|j| j.name.clone());
-            (off, job)
-        });
-        if let Some(name) = job
-            && !off.is_empty()
-        {
-            let question = format!(
-                "{} off while {name} prints? The print will most likely fail.",
-                off.join(" and ")
-            );
-            if !self.confirm(input, &question, true) {
-                self.out.dim("Temperatures kept");
-                return;
-            }
+        let gcode = self
+            .printer
+            .with_state(|s| actions::targets_gcode(&s.temps, &targets));
+        let question = format!("Set {}?", actions::targets_text(&targets));
+        let check = SendCheck {
+            question: &question,
+            refused: "Not set",
+            declined: "Temperatures kept",
+            always_ask: None,
+            raw: false,
+        };
+        if !self.safe_to_send(&gcode, &check, input) {
+            return;
         }
         for &(heater, celsius) in &targets {
             self.printer.set_temperature(heater, celsius);
@@ -1726,16 +1779,4 @@ fn disconnect_question(state: &sprint_host::PrinterState) -> Option<String> {
             "{name} is being written to the SD card; disconnecting cancels the upload. Disconnect?"
         ),
     })
-}
-
-/// Whether `heater` has a target above 0 °C.
-fn heating(state: &sprint_host::PrinterState, heater: Heater) -> bool {
-    let reading = match heater {
-        Heater::Hotend(t) => state.temps.hotends.get(usize::from(t)),
-        Heater::Bed => state.temps.bed.as_ref(),
-        Heater::Chamber => state.temps.chamber.as_ref(),
-    };
-    reading
-        .and_then(|r| r.target)
-        .is_some_and(|t| t.is_finite() && t > 0.0)
 }
