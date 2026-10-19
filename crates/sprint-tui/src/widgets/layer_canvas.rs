@@ -377,6 +377,8 @@ impl Widget for LayerCanvas<'_> {
         };
         let tool_style: Style = theme.accent();
         let canvas = Canvas::default()
+            // The canvas clears its area; keep the screen background.
+            .background_color(theme.background)
             .marker(Marker::Braille)
             .x_bounds(view.x)
             .y_bounds(view.y)
