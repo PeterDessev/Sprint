@@ -2,10 +2,12 @@
 //! editor dialog, confirmation where asked for, a context menu to edit,
 //! duplicate, reorder and delete, and a set of useful defaults.
 
+use egui::color_picker::{self, Alpha};
+use egui::ecolor::Hsva;
 use egui::{
-    Align, Color32, CornerRadius, CursorIcon, FontId, Frame, Id, Key, Layout, Margin, Modal,
-    Response, RichText, Sense, Stroke, StrokeKind, TextEdit, Ui, WidgetInfo, WidgetType,
-    text::LayoutJob, vec2,
+    Align, Color32, CornerRadius, CursorIcon, FontId, Frame, Id, Key, Layout, Margin, Mesh, Modal,
+    Popup, PopupCloseBehavior, Response, RichText, Sense, Stroke, StrokeKind, TextEdit, Ui,
+    WidgetInfo, WidgetType, text::LayoutJob, vec2,
 };
 use sprint_host::{Macro, PrinterProfile};
 
@@ -693,13 +695,68 @@ fn color_row(ui: &mut Ui, p: &Palette, editor: &mut Editor) {
                 editor.draft.color = Some(rgb);
             }
         }
-        let custom_selected = editor.draft.color.is_some_and(|c| !SWATCHES.contains(&c));
-        let r = egui::color_picker::color_edit_button_srgb(ui, &mut editor.custom)
-            .on_hover_text("Custom color");
-        if r.changed() || (r.clicked() && !custom_selected) {
-            editor.draft.color = Some(editor.custom);
-        }
+        custom_swatch(ui, p, editor);
     });
+}
+
+/// The custom color choice: a hue wheel (holding the custom color once it
+/// is picked) that opens egui's color picker.
+fn custom_swatch(ui: &mut Ui, p: &Palette, editor: &mut Editor) {
+    let selected = editor.draft.color.is_some_and(|c| !SWATCHES.contains(&c));
+    let (rect, response) = ui.allocate_exact_size(vec2(24.0, 24.0), Sense::click());
+    response.widget_info(|| {
+        WidgetInfo::selected(WidgetType::RadioButton, true, selected, "Custom color")
+    });
+    if ui.is_rect_visible(rect) {
+        let c = rect.center();
+        let segments = 24;
+        let mut wheel = Mesh::default();
+        wheel.colored_vertex(c, if p.dark { p.surface } else { Color32::WHITE });
+        for i in 0..=segments {
+            let turn = i as f32 / segments as f32;
+            let angle = turn * std::f32::consts::TAU;
+            wheel.colored_vertex(
+                c + 9.0 * vec2(angle.cos(), angle.sin()),
+                Hsva::new(turn, 0.7, 1.0, 1.0).into(),
+            );
+        }
+        for i in 0..segments {
+            wheel.add_triangle(0, i + 1, i + 2);
+        }
+        let painter = ui.painter();
+        painter.add(wheel);
+        if selected {
+            let [r, g, b] = editor.custom;
+            painter.circle(
+                c,
+                5.0,
+                Color32::from_rgb(r, g, b),
+                Stroke::new(1.5, p.surface),
+            );
+        }
+        if selected {
+            painter.circle_stroke(c, 11.5, Stroke::new(2.0, p.accent));
+        } else if response.hovered() {
+            painter.circle_stroke(c, 11.5, Stroke::new(1.0, p.border_strong));
+        }
+    }
+    let response = response
+        .on_hover_cursor(CursorIcon::PointingHand)
+        .on_hover_text("Custom color");
+    if response.clicked() {
+        editor.draft.color = Some(editor.custom);
+    }
+    Popup::menu(&response)
+        .id(Id::new("sprint-controls-macro-custom-color"))
+        .close_behavior(PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            let [r, g, b] = editor.custom;
+            let mut color = Color32::from_rgb(r, g, b);
+            if color_picker::color_picker_color32(ui, &mut color, Alpha::Opaque) {
+                editor.custom = [color.r(), color.g(), color.b()];
+                editor.draft.color = Some(editor.custom);
+            }
+        });
 }
 
 /// A round color choice; `None` is the "no color" swatch.
