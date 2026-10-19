@@ -1722,3 +1722,16 @@ fn key_hints_during_a_job_lead_with_its_controls() {
     let hints = app.hints();
     assert!(hints.contains(&("F5", "Print")) && hints.contains(&("j", "Jog")));
 }
+
+#[test]
+fn a_relative_startup_file_is_remembered_with_its_full_path() {
+    // `sprint tui cube.gcode`: the recent file must not depend on the
+    // directory the next session starts in.
+    let mut app = app();
+    app.base_dir = sample("");
+    app.open_file(PathBuf::from("arcs-test.gcode"));
+    wait_app(&mut app, "the analysis", |a| a.loader.is_none());
+    let file = app.file.as_ref().expect("loaded");
+    assert!(file.path.is_absolute(), "{}", file.path.display());
+    assert_eq!(app.config.recent_files.first(), Some(&file.path));
+}

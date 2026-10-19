@@ -656,8 +656,16 @@ impl App {
 
     // ----- the loaded file and the print -----
 
-    /// Start loading `path` in the background.
+    /// Start loading `path` (relative to the starting directory) in the
+    /// background.
     pub(crate) fn open_file(&mut self, path: PathBuf) {
+        // The full path: it becomes a recent file, which must not depend on
+        // where the next session starts.
+        let path = if path.is_relative() {
+            self.base_dir.join(path)
+        } else {
+            path
+        };
         let options = analyze_options(&self.profile);
         let job = LoadJob::spawn(path, options);
         self.info(format!("Loading {}", job.name()));
