@@ -560,6 +560,29 @@ fn overrides_beyond_the_slider_ranges_read_out_as_reported() {
     assert!(h.query_by_label("50%").is_some(), "the fan, unchanged");
 }
 
+/// A tap whose press and release arrive in the same frame (touchpads tap
+/// that fast) sets a slider like a slower click.
+#[test]
+fn a_quick_tap_sets_a_slider() {
+    let mut h = connected();
+    let p = printer(&h);
+    let fan = slider(&h, "Fan");
+    let pos = egui::pos2(fan.max.x - 2.0, fan.center().y);
+    h.hover_at(pos);
+    h.step();
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        });
+    }
+    h.step();
+    run_for(&mut h, Duration::from_millis(100));
+    wait_for_commands(&p, &["M106 S255"]);
+}
+
 /// A focused slider steps by 1 with the arrow keys and by 10 with Shift.
 #[test]
 fn focused_sliders_step_with_the_arrow_keys() {
