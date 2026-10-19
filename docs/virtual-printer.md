@@ -48,7 +48,12 @@ Lost replies), or in the `[profiles.connection.Simulator]` table of the
 | `machine_name` | Sprint Virtual Printer | Reported by M115 |
 | `seed` | fixed | Seed for fault injection, sensor noise and the shape of the simulated bed; the same seed repeats the same faults |
 
-Unknown keys are an error. Examples:
+Unknown keys are an error. The table shows the values as a target takes
+them; in the configuration file `build_volume` and `mesh_size` are arrays
+(`build_volume = [220.0, 220.0, 250.0]`, `mesh_size = [5, 5]`; text such
+as `"5x5"` is dropped with a warning there), and `sd_files` sets the card's
+files as `[name, size in bytes]` pairs
+(`sd_files = [["cube.gcode", 48213]]`). Examples:
 
 ```bash
 sprint tui --connect "sim://?time_scale=20"
