@@ -38,6 +38,15 @@ const NO_SD_WRITE: &str = "The firmware cannot write to its card (Cap:SD_WRITE:0
 const EMPTY_WITH_FILE: &str =
     "The card is empty. Upload the loaded file to print it from the card.";
 
+/// Shown before the file list was read on this connection.
+const NOT_READ: &str = concat!(
+    "Sprint has not read the card's file list since connecting. It is read ",
+    "automatically when no job runs.",
+);
+
+/// Why the card cannot be read or written while a job runs.
+const BUSY: &str = "Not while a job runs";
+
 /// Body of the print confirmation.
 const PRINT_MESSAGE: &str = concat!(
     "The printer reads the file from its card while Sprint shows the progress. Make ",
@@ -108,6 +117,11 @@ pub struct SdCardTab {
     stale_progress: Option<(u64, u64)>,
     /// The card's print progress this frame, stale reports left out.
     card_printing: Option<(u64, u64)>,
+    /// The file list was read on this connection (a listing ended, or files
+    /// are known): only then does an empty list mean an empty card.
+    read: bool,
+    /// A listing was seen running on this connection.
+    listing_seen: bool,
     connection: kit::ConnectionWatch,
 }
 
@@ -252,8 +266,12 @@ impl SdCardTab {
             self.released = false;
             self.confirm = None;
             self.upload = None;
+            self.read = false;
+            self.listing_seen = false;
         }
         if !ctx.connected() {
+            self.read = false;
+            self.listing_seen = false;
             self.auto_requested = false;
             self.print_after_upload = None;
             self.upload_seen = None;
@@ -263,6 +281,11 @@ impl SdCardTab {
             return;
         }
         let sd = &ctx.state.sd;
+        if sd.listing {
+            self.listing_seen = true;
+        } else if self.listing_seen || !sd.files.is_empty() {
+            self.read = true;
+        }
         if !self.auto_requested
             && !ctx.job_active()
             && ctx.command_blocker().is_none()
@@ -318,12 +341,38 @@ impl SdCardTab {
         }
     }
 
+    /// Why the loaded file cannot be uploaded now (`None`: it can).
+    fn upload_blocker(&self, ctx: &AppCtx<'_>) -> Option<&'static str> {
+        let state = ctx.state;
+        if ctx.file.is_none() {
+            Some("Open a G-code file to upload it")
+        } else if let Some(reason) = ctx.command_blocker() {
+            Some(reason)
+        } else if kit::lacks_capability(state, "SDCARD") || kit::lacks_capability(state, "SD_WRITE")
+        {
+            Some(NO_SD_WRITE)
+        } else if ctx.job_active() || self.card_printing.is_some() {
+            Some(BUSY)
+        } else if self.released {
+            Some("Initialize the card first")
+        } else {
+            None
+        }
+    }
+
+    /// Why the file list cannot be read now (`None`: it can). Not while a
+    /// job runs: the listing would come between its lines, and M20 can
+    /// disturb a print from the card.
+    fn read_blocker(&self, ctx: &AppCtx<'_>) -> Option<&'static str> {
+        ctx.command_blocker()
+            .or_else(|| (ctx.job_active() || self.card_printing.is_some()).then_some(BUSY))
+    }
+
     fn header(&mut self, ui: &mut Ui, ctx: &mut AppCtx<'_>) {
         let state = ctx.state;
         let sd = &state.sd;
         let total: u64 = sd.files.iter().filter_map(|f| f.size).sum();
         let no_sd = kit::lacks_capability(state, "SDCARD");
-        let no_write = no_sd || kit::lacks_capability(state, "SD_WRITE");
         let subtitle = if !ctx.connected() {
             "Files on the printer's card".to_owned()
         } else if no_sd {
@@ -334,6 +383,8 @@ impl SdCardTab {
             "Released".to_owned()
         } else if sd.files.is_empty() && sd.listing {
             "Reading the card…".to_owned()
+        } else if sd.files.is_empty() && !self.read {
+            "Not read yet".to_owned()
         } else {
             format!(
                 "{} file{} · {}",
@@ -343,26 +394,20 @@ impl SdCardTab {
             )
         };
         let connected = ctx.connected();
-        let blocker = ctx.command_blocker();
-        // A print started on the printer's display reads the card too.
-        let job = ctx.job_active() || self.card_printing.is_some();
+        let upload_blocker = self.upload_blocker(ctx);
+        let read_blocker = self.read_blocker(ctx);
         let file_name = ctx.file.map(|f| f.file.name().to_owned());
         let mut refresh = false;
         let mut upload = false;
-        let released = self.released;
         kit::page_header(ui, icons::SD_CARD, "SD card", Some(&subtitle), |ui| {
-            let upload_tip = match (&file_name, connected, job) {
-                (None, _, _) => "Open a G-code file to upload it".to_owned(),
-                (_, false, _) => "Connect to a printer first".to_owned(),
-                _ if let Some(reason) = blocker => reason.to_owned(),
-                _ if no_write => NO_SD_WRITE.to_owned(),
-                (_, _, true) => "Not while a job runs".to_owned(),
-                _ if released => "Initialize the card first".to_owned(),
-                (Some(name), _, _) => format!("Write {name} to the card"),
+            let upload_tip = match (upload_blocker, &file_name) {
+                (Some(reason), _) => reason.to_owned(),
+                (None, Some(name)) => format!("Write {name} to the card"),
+                (None, None) => String::new(),
             };
             if ui
                 .add_enabled(
-                    blocker.is_none() && !job && !released && !no_write && file_name.is_some(),
+                    upload_blocker.is_none(),
                     ActionButton::new("Upload")
                         .icon(icons::UPLOAD)
                         .primary()
@@ -374,10 +419,10 @@ impl SdCardTab {
             }
             if ui
                 .add_enabled(
-                    blocker.is_none() && !no_sd,
+                    read_blocker.is_none() && !no_sd,
                     IconButton::new(icons::REFRESH).tooltip("Read the file list again (M20)"),
                 )
-                .on_disabled_hover_text(blocker.unwrap_or_default())
+                .on_disabled_hover_text(read_blocker.unwrap_or_default())
                 .clicked()
             {
                 refresh = true;
@@ -604,27 +649,33 @@ impl SdCardTab {
                         if empty.show(ui).action_clicked() && ready {
                             self.init_card(ctx);
                         }
+                    } else if sd.files.is_empty() && !sd.listing && !self.read {
+                        // Nothing read yet (a job ran since connecting): not
+                        // an empty card.
+                        let reason = self.read_blocker(ctx);
+                        let r = EmptyState::new(icons::SD_CARD, "Not read yet")
+                            .message(NOT_READ)
+                            .action("Read the card")
+                            .action_icon(icons::REFRESH)
+                            .action_blocked(reason)
+                            .show(ui);
+                        if r.action_clicked() && reason.is_none() {
+                            ctx.printer.request_sd_files();
+                        }
                     } else if sd.files.is_empty() && !sd.listing {
                         let has_file = ctx.file.is_some();
                         let mut empty =
                             EmptyState::new(icons::FILE, "No files").message(if has_file {
                                 EMPTY_WITH_FILE
                             } else {
-                                "The card is empty, or the list has not been read yet."
+                                "The card is empty."
                             });
-                        if ready {
-                            empty = empty.action(if has_file {
-                                "Upload loaded file"
-                            } else {
-                                "Read the card"
-                            });
+                        let reason = self.upload_blocker(ctx);
+                        if has_file {
+                            empty = empty.action("Upload loaded file").action_blocked(reason);
                         }
-                        if empty.show(ui).action_clicked() && ready {
-                            if has_file {
-                                self.open_upload(ctx);
-                            } else {
-                                ctx.printer.request_sd_files();
-                            }
+                        if empty.show(ui).action_clicked() && reason.is_none() {
+                            self.open_upload(ctx);
                         }
                     } else if !sd.files.is_empty() {
                         table::header(ui, &mut self.sort);

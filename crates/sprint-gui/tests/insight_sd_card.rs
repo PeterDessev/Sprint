@@ -212,10 +212,21 @@ fn sd_card_empty_states() {
     state.sd.card_present = Some(false);
     let h = tab(Theme::Dark, (900.0, 600.0), state);
     assert!(h.query_by_label("No SD card").is_some());
+    // Nothing read on this connection yet: not "empty".
     let mut state = sd_state();
     state.sd.files.clear();
-    let h = tab(Theme::Dark, (900.0, 600.0), state);
+    let mut h = tab(Theme::Dark, (900.0, 600.0), state.clone());
+    assert!(h.query_by_label("Not read yet").is_some());
+    assert!(h.query_by_label("No files").is_none());
+    // A listing that ends without files: the card is empty.
+    state.sd.listing = true;
+    h.state_mut().state = Some(state.clone());
+    h.run_ok();
+    state.sd.listing = false;
+    h.state_mut().state = Some(state);
+    h.run_ok();
     assert!(h.query_by_label("No files").is_some());
+    assert!(h.query_by_label("Not read yet").is_none());
     let mut state = sd_state();
     state.sd.files.clear();
     state.sd.listing = true;

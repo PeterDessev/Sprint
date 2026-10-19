@@ -866,6 +866,31 @@ fn heating_print() -> (
     (h, control)
 }
 
+#[test]
+fn the_sd_card_is_not_called_empty_before_it_was_read() {
+    // The SD card tab opened for the first time during a print: the card
+    // was not read (no listing while a job runs).
+    let (mut h, _control) = heating_print();
+    h.state_mut().push_action(AppAction::ShowTab(Tab::SdCard));
+    settle(&mut h);
+    assert!(h.query_by_label("Not read yet").is_some());
+    assert!(h.query_by_label_contains("The card is empty").is_none());
+    assert!(
+        h.get_by_label("Read the card")
+            .accesskit_node()
+            .is_disabled()
+    );
+    assert!(h.query_by_label("Upload loaded file").is_none());
+    assert!(h.get_by_label("Upload").accesskit_node().is_disabled());
+    // Once the job is over, the card is read and its files listed.
+    h.state().printer().cancel();
+    expect(&mut h, "the card's files", |app| {
+        !app.state().job_active() && !app.state().sd.files.is_empty()
+    });
+    settle(&mut h);
+    assert!(h.query_by_label("Not read yet").is_none());
+}
+
 /// The cancel script ran: the heaters are off.
 #[track_caller]
 fn assert_heaters_off(control: &sprint_host::sprint_sim::SimControl) {

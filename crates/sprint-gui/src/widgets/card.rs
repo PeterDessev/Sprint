@@ -469,6 +469,7 @@ pub struct EmptyState<'a> {
     message: Option<&'a str>,
     action: Option<&'a str>,
     action_icon: Option<&'a str>,
+    action_blocked: Option<&'a str>,
 }
 
 impl<'a> EmptyState<'a> {
@@ -480,7 +481,15 @@ impl<'a> EmptyState<'a> {
             message: None,
             action: None,
             action_icon: None,
+            action_blocked: None,
         }
+    }
+
+    /// Disable the action button when `reason` is `Some`, with the reason
+    /// as its hover text.
+    pub fn action_blocked(mut self, reason: Option<&'a str>) -> Self {
+        self.action_blocked = reason;
+        self
     }
 
     /// Explanatory text below the title.
@@ -544,7 +553,11 @@ impl<'a> EmptyState<'a> {
                 if let Some(icon) = self.action_icon {
                     button = button.icon(icon);
                 }
-                action = Some(ui.add(button));
+                let r = ui.add_enabled(self.action_blocked.is_none(), button);
+                action = Some(match self.action_blocked {
+                    Some(reason) => r.on_disabled_hover_text(reason),
+                    None => r,
+                });
             }
             ui.add_space(12.0);
         });
