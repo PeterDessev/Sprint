@@ -835,15 +835,16 @@ impl Engine {
     /// The next command to send, by priority: setup/recovery, job scripts,
     /// user commands, polls, progress reports, the job stream.
     fn next_command(&mut self, now: Instant) -> Option<Next> {
-        if let Some(m) = self.internal.pop_front() {
+        // Nothing but the upload itself may reach the printer while it writes
+        // to the card: it would be stored in the file.
+        let uploading = self.upload_active();
+        if !uploading && let Some(m) = self.internal.pop_front() {
             return Some(Next::Command(m));
         }
         if let Some(m) = self.job.as_mut().and_then(JobRuntime::next_script) {
             return Some(Next::Command(m));
         }
-        if !self.upload_active()
-            && let Some(front) = self.manual.front()
-        {
+        if !uploading && let Some(front) = self.manual.front() {
             if front.is('M', 110) {
                 // A line counter reset needs an idle link.
                 if !self.flow.is_idle() {
