@@ -1205,6 +1205,13 @@ impl ScriptContext<'_> { pub fn new(state: &MachineState) -> ScriptContext<'_>; 
 pub fn render_script_with(template: &str, ctx: &ScriptContext<'_>) -> Vec<String>;
 /// "M104 S0" (one "M104 T<n> S0" per hotend when there are several), "M140 S0" with `bed`, "M141 S0" with `chamber`.
 pub fn heaters_off(hotends: u8, bed: bool, chamber: bool) -> Vec<String>;
+/// Macro arguments (pronsole's syntax, as the shell's and TUI's `macro` command): `{0}`, `{1}`, ... in order,
+/// `{1=60}` with a default, `{args}` all of them joined by spaces; other `{...}` stay for render_script_with.
+pub enum MacroArg { Index { index: usize, default: Option<String> }, All }
+pub enum MacroArgsError { Missing { needed: usize, given: usize }, Unexpected { given: usize } } // Display + Error
+pub fn expand_macro_args(text: &str, args: &[String]) -> Result<String, MacroArgsError>;
+pub fn macro_args(text: &str) -> Vec<MacroArg>;        // each placeholder once, first-appearance order
+pub fn macro_args_needed(text: &str) -> usize;         // highest `{n}` without a default + 1
 
 #[derive(Debug, thiserror::Error)]
 pub enum HostError { /* NotConnected, AlreadyConnected, Busy(String), Halted, Io(std::io::Error), Serial(String), InvalidTarget(String), Config(String),
@@ -1342,7 +1349,16 @@ Every public item is also re-exported at the crate root.
   geometry come from the profile unless `PrintOptions` overrides them),
   `connect_profile(&profile)`, `connect_link(link, label, options)` (custom
   transports), `sim_control()` (while connected to the simulator),
-  `run_macro(&Macro)` (templated with the current position/targets).
+  `run_macro(&Macro)` and `run_macro_with_args(&Macro, &[String]) ->
+  Result<(), HostError>`: the arguments are filled in first
+  (`expand_macro_args`; `run_macro` gives none, so defaults apply and
+  `{args}` is empty), then the placeholders are templated with the
+  current position/targets. A macro whose arguments cannot be filled in
+  is not sent: a console error ("Macro Heat not sent: it needs 1
+  argument (0 given)") and `InvalidArgument`, never placeholders sent
+  verbatim; `NotConnected` without a connection. A placeholder whose
+  number is too large for `usize` can never be given (the TUI's own
+  `macro_gcode` leaves it as text).
   Commands without a connection are dropped with a console warning;
   `start_*` wait up to 5 s for the engine's answer and fail with
   `NotConnected`, `Halted`, `Busy` (a job is active) or `InvalidArgument`.

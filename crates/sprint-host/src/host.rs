@@ -17,7 +17,7 @@ use crate::engine::{self, Command, EngineHandle, Shared};
 use crate::error::HostError;
 use crate::event::Event;
 use crate::job::{JobKind, JobStatus, PrintOptions};
-use crate::script::{format_number, render_script_with};
+use crate::script::{expand_macro_args, format_number, render_script_with};
 use crate::state::{Axes, Axis, ConnectionStatus, Heater, PrinterState};
 use crate::transport::{ConnectTarget, Link};
 
@@ -580,24 +580,31 @@ impl Printer {
     /// M410 during a host print also stops the print (the firmware threw
     /// its planned moves away).
     pub fn send(&self, gcode: &str) {
+        self.send_lines(gcode);
+    }
+
+    /// [`Printer::send`]; false when there was no engine to take them.
+    fn send_lines(&self, gcode: &str) -> bool {
+        let mut taken = true;
         let mut queued = Vec::new();
         for line in command_lines(gcode) {
             if is_emergency_command(&line) {
                 if !queued.is_empty() {
-                    self.command(Command::Send(std::mem::take(&mut queued)));
+                    taken &= self.command(Command::Send(std::mem::take(&mut queued)));
                 }
                 if line.to_ascii_uppercase().starts_with("M112") {
-                    self.command(Command::EmergencyStop);
+                    taken &= self.command(Command::EmergencyStop);
                 } else {
-                    self.command(Command::Immediate(line));
+                    taken &= self.command(Command::Immediate(line));
                 }
             } else {
                 queued.push(line);
             }
         }
         if !queued.is_empty() {
-            self.command(Command::Send(queued));
+            taken &= self.command(Command::Send(queued));
         }
+        taken
     }
 
     /// Send right away, bypassing the queue and flow control (unnumbered).
@@ -974,15 +981,46 @@ impl Printer {
         self.command(Command::FirmwareRestart);
     }
 
-    /// Send a macro, its placeholders expanded with the current state (see
-    /// [`script`](crate::script)).
+    /// Send a macro without arguments: [`Printer::run_macro_with_args`]
+    /// with none, so `{n=default}` placeholders get their defaults and
+    /// `{args}` is empty. A macro that needs arguments (a `{n}` without a
+    /// default) is not sent: the console says why.
     pub fn run_macro(&self, m: &Macro) {
+        let _ = self.run_macro_with_args(m, &[]);
+    }
+
+    /// Send a macro with arguments: `{0}`, `{1}`, ... (`{1=60}` with a
+    /// default) and `{args}` are filled in from `args` as the shell's and
+    /// the TUI's `macro` command do ([`expand_macro_args`]), then the
+    /// machine-state placeholders are expanded with the current state (see
+    /// [`script`](crate::script)).
+    ///
+    /// A macro whose arguments cannot be filled in (one without a default
+    /// is missing, or arguments for a macro that takes none) is not sent:
+    /// [`HostError::InvalidArgument`] and an error in the console, never
+    /// placeholders sent verbatim. [`HostError::NotConnected`] when there
+    /// is no connection (the commands are dropped with a console warning).
+    pub fn run_macro_with_args(&self, m: &Macro, args: &[String]) -> Result<(), HostError> {
+        let gcode = match expand_macro_args(&m.gcode, args) {
+            Ok(gcode) => gcode,
+            Err(why) => {
+                let message = format!("Macro {} not sent: it {why}", m.name);
+                self.shared()
+                    .log(ConsoleKind::Error, message.clone(), false, None);
+                self.shared().wake_now();
+                return Err(HostError::InvalidArgument(message));
+            }
+        };
         let (state, temps) = self.with_state(|s| (machine_state(s), s.temps.clone()));
         let lines = {
             let profile = self.shared().profile.read();
-            render_script_with(&m.gcode, &profile.script_context(&state).covering(&temps))
+            render_script_with(&gcode, &profile.script_context(&state).covering(&temps))
         };
-        self.send(&lines.join("\n"));
+        if self.send_lines(&lines.join("\n")) {
+            Ok(())
+        } else {
+            Err(HostError::NotConnected)
+        }
     }
 }
 

@@ -22,6 +22,11 @@
 //! there is no absolute extruder position to restore then; this is what
 //! makes the default resume script's `G92 E{e}` disappear for files that
 //! extrude relatively.
+//!
+//! Macros also take arguments, filled in before the placeholders above
+//! ([`expand_macro_args`], pronsole's syntax): `{0}`, `{1}`, ... are the
+//! arguments in order, `{1=60}` gives a default, `{args}` is all of them.
+//! [`macro_args`] and [`macro_args_needed`] tell what a macro takes.
 
 use sprint_gcode::{MachineState, clean_line};
 use sprint_proto::TempReport;
@@ -239,6 +244,221 @@ fn value(name: &str, ctx: &ScriptContext<'_>) -> Option<String> {
     })
 }
 
+/// An argument placeholder of a macro (see [`expand_macro_args`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MacroArg {
+    /// `{n}`: the argument at 0-based `index`; `{n=default}` gives a
+    /// default used when it is not given.
+    Index {
+        /// 0-based argument number.
+        index: usize,
+        /// The text after `=`, verbatim.
+        default: Option<String>,
+    },
+    /// `{args}`: every argument, separated by spaces.
+    All,
+}
+
+/// Why [`expand_macro_args`] could not fill a macro's arguments in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MacroArgsError {
+    /// Arguments without a default are missing: the macro needs `needed`
+    /// (up to its last `{n}` without a default), `given` were given.
+    Missing {
+        /// Arguments the macro needs.
+        needed: usize,
+        /// Arguments given.
+        given: usize,
+    },
+    /// Arguments were given to a macro whose G-code has no `{0}`, `{1}`,
+    /// ... or `{args}`.
+    Unexpected {
+        /// Arguments given.
+        given: usize,
+    },
+}
+
+impl std::fmt::Display for MacroArgsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let plural = |n: usize| if n == 1 { "" } else { "s" };
+        match *self {
+            MacroArgsError::Missing { needed, given } => write!(
+                f,
+                "needs {needed} argument{} ({given} given)",
+                plural(needed)
+            ),
+            MacroArgsError::Unexpected { given } => write!(
+                f,
+                "takes no arguments (its G-code has no {{0}} or {{args}}; {given} given)"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for MacroArgsError {}
+
+/// A macro template in pieces: text kept as it is (the machine-state
+/// placeholders like `{x}` included, which stay for
+/// [`render_script_with`]) and argument placeholders, the way the shell's
+/// and the TUI's `macro` command read it: each `{` up to the next `}`.
+fn macro_placeholders(text: &str) -> impl Iterator<Item = MacroPiece<'_>> {
+    let mut rest = text;
+    std::iter::from_fn(move || {
+        if rest.is_empty() {
+            return None;
+        }
+        let Some(open) = rest.find('{') else {
+            let literal = std::mem::take(&mut rest);
+            return Some(MacroPiece::Literal(literal));
+        };
+        if open > 0 {
+            let (literal, tail) = rest.split_at(open);
+            rest = tail;
+            return Some(MacroPiece::Literal(literal));
+        }
+        let after = &rest[1..];
+        let Some(close) = after.find('}') else {
+            // An unclosed brace is text.
+            let literal = std::mem::take(&mut rest);
+            return Some(MacroPiece::Literal(literal));
+        };
+        let whole = &rest[..close + 2];
+        let inner = &after[..close];
+        rest = &after[close + 1..];
+        let (key, default) = match inner.split_once('=') {
+            Some((key, default)) => (key.trim(), Some(default)),
+            None => (inner.trim(), None),
+        };
+        // (An index too large for usize can never be given.)
+        let index = key.parse::<usize>().ok().or_else(|| {
+            (!key.is_empty() && key.bytes().all(|b| b.is_ascii_digit())).then_some(usize::MAX)
+        });
+        Some(if key == "args" {
+            MacroPiece::Arg(MacroArg::All)
+        } else if let Some(index) = index {
+            MacroPiece::Arg(MacroArg::Index {
+                index,
+                default: default.map(str::to_string),
+            })
+        } else {
+            MacroPiece::Literal(whole)
+        })
+    })
+}
+
+enum MacroPiece<'a> {
+    /// Text kept as it is (machine-state placeholders included).
+    Literal(&'a str),
+    /// An argument placeholder.
+    Arg(MacroArg),
+}
+
+/// The argument placeholders of a macro's G-code, each once, in the order
+/// they first appear (see [`expand_macro_args`]). Empty for a macro that
+/// takes no arguments.
+///
+/// ```
+/// use sprint_host::script::{MacroArg, macro_args};
+///
+/// assert_eq!(
+///     macro_args("M104 S{0}\nM140 S{1=60}\nM117 {args} {0}"),
+///     [
+///         MacroArg::Index { index: 0, default: None },
+///         MacroArg::Index { index: 1, default: Some("60".into()) },
+///         MacroArg::All,
+///     ]
+/// );
+/// ```
+pub fn macro_args(text: &str) -> Vec<MacroArg> {
+    let mut out: Vec<MacroArg> = Vec::new();
+    for piece in macro_placeholders(text) {
+        if let MacroPiece::Arg(arg) = piece
+            && !out.contains(&arg)
+        {
+            out.push(arg);
+        }
+    }
+    out
+}
+
+/// How many arguments a macro needs: one more than its highest `{n}`
+/// without a default (0: it runs without arguments).
+///
+/// ```
+/// assert_eq!(sprint_host::script::macro_args_needed("M104 S{0}\nM140 S{1=60}"), 1);
+/// assert_eq!(sprint_host::script::macro_args_needed("M117 {args}"), 0);
+/// ```
+pub fn macro_args_needed(text: &str) -> usize {
+    macro_args(text)
+        .iter()
+        .filter_map(|a| match a {
+            MacroArg::Index {
+                index,
+                default: None,
+            } => Some(index.saturating_add(1)),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// Fill a macro's arguments in, as pronsole (and Sprint's shell and TUI
+/// `macro` command) does: `{0}`, `{1}`, ... are the arguments in order,
+/// `{1=200}` gives a default, `{args}` is all of them separated by
+/// spaces (empty without arguments). Whitespace around the name is
+/// allowed (`{ 0 }`). Every other `{...}` (the machine-state
+/// placeholders `{x}`, `{max_z}`, ...) and an unclosed `{` stay as they
+/// are for [`render_script_with`].
+///
+/// Fails when an argument without a default is missing, or arguments are
+/// given to a macro that takes none.
+///
+/// ```
+/// use sprint_host::script::{MacroArgsError, expand_macro_args};
+///
+/// let heat = "M104 S{0}\nM140 S{1=60}\nM117 {args} at {x}";
+/// assert_eq!(
+///     expand_macro_args(heat, &["210".into()]).as_deref(),
+///     Ok("M104 S210\nM140 S60\nM117 210 at {x}")
+/// );
+/// assert_eq!(
+///     expand_macro_args(heat, &[]),
+///     Err(MacroArgsError::Missing { needed: 1, given: 0 })
+/// );
+/// ```
+pub fn expand_macro_args(text: &str, args: &[String]) -> Result<String, MacroArgsError> {
+    let mut out = String::with_capacity(text.len());
+    let mut takes_args = false;
+    let mut missing = false;
+    for piece in macro_placeholders(text) {
+        match piece {
+            MacroPiece::Literal(literal) => out.push_str(literal),
+            MacroPiece::Arg(MacroArg::All) => {
+                takes_args = true;
+                out.push_str(&args.join(" "));
+            }
+            MacroPiece::Arg(MacroArg::Index { index, default }) => {
+                takes_args = true;
+                match (args.get(index), default) {
+                    (Some(arg), _) => out.push_str(arg),
+                    (None, Some(default)) => out.push_str(&default),
+                    (None, None) => missing = true,
+                }
+            }
+        }
+    }
+    if missing {
+        return Err(MacroArgsError::Missing {
+            needed: macro_args_needed(text),
+            given: args.len(),
+        });
+    }
+    if !takes_args && !args.is_empty() {
+        return Err(MacroArgsError::Unexpected { given: args.len() });
+    }
+    Ok(out)
+}
+
 /// Format a number for G-code: at most `decimals` decimals, trailing zeros
 /// and a trailing point removed, `-0` printed as `0`, non-finite values as
 /// `0`.
@@ -403,5 +623,103 @@ mod tests {
             let _ = render_script(t, &s);
         }
         assert_eq!(render_script("{{x}}", &s), ["{101.25}"]);
+    }
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|a| (*a).to_string()).collect()
+    }
+
+    #[test]
+    fn macro_arguments_like_pronsole() {
+        // The cases of the shell's and the TUI's `macro` command.
+        let heat = "M104 S{0}\nM140 S{1=60}\nM117 {args} at {x}";
+        assert_eq!(
+            expand_macro_args(heat, &args(&["210"])).as_deref(),
+            Ok("M104 S210\nM140 S60\nM117 210 at {x}")
+        );
+        assert_eq!(
+            expand_macro_args(heat, &args(&["200", "70"])).as_deref(),
+            Ok("M104 S200\nM140 S70\nM117 200 70 at {x}")
+        );
+        let missing = expand_macro_args(heat, &[]).unwrap_err();
+        assert_eq!(
+            missing,
+            MacroArgsError::Missing {
+                needed: 1,
+                given: 0
+            }
+        );
+        assert_eq!(missing.to_string(), "needs 1 argument (0 given)");
+        assert_eq!(
+            expand_macro_args("G28 {unclosed", &[]).as_deref(),
+            Ok("G28 {unclosed")
+        );
+        let extra = expand_macro_args("G28 {unclosed", &args(&["5"])).unwrap_err();
+        assert_eq!(extra, MacroArgsError::Unexpected { given: 1 });
+        assert!(
+            extra.to_string().starts_with("takes no arguments"),
+            "{extra}"
+        );
+        // Any placeholder, however large its number, is an error at most.
+        let huge = format!("M117 {{{}}}", usize::MAX);
+        assert!(expand_macro_args(&huge, &[]).is_err());
+        assert!(expand_macro_args("M117 {99999999999999999999999}", &[]).is_err());
+    }
+
+    #[test]
+    fn macro_argument_syntax_details() {
+        let none: [String; 0] = [];
+        // Spaces around the name, `=` inside a default, {args} without
+        // arguments, repeated and out-of-order placeholders.
+        assert_eq!(
+            expand_macro_args("M117 { 1 } {0=a=b} [{args}]", &args(&["x", "y"])).as_deref(),
+            Ok("M117 y x [x y]")
+        );
+        assert_eq!(
+            expand_macro_args("M117 {0=a=b}[{args}]", &none).as_deref(),
+            Ok("M117 a=b[]")
+        );
+        assert_eq!(
+            expand_macro_args("M117 {0}{0} {+1}", &args(&["a", "b"])).as_deref(),
+            Ok("M117 aa b")
+        );
+        // Not arguments: kept for the machine-state placeholders.
+        assert_eq!(
+            expand_macro_args("G1 Z{z} {} {=1} {-1} {{0}} {ARGS}", &none).as_deref(),
+            Ok("G1 Z{z} {} {=1} {-1} {{0}} {ARGS}")
+        );
+        // A gap: {2} needs three arguments, {1=..} fills the middle.
+        assert_eq!(macro_args_needed("M117 {2} {1=x}"), 3);
+        assert_eq!(
+            expand_macro_args("M117 {2} {1=x}", &args(&["a"])),
+            Err(MacroArgsError::Missing {
+                needed: 3,
+                given: 1
+            })
+        );
+        assert_eq!(
+            macro_args("M117 {1=x} {0} {args} {0} {1=x} {1}"),
+            [
+                MacroArg::Index {
+                    index: 1,
+                    default: Some("x".into())
+                },
+                MacroArg::Index {
+                    index: 0,
+                    default: None
+                },
+                MacroArg::All,
+                MacroArg::Index {
+                    index: 1,
+                    default: None
+                },
+            ]
+        );
+        assert!(macro_args("G28\nG1 X{x}").is_empty());
+        assert_eq!(macro_args_needed("G28"), 0);
+        for garbage in ["{", "}", "{{", "{\u{e9}}", "\u{1F600}{0", "{0}\u{1F600}"] {
+            let _ = expand_macro_args(garbage, &args(&["1"]));
+            let _ = macro_args(garbage);
+        }
     }
 }

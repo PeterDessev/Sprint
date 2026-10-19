@@ -86,8 +86,9 @@ pub use fs::write_atomic;
 pub use host::{DisconnectSummary, Printer};
 pub use job::{JobInfo, JobKind, JobStatus, PrintOptions, Progress, ProgressModel};
 pub use script::{
-    DEFAULT_CANCEL_SCRIPT, DEFAULT_PAUSE_SCRIPT, DEFAULT_RESUME_SCRIPT, ScriptContext,
-    format_number, heaters_off, render_script, render_script_with,
+    DEFAULT_CANCEL_SCRIPT, DEFAULT_PAUSE_SCRIPT, DEFAULT_RESUME_SCRIPT, MacroArg, MacroArgsError,
+    ScriptContext, expand_macro_args, format_number, heaters_off, macro_args, macro_args_needed,
+    render_script, render_script_with,
 };
 pub use state::{
     AutotuneState, Axes, Axis, ConnectionStatus, FIRMWARE_MESSAGES_LEN, Heater, HostPrompt,

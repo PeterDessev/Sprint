@@ -8,7 +8,9 @@ use std::time::Duration;
 use common::*;
 use sprint_host::sprint_proto::SettingCommand;
 use sprint_host::sprint_sim::SimConfig;
-use sprint_host::{Axes, Axis, ConnectOptions, ConsoleKind, Event, Heater, Printer};
+use sprint_host::{
+    Axes, Axis, ConnectOptions, ConsoleKind, Event, Heater, HostError, Macro, Printer,
+};
 
 /// Run `f`, wait until the link is idle and return what the simulator
 /// executed meanwhile.
@@ -589,4 +591,74 @@ fn the_babystep_tally_resets_when_z_is_homed() {
     printer.emergency_stop();
     wait_for(&printer, "halted", |s| s.halted);
     assert_eq!(tally(&printer), 0.0);
+}
+
+#[test]
+fn macros_take_arguments_and_are_refused_without_them() {
+    let printer = connect(fast_sim(20.0), options());
+    let heat = Macro {
+        name: "Heat".into(),
+        gcode: "M104 S{0}\nM140 S{1=55}\nM117 {args} ; at Z{z}".into(),
+        color: None,
+        confirm: false,
+    };
+    // Without its argument it is not sent (never "M104 S{0}").
+    let seq = last_seq(&printer);
+    let got = executed(&printer, |p| p.run_macro(&heat));
+    assert!(got.is_empty(), "{got:?}");
+    let errors: Vec<String> = printer
+        .console_since(seq, usize::MAX)
+        .into_iter()
+        .filter(|e| e.kind == ConsoleKind::Error)
+        .map(|e| e.text)
+        .collect();
+    assert_eq!(
+        errors,
+        ["Macro Heat not sent: it needs 1 argument (0 given)"]
+    );
+    let refused = printer.run_macro_with_args(&heat, &[]);
+    assert!(
+        matches!(&refused, Err(HostError::InvalidArgument(m)) if m.contains("needs 1 argument")),
+        "{refused:?}"
+    );
+    // With it the defaults fill the rest.
+    let got = executed(&printer, |p| {
+        p.run_macro_with_args(&heat, &["210".into()]).unwrap();
+    });
+    assert_eq!(got, ["M104 S210", "M140 S55", "M117 210"]);
+    let got = executed(&printer, |p| {
+        p.run_macro_with_args(&heat, &["200".into(), "60".into()])
+            .unwrap();
+    });
+    assert_eq!(got, ["M104 S200", "M140 S60", "M117 200 60"]);
+    // Arguments for a macro that takes none are refused too.
+    let park = Macro {
+        name: "Park".into(),
+        gcode: "G1 Z{0=5} F600\nG1 X{park_x} F6000".into(),
+        color: None,
+        confirm: false,
+    };
+    let home = Macro {
+        name: "Home".into(),
+        gcode: "G28".into(),
+        color: None,
+        confirm: false,
+    };
+    let got = executed(&printer, |p| {
+        assert!(matches!(
+            p.run_macro_with_args(&home, &["X".into()]),
+            Err(HostError::InvalidArgument(_))
+        ));
+    });
+    assert!(got.is_empty(), "{got:?}");
+    // Defaults only: run_macro fills them in, and the machine-state
+    // placeholders still work.
+    let got = executed(&printer, |p| p.run_macro(&park));
+    assert_eq!(got, ["G1 Z5 F600", "G1 X10 F6000"]);
+    // Without a connection: dropped with the usual warning.
+    let offline = Printer::new();
+    assert!(matches!(
+        offline.run_macro_with_args(&park, &[]),
+        Err(HostError::NotConnected)
+    ));
 }
