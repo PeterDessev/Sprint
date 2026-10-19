@@ -581,3 +581,72 @@ fn an_engine_panic_leaves_a_consistent_state() {
         .unwrap();
     wait_for(&printer, "connected again", |s| s.is_connected());
 }
+
+#[test]
+fn sd_status_is_polled_without_auto_reports() {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut fw = Mini::new(Arc::clone(&log));
+    let mut polls = 0u64;
+    let (link, _) = fake(
+        |out| out.line("start"),
+        move |line, out| {
+            let Some(cmd) = fw.accept(line, out) else {
+                return;
+            };
+            match cmd.as_str() {
+                "M115" => {
+                    out.line("FIRMWARE_NAME:Marlin 2.0.9 (old) EXTRUDER_COUNT:1");
+                    out.line("Cap:SDCARD:1");
+                    out.line("Cap:AUTOREPORT_SD_STATUS:0");
+                }
+                "M23 part.gco" => {
+                    out.line("echo:Now fresh file: part.gco");
+                    out.line("File opened: PART.GCO Size: 1000");
+                    out.line("File selected");
+                }
+                "M27" => {
+                    polls += 1;
+                    if polls < 3 {
+                        out.line(&format!("SD printing byte {}/1000", polls * 400));
+                    } else {
+                        out.line("Done printing file");
+                    }
+                }
+                _ => {}
+            }
+            out.line("ok");
+        },
+    );
+    let printer = connect_fake(
+        link,
+        ConnectOptions {
+            temp_poll_secs: 0.0,
+            ..options()
+        },
+    );
+    wait_for(&printer, "connected", |s| {
+        s.is_connected() && !s.capabilities.is_empty()
+    });
+    wait_idle(&printer);
+    printer.start_sd_print("part.gco").unwrap();
+    wait_for(&printer, "progress from a poll", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.bytes_done == 400 && j.bytes_total == 1000)
+    });
+    wait_for(&printer, "the SD print to complete", |s| !s.job_active());
+    assert_eq!(
+        printer.with_state(|s| s.job.as_ref().map(|j| j.status.clone())),
+        Some(JobStatus::Completed)
+    );
+    let log = log.lock().unwrap().clone();
+    assert!(log.iter().filter(|c| *c == "M27").count() >= 3, "{log:?}");
+    assert!(!log.iter().any(|c| c.starts_with("M27 S")), "{log:?}");
+    // Polls are automatic traffic.
+    assert!(
+        console(&printer)
+            .iter()
+            .filter(|e| e.kind == ConsoleKind::Sent && e.text == "M27")
+            .all(|e| e.auto)
+    );
+}
