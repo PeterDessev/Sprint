@@ -267,7 +267,6 @@ fn unimplemented_commands_exit_with_2() {
     for args in [
         vec!["print", cube.as_str(), "--connect", "sim"],
         vec!["send", "--connect", "sim", "M105"],
-        vec!["ports"],
     ] {
         let output = sprint(&args);
         assert_eq!(output.status.code(), Some(2), "{args:?}");
@@ -278,6 +277,19 @@ fn unimplemented_commands_exit_with_2() {
         );
         assert!(output.stdout.is_empty(), "{args:?}");
     }
+}
+
+#[test]
+fn ports_are_listed_without_opening_them() {
+    let output = sprint(&["ports"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let text = stdout(&output);
+    assert!(
+        text.starts_with("PORT ") || text.starts_with("No serial ports found."),
+        "{text}"
+    );
+    // Piped output has no colors.
+    assert!(!text.contains('\u{1b}'), "{text:?}");
 }
 
 #[test]
