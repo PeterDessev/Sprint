@@ -1193,6 +1193,16 @@ impl GcodeViewer {
         (p.is_finite() && p.abs().max_element() < MAX_COORD).then_some(p)
     }
 
+    /// The layer being printed while a print progress line is set: the
+    /// layer of the last move at or before it.
+    pub fn current_layer(&self) -> Option<usize> {
+        let line = self.options.progress_line?;
+        let tp = self.toolpath.as_ref()?;
+        let seg = tp.segments.get(tp.segment_at_line(line)?)?;
+        let layer = seg.layer as usize;
+        (layer < self.layer_count()).then_some(layer)
+    }
+
     /// Depth-cue start distance and `1 / (end - start)` for a camera: haze
     /// starts a little in front of the scene centre and is complete at the
     /// far side of the bed or print, whichever reaches further.
@@ -1319,6 +1329,10 @@ impl GcodeViewer {
         if head.is_some() {
             flag_bits |= flags::HEAD;
         }
+        let current_layer = self.current_layer();
+        if current_layer.is_some() {
+            flag_bits |= flags::CURRENT_LAYER;
+        }
 
         let scalar = self
             .info
@@ -1359,7 +1373,7 @@ impl GcodeViewer {
                 lo.min(u32::MAX as usize) as u32,
                 hi.min(u32::MAX as usize) as u32,
                 hi.min(u32::MAX as usize) as u32,
-                0,
+                current_layer.map_or(u32::MAX, |l| l.min(u32::MAX as usize) as u32),
             ],
             range: [scalar.0, scalar.1, MARKER_PX, 0.0],
             fill_light: rig.fill,

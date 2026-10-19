@@ -28,7 +28,8 @@ struct Globals {
     mode: vec4<u32>,
     // x: progress line, y: highlight line, z: line limit, w: hover line.
     lines: vec4<u32>,
-    // x: first visible layer, y: last visible layer, z: top layer, w: unused.
+    // x: first visible layer, y: last visible layer, z: top layer, w: layer
+    // being printed (with FLAG_CURRENT_LAYER).
     layers: vec4<u32>,
     // x/y: scalar range min/max, z: marker radius in pixels, w: unused.
     range: vec4<f32>,
@@ -62,6 +63,7 @@ const FLAG_LAYER_TOP: u32 = 16u;
 const FLAG_ENCODE_GAMMA: u32 = 32u;
 const FLAG_TRANSLUCENT_GHOSTS: u32 = 64u;
 const FLAG_HEAD: u32 = 128u;
+const FLAG_CURRENT_LAYER: u32 = 256u;
 
 const TRAVEL_BIT: u32 = 32u;
 
@@ -397,6 +399,10 @@ fn segment_shade(s: SegmentIn) -> vec4<f32> {
         } else {
             c = ghostify(c);
         }
+    } else if (has_flag(FLAG_CURRENT_LAYER) && s.layer == g.layers.w) {
+        // The layer being printed: a touch brighter, with a faint glow.
+        c = mix(c, vec3<f32>(1.0, 0.97, 0.9), 0.22);
+        emissive = 0.12;
     }
     if (has_flag(FLAG_HOVER) && s.line == g.lines.w) {
         c = mix(c, vec3<f32>(1.0), 0.3);

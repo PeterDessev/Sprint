@@ -875,3 +875,36 @@ fn the_nozzle_casts_a_soft_shadow_on_the_part() {
         px(&with_head, above.0, above.1)
     );
 }
+
+#[test]
+fn the_layer_being_printed_is_highlighted() {
+    let Some((device, queue)) = device() else {
+        return;
+    };
+    let tp = block();
+    let mut viewer = loaded_viewer(&device, &queue, tp);
+    viewer.set_view(ViewPreset::Top);
+    viewer.options_mut().show_tool_head = false;
+    let (cx, cy) = block_centre(&viewer);
+    // Everything printed: no current layer.
+    let plain = px(&render(&mut viewer), cx, cy);
+    assert_eq!(viewer.current_layer(), None);
+    // Layer 9 being printed, most of it done.
+    viewer.options_mut().progress_line = Some(9 * 45 + 40);
+    assert_eq!(viewer.current_layer(), Some(9));
+    let current = px(&render(&mut viewer), cx, cy);
+    assert!(
+        luma(current) > luma(plain) + 8.0,
+        "current layer {current:?} vs plain {plain:?}"
+    );
+    // A layer below the one being printed is not highlighted.
+    viewer.options_mut().progress_line = None;
+    viewer.options_mut().layer_range = (0, 8);
+    let lower = px(&render(&mut viewer), cx, cy);
+    viewer.options_mut().progress_line = Some(9 * 45 + 40);
+    let lower_while_printing = px(&render(&mut viewer), cx, cy);
+    assert!(
+        (luma(lower) - luma(lower_while_printing)).abs() < 2.0,
+        "{lower:?} vs {lower_while_printing:?}"
+    );
+}

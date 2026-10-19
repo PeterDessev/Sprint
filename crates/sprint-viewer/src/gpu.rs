@@ -77,6 +77,7 @@ pub(crate) mod flags {
     pub const ENCODE_GAMMA: u32 = 32;
     pub const TRANSLUCENT_GHOSTS: u32 = 64;
     pub const HEAD: u32 = 128;
+    pub const CURRENT_LAYER: u32 = 256;
 }
 
 /// Everything needed to draw one frame.
