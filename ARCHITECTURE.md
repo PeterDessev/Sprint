@@ -1139,9 +1139,11 @@ Every public item is also re-exported at the crate root.
   M24 is acknowledged), `M27 S<n>` with AUTOREPORT_SD_STATUS (switched off
   with M27 S0 afterwards) else M27 polling; "open failed" or a missing card
   fails the job; "Not SD printing" while printing ends it (Completed when
-  the whole file was reported read, else Failed); cancel = M108 + M524. Uploads stream only after "Writing to file"
-  (M28's `ok` without it fails the job), skip the file's own M28/M29, end
-  with M29; cancel = M29 + M30 <name>.
+  the whole file was reported read, else Failed); cancel = M108 + M524.
+  Uploads stream only after "Writing to file" (M28's `ok` without it fails
+  the job), skip the file's own M28/M29, end with M29 (complete on "Done
+  saving file." or on M29's `ok`); cancel = M29 + M30 <name>. An M303
+  acknowledged without a result or failure message fails the autotune.
 * Threads: `disconnect()` and dropping the last handle join each thread for
   at most 2 s, then detach it. A panic in the engine leaves status (and any
   job) `Failed`. The waker is called without the rate limit when the engine
