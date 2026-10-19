@@ -103,6 +103,9 @@ fn sd_card_snapshots() {
     for label in [
         "Print calibration_cube.gcode",
         "Delete calibration_cube.gcode",
+        // M21 would remount the card under the running print.
+        "Initialize",
+        "Release",
     ] {
         assert!(
             h.get_by_label(label).accesskit_node().is_disabled(),

@@ -547,9 +547,11 @@ impl SdCardTab {
                     }
                     ui.add_space(10.0);
                     ui.horizontal(|ui| {
+                        // M21 remounts the card: never under a running SD
+                        // print or upload.
                         if ui
                             .add_enabled(
-                                connected,
+                                connected && !sd_busy,
                                 ActionButton::new("Initialize")
                                     .icon(icons::SD_CARD)
                                     .ghost()
