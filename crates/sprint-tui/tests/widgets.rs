@@ -296,6 +296,89 @@ fn ansi16_theme_uses_only_basic_colors() {
 }
 
 #[test]
+fn random_keys_never_break_the_command_line() {
+    use crossterm::event::{KeyEventKind, KeyEventState};
+    // Deterministic xorshift, so failures reproduce.
+    let mut seed = 0x9E37_79B9_7F4A_7C15_u64;
+    let mut next = move |n: usize| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        usize::try_from(seed % u64::try_from(n.max(1)).unwrap_or(1)).unwrap_or(0)
+    };
+    // Multibyte, wide, combining and zero-width characters.
+    let chars = ['G', '1', ' ', 'm', 'é', '日', '\u{301}', '\u{200b}', '😀'];
+    let codes = [
+        KeyCode::Backspace,
+        KeyCode::Delete,
+        KeyCode::Left,
+        KeyCode::Right,
+        KeyCode::Home,
+        KeyCode::End,
+        KeyCode::Up,
+        KeyCode::Down,
+        KeyCode::Tab,
+        KeyCode::BackTab,
+        KeyCode::Enter,
+        KeyCode::Esc,
+    ];
+    let emacs = ['a', 'e', 'b', 'f', 'u', 'k', 'w', 'y', 'd', 'h', 'p', 'n'];
+    let mods = [
+        KeyModifiers::NONE,
+        KeyModifiers::NONE,
+        KeyModifiers::SHIFT,
+        KeyModifiers::CONTROL,
+        KeyModifiers::ALT,
+        KeyModifiers::CONTROL | KeyModifiers::ALT,
+    ];
+    let mut input = CommandInput::new();
+    let mut terminal = Terminal::new(TestBackend::new(40, 12)).expect("terminal");
+    for step in 0..30_000 {
+        let code = match next(4) {
+            0 => KeyCode::Char(chars[next(chars.len())]),
+            1 => KeyCode::Char(emacs[next(emacs.len())]),
+            _ => codes[next(codes.len())],
+        };
+        let kind = if next(10) == 0 {
+            KeyEventKind::Release
+        } else {
+            KeyEventKind::Press
+        };
+        let key = KeyEvent {
+            code,
+            modifiers: mods[next(mods.len())],
+            kind,
+            state: KeyEventState::NONE,
+        };
+        if next(300) == 0 {
+            input.insert_str("pasted\r\nline\t日");
+        } else {
+            let _ = input.handle_key(key);
+        }
+        let text = input.text();
+        assert!(text.is_char_boundary(input.cursor()), "step {step}");
+        assert!(!text.chars().any(char::is_control), "step {step}: {text:?}");
+        if step % 101 == 0 {
+            let width = u16::try_from(next(30)).unwrap_or(0);
+            let area = Rect::new(0, 11, width, 1);
+            terminal
+                .draw(|frame| {
+                    let line = CommandLine::new(&input).prompt("sprint> ");
+                    if let Some(pos) = line.cursor_position(area) {
+                        assert!(pos.x < area.right(), "step {step}: {pos:?}");
+                    }
+                    frame.render_widget(line, area);
+                    let popup = CompletionPopup::new(&input);
+                    if let Some(popup_area) = popup.area(area, frame.area()) {
+                        frame.render_widget(popup, popup_area);
+                    }
+                })
+                .expect("draw");
+        }
+    }
+}
+
+#[test]
 fn typed_commands_flow_into_the_console() {
     let mut input = CommandInput::new();
     let mut log: Vec<ConsoleLine> = Vec::new();
