@@ -19,11 +19,15 @@ use crate::console::ConsoleKind;
 use crate::error::HostError;
 use crate::event::Event;
 use crate::hooks::Hook;
-use crate::job::{JobInfo, JobKind, JobStatus, PrintOptions, ProgressModel};
+use crate::job::{JobInfo, JobKind, JobStatus, PrintOptions, ProgressModel, is_user_wait};
 use crate::script::format_number;
 
 /// A pause repeats its M108 this often while the firmware still waits.
 const WAIT_BREAK_REPEAT: Duration = Duration::from_secs(1);
+/// A "busy: paused for user" that arrives this soon after the host sent
+/// M108 may have left the printer before it got the M108: it is not taken
+/// for a new wait (Marlin reports busy every 2 s by default).
+const BUSY_LAG: Duration = Duration::from_secs(2);
 
 /// A running job.
 pub(super) struct JobRuntime {
@@ -41,7 +45,6 @@ pub(super) struct JobRuntime {
     machine: MachineState,
     /// State saved when the pause script ran (resume restores it).
     pause_snapshot: Option<MachineState>,
-    paused_by_firmware: bool,
     pause_script_queued: bool,
     progress: ProgressModel,
     last_acked: Option<usize>,
@@ -140,7 +143,6 @@ impl JobRuntime {
             after_scripts: None,
             machine: MachineState::new(),
             pause_snapshot: None,
-            paused_by_firmware: false,
             pause_script_queued: false,
             progress,
             last_acked: None,
@@ -513,18 +515,23 @@ impl Engine {
         let Some(job) = &mut self.job else {
             return;
         };
+        // Paused by the firmware at an M0/M1 of the stream: a pause from
+        // here ends the wait and parks with the pause script, as from
+        // Printing (M600 keeps its own dialogue).
+        let at_stream_user_wait = job.info.kind == JobKind::HostPrint
+            && job.info.status == JobStatus::Paused
+            && job.info.paused_by_firmware
+            && self.flow.in_flight().any(|e| {
+                matches!(e.meta.job_line(), Some(JobLine::Stream(_)))
+                    && (e.meta.is('M', 0) || e.meta.is('M', 1))
+            });
         match (job.info.kind, &job.info.status) {
             (
                 JobKind::HostPrint,
                 JobStatus::Starting | JobStatus::Printing | JobStatus::Resuming,
-            ) => {
-                job.pause_script_queued = false;
-                job.wait_broken_at = None;
-                self.set_job_status(JobStatus::Pausing, now);
-                if let Some(what) = self.break_stream_wait(now) {
-                    self.info(format!("Pausing: ending {what} (M108)"));
-                }
-                self.advance_job(now);
+            ) => self.pause_host_print(now),
+            (JobKind::HostPrint, JobStatus::Paused) if at_stream_user_wait => {
+                self.pause_host_print(now);
             }
             (JobKind::SdPrint, JobStatus::Printing | JobStatus::Resuming) => {
                 job.queue_scripts(vec!["M25".to_string()], Some(JobStatus::Paused));
@@ -533,6 +540,86 @@ impl Engine {
             }
             (JobKind::SdUpload, _) => self.warn("An SD upload cannot be paused"),
             _ => {}
+        }
+    }
+
+    /// Pause a host print: drain the stream (ending a wait of it), then
+    /// the pause script.
+    fn pause_host_print(&mut self, now: Instant) {
+        if let Some(job) = &mut self.job {
+            job.pause_script_queued = false;
+            job.wait_broken_at = None;
+        }
+        self.set_job_status(JobStatus::Pausing, now);
+        if let Some(what) = self.break_stream_wait(now) {
+            self.info(format!("Pausing: ending {what} (M108)"));
+        }
+        self.advance_job(now);
+    }
+
+    /// Send M108 to end the firmware's wait (for the user or a heat-up).
+    fn release_wait(&mut self, now: Instant) {
+        self.send_immediate("M108", Source::User);
+        self.wait_released(now);
+    }
+
+    /// An M108 went out: the wait it ends is over, and a "busy: paused for
+    /// user" that left the printer before it got the M108 is not a new
+    /// one.
+    pub(super) fn wait_released(&mut self, now: Instant) {
+        self.wait_released_at = Some(now);
+        if self.user_wait {
+            self.user_wait = false;
+            let waiting = self.shared.state.read().waiting_for_user();
+            if waiting {
+                self.shared.update(|s| s.busy = None);
+            }
+        }
+    }
+
+    /// A firmware busy message.
+    pub(super) fn on_busy(&mut self, message: String, now: Instant) {
+        if !is_user_wait(&message) {
+            self.user_wait = false;
+            self.shared.update(|s| s.busy = Some(message));
+            return;
+        }
+        let stale = self
+            .wait_released_at
+            .is_some_and(|t| now.saturating_duration_since(t) < BUSY_LAG);
+        if stale {
+            return;
+        }
+        self.shared.update(|s| s.busy = Some(message));
+        self.user_wait = true;
+        // A host print the firmware holds at a wait for the user (M0/M1,
+        // M600, the rest of a filament change) is paused by the firmware.
+        // (Not while a resume script runs: its end sets Printing, and the
+        // next report pauses the job then.)
+        let held = self.job.as_ref().is_some_and(|j| {
+            j.kind() == JobKind::HostPrint
+                && matches!(j.info.status, JobStatus::Starting | JobStatus::Printing)
+        });
+        if held {
+            if let Some(job) = &mut self.job {
+                job.info.paused_by_firmware = true;
+            }
+            self.info("The printer waits for the user: the job is paused until it continues");
+            self.set_job_status(JobStatus::Paused, now);
+        }
+    }
+
+    /// An M0/M1/M600 was acknowledged: the firmware no longer waits for
+    /// the user. A host print it held continues.
+    pub(super) fn user_wait_ended(&mut self, now: Instant) {
+        let held = self.job.as_ref().is_some_and(|j| {
+            j.kind() == JobKind::HostPrint
+                && j.info.status == JobStatus::Paused
+                && j.info.paused_by_firmware
+        });
+        if held {
+            self.info("The printer continued the job");
+            self.set_job_status(JobStatus::Printing, now);
         }
     }
 
@@ -570,7 +657,7 @@ impl Engine {
             return None;
         }
         job.wait_broken_at = Some(now);
-        self.send_immediate("M108", Source::User);
+        self.release_wait(now);
         Some(wait)
     }
 
@@ -580,18 +667,16 @@ impl Engine {
         };
         match (job.info.kind, &job.info.status) {
             (JobKind::HostPrint, JobStatus::Paused) => {
-                if std::mem::take(&mut job.paused_by_firmware) || job.pause_snapshot.is_none() {
-                    // The firmware paused (and parks) itself: just continue;
-                    // release a firmware waiting for the user.
-                    let waiting = self
-                        .shared
-                        .state
-                        .read()
-                        .busy
-                        .as_deref()
-                        .is_some_and(|b| b.to_ascii_lowercase().contains("paused for user"));
-                    if waiting {
-                        self.send_immediate("M108", Source::User);
+                if job.info.paused_by_firmware || job.pause_snapshot.is_none() {
+                    // The firmware paused (and parks) itself: no resume
+                    // script, let it continue. One M108 releases a wait
+                    // for the user (never one the firmware is not in, nor
+                    // a second for the same wait).
+                    if self.user_wait {
+                        self.info(
+                            "Resuming: the printer waits for the user; M108 lets it continue",
+                        );
+                        self.release_wait(now);
                     }
                     self.set_job_status(JobStatus::Printing, now);
                     return;
@@ -643,7 +728,6 @@ impl Engine {
                 self.set_job_status(JobStatus::Printing, now);
             }
             (JobKind::SdPrint, JobStatus::Paused) => {
-                job.paused_by_firmware = false;
                 job.queue_scripts(vec!["M24".to_string()], Some(JobStatus::Printing));
                 self.manual_before_scripts();
                 self.set_job_status(JobStatus::Resuming, now);
@@ -684,13 +768,13 @@ impl Engine {
                 job.queue_scripts(lines, Some(JobStatus::Cancelled));
                 if waiting {
                     // Break out of a heat wait or user pause first.
-                    self.send_immediate("M108", Source::User);
+                    self.release_wait(now);
                 }
             }
             JobKind::SdPrint => {
                 job.queue_scripts(vec!["M524".to_string()], Some(JobStatus::Cancelled));
                 // M524 is not an emergency command: break a heat wait first.
-                self.send_immediate("M108", Source::User);
+                self.release_wait(now);
             }
             JobKind::SdUpload => {
                 let name = job.info.name.clone();
@@ -721,7 +805,7 @@ impl Engine {
             JobKind::SdUpload => false,
         };
         if pause {
-            job.paused_by_firmware = true;
+            job.info.paused_by_firmware = true;
             self.info("The printer paused the job");
             self.set_job_status(JobStatus::Paused, now);
         }
@@ -736,8 +820,7 @@ impl Engine {
         }
         match job.info.kind {
             JobKind::HostPrint => {
-                if job.paused_by_firmware {
-                    job.paused_by_firmware = false;
+                if job.info.paused_by_firmware {
                     self.info("The printer resumed the job");
                     self.set_job_status(JobStatus::Printing, now);
                 } else {
@@ -745,7 +828,6 @@ impl Engine {
                 }
             }
             JobKind::SdPrint => {
-                job.paused_by_firmware = false;
                 self.set_job_status(JobStatus::Printing, now);
             }
             JobKind::SdUpload => {}
@@ -1023,6 +1105,9 @@ impl Engine {
             return;
         }
         let previous = std::mem::replace(&mut job.info.status, status.clone());
+        if status != JobStatus::Paused {
+            job.info.paused_by_firmware = false;
+        }
         match &status {
             JobStatus::Paused => {
                 job.accumulated = job.elapsed(now);

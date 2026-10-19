@@ -452,6 +452,11 @@ pub(crate) struct Engine {
     last_temp_sample: Option<Instant>,
     /// Axes known to be homed (mirrors `PrinterState::homed`).
     homed: Option<Axes>,
+    /// The firmware reported that it waits for the user and nothing has
+    /// released the wait since (M108, its `ok`).
+    user_wait: bool,
+    /// When the host last sent M108 to end a wait.
+    wait_released_at: Option<Instant>,
     /// Modes and positions over every command sent since connecting, the
     /// last board reset or halt (the firmware's defaults then).
     printer_modes: MachineState,
@@ -514,6 +519,8 @@ impl Engine {
             sd_report_interval: SD_POLL_INTERVAL,
             last_temp_sample: None,
             homed: None,
+            user_wait: false,
+            wait_released_at: None,
             printer_modes: MachineState::new(),
             settings_refresh_at: None,
             pending_settings: None,
@@ -893,6 +900,8 @@ impl Engine {
         self.restarting = false;
         self.renumber_pending = false;
         self.setup_pending = false;
+        self.user_wait = false;
+        self.wait_released_at = None;
         self.temp_autoreport = false;
         self.sd_autoreport = false;
         self.temp_poll_outstanding = false;
@@ -1241,8 +1250,12 @@ impl Engine {
             }
             Command::Immediate(text) => {
                 self.send_immediate(&text, Source::User);
-                if CmdMeta::new(text, Source::User).is('M', 410) {
+                let meta = CmdMeta::new(text, Source::User);
+                if meta.is('M', 410) {
                     self.quick_stop();
+                }
+                if meta.is('M', 108) {
+                    self.wait_released(now);
                 }
             }
             Command::EmergencyStop => self.emergency_stop(),
@@ -1418,6 +1431,7 @@ impl Engine {
         // Before the M303 is released below: it did not finish, the halt
         // cut it short.
         self.end_autotune("the printer halted");
+        self.user_wait = false;
         self.halted = true;
         self.restarting = false;
         self.renumber_pending = true;

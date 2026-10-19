@@ -372,6 +372,75 @@ fn resend_requests_for_unknown_lines_reset_the_counter() {
 }
 
 #[test]
+fn a_firmware_pause_gets_one_m108_per_wait() {
+    // M600 in a host print: the firmware pauses and waits for the user.
+    // resume() releases the wait with M108; a "paused for user" that left
+    // the printer before the M108 arrived must neither pause the job again
+    // nor get a second M108 (it could end the next wait, unasked).
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut fw = Mini::new(Arc::clone(&log));
+    let (link, out) = fake(
+        |out| out.line("start"),
+        move |line, out| {
+            let Some(cmd) = fw.accept(line, out) else {
+                return;
+            };
+            match cmd.as_str() {
+                "M600" => {
+                    out.line("//action:paused");
+                    out.line("echo:busy: paused for user");
+                }
+                // Answered after the M600 (Marlin queues it behind).
+                "M108" => {}
+                _ => out.line("ok"),
+            }
+        },
+    );
+    let printer = connect_fake(
+        link,
+        ConnectOptions {
+            query_on_connect: false,
+            temp_poll_secs: 0.0,
+            ok_timeout_secs: 30.0,
+            ..options()
+        },
+    );
+    wait_for(&printer, "connected", |s| s.is_connected());
+    let file = Arc::new(GcodeFile::from_text("change.gcode", "G1 X1\nM600\nG1 X2\n"));
+    printer.start_print(file, PrintOptions::default()).unwrap();
+    wait_for(&printer, "the firmware pause", |s| {
+        s.waiting_for_user()
+            && s.job
+                .as_ref()
+                .is_some_and(|j| j.status == JobStatus::Paused && j.paused_by_firmware)
+    });
+    let m108s = || log.lock().unwrap().iter().filter(|c| *c == "M108").count();
+    printer.resume();
+    wait_for(&printer, "the M108", |_| m108s() == 1);
+    assert!(printer.with_state(|s| !s.waiting_for_user()));
+    // Stale: sent before the printer got the M108.
+    out.line("echo:busy: paused for user");
+    std::thread::sleep(Duration::from_millis(150));
+    let job = printer.with_state(|s| s.job.clone()).unwrap();
+    assert_eq!(job.status, JobStatus::Printing);
+    assert!(!job.paused_by_firmware);
+    printer.resume();
+    std::thread::sleep(Duration::from_millis(150));
+    assert_eq!(m108s(), 1, "{:?}", log.lock().unwrap());
+    // The change completes: M600's ok, then M108's.
+    out.line("//action:resumed");
+    out.line("ok");
+    out.line("ok");
+    wait_for(&printer, "completed", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Completed)
+    });
+    assert_eq!(m108s(), 1);
+    assert_eq!(printer.with_state(|s| s.link.timeouts), 0);
+}
+
+#[test]
 fn a_lost_line_counter_does_not_fail_an_sd_print() {
     let log = Arc::new(Mutex::new(Vec::new()));
     let mut fw = Mini::new(Arc::clone(&log));

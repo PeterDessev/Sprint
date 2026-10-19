@@ -1070,6 +1070,8 @@ pub struct JobInfo {
     pub objects: Vec<String>,          // host prints: object labels of the file, first-seen order
     pub excluded_objects: Vec<String>, // excluded while printing
     pub current_object: Option<String>,// the object the stream is in (as sent)
+    pub paused_by_firmware: bool,      // Paused by the firmware (//action:pause[d], a wait for the user holding a host print):
+                                       //   resume() runs no resume script, it lets the firmware continue (M108 if it waits)
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)] pub enum JobKind { HostPrint, SdPrint, SdUpload }
 #[derive(Clone, Debug, PartialEq)]
@@ -1285,7 +1287,8 @@ Every public item is also re-exported at the crate root.
   `clear`; `push_stream` adds a `stream` entry). Sent entries carry the clean command and its `line` number;
   resent lines are logged again.
 * `state`: `PrinterState::{is_connected, has_capability, job_active,
-  push_message}`, `ConnectionStatus::{is_connected, is_open, label}`,
+  push_message, waiting_for_user}` (`busy` is "paused for user" or
+  "paused for input"), `ConnectionStatus::{is_connected, is_open, label}`,
   `Heater::{name, autotune_index, from_autotune_index}`, `Axis::letter`,
   `Axes::home_command`, `TEMP_HISTORY_LEN`, `TEMP_HISTORY_SECS` (the
   history spans at most 30 minutes, whatever the report rate),
@@ -1453,9 +1456,19 @@ Every public item is also re-exported at the crate root.
   leave them all out). Pause points (`pause_at_lines`) act like `;@pause`
   before their line.
   `//action:pause|paused` pause
-  without scripts and `//action:resume|resumed` continue; `resume()` after
-  such a pause sends
-  M108 when the firmware waits for the user. `cancel` sends M108 first when
+  without scripts and `//action:resume|resumed` continue. A host print
+  the firmware holds at a wait for the user (`busy: paused for user` or
+  `paused for input` while `Starting`/`Printing`: M0/M1, M600, a typed
+  M0) is paused by the firmware too. `JobInfo::paused_by_firmware` marks
+  such pauses (only while `Paused`): `resume()` runs no resume script but
+  lets the firmware continue, with one M108 when it waits for the user
+  (never when it does not, never a second one for the same wait: a
+  "paused for user" arriving within 2 s of an M108 the host sent may have
+  left the printer before it got the M108 and counts as no new wait); the
+  job also continues when the printer acknowledges its M0/M1/M600 (its
+  button, an answered prompt) or reports `//action:resumed`. `pause()`
+  while the firmware holds the print at an M0/M1 of the stream ends the
+  wait and runs the pause script, as from `Printing`. `cancel` sends M108 first when
   a heat or user wait is in flight. SD prints: M23/M24 (`Starting` until
   M24 is acknowledged), `M27 S<n>` with AUTOREPORT_SD_STATUS (switched off
   with M27 S0 afterwards) else M27 polling; "open failed" or a missing card

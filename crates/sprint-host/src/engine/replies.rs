@@ -131,7 +131,7 @@ impl Engine {
             }
             Reply::Busy(message) => {
                 self.flow.note_activity(now);
-                self.shared.update(|s| s.busy = Some(message));
+                self.on_busy(message, now);
                 // A pause is waiting for an M0 the M108 came too early for.
                 self.break_stream_wait(now);
             }
@@ -227,6 +227,8 @@ impl Engine {
             OkOutcome::Swallowed => {}
             OkOutcome::Spurious => log::debug!("ok without a command in flight"),
         }
+        // Whatever the firmware waited for is over.
+        self.user_wait = false;
         let busy = self.shared.state.read().busy.is_some();
         if busy {
             self.shared.update(|s| s.busy = None);
@@ -588,6 +590,9 @@ impl Engine {
         }
         if let Some(line) = meta.job_line() {
             self.job_ack(meta, line, rtt, now);
+        }
+        if rtt.is_some() && (meta.is('M', 0) || meta.is('M', 1) || meta.is('M', 600)) {
+            self.user_wait_ended(now);
         }
     }
 

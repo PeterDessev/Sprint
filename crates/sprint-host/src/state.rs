@@ -159,6 +159,15 @@ impl PrinterState {
         self.job.as_ref().is_some_and(|j| j.status.is_active())
     }
 
+    /// The firmware reported that it waits for the user ([`busy`] "paused
+    /// for user" or "paused for input": M0/M1, M600's "Nozzle Parked"),
+    /// until its next `ok` or other busy message.
+    ///
+    /// [`busy`]: PrinterState::busy
+    pub fn waiting_for_user(&self) -> bool {
+        self.busy.as_deref().is_some_and(crate::job::is_user_wait)
+    }
+
     /// Append to [`PrinterState::firmware_messages`], keeping the last
     /// [`FIRMWARE_MESSAGES_LEN`].
     pub fn push_message(&mut self, message: String) {

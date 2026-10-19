@@ -120,6 +120,13 @@ impl JobStatus {
     }
 }
 
+/// Whether a firmware busy message (`busy: paused for user`, `busy:
+/// paused for input`) says that the firmware waits for the user.
+pub(crate) fn is_user_wait(busy: &str) -> bool {
+    let m = busy.to_ascii_lowercase();
+    m.contains("paused for user") || m.contains("paused for input")
+}
+
 /// The current or last job.
 #[derive(Clone, Debug, PartialEq)]
 pub struct JobInfo {
@@ -178,6 +185,15 @@ pub struct JobInfo {
     /// [`resume_preamble`](sprint_gcode::resume_preamble)). Kept with the
     /// job record until the next job starts; `None` otherwise.
     pub stopped_at: Option<usize>,
+    /// While `Paused`: the firmware paused the job, not the host
+    /// (`//action:paused` or `//action:pause`, or a wait for the user such
+    /// as M0/M1/M600 that holds a host print). No pause script ran, so
+    /// [`Printer::resume`](crate::Printer::resume) runs no resume script:
+    /// it lets the firmware continue (with M108 when it waits for the
+    /// user, see [`PrinterState::waiting_for_user`](crate::PrinterState::waiting_for_user)).
+    /// The job also continues when the printer does by itself (its
+    /// button, `//action:resumed`). False in every other status.
+    pub paused_by_firmware: bool,
 }
 
 impl JobInfo {
@@ -208,6 +224,7 @@ impl JobInfo {
             excluded_objects: Vec::new(),
             current_object: None,
             stopped_at: None,
+            paused_by_firmware: false,
         }
     }
 }

@@ -494,6 +494,117 @@ fn filament_runout_prompt_and_answer() {
     assert_eq!(printer.with_state(|s| s.link.timeouts), 0);
 }
 
+/// A short file that waits for the user (M0) after a few moves.
+fn magnets_file() -> Arc<GcodeFile> {
+    let mut text = String::from("G28\nM302 P1\nM83\nG1 Z0.3 F600\nM0 Insert the magnets\n");
+    for i in 0..50 {
+        text.push_str(&format!("G1 X{} Y20 E0.5 F3000\n", 20 + i));
+    }
+    Arc::new(GcodeFile::from_text("magnets.gcode", text))
+}
+
+fn paused_by_firmware(printer: &Printer) -> bool {
+    printer.with_state(|s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Paused && j.paused_by_firmware)
+    })
+}
+
+fn m108s(control: &sprint_host::sprint_sim::SimControl) -> usize {
+    control
+        .received_commands()
+        .iter()
+        .filter(|c| *c == "M108")
+        .count()
+}
+
+#[test]
+fn a_wait_for_the_user_pauses_the_print_and_resume_releases_it_once() {
+    let printer = connect(sim(), options());
+    let control = printer.sim_control().unwrap();
+    control.clear_received();
+    printer
+        .start_print(magnets_file(), PrintOptions::default())
+        .unwrap();
+    wait_for(&printer, "the printer to hold the print", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Paused && j.paused_by_firmware)
+    });
+    assert!(printer.with_state(|s| s.waiting_for_user()));
+    // The firmware paused: no pause script, no M108 yet.
+    let got = control.received_commands();
+    assert!(!got.iter().any(|c| c == "M400" || c == "M108"), "{got:?}");
+    printer.resume();
+    wait_for(&printer, "completed", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Completed)
+    });
+    assert_eq!(m108s(&control), 1);
+    let job = printer.with_state(|s| s.job.clone()).unwrap();
+    assert!(!job.paused_by_firmware);
+    assert!(
+        !control.received_commands().iter().any(|c| c == "M400"),
+        "no pause or resume script"
+    );
+}
+
+#[test]
+fn a_print_held_for_the_user_continues_when_the_printer_does() {
+    // The user presses the printer's button instead of resuming here.
+    let printer = connect(sim(), options());
+    let control = printer.sim_control().unwrap();
+    control.clear_received();
+    printer
+        .start_print(magnets_file(), PrintOptions::default())
+        .unwrap();
+    wait_for(&printer, "the printer to hold the print", |_| {
+        paused_by_firmware(&printer)
+    });
+    control.press_button();
+    wait_for(&printer, "completed", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Completed)
+    });
+    assert_eq!(m108s(&control), 0);
+}
+
+#[test]
+fn resume_sends_no_m108_to_a_printer_that_does_not_wait() {
+    let printer = connect(sim(), options());
+    let file = file();
+    let control = printer.sim_control().unwrap();
+    start(&printer, &file, PrintOptions::default());
+    control.inject_line("//action:paused");
+    wait_for(&printer, "paused by the printer", |_| {
+        paused_by_firmware(&printer)
+    });
+    assert!(!printer.with_state(|s| s.waiting_for_user()));
+    printer.resume();
+    wait_for(&printer, "printing", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Printing && !j.paused_by_firmware)
+    });
+    // Paused again, now waiting for input: one M108.
+    control.inject_line("//action:paused");
+    wait_for(&printer, "paused by the printer", |_| {
+        paused_by_firmware(&printer)
+    });
+    control.inject_line("echo:busy: paused for input");
+    wait_for(&printer, "waiting for input", |s| s.waiting_for_user());
+    printer.resume();
+    wait_for(&printer, "completed", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Completed)
+    });
+    assert_eq!(m108s(&control), 1);
+}
+
 #[test]
 fn resume_after_a_firmware_pause_releases_a_waiting_printer() {
     let printer = connect(sim(), options());
