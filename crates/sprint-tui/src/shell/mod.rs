@@ -529,6 +529,11 @@ impl Shell {
                 if !open {
                     self.out.dim("Not connected");
                 } else if question.is_none_or(|q| self.confirm(input, &q, true)) {
+                    // A streamed print is cancelled first (heaters off).
+                    let out = self.out.clone();
+                    session::cancel_before_closing(&self.printer, CANCEL_TIMEOUT, |name| {
+                        out.dim(format!("Cancelling {name} first…"));
+                    });
                     self.printer.disconnect();
                 }
             }
@@ -1122,18 +1127,21 @@ impl Shell {
     }
 }
 
-/// What to ask before disconnecting while a job runs: only a print Sprint
-/// streams stops; one from the printer's SD card goes on unwatched.
+/// What to ask before disconnecting while a job runs: a print Sprint
+/// streams (or an upload) is cancelled first; one from the printer's SD
+/// card goes on unwatched.
 fn disconnect_question(state: &sprint_host::PrinterState) -> Option<String> {
     let job = state.job.as_ref().filter(|j| j.status.is_active())?;
     let name = &job.name;
     Some(match job.kind {
-        JobKind::HostPrint => format!("{name} is printing; disconnecting stops it. Disconnect?"),
+        JobKind::HostPrint => format!(
+            "{name} is printing; disconnecting cancels it (the cancel script turns the heaters off). Disconnect?"
+        ),
         JobKind::SdPrint => format!(
             "{name} prints from the SD card and goes on unwatched (cancel ends it). Disconnect?"
         ),
         JobKind::SdUpload => format!(
-            "{name} is being written to the SD card; disconnecting leaves it incomplete. Disconnect?"
+            "{name} is being written to the SD card; disconnecting cancels the upload. Disconnect?"
         ),
     })
 }

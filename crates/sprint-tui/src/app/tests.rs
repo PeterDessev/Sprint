@@ -1575,7 +1575,7 @@ fn quit_question(kind: JobKind) -> Vec<String> {
 #[test]
 fn quitting_says_what_happens_to_the_job() {
     let host = quit_question(JobKind::HostPrint).join(" ");
-    assert!(host.contains("stops"), "{host}");
+    assert!(host.contains("cancels it first"), "{host}");
     // The printer prints from its card without Sprint: quitting does not
     // stop that print, and saying so would leave it running unwatched.
     let sd = quit_question(JobKind::SdPrint).join(" ");
@@ -1734,4 +1734,34 @@ fn a_relative_startup_file_is_remembered_with_its_full_path() {
     let file = app.file.as_ref().expect("loaded");
     assert!(file.path.is_absolute(), "{}", file.path.display());
     assert_eq!(app.config.recent_files.first(), Some(&file.path));
+}
+
+#[test]
+fn disconnecting_during_a_print_cancels_it_first() {
+    let scratch = Scratch::new("disconnect-cancel");
+    let mut app = timed_app();
+    app.open_file(slow_file(&scratch.0));
+    wait_app(&mut app, "the analysis", |a| a.loader.is_none());
+    press(&mut app, KeyCode::F(5));
+    press(&mut app, KeyCode::Char('y'));
+    wait(&mut app, "printing", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Printing && j.current_line > 10)
+    });
+    let control = app.printer.sim_control().expect("simulator");
+    control.clear_received();
+    app.run_line("disconnect");
+    let Some(Modal::Confirm(confirm)) = &app.modal else {
+        panic!("disconnecting during a print asks first");
+    };
+    let text = confirm.message.join(" ");
+    assert!(text.contains("heaters off"), "{text}");
+    press(&mut app, KeyCode::Char('y'));
+    // Closing the link alone would leave the printer heating: the print
+    // is cancelled (its script turns the heaters off) before it closes.
+    wait(&mut app, "the disconnect", |s| !s.status.is_open());
+    assert_eq!(job_status(&app), Some(JobStatus::Cancelled));
+    let got = control.received_commands();
+    assert!(got.iter().any(|c| c == "M104 S0"), "{got:?}");
 }

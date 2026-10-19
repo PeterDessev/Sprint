@@ -165,6 +165,11 @@ pub fn run_tui(options: TuiOptions) -> Result<()> {
         let (_guard, mut terminal) = TerminalGuard::enter()?;
         event_loop(&mut terminal, &mut app, &wake)
     };
+    // Quitting during a print (after asking) cancels it, so its cancel
+    // script turns the heaters off before the link closes.
+    let _ = crate::session::cancel_before_closing(&printer, crate::session::CANCEL_WAIT, |name| {
+        eprintln!("Cancelling {name} before closing the connection…")
+    });
     printer.disconnect();
     result
 }

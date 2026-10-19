@@ -642,13 +642,13 @@ fn disconnecting_says_what_happens_to_the_job() {
         None
     );
     let host = disconnect_question(&state(JobKind::HostPrint, JobStatus::Paused));
-    assert!(host.is_some_and(|q| q.contains("disconnecting stops it")));
+    assert!(host.is_some_and(|q| q.contains("disconnecting cancels it")));
     // A print from the card goes on without Sprint.
     let sd = disconnect_question(&state(JobKind::SdPrint, JobStatus::Printing)).unwrap_or_default();
-    assert!(sd.contains("goes on") && !sd.contains("stops it"), "{sd}");
+    assert!(sd.contains("goes on") && !sd.contains("cancels"), "{sd}");
     let upload =
         disconnect_question(&state(JobKind::SdUpload, JobStatus::Printing)).unwrap_or_default();
-    assert!(upload.contains("incomplete"), "{upload}");
+    assert!(upload.contains("cancels the upload"), "{upload}");
 }
 
 #[test]
@@ -683,4 +683,35 @@ fn typed_homing_during_a_job_asks_first() {
     assert!(received(&shell).iter().any(|c| c == "M84"));
     shell.printer.cancel();
     wait_for(&shell, "the cancel", |s| !s.job_active());
+}
+
+#[test]
+fn disconnecting_during_a_print_cancels_it_first() {
+    let scratch = Scratch::new("disconnect-cancel");
+    let (mut shell, buffer) = connected_timed();
+    shell.load(&scratch.slow_file());
+    let mut input = Script::new(["print"], false);
+    shell.run_lines_until_eof_without_leaving(&mut input);
+    wait_for(&shell, "the print", |s| {
+        s.job.as_ref().is_some_and(|j| j.current_line > 10)
+    });
+    let control = shell.printer.sim_control().expect("simulator");
+    control.clear_received();
+    let mut input = Script::new(["disconnect", "y"], true);
+    shell.run_lines_until_eof_without_leaving(&mut input);
+    // The cancel script ran (heaters off) before the link closed.
+    assert!(!shell.printer.with_state(|s| s.status.is_open()));
+    assert_eq!(
+        shell
+            .printer
+            .with_state(|s| s.job.as_ref().map(|j| j.status.clone())),
+        Some(JobStatus::Cancelled)
+    );
+    let got = control.received_commands();
+    assert!(got.iter().any(|c| c == "M104 S0"), "{got:?}");
+    assert!(
+        buffer.text().contains("Cancelling slow.gcode first"),
+        "{}",
+        buffer.text()
+    );
 }

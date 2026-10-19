@@ -7,7 +7,9 @@
 
 use std::time::{Duration, Instant};
 
-use sprint_host::{ConnectOptions, ConnectTarget, ConnectionStatus, Printer, PrinterState};
+use sprint_host::{
+    ConnectOptions, ConnectTarget, ConnectionStatus, JobKind, Printer, PrinterState,
+};
 
 use crate::interrupt::Interrupt;
 
@@ -157,6 +159,37 @@ pub fn connect_blocking(
     }
 }
 
+/// How long closing the link waits for a cancelled job to stop (the cancel
+/// script parks the head).
+pub const CANCEL_WAIT: Duration = Duration::from_secs(30);
+
+/// Before closing the link while a job runs: cancel a print Sprint
+/// streams (or an SD upload) and wait, at most `timeout`, for it to stop.
+/// The cancel script turns the heaters off and parks; only closing the
+/// link would leave the printer heating with nobody watching. `announce`
+/// gets the job's name before the wait. A print from the printer's SD card
+/// goes on by itself and is left alone. Returns the name of the job
+/// cancelled.
+pub fn cancel_before_closing(
+    printer: &Printer,
+    timeout: Duration,
+    announce: impl FnOnce(&str),
+) -> Option<String> {
+    let name = printer.with_state(|s| {
+        s.job
+            .as_ref()
+            .filter(|j| j.status.is_active() && j.kind != JobKind::SdPrint)
+            .map(|j| j.name.clone())
+    })?;
+    announce(&name);
+    printer.cancel();
+    // Ctrl+C is not wanted here: the cancel script must run.
+    let _ = wait_for(printer, timeout, &Interrupt::new(), true, |s| {
+        !s.job_active()
+    });
+    Some(name)
+}
+
 /// Whether nothing waits to be sent or acknowledged.
 pub fn link_idle(s: &PrinterState) -> bool {
     s.link.queue_len == 0 && s.link.in_flight == 0
@@ -222,6 +255,59 @@ mod tests {
         // Already connected: a second connect fails to open.
         let again = connect_blocking(&printer, fast_sim(), ConnectOptions::default(), &interrupt);
         assert!(matches!(again, Err(ConnectError::Open(_))), "{again:?}");
+        printer.disconnect();
+    }
+
+    #[test]
+    fn closing_the_link_cancels_a_streamed_print_first() {
+        let printer = Printer::new();
+        let interrupt = Interrupt::new();
+        // Moves in (fast) real time: still printing when the link closes.
+        let sim = ConnectTarget::Simulator(SimConfig {
+            boot_delay_ms: 20,
+            time_scale: 5.0,
+            ..SimConfig::default()
+        });
+        connect_blocking(&printer, sim, ConnectOptions::default(), &interrupt).expect("connect");
+        wait_setup(&printer, Duration::from_secs(30), &interrupt).expect("setup");
+        // Nothing runs: nothing to cancel.
+        assert_eq!(cancel_before_closing(&printer, CANCEL_WAIT, |_| {}), None);
+        let mut gcode = String::from(
+            "M104 S200
+G28
+G1 Z0.3 F600
+",
+        );
+        for i in 0..400 {
+            gcode.push_str(&format!(
+                "G1 X{} Y20 F600
+",
+                20 + (i % 2) * 5
+            ));
+        }
+        let file = std::sync::Arc::new(sprint_host::sprint_gcode::GcodeFile::from_text(
+            "slow.gcode",
+            &gcode,
+        ));
+        printer
+            .start_print(file, Default::default())
+            .expect("start");
+        wait_for(&printer, Duration::from_secs(30), &interrupt, true, |s| {
+            s.job.as_ref().is_some_and(|j| j.current_line > 5)
+        })
+        .expect("printing");
+        let control = printer.sim_control().expect("simulator");
+        control.clear_received();
+        let mut announced = String::new();
+        let cancelled = cancel_before_closing(&printer, CANCEL_WAIT, |name| {
+            announced = name.to_string();
+        });
+        assert_eq!(cancelled.as_deref(), Some("slow.gcode"));
+        assert_eq!(announced, "slow.gcode");
+        assert!(!printer.with_state(PrinterState::job_active));
+        // The cancel script turned the heaters off.
+        let got = control.received_commands();
+        assert!(got.iter().any(|c| c == "M104 S0"), "{got:?}");
         printer.disconnect();
     }
 

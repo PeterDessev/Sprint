@@ -33,6 +33,7 @@ use crate::commands::{
 use crate::format;
 use crate::loader::{LoadJob, LoadedFile, analyze_options};
 use crate::report::{self, ReportLine, Tone};
+use crate::session;
 use crate::theme::Theme;
 use crate::widgets::{
     Candidate, CommandInput, ConsoleKind, ConsoleLine, ConsoleState, InputEvent, LayerFit,
@@ -877,7 +878,9 @@ impl App {
             .name("sprint-connect".into())
             .spawn(move || {
                 // Closing a link can take a moment too: off the UI thread.
+                // A running print is cancelled first (heaters off).
                 if reconnect {
+                    let _ = session::cancel_before_closing(&printer, session::CANCEL_WAIT, |_| {});
                     printer.disconnect();
                 }
                 let result = printer
@@ -965,11 +968,16 @@ impl App {
 
     /// Close the connection on a helper thread (the engine threads get a
     /// moment to stop, which must not freeze the screen).
+    /// A running print is cancelled first, so its cancel script turns the
+    /// heaters off (see [`session::cancel_before_closing`]).
     fn disconnect(&mut self) {
         let printer = self.printer.clone();
         let spawned = std::thread::Builder::new()
             .name("sprint-disconnect".into())
-            .spawn(move || printer.disconnect());
+            .spawn(move || {
+                let _ = session::cancel_before_closing(&printer, session::CANCEL_WAIT, |_| {});
+                printer.disconnect();
+            });
         if spawned.is_err() {
             self.printer.disconnect();
         }
@@ -990,12 +998,12 @@ impl App {
             return false;
         };
         let name = &job.name;
-        // Only a print Sprint streams stops with the connection: the
-        // printer goes on with a print from its card, unwatched.
+        // A print Sprint streams (or an upload) is cancelled before the
+        // link closes; the printer goes on with a print from its card.
         let message = match job.kind {
             JobKind::HostPrint => vec![
                 format!("{name} is printing and Sprint streams it."),
-                format!("{doing} closes the connection and the print stops."),
+                format!("{doing} cancels it first: the cancel script turns the heaters off."),
             ],
             JobKind::SdPrint => vec![
                 format!("{name} prints from the printer's SD card."),
@@ -1004,7 +1012,7 @@ impl App {
             ],
             JobKind::SdUpload => vec![
                 format!("{name} is being written to the SD card."),
-                format!("{doing} stops the upload and leaves the file incomplete."),
+                format!("{doing} cancels the upload and deletes the partial file."),
             ],
         };
         self.modal = Some(Modal::Confirm(Confirm::new(
