@@ -19,6 +19,7 @@
 //! Widgets never send G-code; the sections turn their actions into
 //! [`sprint_host::Printer`] calls, which never block the UI thread.
 
+mod extruder;
 mod motion;
 mod temperatures;
 
@@ -38,6 +39,7 @@ use crate::widgets::Card;
 #[derive(Default)]
 pub struct ControlsSidebar {
     motion: motion::Motion,
+    extruder: extruder::Extruder,
 }
 
 impl ControlsSidebar {
@@ -53,6 +55,7 @@ impl ControlsSidebar {
                 }
                 temperatures::show(ui, ctx);
                 self.motion.show(ui, ctx);
+                self.extruder.show(ui, ctx);
             });
     }
 }

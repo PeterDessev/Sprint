@@ -81,6 +81,19 @@ pub(super) fn reading(state: &PrinterState, heater: Heater) -> Option<&HeaterRea
     }
 }
 
+/// Current temperature of a heater (NaN without a reading).
+pub(super) fn current_temp(state: &PrinterState, heater: Heater) -> f32 {
+    reading(state, heater).map_or(f32::NAN, |r| r.current)
+}
+
+/// Target of a heater (0 = off or unknown).
+pub(super) fn target_temp(state: &PrinterState, heater: Heater) -> f32 {
+    reading(state, heater)
+        .and_then(|r| r.target)
+        .filter(|t| t.is_finite() && *t > 0.0)
+        .unwrap_or(0.0)
+}
+
 /// Finite readings of `heater` from the last `secs` seconds of history.
 pub(super) fn heater_history(state: &PrinterState, heater: Heater, secs: f64) -> Vec<f32> {
     let Some(last) = state.temp_history.back() else {
