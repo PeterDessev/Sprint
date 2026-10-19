@@ -357,6 +357,8 @@ fn dangerous_gcode_asks_on_a_terminal() {
     let (mut shell, buffer) = connected();
     let mut input = Script::new(["M502", "n", "M502", "y"], true);
     shell.run_lines(&mut input);
+    // Typed input does not wait for the queue to drain (scripts do).
+    crate::session::wait_idle(&shell.printer, PATIENCE, &Interrupt::new()).expect("idle");
     let text = buffer.text();
     assert!(text.contains("Not sent"), "{text}");
     let got = received(&shell);
