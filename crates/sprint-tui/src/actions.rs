@@ -267,6 +267,17 @@ fn homes_z(line: &str) -> bool {
     axes.is_empty() || axes.contains(&'Z')
 }
 
+/// Whether the firmware waits for the user without a host prompt to
+/// answer (`busy: paused for user` after M0/M1 or a filament change on
+/// firmware without host prompt support): M108 lets it go on.
+pub fn waiting_for_user(state: &PrinterState) -> bool {
+    state.prompt.is_none()
+        && state.busy.as_deref().is_some_and(|busy| {
+            let lower = busy.to_ascii_lowercase();
+            lower.contains("paused for user") || lower.contains("wait for user")
+        })
+}
+
 /// Why a print cannot start, if it cannot.
 pub fn print_blocker(state: &PrinterState, loaded: Option<&LoadedFile>) -> Option<String> {
     if !state.is_connected() {
@@ -502,6 +513,25 @@ mod tests {
         let (doc, why) = job_conflict("G28", true).expect("G28");
         assert_eq!(doc.code, "G28");
         assert!(why.contains("nozzle"), "{why}");
+    }
+
+    #[test]
+    fn waits_for_the_user_without_a_prompt() {
+        let busy = |text: &str| PrinterState {
+            busy: Some(text.to_string()),
+            ..PrinterState::default()
+        };
+        assert!(waiting_for_user(&busy("paused for user")));
+        assert!(waiting_for_user(&busy("Wait for user")));
+        assert!(!waiting_for_user(&busy("processing")));
+        assert!(!waiting_for_user(&PrinterState::default()));
+        // With a prompt the prompt is answered instead.
+        let mut prompted = busy("paused for user");
+        prompted.prompt = Some(sprint_host::HostPrompt {
+            message: "M0 Stop".into(),
+            buttons: vec!["Continue".into()],
+        });
+        assert!(!waiting_for_user(&prompted));
     }
 
     #[test]

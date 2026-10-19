@@ -1176,6 +1176,11 @@ pub fn monitor_text(state: &PrinterState) -> String {
             let _ = write!(out, "  ETA {}", format::clock_of(eta));
         }
     }
+    if let Some(prompt) = &state.prompt {
+        let _ = write!(out, "  waiting for the user: {}", sanitize(&prompt.message));
+    } else if crate::actions::waiting_for_user(state) {
+        out.push_str("  waiting for the user");
+    }
     let temp = |current: f32, target: Option<f32>| {
         let now = format::fixed(f64::from(current), 0);
         match target.filter(|t| t.is_finite() && *t > 0.0) {
@@ -1582,5 +1587,26 @@ mod tests {
             "Printing 42.0%  layer 12/100  ETA 20:00  T0 205/210  B 60/60  Z 0.20"
         );
         assert_eq!(monitor_text(&PrinterState::default()), "Disconnected");
+    }
+
+    #[test]
+    fn monitor_shows_what_the_printer_waits_for() {
+        let mut state = connected_state();
+        state.prompt = Some(HostPrompt {
+            message: "Insert magnets\x1b[2J".into(),
+            buttons: vec!["Continue".into()],
+        });
+        assert_eq!(
+            monitor_text(&state),
+            "Printing 42.0%  layer 12/100  ETA 20:00  waiting for the user: Insert magnets·[2J  \
+             T0 205/210  B 60/60  Z 0.20"
+        );
+        state.prompt = None;
+        state.busy = Some("paused for user".into());
+        assert!(
+            monitor_text(&state).contains("ETA 20:00  waiting for the user  T0"),
+            "{}",
+            monitor_text(&state)
+        );
     }
 }
