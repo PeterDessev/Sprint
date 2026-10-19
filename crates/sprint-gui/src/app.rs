@@ -14,8 +14,10 @@
 //! 4. run the [`AppAction`]s the panels pushed;
 //! 5. update the window title and save the configuration (debounced).
 //!
-//! Nothing here blocks the UI thread: connecting, loading, analysis, file
-//! dialogs and configuration saves run on worker threads.
+//! Nothing here blocks the UI thread: connecting, port scans, loading,
+//! analysis, checks of the file on disk, file dialogs and configuration
+//! saves run on worker threads. Only starting a print waits briefly for the
+//! engine's answer (`Printer::start_print`).
 
 use std::path::PathBuf;
 use std::sync::Arc;
