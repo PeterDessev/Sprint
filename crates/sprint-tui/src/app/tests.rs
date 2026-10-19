@@ -1089,6 +1089,21 @@ fn connect_dialog_reaches_the_simulator() {
 }
 
 #[test]
+fn a_connect_thread_that_dies_does_not_block_connecting() {
+    let mut app = app();
+    let (tx, rx) = crossbeam_channel::bounded::<Result<(), String>>(1);
+    app.connecting = Some(rx);
+    drop(tx);
+    app.tick(Instant::now());
+    assert!(app.connecting.is_none());
+    assert!(
+        app.toast
+            .as_ref()
+            .is_some_and(|t| t.text == "Connecting stopped unexpectedly")
+    );
+}
+
+#[test]
 fn open_dialog_completes_and_loads() {
     let mut app = app();
     press(&mut app, KeyCode::F(3));

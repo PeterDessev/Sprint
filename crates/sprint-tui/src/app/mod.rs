@@ -419,14 +419,23 @@ impl App {
             self.info("Emergency stop disarmed");
         }
         self.poll_loader();
-        if let Some(rx) = &self.connecting
-            && let Ok(result) = rx.try_recv()
-        {
-            self.connecting = None;
-            if let Err(why) = result {
-                self.error(why);
+        if let Some(rx) = &self.connecting {
+            let result = match rx.try_recv() {
+                Ok(result) => Some(result),
+                Err(crossbeam_channel::TryRecvError::Empty) => None,
+                // The connect thread died without an answer: do not keep
+                // refusing new connects as "already connecting".
+                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                    Some(Err("Connecting stopped unexpectedly".to_string()))
+                }
+            };
+            if let Some(result) = result {
+                self.connecting = None;
+                if let Err(why) = result {
+                    self.error(why);
+                }
+                self.dirty = true;
             }
-            self.dirty = true;
         }
         self.poll_background();
         self.tick_report(now);
