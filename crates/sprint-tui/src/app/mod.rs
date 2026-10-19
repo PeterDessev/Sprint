@@ -968,8 +968,8 @@ impl App {
 
     fn on_paste(&mut self, text: &str) {
         match &mut self.modal {
-            Some(Modal::Open(d)) => d.input.insert_str(text),
-            Some(Modal::Connect(d)) => d.tcp.insert_str(text),
+            Some(Modal::Open(d)) => d.paste(text),
+            Some(Modal::Connect(d)) => d.paste(text),
             Some(_) => {}
             None => {
                 if self.focus != Focus::Input {

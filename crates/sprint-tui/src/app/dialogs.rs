@@ -238,6 +238,15 @@ impl ConnectDialog {
         self.items.get(self.selected)
     }
 
+    /// Pasted text is a network address: the TCP entry gets it (and the
+    /// selection, so the edit is seen).
+    pub(crate) fn paste(&mut self, text: &str) {
+        if let Some(tcp) = self.items.iter().position(|i| *i == ConnectItem::Tcp) {
+            self.selected = tcp;
+        }
+        self.tcp.insert_str(text);
+    }
+
     pub(crate) fn handle_key(&mut self, key: KeyEvent) -> Outcome {
         let on_tcp = self.selected_item() == Some(&ConnectItem::Tcp);
         let count = self.items.len().max(1);
@@ -442,6 +451,13 @@ impl OpenDialog {
             Some(i) => (i as isize + delta).rem_euclid(n as isize) as usize,
         };
         self.selected = Some(next);
+    }
+
+    /// Pasted text goes into the path; the list follows it (and a choice
+    /// made before no longer stands).
+    pub(crate) fn paste(&mut self, text: &str) {
+        self.input.insert_str(text);
+        self.refresh();
     }
 
     fn path_of(&self, entry: &OpenEntry) -> PathBuf {
@@ -1349,6 +1365,41 @@ mod tests {
         assert_eq!(
             bare.handle_key(key(KeyCode::Enter)),
             Outcome::Run(Action::AnswerPrompt(0))
+        );
+    }
+
+    #[test]
+    fn pasting_replaces_the_choice() {
+        let samples = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../samples");
+        let arcs = samples.join("arcs-test.gcode");
+        let cube = samples.join("calibration-cube.gcode");
+        let mut d = OpenDialog::new(samples.clone(), vec![arcs]);
+        d.handle_key(key(KeyCode::Down));
+        assert_eq!(d.selected, Some(0));
+        d.paste(&cube.display().to_string());
+        assert_eq!(d.selected, None);
+        assert!(
+            d.entries
+                .iter()
+                .any(|e| matches!(e, OpenEntry::Path(c) if c.name == "calibration-cube.gcode")),
+            "the list follows the pasted path"
+        );
+        assert_eq!(
+            d.handle_key(key(KeyCode::Enter)),
+            Outcome::Run(Action::Open(cube))
+        );
+        // An address pasted into the connect dialog lands in (and selects)
+        // the TCP entry.
+        let mut c = ConnectDialog::new(Vec::new(), false, &PrinterProfile::default());
+        c.tcp.clear();
+        c.paste("127.0.0.1:2323");
+        assert_eq!(c.selected_item(), Some(&ConnectItem::Tcp));
+        assert_eq!(
+            c.handle_key(key(KeyCode::Enter)),
+            Outcome::Run(Action::Connect(ConnectTarget::Tcp {
+                host: "127.0.0.1".into(),
+                port: 2323
+            }))
         );
     }
 
