@@ -1511,7 +1511,8 @@ Every public item is also re-exported at the crate root.
   "paused for user" arriving within 2 s of an M108 the host sent may have
   left the printer before it got the M108 and counts as no new wait); the
   job also continues when the printer acknowledges its M0/M1/M600 (its
-  button, an answered prompt) or reports `//action:resumed`. `pause()`
+  button, an answered prompt; or the host gives up on that lost `ok`, a
+  `wait` or a timeout, while not halted) or reports `//action:resumed`. `pause()`
   while the firmware holds the print at an M0/M1 of the stream ends the
   wait and runs the pause script, as from `Printing`. `cancel` sends M108 first when
   a heat or user wait is in flight. SD prints: M23/M24 (`Starting` until

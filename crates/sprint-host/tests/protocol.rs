@@ -441,6 +441,57 @@ fn a_firmware_pause_gets_one_m108_per_wait() {
 }
 
 #[test]
+fn a_wait_for_the_user_whose_ok_was_lost_does_not_hold_the_print() {
+    // The last line waits for the user; the user presses the printer's
+    // button, but the M0's ok is lost. The idle printer says "wait", the
+    // host gives up on the ok: the firmware no longer waits, so the job
+    // must not stay paused (it would never complete).
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut fw = Mini::new(Arc::clone(&log));
+    let (link, out) = fake(
+        |out| out.line("start"),
+        move |line, out| {
+            let Some(cmd) = fw.accept(line, out) else {
+                return;
+            };
+            if cmd.starts_with("M0") {
+                out.line("echo:busy: paused for user");
+                return;
+            }
+            out.line("ok");
+        },
+    );
+    let printer = connect_fake(
+        link,
+        ConnectOptions {
+            query_on_connect: false,
+            temp_poll_secs: 0.0,
+            ..options()
+        },
+    );
+    wait_for(&printer, "connected", |s| s.is_connected());
+    let file = Arc::new(GcodeFile::from_text(
+        "done.gcode",
+        "G1 X1\nM0 Take it off\n",
+    ));
+    printer.start_print(file, PrintOptions::default()).unwrap();
+    wait_for(&printer, "the wait for the user", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Paused && j.paused_by_firmware)
+    });
+    // (Marlin says "wait" once its queue has been empty for a while.)
+    thread::sleep(Duration::from_millis(1200));
+    out.line("wait");
+    wait_for_within(&printer, "completed", Duration::from_secs(5), |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Completed)
+    });
+    assert!(!log.lock().unwrap().iter().any(|c| c == "M108"));
+}
+
+#[test]
 fn a_lost_line_counter_does_not_fail_an_sd_print() {
     let log = Arc::new(Mutex::new(Vec::new()));
     let mut fw = Mini::new(Arc::clone(&log));

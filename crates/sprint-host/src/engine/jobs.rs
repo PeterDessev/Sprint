@@ -619,9 +619,16 @@ impl Engine {
         }
     }
 
-    /// An M0/M1/M600 was acknowledged: the firmware no longer waits for
-    /// the user. A host print it held continues.
+    /// An M0/M1/M600 was acknowledged (or its lost `ok` given up on): the
+    /// firmware no longer waits for the user. A host print it held
+    /// continues.
     pub(super) fn user_wait_ended(&mut self, now: Instant) {
+        if std::mem::take(&mut self.user_wait) {
+            let waiting = self.shared.state.read().waiting_for_user();
+            if waiting {
+                self.shared.update(|s| s.busy = None);
+            }
+        }
         let held = self.job.as_ref().is_some_and(|j| {
             j.kind() == JobKind::HostPrint
                 && j.info.status == JobStatus::Paused

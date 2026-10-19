@@ -655,7 +655,12 @@ impl Engine {
         if let Some(line) = meta.job_line() {
             self.job_ack(meta, line, rtt, now);
         }
-        if rtt.is_some() && (meta.is('M', 0) || meta.is('M', 1) || meta.is('M', 600)) {
+        // Acknowledged, or given up on while the firmware runs (its ok was
+        // lost, the printer is idle): the wait is over either way. (Not
+        // when a halt released it.)
+        if (rtt.is_some() || !self.halted)
+            && (meta.is('M', 0) || meta.is('M', 1) || meta.is('M', 600))
+        {
             self.user_wait_ended(now);
         }
     }
