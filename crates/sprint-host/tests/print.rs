@@ -614,3 +614,48 @@ fn the_profile_can_report_progress_on_the_printer() {
     let (got, _) = print(&printer, generated(50), PrintOptions::default());
     assert!(!got.iter().any(|c| c.starts_with("M73")));
 }
+
+#[test]
+fn stream_lines_and_their_oks_are_marked_in_the_console() {
+    let printer = connect(fast_sim(100.0), options());
+    let seq = last_seq(&printer);
+    printer.send("M117 before");
+    wait_idle(&printer);
+    let (_, _) = print(&printer, generated(20), PrintOptions::default());
+    let entries = printer.console_since(seq, usize::MAX);
+    let sent = |text: &str| {
+        entries
+            .iter()
+            .find(|e| e.kind == ConsoleKind::Sent && e.text == text)
+            .unwrap_or_else(|| panic!("{text} was sent"))
+            .clone()
+    };
+    assert!(!sent("M117 before").stream);
+    assert!(sent("G28").stream);
+    let streamed = entries
+        .iter()
+        .filter(|e| e.kind == ConsoleKind::Sent && e.stream)
+        .count();
+    let stream_oks = entries
+        .iter()
+        .filter(|e| e.kind == ConsoleKind::Received && e.stream)
+        .count();
+    assert!(streamed > 20, "{streamed}");
+    assert_eq!(stream_oks, streamed, "one ok per stream line");
+    assert!(
+        entries
+            .iter()
+            .filter(|e| e.stream)
+            .all(|e| !e.auto && (e.kind == ConsoleKind::Sent || e.text.starts_with("ok")))
+    );
+    // The user's command's ok is not a stream line.
+    let user = entries
+        .iter()
+        .position(|e| e.text == "M117 before")
+        .unwrap();
+    let ok = entries[user..]
+        .iter()
+        .find(|e| e.kind == ConsoleKind::Received && e.text.starts_with("ok"))
+        .unwrap();
+    assert!(!ok.stream);
+}

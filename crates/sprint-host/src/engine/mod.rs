@@ -112,6 +112,14 @@ impl Shared {
         self.request_wake();
     }
 
+    /// Append a console line of a streamed job (and announce it).
+    pub(crate) fn log_stream(&self, kind: ConsoleKind, text: impl Into<String>, line: Option<u32>) {
+        let time = self.epoch.elapsed().as_secs_f64();
+        let entry = self.console.lock().push_stream(time, kind, text, line);
+        self.bus.emit(Event::Console(entry));
+        self.request_wake();
+    }
+
     pub(crate) fn emit(&self, event: Event) {
         self.bus.emit(event);
         self.request_wake();
@@ -1084,12 +1092,17 @@ impl Engine {
         out.push(b'\n');
         self.stats.lines_sent += 1;
         self.stats.bytes_sent += w.text.len() as u64 + 1;
-        self.shared.log(
-            ConsoleKind::Sent,
-            w.meta.text.clone(),
-            w.meta.auto,
-            w.number,
-        );
+        if w.meta.is_stream() {
+            self.shared
+                .log_stream(ConsoleKind::Sent, w.meta.text.clone(), w.number);
+        } else {
+            self.shared.log(
+                ConsoleKind::Sent,
+                w.meta.text.clone(),
+                w.meta.auto,
+                w.number,
+            );
+        }
     }
 
     fn write(&mut self, out: &[u8]) {

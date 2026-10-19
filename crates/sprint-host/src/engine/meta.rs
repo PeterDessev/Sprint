@@ -121,6 +121,17 @@ impl CmdMeta {
         self.is_heat_wait() || self.is('M', 0) || self.is('M', 1) || self.is('M', 600)
     }
 
+    /// A line of the job stream (file, preamble, progress or resync line;
+    /// not a script line).
+    pub(crate) fn is_stream(&self) -> bool {
+        matches!(
+            self.source,
+            Source::Job(
+                JobLine::Stream(_) | JobLine::Preamble | JobLine::Progress | JobLine::Resync
+            )
+        )
+    }
+
     /// The job line role, if any.
     pub(crate) fn job_line(&self) -> Option<JobLine> {
         match self.source {

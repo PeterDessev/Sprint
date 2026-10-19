@@ -22,6 +22,10 @@ pub struct ConsoleEntry {
     /// Automatic traffic (temperature polling/auto-reports and their oks).
     /// UIs hide these by default.
     pub auto: bool,
+    /// A line of a streamed job: a sent file, preamble or progress line
+    /// (not a pause/resume/cancel script line) or the `ok` that answers
+    /// one. UIs may hide these during prints.
+    pub stream: bool,
     /// Line number the command was sent with (`N<n>`), for sent lines.
     pub line: Option<u32>,
 }
@@ -69,12 +73,37 @@ impl Console {
         auto: bool,
         line: Option<u32>,
     ) -> ConsoleEntry {
+        self.push_entry(time, kind, text.into(), auto, false, line)
+    }
+
+    /// [`Console::push`] for a line of a streamed job
+    /// ([`ConsoleEntry::stream`]).
+    pub fn push_stream(
+        &mut self,
+        time: f64,
+        kind: ConsoleKind,
+        text: impl Into<String>,
+        line: Option<u32>,
+    ) -> ConsoleEntry {
+        self.push_entry(time, kind, text.into(), false, true, line)
+    }
+
+    fn push_entry(
+        &mut self,
+        time: f64,
+        kind: ConsoleKind,
+        text: String,
+        auto: bool,
+        stream: bool,
+        line: Option<u32>,
+    ) -> ConsoleEntry {
         let entry = ConsoleEntry {
             seq: self.next_seq,
             time,
             kind,
-            text: text.into(),
+            text,
             auto,
+            stream,
             line,
         };
         self.next_seq += 1;
@@ -159,6 +188,15 @@ mod tests {
         assert_eq!(push(&mut c, "c"), 3);
         assert_eq!(c.last_seq(), 3);
         assert_eq!(c.since(0, 10).len(), 1);
+    }
+
+    #[test]
+    fn stream_lines_are_marked() {
+        let mut c = Console::new(10);
+        let plain = c.push(0.0, ConsoleKind::Sent, "G28", false, Some(3));
+        let stream = c.push_stream(0.0, ConsoleKind::Sent, "G1 X1", Some(4));
+        assert!(!plain.stream && stream.stream && !stream.auto);
+        assert_eq!((stream.seq, stream.line), (2, Some(4)));
     }
 
     #[test]

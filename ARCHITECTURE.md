@@ -947,7 +947,9 @@ pub struct ConsoleEntry { pub seq: u64, pub time: f64 /* secs since Printer::new
                           /// Automatic traffic (temperature polling/auto-reports and their oks). UIs hide these by default.
                           pub auto: bool,
                           /// Line number a sent command went out with (`N<n>`); None for unnumbered and received lines.
-                          pub line: Option<u32> }
+                          pub line: Option<u32>,
+                          /// A line of a streamed job: sent file/preamble/progress lines (not scripts) and the oks that answer them.
+                          pub stream: bool }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)] pub enum ConsoleKind { Sent, Received, Info, Warning, Error }
 
 // ---- config ----
@@ -1111,7 +1113,7 @@ Every public item is also re-exported at the crate root.
   using `{e}` is dropped while extrusion is relative (that is how the
   resume script's `G92 E{e}` disappears for M83 files).
 * `console`: `Console` (the bounded ring; `seq` starts at 1 and survives
-  `clear`). Sent entries carry the clean command and its `line` number;
+  `clear`; `push_stream` adds a `stream` entry). Sent entries carry the clean command and its `line` number;
   resent lines are logged again.
 * `state`: `PrinterState::{is_connected, has_capability, job_active,
   push_message}`, `ConnectionStatus::{is_connected, is_open, label}`,

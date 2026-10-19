@@ -30,8 +30,12 @@ impl Engine {
         let now = Instant::now();
         self.flow.begin_line();
         let replies = self.parser.feed(&line);
-        let auto = self.is_auto(&replies);
-        self.shared.log(ConsoleKind::Received, line, auto, None);
+        if self.answers_the_stream(&replies) {
+            self.shared.log_stream(ConsoleKind::Received, line, None);
+        } else {
+            let auto = self.is_auto(&replies);
+            self.shared.log(ConsoleKind::Received, line, auto, None);
+        }
         if let Phase::Handshake { .. } = self.phase {
             self.on_handshake_replies(replies, now);
             return;
@@ -47,6 +51,12 @@ impl Engine {
                 return;
             }
         }
+    }
+
+    /// A bare `ok` for a line of the job stream.
+    fn answers_the_stream(&self, replies: &[Reply]) -> bool {
+        matches!(replies, [Reply::Ok { .. }])
+            && self.flow.front().is_some_and(|e| e.meta.is_stream())
     }
 
     /// Automatic traffic: temperature reports, auto-reports and the `ok`s of
