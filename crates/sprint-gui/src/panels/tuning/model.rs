@@ -251,6 +251,9 @@ pub struct Change {
     pub params: Vec<ParamChange>,
     /// The old raw G-code, for raw edits.
     pub old_raw: Option<String>,
+    /// Commands sent after `command` to complete it (see
+    /// [`switched_off_drivers`]).
+    pub also: Vec<SettingCommand>,
 }
 
 impl Change {
@@ -419,6 +422,12 @@ impl Draft {
                 let mut command = e.command()?;
                 command.raw = command.to_gcode();
                 Some(Change {
+                    also: e
+                        .original
+                        .as_ref()
+                        .and_then(|o| switched_off_drivers(o, &command))
+                        .into_iter()
+                        .collect(),
                     key: e.key.clone(),
                     name: e
                         .def()
@@ -468,6 +477,40 @@ impl Draft {
             })
             .collect()
     }
+}
+
+/// `M569 S1 X Y Z` lists the drivers in StealthChop, and Marlin only
+/// changes the drivers a command names: dropping Z from the list leaves Z
+/// as it is. The command that switches the dropped drivers to SpreadCycle
+/// (`M569 S0 Z`, with the same `T`/`I` selectors), if any were dropped.
+pub fn switched_off_drivers(
+    original: &SettingCommand,
+    edited: &SettingCommand,
+) -> Option<SettingCommand> {
+    if edited.code != "M569" || !edited.get('S').is_some_and(|s| s >= 0.5) {
+        return None;
+    }
+    let def = setting_def("M569")?;
+    let dropped: Vec<char> = original
+        .params
+        .iter()
+        .map(|(l, _)| *l)
+        .filter(|&l| !def.is_selector(l) && def.param(l).is_some_and(|p| p.flag))
+        .filter(|&l| !edited.has(l))
+        .collect();
+    if dropped.is_empty() {
+        return None;
+    }
+    let mut params = vec![('S', 0.0)];
+    params.extend(
+        def.selectors
+            .iter()
+            .filter_map(|&sel| edited.get(sel).map(|v| (sel, v))),
+    );
+    params.extend(dropped.iter().map(|&l| (l, f64::NAN)));
+    let mut cmd = SettingCommand::new("M569", &params);
+    cmd.raw = cmd.to_gcode();
+    Some(cmd)
 }
 
 /// A text file of settings: what will be exported.
@@ -673,6 +716,36 @@ mod tests {
         assert_eq!(changes.len(), 1);
         assert_eq!(changes[0].command.to_gcode(), "M569 S1 X Y");
         assert_eq!(changes[0].lines(), vec!["Z driver: on → off"]);
+    }
+
+    #[test]
+    fn dropped_drivers_are_switched_to_spreadcycle() {
+        let mut d = Draft::new(&settings(&["M569 S1 X Y Z", "M569 S1 T0 E"]));
+        d.entry_mut("M569").expect("M569").draft.remove('Z');
+        let changes = d.changes();
+        assert_eq!(changes[0].command.to_gcode(), "M569 S1 X Y");
+        let also: Vec<String> = changes[0].also.iter().map(|c| c.to_gcode()).collect();
+        assert_eq!(also, ["M569 S0 Z"]);
+        // Every driver off: the S1 line names none, the S0 line all.
+        let e = d.entry_mut("M569").expect("M569");
+        e.draft.remove('X');
+        e.draft.remove('Y');
+        assert_eq!(d.changes()[0].also[0].to_gcode(), "M569 S0 X Y Z");
+        // Selectors carry over; switching S itself needs nothing extra.
+        let e = d.entry_mut("M569 T0").expect("M569 T0");
+        e.draft.remove('E');
+        let t0 = d
+            .changes()
+            .into_iter()
+            .find(|c| c.key == "M569 T0")
+            .expect("T0");
+        assert_eq!(t0.also[0].to_gcode(), "M569 S0 T0 E");
+        d.revert_all();
+        d.entry_mut("M569").expect("M569").draft.set('S', 0.0);
+        assert!(d.changes()[0].also.is_empty());
+        // Nothing for other settings.
+        let m92 = SettingCommand::parse("M92 E93").expect("parse");
+        assert_eq!(switched_off_drivers(&m92, &m92), None);
     }
 
     #[test]

@@ -638,6 +638,11 @@ impl TuningTab {
         if apply {
             for change in &changes {
                 ctx.printer.apply_setting(&change.command);
+                // Sent as plain G-code: as a setting it would replace the
+                // command above in the host's optimistic state.
+                for also in &change.also {
+                    ctx.printer.send(&also.to_gcode());
+                }
             }
             ctx.printer.request_settings();
             ctx.toasts

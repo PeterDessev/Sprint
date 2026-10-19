@@ -120,7 +120,11 @@ fn tuning_tab_search_and_categories_filter_cards() {
     // Flags are switches named after the setting.
     h.get_by_label("Drivers").click();
     h.run_ok();
-    h.get_by_label("Z driver").click();
+    // The first M569 instance (the second is the extruder's, "T0 E").
+    h.get_all_by_role_and_label(egui::accesskit::Role::CheckBox, "Z driver")
+        .next()
+        .expect("Z driver switch")
+        .click();
     h.run_ok();
     assert_eq!(h.state().tab.pending_changes(), 1);
     assert_eq!(
@@ -309,5 +313,33 @@ fn tuning_tab_imports_with_a_preview() {
     let text = h.state().tab.export_text(&ctx);
     assert!(text.contains("; Firmware: Marlin 2.1.2.1 (Sprint Virtual)"));
     assert!(text.contains("\nM92 X80 Y80 Z400 E415\n"), "{text}");
+    printer.disconnect();
+}
+
+#[test]
+fn switching_a_driver_off_reaches_the_simulator() {
+    let printer = sim_printer(fast_sim());
+    let mut h = harness_state(
+        Theme::Dark,
+        (1180.0, 900.0),
+        Host::<TuningTab>::live(printer.clone()),
+        |ui, host| host.frame(ui),
+    );
+    h.run_ok();
+    h.get_by_label("Drivers").click();
+    h.run_ok();
+    // The simulator runs every driver in StealthChop: "M569 S1 X Y Z".
+    // The first M569 instance (the second is the extruder's, "T0 E").
+    h.get_all_by_role_and_label(egui::accesskit::Role::CheckBox, "Z driver")
+        .next()
+        .expect("Z driver switch")
+        .click();
+    h.run_ok();
+    clear_received(&printer);
+    h.get_by_label("Apply change").click();
+    h.run_ok();
+    assert_eq!(wait_for_command(&printer, "M569 S1"), "M569 S1 X Y");
+    // Leaving Z out of the list does not change it: it is switched off.
+    assert_eq!(wait_for_command(&printer, "M569 S0"), "M569 S0 Z");
     printer.disconnect();
 }
