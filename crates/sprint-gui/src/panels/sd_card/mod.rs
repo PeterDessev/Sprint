@@ -223,6 +223,15 @@ impl SdCardTab {
         self.upload.is_some()
     }
 
+    /// A file listing ended on this connection (the shell forwards the
+    /// printer's [`Event::SdFiles`](sprint_host::Event::SdFiles)): an empty
+    /// list now means an empty card. The listing of an empty card begins
+    /// and ends in one batch of replies, between two frames, so the state
+    /// alone never shows it.
+    pub fn listing_finished(&mut self) {
+        self.read = true;
+    }
+
     fn init_card(&mut self, ctx: &AppCtx<'_>) {
         ctx.printer.send("M21");
         ctx.printer.request_sd_files();

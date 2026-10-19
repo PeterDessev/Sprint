@@ -870,6 +870,9 @@ impl SprintApp {
             {
                 continue;
             }
+            if matches!(event, Event::SdFiles(_)) {
+                self.panels.sd_card.listing_finished();
+            }
             if let Some(notice) = self.notifier.notice(&event, secs, job_name.as_deref()) {
                 notice.show(&mut self.core.toasts);
             }

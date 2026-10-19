@@ -227,6 +227,15 @@ fn sd_card_empty_states() {
     h.run_ok();
     assert!(h.query_by_label("No files").is_some());
     assert!(h.query_by_label("Not read yet").is_none());
+    // A listing too quick for any frame to see it running: the shell
+    // says it ended.
+    let mut state = sd_state();
+    state.sd.files.clear();
+    let mut h = tab(Theme::Dark, (900.0, 600.0), state);
+    assert!(h.query_by_label("Not read yet").is_some());
+    h.state_mut().tab.listing_finished();
+    h.run_ok();
+    assert!(h.query_by_label("No files").is_some());
     let mut state = sd_state();
     state.sd.files.clear();
     state.sd.listing = true;

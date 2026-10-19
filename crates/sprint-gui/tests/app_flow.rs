@@ -988,6 +988,30 @@ fn the_sd_card_is_not_called_empty_before_it_was_read() {
     assert!(h.query_by_label("Not read yet").is_none());
 }
 
+#[test]
+fn an_empty_card_reads_as_empty_once_listed() {
+    // The listing of an empty card begins and ends in one batch of
+    // replies: no frame sees it running, yet the card was read.
+    let mut options = sim_options();
+    options.config.profiles[0].connection = ConnectTarget::Simulator(SimConfig {
+        sd_files: Vec::new(),
+        ..fast_sim()
+    });
+    let mut h = app(options, WINDOW);
+    connect(&mut h);
+    h.state_mut().push_action(AppAction::ShowTab(Tab::SdCard));
+    expect(&mut h, "the card's listing", |app| {
+        let s = app.state();
+        received(app).iter().any(|c| c.starts_with("M20"))
+            && !s.sd.listing
+            && s.link.queue_len == 0
+            && s.link.in_flight == 0
+    });
+    settle(&mut h);
+    assert!(h.query_by_label("Not read yet").is_none());
+    assert!(h.query_by_label("No files").is_some());
+}
+
 /// The cancel script ran: the heaters are off.
 #[track_caller]
 fn assert_heaters_off(control: &sprint_host::sprint_sim::SimControl) {
