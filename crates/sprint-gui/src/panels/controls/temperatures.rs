@@ -5,7 +5,9 @@ use std::ops::RangeInclusive;
 
 use egui::{
     Color32, CornerRadius, CursorIcon, FontId, Pos2, Response, Sense, Stroke, StrokeKind, Ui,
-    WidgetInfo, WidgetType, vec2,
+    WidgetInfo, WidgetType,
+    text::{LayoutJob, TextWrapping},
+    vec2,
 };
 use sprint_host::sprint_proto::HeaterReading;
 use sprint_host::{Heater, Printer, PrinterProfile, PrinterState, TempPreset};
@@ -522,19 +524,61 @@ fn show(ui: &mut Ui, ctx: &mut AppCtx<'_>) -> Option<(Change, Vec<(Heater, f32)>
     change
 }
 
+/// Horizontal padding inside a preset button (each side).
+const PRESET_PADDING: f32 = 8.0;
+/// Gap between a preset's name and its temperatures.
+const PRESET_GAP: f32 = 5.0;
+/// A preset name never gets narrower than this to make room for the
+/// temperatures (they are dropped instead; the tooltip has them).
+const PRESET_MIN_NAME: f32 = 28.0;
+
+/// How a preset button fits its text into `inner` points: the width the
+/// name is cut to (`None`: it fits) and whether the temperatures show.
+/// The temperatures stay visible; a long name is cut to make room for
+/// them, down to [`PRESET_MIN_NAME`].
+pub(super) fn preset_fit(name: f32, detail: f32, inner: f32) -> (Option<f32>, bool) {
+    if name + PRESET_GAP + detail <= inner {
+        return (None, true);
+    }
+    let room = inner - PRESET_GAP - detail;
+    if room >= PRESET_MIN_NAME {
+        (Some(room), true)
+    } else {
+        ((name > inner).then_some(inner.max(0.0)), false)
+    }
+}
+
 /// A button showing a preset's name and its temperatures ("PLA 205/60"),
 /// `width` points wide.
 fn preset_button(ui: &mut Ui, name: &str, detail: &str, width: f32) -> Response {
     let p = theme::ui_palette(ui);
     let name_font = FontId::new(13.0, theme::font(ui, TextRole::Title).family);
     let detail_font = FontId::proportional(12.0);
-    let name_galley = ui
-        .painter()
-        .layout_no_wrap(name.to_owned(), name_font, Color32::PLACEHOLDER);
-    let detail_galley =
+    let mut name_galley =
+        ui.painter()
+            .layout_no_wrap(name.to_owned(), name_font.clone(), Color32::PLACEHOLDER);
+    let mut detail_galley =
         ui.painter()
             .layout_no_wrap(detail.to_owned(), detail_font, Color32::PLACEHOLDER);
-    let gap = 5.0;
+    let (cut, show_detail) = preset_fit(
+        name_galley.size().x,
+        detail_galley.size().x,
+        width - 2.0 * PRESET_PADDING,
+    );
+    if let Some(max) = cut {
+        let mut job =
+            LayoutJob::simple_singleline(name.to_owned(), name_font, Color32::PLACEHOLDER);
+        job.wrap = TextWrapping::truncate_at_width(max);
+        name_galley = ui.painter().layout_job(job);
+    }
+    if !show_detail {
+        detail_galley = ui.painter().layout_no_wrap(
+            String::new(),
+            FontId::proportional(12.0),
+            Color32::PLACEHOLDER,
+        );
+    }
+    let gap = if show_detail { PRESET_GAP } else { 0.0 };
     let (rect, response) = ui.allocate_exact_size(vec2(width, 30.0), Sense::click());
     response.widget_info(|| {
         WidgetInfo::labeled(
@@ -831,6 +875,18 @@ mod tests {
             card_max_target(HeaterKind::Hotend, &[("Lava", 9000.0)], f32::INFINITY),
             MAX_TARGET
         );
+    }
+
+    #[test]
+    fn long_preset_names_make_room_for_the_temperatures() {
+        // Fits: nothing is cut.
+        assert_eq!(preset_fit(30.0, 40.0, 100.0), (None, true));
+        // A long name is cut so the temperatures stay.
+        assert_eq!(preset_fit(150.0, 40.0, 100.0), (Some(55.0), true));
+        // No room for both: the name alone, cut to the button.
+        assert_eq!(preset_fit(150.0, 80.0, 100.0), (Some(100.0), false));
+        assert_eq!(preset_fit(90.0, 80.0, 100.0), (None, false));
+        assert_eq!(preset_fit(10.0, 10.0, -5.0), (Some(0.0), false));
     }
 
     #[test]
