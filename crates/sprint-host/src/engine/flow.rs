@@ -34,6 +34,10 @@
 //!   queue drains) and either every stale line has been answered or the
 //!   link has been quiet for a short settle time (a few round trips),
 //!   so the retransmitted lines are not flushed by a late stale rejection.
+//! * After a rewind the window shrinks to one command (slow start) until a
+//!   run of commands has been acknowledged without errors: errors come in
+//!   bursts on noisy links, and with a single command in flight there are
+//!   no stale lines to wait for.
 //! * `ok N<n>` (ADVANCED_OK, Repetier) acknowledges line `n` and every
 //!   older in-flight command, whose `ok`s were evidently lost; an `ok` for
 //!   a line no longer in flight is ignored.
@@ -58,6 +62,9 @@ pub(crate) const LINE_NUMBER_LIMIT: u32 = 1 << 30;
 /// Bounds of the settle time before retransmitting after stale lines.
 const SETTLE_MIN: Duration = Duration::from_millis(5);
 const SETTLE_MAX: Duration = Duration::from_millis(200);
+/// Clean acknowledgements needed after a rewind before the full window is
+/// used again (at least this many, or four windows).
+const SLOW_START_MIN: usize = 16;
 
 /// What an `Error:` line before a `Resend:` complained about.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -182,6 +189,9 @@ struct Barrier<M> {
 /// Flow control state. `M` is caller data carried with every command.
 pub(crate) struct Flow<M> {
     window: usize,
+    /// Clean acknowledgements still needed before the full window is used
+    /// again (0 = full window).
+    slow_start: usize,
     /// Next line number to assign.
     next_line: u32,
     /// Next line number to transmit; below `next_line` while rewinding.
@@ -205,6 +215,7 @@ impl<M: Clone> Flow<M> {
     pub(crate) fn new(window: usize, now: Instant) -> Flow<M> {
         Flow {
             window: window.max(1),
+            slow_start: 0,
             next_line: 1,
             cursor: 1,
             ring: VecDeque::new(),
@@ -245,11 +256,16 @@ impl<M: Clone> Flow<M> {
         self.barrier.is_some()
     }
 
+    /// The window in force: one command while slow-starting after a rewind.
+    pub(crate) fn effective_window(&self) -> usize {
+        if self.slow_start > 0 { 1 } else { self.window }
+    }
+
     /// Whether a new command may be sent now.
     pub(crate) fn can_send_new(&self) -> bool {
         self.barrier.is_none()
             && self.cursor >= self.next_line
-            && self.in_flight.len() < self.window
+            && self.in_flight.len() < self.effective_window()
     }
 
     /// The oldest command awaiting its `ok`.
@@ -316,6 +332,18 @@ impl<M: Clone> Flow<M> {
         self.ring.push_back(RingEntry { number, wire, meta });
     }
 
+    /// When a retransmission held back for the settle time becomes due (the
+    /// engine wakes up then instead of waiting for its tick).
+    pub(crate) fn retransmit_due_at(&self) -> Option<Instant> {
+        let rw = self.rewind.as_ref()?;
+        let gated = !rw.resent
+            && rw.line == self.cursor
+            && rw.stale > rw.stale_seen
+            && self.in_flight.is_empty()
+            && self.barrier.is_none();
+        gated.then(|| rw.since.max(self.last_activity) + self.settle())
+    }
+
     /// The next line to retransmit (or the M110 barrier to repeat), if one
     /// is due now.
     pub(crate) fn poll_retransmit(&mut self, now: Instant) -> Option<Wire<M>> {
@@ -340,7 +368,7 @@ impl<M: Clone> Flow<M> {
             }
             return Some(wire);
         }
-        if self.cursor >= self.next_line || self.in_flight.len() >= self.window {
+        if self.cursor >= self.next_line || self.in_flight.len() >= self.effective_window() {
             return None;
         }
         if let Some(rw) = &self.rewind
@@ -497,6 +525,9 @@ impl<M: Clone> Flow<M> {
             {
                 self.rewind = None;
             }
+            if e.number.is_some() {
+                self.slow_start = self.slow_start.saturating_sub(1);
+            }
             acked.push(Acked { meta: e.meta, rtt });
         }
         if let Some(last) = acked.last() {
@@ -585,6 +616,9 @@ impl<M: Clone> Flow<M> {
             stale_seen: 0,
             since: now,
         });
+        if self.window > 1 {
+            self.slow_start = SLOW_START_MIN.max(self.window * 4);
+        }
         ResendAction::Rewind { from: n, stale }
     }
 

@@ -217,10 +217,9 @@ fn windowed_resend_waits_for_stale_lines_and_ignores_duplicates() {
         .expect("retransmit B");
     assert_eq!(w.meta, "B");
     let now = ms(t, 20);
-    assert_eq!(f.poll_retransmit(now).map(|w| w.meta).as_deref(), Some("C"));
-    assert_eq!(f.poll_retransmit(now).map(|w| w.meta).as_deref(), Some("D"));
+    // Slow start: one command at a time after a rewind.
+    assert_eq!(f.effective_window(), 1);
     assert!(f.poll_retransmit(now).is_none());
-    assert!(f.can_send_new());
     // D's late stale rejection (budget left) is still a duplicate ...
     feed(
         &mut f,
@@ -240,8 +239,37 @@ fn windowed_resend_waits_for_stale_lines_and_ignores_duplicates() {
     );
     assert_eq!(
         resend(feed(&mut f, "Resend: 2", now)),
-        ResendAction::Rewind { from: 2, stale: 2 }
+        ResendAction::Rewind { from: 2, stale: 0 }
     );
+    feed(&mut f, "ok", now);
+    // Retransmitted again at once (nothing stale), then one by one until
+    // the link has been clean for a while.
+    for c in ["B", "C", "D"] {
+        assert_eq!(f.poll_retransmit(now).map(|w| w.meta).as_deref(), Some(c));
+        assert!(f.poll_retransmit(now).is_none());
+        assert_eq!(acked(feed(&mut f, "ok", now)), [c]);
+    }
+    assert!(f.can_send_new());
+    let mut sent = 3;
+    while f.effective_window() == 1 {
+        send(&mut f, &format!("G1 X{sent}"), now);
+        assert!(!f.can_send_new());
+        acked(feed(&mut f, "ok", now));
+        sent += 1;
+        assert!(sent < 100);
+    }
+    assert_eq!(f.effective_window(), 4);
+    assert_eq!(sent, SLOW_START_MIN, "B, C, D and the new lines count");
+}
+
+#[test]
+fn ping_pong_has_no_slow_start() {
+    let t = t0();
+    let mut f = synced(1, t);
+    send(&mut f, "A", t);
+    resend(feed(&mut f, "Resend: 1", t));
+    assert_eq!(f.effective_window(), 1);
+    assert_eq!(f.slow_start, 0);
 }
 
 #[test]
@@ -385,11 +413,14 @@ fn a_rewind_past_lines_the_firmware_accepted_moves_forward() {
     );
     feed(&mut f, "ok", t);
     assert_eq!(f.in_flight_len(), 2);
+    // Slow start: C waits until A and B are acknowledged.
+    assert!(f.poll_retransmit(ms(t, 50)).is_none());
+    assert_eq!(acked(feed(&mut f, "ok", t)), ["A"]);
+    assert_eq!(acked(feed(&mut f, "ok", t)), ["B"]);
     assert_eq!(
         f.poll_retransmit(ms(t, 50)).map(|w| w.meta).as_deref(),
         Some("C")
     );
-    assert_eq!(acked(feed(&mut f, "ok", t)), ["A"]);
 }
 
 #[test]
