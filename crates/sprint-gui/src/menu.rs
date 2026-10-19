@@ -216,7 +216,16 @@ fn printer_menu(ui: &mut Ui, info: &MenuInfo<'_>, out: &mut Vec<MenuCommand>) {
         out.push(MenuCommand::RefreshFirmware);
     }
     ui.separator();
-    if item(ui, open, icons::RESTART, "Restart firmware (M999)", None) {
+    // Only for a halted firmware, like the halted banner: Marlin answers
+    // M999 with a resend request even when it runs, which reads as a bad
+    // link.
+    if item(
+        ui,
+        open && state.halted,
+        icons::RESTART,
+        "Restart firmware (M999)",
+        None,
+    ) {
         out.push(MenuCommand::RestartFirmware);
     }
     let estop = Button::new(

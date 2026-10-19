@@ -1347,6 +1347,43 @@ fn the_menu_bar_runs_commands() {
     assert!(!h.state().ui_prefs().show_console);
 }
 
+/// Open the Printer menu (the menu bar's, not the tab of that name).
+fn open_printer_menu(h: &mut Harness<'_, SprintApp>) {
+    h.get_all_by_label("Printer")
+        .min_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
+        .expect("the Printer menu")
+        .click();
+}
+
+#[test]
+fn the_menu_restarts_only_a_halted_firmware() {
+    let mut h = app(sim_options(), WINDOW);
+    connect(&mut h);
+    let restart_item = |h: &mut Harness<'_, SprintApp>| {
+        open_printer_menu(h);
+        settle(h);
+        let disabled = h
+            .get_by_label_contains("Restart firmware (M999)")
+            .accesskit_node()
+            .is_disabled();
+        h.key_press(Key::Escape);
+        settle(h);
+        disabled
+    };
+    // A running firmware answers M999 with a resend: not offered.
+    assert!(restart_item(&mut h));
+    h.state().printer().emergency_stop();
+    expect(&mut h, "the firmware to halt", |app| app.state().halted);
+    // Halted: the banner offers it too, so look at the menu's item.
+    open_printer_menu(&mut h);
+    settle(&mut h);
+    let enabled = h
+        .query_all_by_label_contains("Restart firmware (M999)")
+        .filter(|n| !n.accesskit_node().is_disabled())
+        .count();
+    assert_eq!(enabled, 2, "the menu item and the banner's button");
+}
+
 /// Type `text` into the console's command line and press Enter.
 fn type_command(h: &mut Harness<'_, SprintApp>, text: &str) {
     h.state_mut().console_mut().set_input(text);
