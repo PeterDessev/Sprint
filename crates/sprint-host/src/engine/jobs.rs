@@ -612,23 +612,14 @@ impl Engine {
             job.pause_snapshot = Some(snapshot);
             job.queue_scripts(lines, Some(JobStatus::Paused));
         }
-        // Scripts finished.
+        // Every script line acknowledged: enter the status that follows.
         if job.scripts.is_empty()
             && script_pending == 0
-            && let Some(next) = job.after_scripts.clone()
+            && let Some(next) = job.after_scripts.take()
         {
-            let wait_for_stream = next == JobStatus::Paused
-                && job.info.kind == JobKind::HostPrint
-                && stream_pending > 0;
-            if !wait_for_stream {
-                job.after_scripts = None;
-                self.set_job_status(next, now);
-                return;
-            }
-        }
-        let Some(job) = &mut self.job else {
+            self.set_job_status(next, now);
             return;
-        };
+        }
         match job.info.kind {
             JobKind::HostPrint => {
                 let done = matches!(job.info.status, JobStatus::Printing | JobStatus::Starting)
