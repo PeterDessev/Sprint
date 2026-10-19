@@ -139,8 +139,8 @@ impl Shell {
         loop {
             let prompt = self.prompt();
             match input.read(&prompt) {
-                Read::Line(line) => {
-                    if self.execute_line(&line, input) == Flow::Exit {
+                Read::Line(text) => {
+                    if self.execute_input(&text, input) == Flow::Exit {
                         break;
                     }
                 }
@@ -606,4 +606,21 @@ fn pause_resume_cancel_and_the_prompt() {
     let text = buffer.text();
     assert!(text.contains("Paused slow.gcode"), "{text}");
     assert!(text.contains("slow.gcode cancelled"), "{text}");
+}
+
+#[test]
+fn a_pasted_block_runs_line_by_line() {
+    let (mut shell, buffer) = connected();
+    // A block pasted into the line editor arrives as one line with line
+    // breaks: each line runs as if typed, so the dangerous one still asks.
+    let mut input = Script::new(["G28 X\nM502\r\nM105", "n"], true);
+    shell.run_lines(&mut input);
+    crate::session::wait_idle(&shell.printer, PATIENCE, &Interrupt::new()).expect("idle");
+    let text = buffer.text();
+    assert!(text.contains("Not sent"), "{text}");
+    assert!(!text.contains("unknown command"), "{text}");
+    let got = received(&shell);
+    assert!(got.iter().any(|c| c == "G28 X"), "{got:?}");
+    assert!(got.iter().any(|c| c == "M105"), "{got:?}");
+    assert!(!got.iter().any(|c| c == "M502"), "{got:?}");
 }

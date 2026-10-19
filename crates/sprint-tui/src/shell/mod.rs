@@ -173,12 +173,8 @@ impl Shell {
         loop {
             let prompt = self.prompt();
             match input.read(&prompt) {
-                Read::Line(line) => {
-                    let trimmed = line.trim();
-                    if !trimmed.is_empty() {
-                        input.add_history(trimmed);
-                    }
-                    if self.execute_line(&line, input) == Flow::Exit {
+                Read::Line(text) => {
+                    if self.execute_input(&text, input) == Flow::Exit {
                         break;
                     }
                 }
@@ -217,6 +213,23 @@ impl Shell {
                 }
             }
         })
+    }
+
+    /// Run what the line editor returned: one line, or several when a
+    /// block was pasted. Each line runs (and enters the history) as if it
+    /// was typed, so a dangerous one still asks and a command is not
+    /// handed the next lines as arguments.
+    pub(crate) fn execute_input(&mut self, text: &str, input: &mut dyn LineSource) -> Flow {
+        for line in text.split(['\n', '\r']) {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                input.add_history(trimmed);
+            }
+            if self.execute_line(line, input) == Flow::Exit {
+                return Flow::Exit;
+            }
+        }
+        Flow::Continue
     }
 
     /// Run one line: a command, G-code, or nothing.
