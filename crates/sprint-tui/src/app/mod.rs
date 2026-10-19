@@ -386,10 +386,7 @@ impl App {
                 let showing = matches!(&self.modal, Some(Modal::Prompt(p)) if p.prompt == prompt);
                 let hidden = self.hidden_prompt.as_ref() == Some(&prompt);
                 if !showing && !hidden && !matches!(self.modal, Some(Modal::Confirm(_))) {
-                    self.modal = Some(Modal::Prompt(PromptDialog {
-                        prompt,
-                        selected: 0,
-                    }));
+                    self.modal = Some(Modal::Prompt(PromptDialog::new(prompt)));
                 }
             }
             None => {

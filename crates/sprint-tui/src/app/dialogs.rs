@@ -1069,15 +1069,36 @@ impl ReportView {
 
 // ----- host prompt -----
 
+/// Keys pressed this soon after a host prompt appeared were meant for what
+/// was on screen before (a G-code line being typed): they do not answer or
+/// hide it. An accidental "Continue" during a filament change would resume
+/// the print before the filament is loaded.
+pub(crate) const PROMPT_GRACE: Duration = Duration::from_millis(800);
+
 /// A question from the firmware (`//action:prompt`, M600 filament change).
 pub(crate) struct PromptDialog {
     pub prompt: HostPrompt,
     pub selected: usize,
+    /// When the dialog appeared.
+    pub shown: Instant,
 }
 
 impl PromptDialog {
+    /// A dialog for `prompt`, appearing now.
+    pub(crate) fn new(prompt: HostPrompt) -> PromptDialog {
+        PromptDialog {
+            prompt,
+            selected: 0,
+            shown: Instant::now(),
+        }
+    }
+
     pub(crate) fn handle_key(&mut self, key: KeyEvent) -> Outcome {
         let n = self.prompt.buttons.len();
+        let settled = self.shown.elapsed() >= PROMPT_GRACE;
+        if !settled && matches!(key.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char(_)) {
+            return Outcome::Keep;
+        }
         match key.code {
             KeyCode::Esc => Outcome::Close,
             KeyCode::Left | KeyCode::BackTab if n > 0 => {
@@ -1301,13 +1322,15 @@ mod tests {
 
     #[test]
     fn prompt_buttons_answer_by_index() {
-        let mut p = PromptDialog {
-            prompt: HostPrompt {
-                message: "Filament runout".into(),
-                buttons: vec!["Continue".into(), "Purge more".into()],
-            },
-            selected: 0,
-        };
+        let mut p = PromptDialog::new(HostPrompt {
+            message: "Filament runout".into(),
+            buttons: vec!["Continue".into(), "Purge more".into()],
+        });
+        // Keys typed as it appears do not answer it.
+        assert_eq!(p.handle_key(key(KeyCode::Char('1'))), Outcome::Keep);
+        assert_eq!(p.handle_key(key(KeyCode::Enter)), Outcome::Keep);
+        assert_eq!(p.handle_key(key(KeyCode::Esc)), Outcome::Keep);
+        p.shown -= PROMPT_GRACE;
         p.handle_key(key(KeyCode::Right));
         assert_eq!(
             p.handle_key(key(KeyCode::Enter)),
@@ -1318,13 +1341,11 @@ mod tests {
             Outcome::Run(Action::AnswerPrompt(0))
         );
         assert_eq!(p.handle_key(key(KeyCode::Char('9'))), Outcome::Keep);
-        let mut bare = PromptDialog {
-            prompt: HostPrompt {
-                message: "Paused".into(),
-                buttons: vec![],
-            },
-            selected: 0,
-        };
+        let mut bare = PromptDialog::new(HostPrompt {
+            message: "Paused".into(),
+            buttons: vec![],
+        });
+        bare.shown -= PROMPT_GRACE;
         assert_eq!(
             bare.handle_key(key(KeyCode::Enter)),
             Outcome::Run(Action::AnswerPrompt(0))

@@ -414,13 +414,12 @@ fn dialogs_draw_at_any_size() {
             Modal::Report(report)
         }),
         Box::new(|| {
-            Modal::Prompt(dialogs::PromptDialog {
-                prompt: HostPrompt {
-                    message: "m".repeat(300),
-                    buttons: (0..9).map(|i| format!("Button {i}")).collect(),
-                },
-                selected: 8,
-            })
+            let mut prompt = dialogs::PromptDialog::new(HostPrompt {
+                message: "m".repeat(300),
+                buttons: (0..9).map(|i| format!("Button {i}")).collect(),
+            });
+            prompt.selected = 8;
+            Modal::Prompt(prompt)
         }),
     ];
     let mut app = printing_app();
@@ -942,6 +941,16 @@ fn host_prompts_are_answered() {
     let text = screen(&mut app, 120, 40);
     assert!(text.contains("The printer asks"), "{text}");
     crate::snapshot::save(&render(&mut app, 120, 40), "tui-prompt-120x40");
+    // Someone typing G-code as the prompt appears does not answer it.
+    type_text(&mut app, "G1 X10");
+    press(&mut app, KeyCode::Enter);
+    wait_idle(&mut app);
+    assert!(matches!(app.modal, Some(Modal::Prompt(_))));
+    assert!(!received(&app).iter().any(|c| c.starts_with("M876")));
+    // A moment later Enter answers.
+    if let Some(Modal::Prompt(p)) = &mut app.modal {
+        p.shown -= dialogs::PROMPT_GRACE;
+    }
     press(&mut app, KeyCode::Enter);
     wait_idle(&mut app);
     let got = received(&app);
