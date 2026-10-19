@@ -17,7 +17,9 @@
 //!   mesh, firmware, ...);
 //! * [`loader`], [`paths`], [`actions`], [`config`]: loading files in the
 //!   background, path completion, small decisions shared by the front ends
-//!   and where the configuration lives.
+//!   and where the configuration lives;
+//! * [`session`], [`interrupt`]: blocking connects and waits, and Ctrl+C as
+//!   a request, for the shell and the headless commands.
 //!
 //! Widgets take their own small input types, never host types, and draw
 //! with a [`Theme`]. `cargo run -p sprint-tui --example widgets_demo` shows
@@ -33,9 +35,11 @@ mod app;
 pub mod commands;
 pub mod config;
 pub mod format;
+pub mod interrupt;
 pub mod loader;
 pub mod paths;
 pub mod report;
+pub mod session;
 #[cfg(test)]
 mod snapshot;
 pub mod theme;

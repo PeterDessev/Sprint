@@ -17,6 +17,8 @@ crossbeam-channel.workspace = true
 anyhow.workspace = true
 log.workspace = true
 unicode-width = "0.2"
+# Ctrl+C as a request (see src/interrupt.rs).
+ctrlc = "3.5"
 
 [dev-dependencies]
 # PNG snapshots of test screens (src/snapshot.rs): the Hack font egui
