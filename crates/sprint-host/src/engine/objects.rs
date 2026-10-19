@@ -11,7 +11,10 @@
 //!    given one; unnamed objects are called "Object <id>";
 //! 3. PrusaSlicer / OrcaSlicer comments: `; printing object NAME` and
 //!    `; stop printing object NAME`;
-//! 4. Cura: `;MESH:NAME` until the next `;MESH:` (`;MESH:NONMESH` ends it).
+//! 4. Cura: `;MESH:NAME` until the next `;MESH:` (`;MESH:NONMESH` ends it)
+//!    or the end of the layer (`;TIME_ELAPSED:`, `;LAYER:`): Cura never
+//!    closes the last mesh of a layer, and after the last layer the end
+//!    G-code follows.
 //!
 //! Names are the exact marker text, trimmed.
 
@@ -196,7 +199,13 @@ fn comment_marker(c: &str) -> Option<(Style, Marker)> {
         let name = name.trim();
         return (!name.is_empty()).then(|| (Style::Comments, Marker::Start(name.to_string())));
     }
-    let name = c.strip_prefix("MESH:")?.trim();
+    let Some(name) = c.strip_prefix("MESH:").map(str::trim) else {
+        // Cura ends every layer with ";TIME_ELAPSED:" and starts the next
+        // with ";LAYER:" without closing its last mesh: the layer change
+        // and the end G-code belong to no object.
+        let layer_end = c.starts_with("TIME_ELAPSED:") || c.starts_with("LAYER:");
+        return layer_end.then_some((Style::Cura, Marker::End));
+    };
     Some((
         Style::Cura,
         if name == "NONMESH" || name.is_empty() {
@@ -398,6 +407,34 @@ mod tests {
         assert_eq!(seen[4], None);
         assert_eq!(seen[7].as_deref(), Some("other.stl"));
         assert_eq!(seen[9].as_deref(), Some("vase.stl"));
+        // The end of a layer ends the mesh Cura left open.
+        let text = ";MESH:vase.stl
+G1 X1
+;TIME_ELAPSED:12.5
+G1 E-2
+;LAYER:1
+G0 Z1
+;MESH:vase.stl
+G1 X2
+;TIME_ELAPSED:20
+G1 X0 Y200";
+        let mut o = scan(text);
+        assert_eq!(o.names, ["vase.stl"]);
+        let seen = track(&mut o, text);
+        assert_eq!(seen[1].as_deref(), Some("vase.stl"));
+        assert_eq!(&seen[2..6], [None, None, None, None]);
+        assert_eq!(seen[7].as_deref(), Some("vase.stl"));
+        assert_eq!(seen[9], None, "the end G-code is no object's");
+        // ";LAYER:" alone (other slicers) names no object.
+        assert!(
+            scan(
+                ";LAYER:0
+G1 X1
+;LAYER:1"
+            )
+            .names
+            .is_empty()
+        );
     }
 
     #[test]

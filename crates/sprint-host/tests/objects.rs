@@ -274,3 +274,44 @@ fn the_current_object_follows_the_stream() {
     let job = printer.with_state(|s| s.job.clone()).unwrap();
     assert_eq!(job.current_object, None, "the file ends outside any object");
 }
+
+#[test]
+fn the_end_gcode_after_an_excluded_cura_mesh_still_runs() {
+    // Cura never closes the last mesh of a layer: ";TIME_ELAPSED:" ends
+    // the layer, and after the last one the end G-code follows. Excluding
+    // the mesh printed last must not leave out the lift and the park.
+    let mut text = String::from("G28\nM302 P1\nG90\nM82\n");
+    let mut e = 0.0;
+    for layer in 0..2 {
+        text.push_str(&format!(";LAYER:{layer}\n"));
+        for (id, name) in ["cube", "cone"].iter().enumerate() {
+            text.push_str(&format!(";MESH:{name}\n"));
+            text.push_str(&format!(
+                "G0 F6000 X{} Y10 Z{:.1}\n",
+                20 + 40 * id,
+                0.3 + 0.2 * layer as f64
+            ));
+            for line in object_moves(20.0 + 40.0 * id as f64, layer, &mut e, false) {
+                text.push_str(&line);
+                text.push('\n');
+            }
+        }
+        text.push_str(&format!(";TIME_ELAPSED:{}\n", 10 * (layer + 1)));
+    }
+    text.push_str("G91\nG1 E-2 Z0.2 F2400\nG1 X5 Y5 Z10 F3000\nG90\nG1 X0 Y200\nM84 X Y E\n");
+    let file = Arc::new(GcodeFile::from_text("cura.gcode", text));
+    let printer = connect(fast_sim(1.0), options());
+    start(&printer, &file);
+    printer.exclude_object("cone");
+    let got = printed(&printer);
+    assert!(!got.iter().any(|c| c.starts_with("G1 X60")), "{got:?}");
+    for end in ["G1 X5 Y5 Z10 F3000", "G1 X0 Y200"] {
+        assert!(got.iter().any(|c| c == end), "{end} missing: {got:?}");
+    }
+    let snap = printer.sim_control().unwrap().snapshot();
+    assert!(
+        snap.position[0].abs() < 0.01 && (snap.position[1] - 200.0).abs() < 0.01,
+        "parked at {:?}",
+        snap.position
+    );
+}

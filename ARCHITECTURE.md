@@ -1265,8 +1265,11 @@ Every public item is also re-exported at the crate root.
   Klipper `EXCLUDE_OBJECT_DEFINE/START/END NAME=..`, Marlin `M486`
   (`T<count>`, `S<id>` starts, `S-1` ends, `A"name"`/`Aname` names;
   unnamed objects are "Object <id>"), `; printing object NAME` / `; stop
-  printing object NAME`, Cura `;MESH:NAME` (until the next `;MESH:`,
-  `;MESH:NONMESH` ends it); names are the marker text, trimmed. Inside an
+  printing object NAME`, Cura `;MESH:NAME` (until the next `;MESH:`;
+  `;MESH:NONMESH` and the end of the layer, `;TIME_ELAPSED:` or `;LAYER:`,
+  end it, since Cura leaves the last mesh of a layer open and the end
+  G-code must not count as part of it); names are the marker text,
+  trimmed. Inside an
   excluded object the host sends none of its G0..G3 and G10/G11 (moves,
   extrusions, retractions, primes) but follows them in the job's
   `MachineState`; everything else (fan, temperatures, `G92`, modes, the
