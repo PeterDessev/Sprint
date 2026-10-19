@@ -1526,7 +1526,8 @@ Every public item is also re-exported at the crate root.
   "Not SD printing", "Done printing file", the end of Sprint's SD print
   (however it ends; cleared before the final job status is published), a
   halt, a board reset and the connection closing clear it, and so does
-  missing 3 report intervals (6 s by default; 3 x n with `M27 S<n>`) while
+  missing 3 report intervals (6 s by default; 3 x n with `M27 S<n>` for
+  n above 2; the 2 s polls at least) while
   no M27 waits for its answer and Sprint's own SD print is not running.
   Uploads stream only after "Writing to file" (M28's `ok` without it fails
   the job), skip the file's own M28/M29, end with M29 (complete on "Done

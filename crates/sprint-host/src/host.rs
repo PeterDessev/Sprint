@@ -638,13 +638,18 @@ impl Printer {
     }
 
     /// Pause the job (host prints: wait for in-flight commands, then run the
-    /// pause script; SD prints: M25).
+    /// pause script; SD prints: M25). A host print the firmware holds at
+    /// an M0/M1 of the file is paused the same way: the wait is ended
+    /// (M108) and the pause script runs.
     pub fn pause(&self) {
         self.command(Command::Pause);
     }
 
     /// Resume a paused job (host prints: run the resume script, then
-    /// continue streaming; SD prints: M24).
+    /// continue streaming; SD prints: M24). A host print the firmware
+    /// paused ([`JobInfo::paused_by_firmware`](crate::JobInfo::paused_by_firmware))
+    /// gets no resume script: the firmware continues, with one M108 when
+    /// it waits for the user ([`PrinterState::waiting_for_user`]).
     pub fn resume(&self) {
         self.command(Command::Resume);
     }
