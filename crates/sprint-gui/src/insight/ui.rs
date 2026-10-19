@@ -314,6 +314,143 @@ pub(crate) fn dot_label(ui: &mut Ui, color: Color32, text: &str, strong: bool) -
     response
 }
 
+/// The result of a [`FileTask`].
+#[derive(Debug)]
+pub(crate) enum FileOutcome {
+    /// The file was written.
+    Saved(std::path::PathBuf),
+    /// The file was read (lossy UTF-8).
+    Loaded(std::path::PathBuf, String),
+    /// The user closed the dialog.
+    Cancelled,
+    /// Writing or reading failed.
+    Failed(String),
+}
+
+/// A native file dialog (and the file I/O after it) running on its own
+/// thread, so the window keeps painting while it is open.
+pub(crate) struct FileTask {
+    rx: std::sync::mpsc::Receiver<FileOutcome>,
+}
+
+/// Largest text file read by [`FileTask::open_text`] (bytes).
+pub(crate) const MAX_TEXT_FILE: u64 = 4 * 1024 * 1024;
+
+impl FileTask {
+    fn spawn(ctx: &egui::Context, job: impl FnOnce() -> FileOutcome + Send + 'static) -> FileTask {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ctx = ctx.clone();
+        let spawned = std::thread::Builder::new()
+            .name("sprint-file-dialog".into())
+            .spawn(move || {
+                let outcome = job();
+                let _ = tx.send(outcome);
+                ctx.request_repaint();
+            });
+        if let Err(err) = spawned {
+            // Without a thread there is no dialog; report it right away.
+            let (tx, rx) = std::sync::mpsc::channel();
+            let _ = tx.send(FileOutcome::Failed(format!(
+                "cannot open a file dialog: {err}"
+            )));
+            return FileTask { rx };
+        }
+        FileTask { rx }
+    }
+
+    /// Ask where to save `contents` and write it there.
+    pub(crate) fn save_text(
+        ctx: &egui::Context,
+        title: &str,
+        file_name: &str,
+        filter: (&str, &[&str]),
+        contents: String,
+    ) -> FileTask {
+        let dialog = rfd::AsyncFileDialog::new()
+            .set_title(title)
+            .set_file_name(file_name)
+            .add_filter(filter.0, filter.1);
+        FileTask::spawn(ctx, move || match block_on(dialog.save_file()) {
+            None => FileOutcome::Cancelled,
+            Some(handle) => {
+                let path = handle.path().to_path_buf();
+                match std::fs::write(&path, contents) {
+                    Ok(()) => FileOutcome::Saved(path),
+                    Err(err) => FileOutcome::Failed(format!("{}: {err}", path.display())),
+                }
+            }
+        })
+    }
+
+    /// Ask for a text file and read it (at most [`MAX_TEXT_FILE`] bytes).
+    pub(crate) fn open_text(ctx: &egui::Context, title: &str, filter: (&str, &[&str])) -> FileTask {
+        let dialog = rfd::AsyncFileDialog::new()
+            .set_title(title)
+            .add_filter(filter.0, filter.1)
+            .add_filter("All files", &["*"]);
+        FileTask::spawn(ctx, move || match block_on(dialog.pick_file()) {
+            None => FileOutcome::Cancelled,
+            Some(handle) => {
+                let path = handle.path().to_path_buf();
+                read_text(&path)
+            }
+        })
+    }
+
+    /// The outcome, once the dialog closed.
+    pub(crate) fn poll(&self) -> Option<FileOutcome> {
+        match self.rx.try_recv() {
+            Ok(outcome) => Some(outcome),
+            Err(std::sync::mpsc::TryRecvError::Empty) => None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(FileOutcome::Failed(
+                "the file dialog closed unexpectedly".into(),
+            )),
+        }
+    }
+}
+
+/// Read a text file of at most [`MAX_TEXT_FILE`] bytes (lossy UTF-8).
+pub(crate) fn read_text(path: &std::path::Path) -> FileOutcome {
+    let too_big = std::fs::metadata(path).is_ok_and(|m| m.len() > MAX_TEXT_FILE);
+    if too_big {
+        return FileOutcome::Failed(format!(
+            "{} is larger than {} MB",
+            path.display(),
+            MAX_TEXT_FILE / (1024 * 1024)
+        ));
+    }
+    match std::fs::read(path) {
+        Ok(bytes) => FileOutcome::Loaded(
+            path.to_path_buf(),
+            String::from_utf8_lossy(&bytes).into_owned(),
+        ),
+        Err(err) => FileOutcome::Failed(format!("{}: {err}", path.display())),
+    }
+}
+
+/// Run a future to completion on the current thread (for the dialog
+/// thread; rfd's futures are driven by its own backend).
+fn block_on<F: std::future::Future>(future: F) -> F::Output {
+    struct ThreadWaker(std::thread::Thread);
+    impl std::task::Wake for ThreadWaker {
+        fn wake(self: std::sync::Arc<Self>) {
+            self.0.unpark();
+        }
+        fn wake_by_ref(self: &std::sync::Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+    let waker = std::task::Waker::from(std::sync::Arc::new(ThreadWaker(std::thread::current())));
+    let mut cx = std::task::Context::from_waker(&waker);
+    let mut future = std::pin::pin!(future);
+    loop {
+        match future.as_mut().poll(&mut cx) {
+            std::task::Poll::Ready(value) => return value,
+            std::task::Poll::Pending => std::thread::park(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -327,5 +464,39 @@ mod tests {
         assert_eq!(column_count(f32::NAN, 340.0, 3), 1);
         assert_eq!(column_count(1000.0, 0.0, 3), 1);
         assert_eq!(column_count(1000.0, 100.0, 0), 1);
+    }
+
+    #[test]
+    fn block_on_runs_ready_and_woken_futures() {
+        assert_eq!(block_on(async { 7 }), 7);
+        // A future that wakes itself once before completing.
+        let mut polled = false;
+        let value = block_on(std::future::poll_fn(move |cx| {
+            if polled {
+                std::task::Poll::Ready(42)
+            } else {
+                polled = true;
+                cx.waker().wake_by_ref();
+                std::task::Poll::Pending
+            }
+        }));
+        assert_eq!(value, 42);
+    }
+
+    #[test]
+    fn reading_missing_or_huge_files_fails_cleanly() {
+        let missing = std::env::temp_dir().join("sprint-insight-definitely-missing.txt");
+        assert!(matches!(read_text(&missing), FileOutcome::Failed(_)));
+        let path =
+            std::env::temp_dir().join(format!("sprint-insight-read-{}.gcode", std::process::id()));
+        std::fs::write(&path, b"M92 E415\n\xff").expect("write");
+        match read_text(&path) {
+            FileOutcome::Loaded(p, text) => {
+                assert_eq!(p, path);
+                assert!(text.starts_with("M92 E415"));
+            }
+            other => panic!("{other:?}"),
+        }
+        let _ = std::fs::remove_file(&path);
     }
 }
