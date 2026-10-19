@@ -96,12 +96,28 @@ pub fn complete_path(input: &str, base: &Path, gcode_only: bool) -> Vec<PathCand
             if name.starts_with('.') && !show_hidden {
                 return None;
             }
-            // Follows symlinks, so a link to a directory completes as one.
-            let meta = std::fs::metadata(entry.path()).ok();
-            let is_dir = meta.as_ref().is_some_and(std::fs::Metadata::is_dir);
+            // The listing already says what an entry is; only links are
+            // looked up (followed, so a link to a directory completes as
+            // one). Asking the file system about every entry made each
+            // keystroke in a folder of thousands of files take a third of
+            // a second.
+            let file_type = entry.file_type().ok();
+            let followed = file_type
+                .is_some_and(|t| t.is_symlink())
+                .then(|| std::fs::metadata(entry.path()).ok())
+                .flatten();
+            let is_dir = match &followed {
+                Some(meta) => meta.is_dir(),
+                None => file_type.is_some_and(|t| t.is_dir()),
+            };
             if !is_dir && gcode_only && !is_gcode_name(&name) {
                 return None;
             }
+            let meta = if is_dir {
+                None
+            } else {
+                followed.or_else(|| entry.metadata().ok())
+            };
             let shown = if is_dir {
                 format!("{name}{MAIN_SEPARATOR}")
             } else {
