@@ -372,6 +372,80 @@ fn resend_requests_for_unknown_lines_reset_the_counter() {
 }
 
 #[test]
+fn a_lost_line_counter_does_not_fail_an_sd_print() {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut fw = Mini::new(Arc::clone(&log));
+    let mut seen_g4 = false;
+    let (link, out) = fake(
+        |out| out.line("start"),
+        move |line, out| {
+            if command(line) == "G4 P0" && !seen_g4 {
+                // The counter moved behind the host's back.
+                seen_g4 = true;
+                fw.last = 9998;
+                out.line("Error:Line Number is not Last Line Number+1, Last Line: 9998");
+                out.line("Resend: 9999");
+                out.line("ok");
+                return;
+            }
+            let Some(cmd) = fw.accept(line, out) else {
+                return;
+            };
+            if cmd == "M23 part.gco" {
+                out.line("File opened: PART.GCO Size: 1000");
+                out.line("File selected");
+            }
+            out.line("ok");
+        },
+    );
+    let printer = connect_fake(
+        link,
+        ConnectOptions {
+            query_on_connect: false,
+            temp_poll_secs: 0.0,
+            ..options()
+        },
+    );
+    wait_for(&printer, "connected", |s| s.is_connected());
+    printer.start_sd_print("part.gco").unwrap();
+    wait_for(&printer, "printing", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Printing)
+    });
+    out.line("SD printing byte 100/1000");
+    printer.send("G4 P0");
+    wait_for(&printer, "the counter reset", |_| {
+        log.lock()
+            .unwrap()
+            .iter()
+            .filter(|c| *c == "M110 N0")
+            .count()
+            == 2
+    });
+    wait_idle(&printer);
+    // The card prints on, untouched: no heaters off, still the job.
+    let job = printer.with_state(|s| s.job.clone()).unwrap();
+    assert_eq!(job.status, JobStatus::Printing);
+    assert!(
+        !log.lock().unwrap().iter().any(|c| c.starts_with("M104")),
+        "{:?}",
+        log.lock().unwrap()
+    );
+    assert!(
+        console(&printer)
+            .iter()
+            .any(|e| e.text.contains("The SD print goes on"))
+    );
+    out.line("Done printing file");
+    wait_for(&printer, "completed", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Completed)
+    });
+}
+
+#[test]
 fn wait_with_commands_in_flight_recovers_without_the_timeout() {
     let log = Arc::new(Mutex::new(Vec::new()));
     let mut fw = Mini::new(Arc::clone(&log));

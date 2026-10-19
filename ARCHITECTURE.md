@@ -1346,7 +1346,9 @@ Every public item is also re-exported at the crate root.
   command until 16 (or 4 windows of) commands were acknowledged cleanly.
   A request beyond the last line sent or for an acknowledged line (the
   firmware's counter changed) and a line rejected 16 times in a row drop the
-  numbered lines in flight, fail the job and reset the counter (resending
+  numbered lines in flight, fail a host print or an upload (an SD print
+  goes on: the printer reads it from its card, whatever the host's line
+  numbers) and reset the counter (resending
   could execute lines twice). The printer still runs then, so a failed host
   print gets `{heaters_off}` and `M107` right after the counter reset
   (unless `PrinterProfile::keep_heaters_on_failure`), a failed upload `M29`;

@@ -258,15 +258,25 @@ impl Engine {
     }
 
     /// The firmware lost track of the line numbers: the numbered commands in
-    /// flight were dropped (resending could execute some twice), so a job
-    /// cannot continue; the counter is reset before anything else is sent.
+    /// flight were dropped (resending could execute some twice), so a host
+    /// print or an upload cannot continue; the counter is reset before
+    /// anything else is sent. An SD print goes on: the printer reads it
+    /// from its card, whatever the host's line numbers.
     fn line_counter_lost(&mut self, message: String) {
         self.shared
             .log(ConsoleKind::Error, message.clone(), false, None);
         self.shared.emit(Event::Error(message.clone()));
-        // The printer still runs: leave it safe (heaters off) after the
-        // counter reset.
-        self.abandon_job(&message);
+        let sd_print = self
+            .job
+            .as_ref()
+            .is_some_and(|j| j.kind() == JobKind::SdPrint && j.is_active());
+        if sd_print {
+            self.warn("The SD print goes on: it does not depend on the host's line numbers");
+        } else {
+            // The printer still runs: leave it safe (heaters off) after
+            // the counter reset.
+            self.abandon_job(&message);
+        }
         self.renumber_pending = true;
         let polls = |kind: PollKind, flow: &super::flow::Flow<Meta>| {
             flow.in_flight()
