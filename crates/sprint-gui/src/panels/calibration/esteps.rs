@@ -64,7 +64,7 @@ impl Default for EstepsWizard {
             tool: 0,
             temperature: 205.0,
             mark: ESTEPS_MARK_MM,
-            remaining: 20.0,
+            remaining: f64::from(ESTEPS_MARK_MM - ESTEPS_EXTRUDE_MM),
             extrude_started: None,
             tested_steps: None,
             applied: None,
@@ -276,6 +276,9 @@ impl EstepsWizard {
                     .extrude(self.tool, ESTEPS_EXTRUDE_MM, ESTEPS_FEEDRATE_MM_MIN);
                 self.extrude_started = Some(now);
                 self.tested_steps = current_esteps(&ctx.state.settings, self.tool);
+                // Until measured, what a perfect extruder would leave: no
+                // correction, whatever the mark distance.
+                self.remaining = f64::from(self.mark - ESTEPS_EXTRUDE_MM).max(0.0);
             }
             if !hot && !extruded {
                 ui.add(StatusPill::new("Hotend not hot", Tone::Warning));

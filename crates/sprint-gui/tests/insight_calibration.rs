@@ -204,6 +204,27 @@ fn esteps_result_stays_put_after_applying() {
 }
 
 #[test]
+fn esteps_measurement_starts_from_the_mark() {
+    let mut h = tab(Theme::Dark, (1100.0, 900.0), Some(demo_state()), None);
+    h.get_by_label("Extruder E-steps").click();
+    h.run_ok();
+    h.get_by_label("Next").click();
+    h.run_ok();
+    // The filament is marked 150 mm up instead of 120.
+    type_number(&mut h, 0, "150");
+    for step in ["Marked", "Extrude 100 mm", "Measure"] {
+        h.get_by_label(step).click();
+        h.run_ok();
+    }
+    // Nothing measured yet: the field shows what a perfect extruder
+    // leaves, not a 23% correction computed from a stale 20 mm.
+    assert!(h.query_by_label("Extruded: 100.0 mm").is_some());
+    assert!(h.query_by_label("Change: 0.0%").is_some());
+    type_number(&mut h, 0, "52");
+    assert!(h.query_by_label("Extruded: 98.0 mm").is_some());
+}
+
+#[test]
 fn esteps_extrudes_once_per_mark() {
     let mut h = tab(Theme::Dark, (1100.0, 900.0), Some(demo_state()), None);
     h.get_by_label("Extruder E-steps").click();
