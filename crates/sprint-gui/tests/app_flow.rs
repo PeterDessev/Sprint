@@ -596,3 +596,43 @@ fn layer_keys_move_the_top_layer_under_the_pointer() {
     settle(&mut h);
     assert_eq!(h.state().viewer_tab().layer_range(), Some((0, 99)));
 }
+
+#[test]
+fn the_menu_bar_runs_commands() {
+    let mut h = app(AppOptions::headless(), WINDOW);
+    h.get_by_label("Help").click();
+    settle(&mut h);
+    h.get_by_label_contains("About Sprint").click();
+    settle(&mut h);
+    assert_eq!(h.state().dialog(), Some(DialogKind::About));
+    h.key_press(Key::Escape);
+    settle(&mut h);
+
+    h.get_by_label("View").click();
+    settle(&mut h);
+    h.get_by_label_contains("Light theme").click();
+    settle(&mut h);
+    assert_eq!(h.state().ui_prefs().theme, sprint_gui::theme::Theme::Light);
+    assert_eq!(h.ctx.theme(), egui::Theme::Light);
+
+    h.get_by_label("View").click();
+    settle(&mut h);
+    h.get_by_label("Console").click();
+    settle(&mut h);
+    assert!(!h.state().ui_prefs().show_console);
+}
+
+#[test]
+fn the_console_completes_gcode() {
+    let mut h = app(AppOptions::headless(), WINDOW);
+    h.state_mut().console_mut().focus_input();
+    settle(&mut h);
+    h.event(egui::Event::Text("M10".into()));
+    settle(&mut h);
+    assert_eq!(h.state().console().input(), "M10");
+    // Tab accepts the first suggestion from the G-code reference.
+    h.key_press(Key::Tab);
+    settle(&mut h);
+    let first = sprint_gui::panels::console::suggestions("M10")[0].code;
+    assert_eq!(h.state().console().input(), format!("{first} "));
+}
