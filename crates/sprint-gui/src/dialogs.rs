@@ -450,7 +450,7 @@ impl StartPrintDialog {
 pub fn prompt_dialog(egui_ctx: &egui::Context, prompt: &HostPrompt) -> Option<usize> {
     let p = theme::palette(egui_ctx);
     let mut answer = None;
-    Modal::new(Id::new("sprint-host-prompt"))
+    let modal = Modal::new(Id::new("sprint-host-prompt"))
         .frame(modal_frame(egui_ctx))
         .backdrop_color(backdrop(egui_ctx))
         .show(egui_ctx, |ui| {
@@ -491,6 +491,10 @@ pub fn prompt_dialog(egui_ctx: &egui::Context, prompt: &HostPrompt) -> Option<us
                 }
             });
         });
+    // Escape or a click beside the dialog hides it, like "Hide".
+    if answer.is_none() && modal.should_close() {
+        answer = Some(usize::MAX);
+    }
     answer
 }
 
