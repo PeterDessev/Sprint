@@ -28,3 +28,111 @@ impl Drop for TempDir {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
+
+use std::time::{Duration, Instant};
+
+use sprint_host::sprint_sim::SimConfig;
+use sprint_host::{ConnectOptions, ConnectTarget, ConsoleEntry, Printer, PrinterState};
+
+/// Generous upper bound for anything a test waits for.
+pub const PATIENCE: Duration = Duration::from_secs(30);
+
+/// A fast simulator: short boot, instant moves, accelerated time.
+pub fn fast_sim(time_scale: f32) -> SimConfig {
+    SimConfig {
+        boot_delay_ms: 20,
+        time_scale,
+        instant_moves: true,
+        ..SimConfig::default()
+    }
+}
+
+/// Options for tests: short timeouts.
+pub fn options() -> ConnectOptions {
+    ConnectOptions {
+        ok_timeout_secs: 3.0,
+        handshake_timeout_secs: 10.0,
+        ..ConnectOptions::default()
+    }
+}
+
+/// Connect to a simulator and wait until the post-handshake queries are
+/// done (settings and position known).
+pub fn connect(config: SimConfig, options: ConnectOptions) -> Printer {
+    let printer = Printer::new();
+    printer
+        .connect(ConnectTarget::Simulator(config), options)
+        .expect("connect");
+    wait_for(&printer, "the setup queries", |s| {
+        s.is_connected() && s.settings_loaded && s.position.is_some()
+    });
+    wait_idle(&printer);
+    printer
+}
+
+/// Poll until `cond` holds, failing with a state and console dump after
+/// [`PATIENCE`].
+pub fn wait_for(printer: &Printer, what: &str, cond: impl Fn(&PrinterState) -> bool) {
+    wait_for_within(printer, what, PATIENCE, cond);
+}
+
+pub fn wait_for_within(
+    printer: &Printer,
+    what: &str,
+    patience: Duration,
+    cond: impl Fn(&PrinterState) -> bool,
+) {
+    let deadline = Instant::now() + patience;
+    loop {
+        if printer.with_state(&cond) {
+            return;
+        }
+        if Instant::now() > deadline {
+            let state = printer.snapshot();
+            let console = tail(printer, 40);
+            panic!(
+                "timed out waiting for {what}\nstatus: {:?}\njob: {:?}\nlink: {:?}\nhalted: {}\nconsole:\n{}",
+                state.status,
+                state.job,
+                state.link,
+                state.halted,
+                console.join("\n")
+            );
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// Wait until nothing is queued or in flight.
+pub fn wait_idle(printer: &Printer) {
+    // Stats are published on the 20 ms tick: require two quiet looks.
+    let deadline = Instant::now() + PATIENCE;
+    let mut quiet = 0;
+    while quiet < 3 {
+        let idle = printer.with_state(|s| s.link.in_flight == 0 && s.link.queue_len == 0);
+        quiet = if idle { quiet + 1 } else { 0 };
+        assert!(Instant::now() < deadline, "the link never became idle");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// The last `n` console lines, formatted.
+pub fn tail(printer: &Printer, n: usize) -> Vec<String> {
+    let all = printer.console_since(0, usize::MAX);
+    all[all.len().saturating_sub(n)..]
+        .iter()
+        .map(format_entry)
+        .collect()
+}
+
+pub fn format_entry(e: &ConsoleEntry) -> String {
+    match e.line {
+        Some(n) => format!("{:?} N{n} {}", e.kind, e.text),
+        None => format!("{:?} {}", e.kind, e.text),
+    }
+}
+
+/// Every console entry so far.
+pub fn console(printer: &Printer) -> Vec<ConsoleEntry> {
+    printer.console_since(0, usize::MAX)
+}

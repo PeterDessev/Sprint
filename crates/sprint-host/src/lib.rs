@@ -13,6 +13,7 @@ pub mod console;
 mod engine;
 mod error;
 pub mod event;
+mod host;
 pub mod job;
 pub mod script;
 pub mod state;
@@ -24,6 +25,7 @@ pub use config::{
 pub use console::{ConsoleEntry, ConsoleKind};
 pub use error::HostError;
 pub use event::{Event, EventBus};
+pub use host::Printer;
 pub use job::{JobInfo, JobKind, JobStatus, PrintOptions, Progress, ProgressModel};
 pub use script::{ScriptContext, render_script, render_script_with};
 pub use state::{
