@@ -1154,7 +1154,9 @@ Every public item is also re-exported at the crate root.
   sends M999 (FIRMWARE_RESTART on Klipper);
   the next `ok`/resend clears `halted` and the counter is reset. A `start` while connected re-runs the handshake and
   setup (status `Handshaking`, then `Connected`) and fails a job with
-  "printer reset".
+  "printer reset". Entering a halt and a board reset drop the user
+  commands still queued (with a console warning): they were meant for a
+  printer that has since lost its position.
 * Jobs: preamble lines are cleaned and sent first; with `start_line` the
   tracked `MachineState` starts from `state_at_line`. Pause: `Pausing` until
   in-flight stream lines are acknowledged and the pause script is

@@ -790,6 +790,11 @@ impl Engine {
         self.flow.reset(now);
         self.parser.reset();
         self.internal.clear();
+        // Commands queued for the old session (a jog behind a long dwell,
+        // commands typed while halted) would run on a printer that just
+        // lost its position and soft endstops.
+        self.drop_queued_commands("the printer reset");
+        self.settings_refresh_at = None;
         self.halted = false;
         self.restarting = false;
         self.renumber_pending = false;
@@ -967,6 +972,17 @@ impl Engine {
     fn clear_manual(&mut self) {
         self.manual.clear();
         self.manual_ahead = 0;
+    }
+
+    /// Drop the manual queue, saying so when it was not empty.
+    fn drop_queued_commands(&mut self, why: &str) {
+        let dropped = self.manual.len();
+        self.clear_manual();
+        if dropped > 0 {
+            self.warn(format!(
+                "Dropped {dropped} queued command(s): {why} before they were sent"
+            ));
+        }
     }
 
     /// A temperature or SD status poll, if one is due.
@@ -1220,6 +1236,10 @@ impl Engine {
         let lower = message.to_ascii_lowercase();
         let killed = lower.contains("kill") || lower.contains("halted") || lower.contains("m112");
         let restartable = self.is_klipper() || (lower.contains("m999") && !killed);
+        if first {
+            // Queued before the halt: they must not run after a restart.
+            self.drop_queued_commands("the printer halted");
+        }
         self.halted = true;
         self.restarting = false;
         self.renumber_pending = true;

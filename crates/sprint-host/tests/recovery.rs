@@ -94,3 +94,57 @@ fn a_board_behind_tcp_or_a_custom_link_cannot_be_reset() {
     ));
     printer.disconnect();
 }
+
+#[test]
+fn commands_queued_before_a_board_reset_are_not_replayed() {
+    // A jog queued behind a long dwell must not run on the rebooted,
+    // unhomed printer.
+    let printer = connect(fast_sim(1.0), options());
+    let control = printer.sim_control().unwrap();
+    printer.send("G4 S30");
+    wait_for(&printer, "the dwell to run", |_| {
+        control.received_commands().iter().any(|c| c == "G4 S30")
+    });
+    printer.send("G91\nG1 Z-5 F600\nG90\nM117 stale-command");
+    wait_for(&printer, "the jog to be queued", |s| s.link.queue_len >= 4);
+    control.clear_received();
+    control.reset();
+    wait_for(&printer, "the handshake after the reset", |s| {
+        s.is_connected() && s.settings_loaded && s.position.is_some()
+    });
+    wait_idle(&printer);
+    let got = control.received_commands();
+    assert!(
+        !got.iter()
+            .any(|c| c.starts_with("G1") || c.contains("stale")),
+        "{got:?}"
+    );
+    assert!(
+        console(&printer)
+            .iter()
+            .any(|e| e.text.contains("Dropped 4 queued command(s)")),
+        "{:?}",
+        tail(&printer, 20)
+    );
+}
+
+#[test]
+fn commands_queued_before_a_halt_are_dropped() {
+    let printer = connect(fast_sim(1.0), options());
+    let control = printer.sim_control().unwrap();
+    printer.send("G4 S30");
+    wait_for(&printer, "the dwell to run", |_| {
+        control.received_commands().iter().any(|c| c == "G4 S30")
+    });
+    printer.send("G91\nG1 Z-5 F600\nG90");
+    wait_for(&printer, "the jog to be queued", |s| s.link.queue_len >= 3);
+    control
+        .inject_line("Error:Printer stopped due to errors. Fix the error and use M999 to restart.");
+    wait_for(&printer, "halted", |s| s.halted);
+    wait_for(&printer, "the queue to empty", |s| s.link.queue_len == 0);
+    assert!(
+        console(&printer)
+            .iter()
+            .any(|e| e.text.contains("Dropped 3 queued command(s)"))
+    );
+}
