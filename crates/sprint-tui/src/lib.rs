@@ -9,7 +9,12 @@
 //!   progress, the console, the command line with G-code completion, key
 //!   hints, help and toolpath statistics;
 //! * [`format`](mod@format): number, length and duration formatting shared
-//!   with the command-line reports.
+//!   with the command-line reports;
+//! * [`commands`]: the shell command set and its parser;
+//! * [`report`]: text reports of the printer state (status, settings, bed
+//!   mesh, firmware, ...);
+//! * [`loader`], [`paths`], [`actions`]: loading files in the background,
+//!   path completion and small decisions shared by the front ends.
 //!
 //! Widgets take their own small input types, never host types, and draw
 //! with a [`Theme`]. `cargo run -p sprint-tui --example widgets_demo` shows
@@ -17,6 +22,7 @@
 
 #![warn(missing_docs)]
 
+pub mod actions;
 pub mod commands;
 pub mod format;
 pub mod loader;
