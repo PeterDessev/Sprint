@@ -21,6 +21,7 @@ pub mod commands;
 pub mod format;
 pub mod loader;
 pub mod paths;
+pub mod report;
 pub mod theme;
 pub mod widgets;
 
