@@ -20,8 +20,6 @@ use egui_plot::{
     ColorConflictHandling, Corner, Legend, Line, LineStyle, Plot, PlotPoints, PlotResponse,
     uniform_grid_spacer,
 };
-use std::collections::VecDeque;
-
 use sprint_host::TempSample;
 
 use crate::context::AppCtx;
@@ -129,7 +127,8 @@ impl TemperatureGraphTab {
     /// Draw the panel.
     pub fn ui(&mut self, ui: &mut Ui, ctx: &mut AppCtx<'_>) {
         self.poll_export(ctx);
-        let history = &ctx.state.temp_history;
+        let history = data::usable(&ctx.state.temp_history);
+        let history = history.as_slice();
         if history.is_empty() {
             empty(ui, ctx.connected());
             return;
@@ -149,8 +148,8 @@ impl TemperatureGraphTab {
                 points: data::points(history, channel),
             })
             .collect();
-        let first = history.front().map_or(0.0, |s| s.t);
-        let last = history.back().map_or(0.0, |s| s.t);
+        let first = history.first().map_or(0.0, |s| s.t);
+        let last = history.last().map_or(0.0, |s| s.t);
         let has_power = series
             .iter()
             .any(|s| s.points.iter().any(|pt| pt.power.is_some()));
@@ -212,7 +211,7 @@ impl TemperatureGraphTab {
     fn toolbar(
         &mut self,
         ui: &mut Ui,
-        history: &VecDeque<TempSample>,
+        history: &[&TempSample],
         connected: bool,
         has_power: bool,
         span: f64,
@@ -381,7 +380,7 @@ fn main_plot(
             for s in series {
                 for run in data::runs(&s.points, data::target_value) {
                     plot.line(
-                        Line::new(s.name.as_str(), PlotPoints::from(run))
+                        Line::new(s.name.as_str(), PlotPoints::from(data::simplify_flat(run)))
                             .color(with_alpha(s.color, 0.75))
                             .width(1.25)
                             .style(LineStyle::Dashed { length: 7.0 })
@@ -465,13 +464,13 @@ fn hovered_time(plot: &PlotResponse<()>) -> Option<(f64, LayerId, Id)> {
 /// A tooltip with every heater's reading at the hovered time.
 fn hover_readout(
     ui: &Ui,
-    history: &VecDeque<TempSample>,
+    history: &[&TempSample],
     series: &[Series],
     t: f64,
     layer: LayerId,
     id: Id,
 ) {
-    let Some(sample) = data::nearest(history, t).and_then(|i| history.get(i)) else {
+    let Some(sample) = data::nearest(history, t) else {
         return;
     };
     egui::Tooltip::always_open(ui.ctx().clone(), layer, id, PopupAnchor::Pointer)

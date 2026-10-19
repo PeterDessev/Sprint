@@ -1,6 +1,10 @@
 //! Pure data behind the temperature graph: heater channels and their
 //! samples from the history, line runs, window statistics, stability,
 //! view ranges, time labels and CSV export.
+//!
+//! Everything works on the [`usable`] samples of the history: corrupt
+//! times and implausible readings never reach the chart (egui_plot asserts
+//! on degenerate bounds and would draw grids with billions of lines).
 
 use std::collections::VecDeque;
 use std::fmt::Write as _;
@@ -19,6 +23,45 @@ pub(crate) const STABLE_SECS: f64 = 30.0;
 /// Readings arrive about once a second: the stability window may start
 /// this much after its nominal start.
 const COVERAGE_SLACK: f64 = 2.5;
+/// Sample times beyond ±this many seconds are corrupt (the history counts
+/// from connecting and spans about 30 minutes).
+pub(crate) const MAX_TIME: f64 = 1e9;
+/// Readings and targets beyond ±this many °C are corrupt (sensor
+/// faults report values far outside any real heater range).
+pub(crate) const MAX_TEMP: f32 = 5000.0;
+
+/// The usable samples of `history`, oldest first: those with a finite,
+/// plausible time. Should time ever run backwards, only the newest
+/// consistent run is kept so the chart recovers instead of freezing.
+pub(crate) fn usable(history: &VecDeque<TempSample>) -> Vec<&TempSample> {
+    let mut out: Vec<&TempSample> = Vec::with_capacity(history.len());
+    for s in history {
+        if !(s.t.is_finite() && s.t.abs() <= MAX_TIME) {
+            continue;
+        }
+        if out.last().is_some_and(|prev| s.t < prev.t) {
+            out.clear();
+        }
+        out.push(s);
+    }
+    out
+}
+
+/// A reading as plotted: an implausible temperature becomes NaN (missing)
+/// and an implausible target 0 (off).
+fn plausible((current, target): (f32, f32)) -> (f32, f32) {
+    let current = if current.is_finite() && current.abs() <= MAX_TEMP {
+        current
+    } else {
+        f32::NAN
+    };
+    let target = if target.is_finite() && target.abs() <= MAX_TEMP {
+        target
+    } else {
+        0.0
+    };
+    (current, target)
+}
 
 /// A heater recorded in the history.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -51,13 +94,15 @@ impl Channel {
         }
     }
 
-    /// (current, target) at a sample, if the heater was reported.
+    /// (current, target) at a sample, if the heater was reported; an
+    /// implausible current is NaN and an implausible target 0.
     pub(crate) fn reading(self, s: &TempSample) -> Option<(f32, f32)> {
         match self {
             Channel::Hotend(i) => s.hotends.get(i).copied(),
             Channel::Bed => s.bed,
             Channel::Chamber => s.chamber,
         }
+        .map(plausible)
     }
 
     /// Heater power 0..=1 at a sample, if reported (the chamber has none).
@@ -71,19 +116,19 @@ impl Channel {
     }
 }
 
-/// Every heater that appears anywhere in the history, in display order.
-pub(crate) fn channels(history: &VecDeque<TempSample>) -> Vec<Channel> {
-    let hotends = history
+/// Every heater that appears anywhere in `samples`, in display order.
+pub(crate) fn channels(samples: &[&TempSample]) -> Vec<Channel> {
+    let hotends = samples
         .iter()
         .map(|s| s.hotends.len())
         .max()
         .unwrap_or(0)
         .min(MAX_HOTENDS);
     let mut list: Vec<Channel> = (0..hotends).map(Channel::Hotend).collect();
-    if history.iter().any(|s| s.bed.is_some()) {
+    if samples.iter().any(|s| s.bed.is_some()) {
         list.push(Channel::Bed);
     }
-    if history.iter().any(|s| s.chamber.is_some()) {
+    if samples.iter().any(|s| s.chamber.is_some()) {
         list.push(Channel::Chamber);
     }
     list
@@ -102,12 +147,11 @@ pub(crate) struct Point {
     pub power: Option<f32>,
 }
 
-/// The readings of `channel`, oldest first (samples without it or with a
-/// non-finite time are skipped).
-pub(crate) fn points(history: &VecDeque<TempSample>, channel: Channel) -> Vec<Point> {
-    history
+/// The readings of `channel`, oldest first (samples without it are
+/// skipped).
+pub(crate) fn points(samples: &[&TempSample], channel: Channel) -> Vec<Point> {
+    samples
         .iter()
-        .filter(|s| s.t.is_finite())
         .filter_map(|s| {
             channel.reading(s).map(|(current, target)| Point {
                 t: s.t,
@@ -143,6 +187,21 @@ pub(crate) fn runs(points: &[Point], value: impl Fn(&Point) -> Option<f64>) -> V
         runs.push(current);
     }
     runs
+}
+
+/// `run` without the inner points of flat stretches (a target held for
+/// minutes becomes two points), keeping its shape. Long straight segments
+/// keep a dashed line's pattern even.
+pub(crate) fn simplify_flat(run: Vec<[f64; 2]>) -> Vec<[f64; 2]> {
+    if run.len() <= 2 {
+        return run;
+    }
+    let last = run.len() - 1;
+    run.iter()
+        .enumerate()
+        .filter(|&(i, p)| i == 0 || i == last || run[i - 1][1] != p[1] || run[i + 1][1] != p[1])
+        .map(|(_, p)| *p)
+        .collect()
 }
 
 /// The current temperature of a point (finite only).
@@ -313,15 +372,20 @@ pub(crate) fn format_span(secs: f64) -> String {
 }
 
 /// Three nested grid step sizes (each a multiple of the previous): the
-/// first ladder entry whose minor step is at least `min_step`.
+/// first ladder entry whose minor step is at least `min_step`. Beyond the
+/// ladder its last entry is scaled by powers of ten, so a far zoomed-out
+/// axis still gets a few dozen lines rather than billions.
 fn nested_steps(min_step: f64, ladder: &[[f64; 3]]) -> [f64; 3] {
-    let min_step = if min_step.is_finite() { min_step } else { 0.0 };
-    ladder
-        .iter()
-        .find(|steps| steps[0] >= min_step)
-        .or(ladder.last())
-        .copied()
-        .unwrap_or([1.0, 5.0, 10.0])
+    let min_step = if min_step.is_nan() { 0.0 } else { min_step };
+    if let Some(steps) = ladder.iter().find(|steps| steps[0] >= min_step) {
+        return *steps;
+    }
+    let Some(&[a, b, c]) = ladder.last() else {
+        return [1.0, 5.0, 10.0];
+    };
+    let exponent = (min_step / a).log10().ceil().clamp(1.0, 300.0);
+    let scale = 10f64.powi(exponent as i32);
+    [a * scale, b * scale, c * scale]
 }
 
 /// Grid steps (s) for a time axis whose finest visible step is `base`:
@@ -361,26 +425,26 @@ pub(crate) fn value_steps(base: f64) -> [f64; 3] {
     nested_steps(base * 2.0, &LADDER)
 }
 
-/// Index of the sample nearest to `t`, if any.
-pub(crate) fn nearest(history: &VecDeque<TempSample>, t: f64) -> Option<usize> {
-    if history.is_empty() || !t.is_finite() {
+/// The sample nearest to `t` (`samples` sorted by time), if any.
+pub(crate) fn nearest<'a>(samples: &[&'a TempSample], t: f64) -> Option<&'a TempSample> {
+    if !t.is_finite() {
         return None;
     }
-    let i = history.partition_point(|s| s.t < t);
-    let candidates = [i.checked_sub(1), (i < history.len()).then_some(i)];
-    candidates.into_iter().flatten().min_by(|a, b| {
-        let da = (history[*a].t - t).abs();
-        let db = (history[*b].t - t).abs();
-        da.total_cmp(&db)
-    })
+    let i = samples.partition_point(|s| s.t < t);
+    let candidates = [i.checked_sub(1), (i < samples.len()).then_some(i)];
+    candidates
+        .into_iter()
+        .flatten()
+        .filter_map(|i| samples.get(i).copied())
+        .min_by(|a, b| (a.t - t).abs().total_cmp(&(b.t - t).abs()))
 }
 
-/// The whole history as CSV: a header and one row per sample with the
-/// time, each heater's temperature and target and (where reported) its
-/// power in percent. Missing values are empty cells.
-pub(crate) fn history_csv(history: &VecDeque<TempSample>) -> String {
-    let channels = channels(history);
-    let has_power = |c: Channel| history.iter().any(|s| c.power(s).is_some());
+/// `samples` as CSV: a header and one row per sample with the time, each
+/// heater's temperature and target and (where reported) its power in
+/// percent. Missing values are empty cells.
+pub(crate) fn history_csv(samples: &[&TempSample]) -> String {
+    let channels = channels(samples);
+    let has_power = |c: Channel| samples.iter().any(|s| c.power(s).is_some());
     let mut out = String::from("time_s");
     for c in &channels {
         let key = c.key();
@@ -396,7 +460,7 @@ pub(crate) fn history_csv(history: &VecDeque<TempSample>) -> String {
             let _ = write!(out, "{v:.decimals$}");
         }
     };
-    for s in history.iter().filter(|s| s.t.is_finite()) {
+    for s in samples {
         let _ = write!(out, "{:.1}", s.t);
         for c in &channels {
             let reading = c.reading(s);
@@ -438,7 +502,7 @@ mod tests {
     #[test]
     fn channels_cover_every_heater_seen() {
         let mut h = VecDeque::new();
-        assert!(channels(&h).is_empty());
+        assert!(channels(&usable(&h)).is_empty());
         h.push_back(sample(0.0, 20.0, 0.0));
         h.push_back(TempSample {
             t: 1.0,
@@ -447,7 +511,7 @@ mod tests {
             ..TempSample::default()
         });
         assert_eq!(
-            channels(&h),
+            channels(&usable(&h)),
             [Channel::Hotend(0), Channel::Hotend(1), Channel::Chamber]
         );
         h.push_back(TempSample {
@@ -456,7 +520,7 @@ mod tests {
             bed: Some((60.0, 60.0)),
             ..TempSample::default()
         });
-        let c = channels(&h);
+        let c = channels(&usable(&h));
         assert_eq!(c.len(), MAX_HOTENDS + 2);
         assert_eq!(Channel::Hotend(0).name(1), "Hotend");
         assert_eq!(Channel::Hotend(1).name(2), "Hotend T1");
@@ -474,11 +538,86 @@ mod tests {
             ..TempSample::default()
         });
         h.push_back(sample(f64::NAN, 1.0, 0.0));
+        let h = usable(&h);
         assert_eq!(points(&h, Channel::Hotend(0)).len(), 1);
         let bed = points(&h, Channel::Bed);
         assert_eq!(bed.len(), 1);
         assert_eq!(bed[0].power, Some(0.5));
         assert!(points(&h, Channel::Chamber).is_empty());
+    }
+
+    #[test]
+    fn usable_samples_drop_corrupt_times() {
+        let times =
+            |h: &VecDeque<TempSample>| -> Vec<f64> { usable(h).iter().map(|s| s.t).collect() };
+        let h: VecDeque<_> = [0.0, f64::NAN, 1.0, f64::INFINITY, 2.0, 1e300, -1e12, 3.0]
+            .into_iter()
+            .map(|t| sample(t, 20.0, 0.0))
+            .collect();
+        assert_eq!(times(&h), [0.0, 1.0, 2.0, 3.0]);
+        // Time running backwards keeps the newest consistent run.
+        let h: VecDeque<_> = [100.0, 101.0, 102.0, 5.0, 6.0]
+            .into_iter()
+            .map(|t| sample(t, 20.0, 0.0))
+            .collect();
+        assert_eq!(times(&h), [5.0, 6.0]);
+        // Equal times are kept (two reports in the same instant).
+        let h: VecDeque<_> = [1.0, 1.0, 2.0]
+            .into_iter()
+            .map(|t| sample(t, 20.0, 0.0))
+            .collect();
+        assert_eq!(times(&h), [1.0, 1.0, 2.0]);
+        assert!(usable(&VecDeque::new()).is_empty());
+    }
+
+    #[test]
+    fn implausible_readings_are_missing() {
+        let s = TempSample {
+            t: 0.0,
+            hotends: vec![
+                (f32::MAX, -f32::MAX),
+                (f32::NAN, f32::INFINITY),
+                (215.0, 215.0),
+            ],
+            bed: Some((-6000.0, 60.0)),
+            ..TempSample::default()
+        };
+        let (current, target) = Channel::Hotend(0).reading(&s).expect("reported");
+        assert!(current.is_nan());
+        assert_eq!(target, 0.0);
+        let (current, target) = Channel::Hotend(1).reading(&s).expect("reported");
+        assert!(current.is_nan());
+        assert_eq!(target, 0.0);
+        assert_eq!(Channel::Hotend(2).reading(&s), Some((215.0, 215.0)));
+        assert!(
+            Channel::Bed
+                .reading(&s)
+                .is_some_and(|(c, t)| c.is_nan() && t == 60.0)
+        );
+        assert_eq!(Channel::Hotend(3).reading(&s), None);
+        assert_eq!(Channel::Chamber.reading(&s), None);
+    }
+
+    #[test]
+    fn flat_stretches_collapse() {
+        let run: Vec<[f64; 2]> = (0..10).map(|i| [f64::from(i), 215.0]).collect();
+        assert_eq!(simplify_flat(run), [[0.0, 215.0], [9.0, 215.0]]);
+        let step = vec![
+            [0.0, 215.0],
+            [1.0, 215.0],
+            [2.0, 215.0],
+            [3.0, 230.0],
+            [4.0, 230.0],
+            [5.0, 230.0],
+        ];
+        assert_eq!(
+            simplify_flat(step),
+            [[0.0, 215.0], [2.0, 215.0], [3.0, 230.0], [5.0, 230.0]]
+        );
+        assert_eq!(simplify_flat(vec![[0.0, 1.0]]), [[0.0, 1.0]]);
+        assert!(simplify_flat(Vec::new()).is_empty());
+        let wavy = vec![[0.0, 1.0], [1.0, 2.0], [2.0, 1.0]];
+        assert_eq!(simplify_flat(wavy.clone()), wavy);
     }
 
     #[test]
@@ -602,8 +741,13 @@ mod tests {
         assert_eq!(time_steps(0.3), [1.0, 5.0, 10.0]);
         assert_eq!(time_steps(5.3), [30.0, 60.0, 300.0]);
         assert_eq!(time_steps(45.0), [300.0, 900.0, 1800.0]);
-        assert_eq!(time_steps(1e6), [3600.0, 7200.0, 14400.0]);
+        assert_eq!(time_steps(1000.0), [3600.0, 7200.0, 14400.0]);
+        // Far beyond the ladder the steps grow by powers of ten.
+        assert_eq!(time_steps(2000.0), [36000.0, 72000.0, 144000.0]);
+        assert_eq!(time_steps(1e9)[0], 3.6e9);
         assert_eq!(time_steps(f64::NAN), [1.0, 5.0, 10.0]);
+        assert!(time_steps(f64::INFINITY)[0].is_finite());
+        assert_eq!(value_steps(1e6), [1e7, 5e7, 1e8]);
         assert_eq!(value_steps(5.7), [25.0, 50.0, 100.0]);
         assert_eq!(value_steps(0.1), [1.0, 5.0, 10.0]);
         for base in [0.01, 0.5, 3.0, 20.0, 77.0, 400.0, 5000.0] {
@@ -621,13 +765,15 @@ mod tests {
             .into_iter()
             .map(|t| sample(t, 20.0, 0.0))
             .collect();
-        assert_eq!(nearest(&h, -5.0), Some(0));
-        assert_eq!(nearest(&h, 1.4), Some(1));
-        assert_eq!(nearest(&h, 1.6), Some(2));
-        assert_eq!(nearest(&h, 7.0), Some(3));
-        assert_eq!(nearest(&h, 99.0), Some(3));
-        assert_eq!(nearest(&h, f64::NAN), None);
-        assert_eq!(nearest(&VecDeque::new(), 1.0), None);
+        let h = usable(&h);
+        let at = |t: f64| nearest(&h, t).map(|s| s.t);
+        assert_eq!(at(-5.0), Some(0.0));
+        assert_eq!(at(1.4), Some(1.0));
+        assert_eq!(at(1.6), Some(2.0));
+        assert_eq!(at(7.0), Some(10.0));
+        assert_eq!(at(99.0), Some(10.0));
+        assert_eq!(at(f64::NAN), None);
+        assert!(nearest(&[], 1.0).is_none());
     }
 
     #[test]
@@ -649,7 +795,7 @@ mod tests {
             bed_power: None,
             ..TempSample::default()
         });
-        let csv = history_csv(&h);
+        let csv = history_csv(&usable(&h));
         let lines: Vec<_> = csv.lines().collect();
         assert_eq!(
             lines[0],
@@ -658,6 +804,6 @@ mod tests {
         assert_eq!(lines[1], "0.0,24.50,0.0,0.0,22.00,60.0,100.0");
         assert_eq!(lines[2], "1.0,,215.0,64.6,,,");
         assert_eq!(lines.len(), 3);
-        assert_eq!(history_csv(&VecDeque::new()), "time_s\n");
+        assert_eq!(history_csv(&[]), "time_s\n");
     }
 }
