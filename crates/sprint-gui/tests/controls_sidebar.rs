@@ -20,7 +20,7 @@ use sprint_gui::{
     widgets::{JogCorner, JogDirection, JogGeometry, JogRegion},
 };
 use sprint_host::sprint_sim::SimConfig;
-use sprint_host::{Macro, Printer, PrinterState};
+use sprint_host::{Macro, Printer, PrinterState, TempPreset};
 
 /// A sidebar on a connected simulator, tall enough that nothing scrolls.
 fn connected() -> Harness<'static, Rig> {
@@ -381,6 +381,46 @@ fn motion_and_extrusion_are_locked_during_a_job() {
     h.get_by_label("Set").click();
     h.run_ok();
     wait_for_commands(&p, &["M104 T0 S240", "M140 S80"]);
+}
+
+/// The heater cards go as hot as the profile's presets: a preset at
+/// 320/130 °C is not cut to the cards' usual 300/120 °C limits.
+#[test]
+fn hot_presets_are_not_cut_by_the_heater_cards() {
+    let mut rig = Rig::simulator();
+    rig.config.profiles[0].temp_presets.push(TempPreset {
+        name: "PC".into(),
+        hotend: 320.0,
+        bed: 130.0,
+    });
+    let mut h = sidebar_fixed(Theme::Dark, (420.0, 2600.0), rig);
+    controls_common::settle(&mut h);
+    let p = printer(&h);
+    // The bed card's preset menu (the hotend card's comes first).
+    let menu = h
+        .get_all_by_label("Presets")
+        .nth(1)
+        .expect("the bed card's presets")
+        .rect();
+    click_at(&mut h, menu.center());
+    h.run_ok();
+    click(&mut h, "PC  \u{b7}  130 \u{b0}C");
+    wait_for_commands(&p, &["M140 S130"]);
+    // A target typed into the hotend card.
+    let field = h
+        .get_all_by_role(Role::TextInput)
+        .next()
+        .expect("target field")
+        .rect();
+    click_at(&mut h, field.center());
+    h.get_all_by_role(Role::TextInput)
+        .next()
+        .expect("target field")
+        .type_text("320");
+    h.step();
+    h.key_press(egui::Key::Enter);
+    h.run_ok();
+    wait_for_commands(&p, &["M104 T0 S320"]);
 }
 
 /// Turning heaters off during a job makes the print fail: "Cool down" and

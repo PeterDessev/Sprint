@@ -50,6 +50,25 @@ pub(super) fn plausible_target(target: Option<f32>) -> f32 {
         .unwrap_or(0.0)
 }
 
+/// The highest target a heater card accepts: the card's usual limit for
+/// its kind (300 / 120 / 80 °C), raised to the hottest of `presets` and the
+/// current `target` so the card never cuts down a temperature the profile's
+/// presets set, and never above [`MAX_TARGET`].
+pub(super) fn card_max_target(kind: HeaterKind, presets: &[(&str, f32)], target: f32) -> f32 {
+    let usual = match kind {
+        HeaterKind::Hotend => 300.0,
+        HeaterKind::Bed => 120.0,
+        HeaterKind::Chamber => 80.0,
+    };
+    presets
+        .iter()
+        .map(|(_, t)| *t)
+        .chain([target])
+        .filter(|t| t.is_finite())
+        .fold(usual, f32::max)
+        .min(MAX_TARGET)
+}
+
 /// Whether a preset temperature can be sent: 0 (off) up to [`MAX_TARGET`].
 pub(super) fn valid_preset_temp(celsius: f32) -> bool {
     (0.0..=MAX_TARGET).contains(&celsius)
@@ -434,6 +453,7 @@ fn show(ui: &mut Ui, ctx: &mut AppCtx<'_>) -> Option<(Change, Vec<(Heater, f32)>
                         .power(view.power)
                         .history(&view.history)
                         .presets(&menu)
+                        .max_target(card_max_target(view.kind, &menu, view.target))
                         .id_salt(("sprint-controls-heater", view.heater))
                         .show(ui);
                     match card.action {
@@ -790,6 +810,27 @@ mod tests {
         );
         assert_eq!(pending.title, "Turn every heater off?");
         assert!(pending.danger);
+    }
+
+    #[test]
+    fn cards_accept_what_the_presets_set() {
+        let usual = card_max_target(HeaterKind::Hotend, &[("PLA", 205.0)], 0.0);
+        assert_eq!(usual, 300.0);
+        assert_eq!(card_max_target(HeaterKind::Bed, &[], 0.0), 120.0);
+        assert_eq!(card_max_target(HeaterKind::Chamber, &[], f32::NAN), 80.0);
+        // A hotter preset or target raises the limit ...
+        let pc = [("PLA", 205.0), ("PC", 320.0)];
+        assert_eq!(card_max_target(HeaterKind::Hotend, &pc, 0.0), 320.0);
+        assert_eq!(
+            card_max_target(HeaterKind::Bed, &[("PC", 130.0)], 0.0),
+            130.0
+        );
+        assert_eq!(card_max_target(HeaterKind::Chamber, &[], 95.0), 95.0);
+        // ... up to the most Sprint ever sends.
+        assert_eq!(
+            card_max_target(HeaterKind::Hotend, &[("Lava", 9000.0)], f32::INFINITY),
+            MAX_TARGET
+        );
     }
 
     #[test]
