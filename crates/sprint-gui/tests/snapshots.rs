@@ -163,6 +163,28 @@ fn cards(ui: &mut egui::Ui) {
     );
 }
 
+fn selection(ui: &mut egui::Ui) {
+    section_header(ui, "Toggles");
+    ui.horizontal(|ui| {
+        ui.add(Toggle::new(&mut true).label("Autoscroll"));
+        ui.add_space(12.0);
+        ui.add(Toggle::new(&mut false).label("Show travel"));
+        ui.add_space(12.0);
+        ui.add_enabled(false, Toggle::new(&mut true).label("Locked"));
+    });
+    section_header(ui, "Segmented controls");
+    let mut view = 0;
+    ui.add(SegmentedControl::new(
+        &mut view,
+        &[(0, "3D"), (1, "Layer"), (2, "G-code")],
+    ));
+    let mut unit = 1;
+    ui.add(
+        SegmentedControl::new(&mut unit, &[(0, "0.1"), (1, "1"), (2, "10"), (3, "100")])
+            .fill_width(true),
+    );
+}
+
 #[test]
 fn buttons_snapshot() {
     for theme in Theme::ALL {
@@ -184,5 +206,13 @@ fn cards_snapshot() {
     for theme in Theme::ALL {
         let mut h = fit(theme, 420.0, cards);
         snapshot(&mut h, &name("cards", theme));
+    }
+}
+
+#[test]
+fn selection_snapshot() {
+    for theme in Theme::ALL {
+        let mut h = fit(theme, 420.0, selection);
+        snapshot(&mut h, &name("selection", theme));
     }
 }

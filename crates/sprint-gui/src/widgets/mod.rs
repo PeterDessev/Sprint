@@ -27,18 +27,25 @@
 //! * [`Badge`] — small tinted tag: `ui.add(Badge::new("BETA").tone(Tone::Info));`
 //! * [`Chip`] — selectable capsule: `ui.add(Chip::new("Travel").selected(on)).clicked()`
 //! * [`status_dot`] — bare colored dot: `status_dot(ui, Tone::Danger, 8.0);`
+//!
+//! # Selection
+//! * [`Toggle`] — on/off switch: `ui.add(Toggle::new(&mut on).label("Autoscroll")).changed()`
+//! * [`SegmentedControl`] — one of many with a sliding highlight:
+//!   `ui.add(SegmentedControl::new(&mut view, &[(View::Iso, "3D"), (View::Top, "Layer")]))`
 
 #![warn(missing_docs)]
 
 mod button;
 mod card;
 mod status;
+mod toggle;
 
 pub use button::{ActionButton, ButtonKind, ButtonSize, EStopButton, EStopStyle, IconButton};
 pub use card::{
     Card, EmptyState, EmptyStateResponse, SectionHeader, card, card_frame, section_header,
 };
 pub use status::{Badge, Chip, StatusPill, status_dot};
+pub use toggle::{SegmentedControl, Toggle};
 
 use egui::{CornerRadius, FontId, Rect, Response, Stroke, StrokeKind, Ui};
 
