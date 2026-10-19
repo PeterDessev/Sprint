@@ -197,6 +197,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         cam.yaw = 0.3;
         cam.pitch = 0.6;
         save(&mut viewer, &dir, "19_vase_rim.png")?;
+        // Middle distances, where beads are a few pixels thick: the range
+        // where shading detail fades in and moire would show.
+        let cam = viewer.camera_mut();
+        cam.target = Vec3::new(110.0, 110.0, 14.0);
+        cam.distance = 170.0;
+        cam.yaw = -0.7;
+        cam.pitch = 0.42;
+        save(&mut viewer, &dir, "19b_mid_distance.png")?;
+        let cam = viewer.camera_mut();
+        cam.distance = 95.0;
+        cam.target = Vec3::new(132.0, 112.0, 16.0);
+        cam.yaw = -0.2;
+        cam.pitch = 0.25;
+        save(&mut viewer, &dir, "19c_mid_vase.png")?;
     }
 
     // Hidden features: only perimeters.
