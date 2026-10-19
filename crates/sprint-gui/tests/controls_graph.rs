@@ -45,6 +45,26 @@ fn graph_multi_heater_snapshot() {
     snapshot(&mut h, &name("graph_multi", Theme::Dark));
 }
 
+/// A narrow center tab: the view controls move to a second toolbar row
+/// and the statistics columns tighten instead of overflowing.
+#[test]
+fn graph_narrow_snapshot() {
+    let mut h = graph(
+        Theme::Dark,
+        (640.0, 720.0),
+        Rig::synthetic(graph_state(true, false)),
+    );
+    settle(&mut h);
+    let window = h.get_by_label("10 min").rect();
+    let export = h.get_by_label("Export CSV").rect();
+    assert!(window.min.y > export.max.y, "controls below the title row");
+    for label in ["STATUS", "Export CSV", "Power"] {
+        let rect = h.get_by_label(label).rect();
+        assert!(rect.max.x <= 640.0 - 16.0, "{label} overflows: {rect:?}");
+    }
+    snapshot(&mut h, &name("graph_narrow", Theme::Dark));
+}
+
 #[test]
 fn graph_empty_snapshots() {
     let mut h = graph(Theme::Dark, (800.0, 480.0), Rig::offline());

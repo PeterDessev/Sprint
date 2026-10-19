@@ -17,8 +17,8 @@ use egui::{
     TextStyle, Ui, vec2,
 };
 use egui_plot::{
-    ColorConflictHandling, Corner, Legend, Line, LineStyle, Plot, PlotPoints, PlotResponse,
-    uniform_grid_spacer,
+    AxisHints, ColorConflictHandling, Corner, Legend, Line, LineStyle, Plot, PlotPoints,
+    PlotResponse, uniform_grid_spacer,
 };
 use sprint_host::TempSample;
 
@@ -41,6 +41,8 @@ const POWER_HEIGHT: f32 = 120.0;
 const MIN_MAIN_HEIGHT: f32 = 220.0;
 /// Width of the value axes (keeps both plots aligned).
 const Y_AXIS_WIDTH: f32 = 44.0;
+/// Narrower tabs put the view controls on a second toolbar row.
+const ONE_ROW_TOOLBAR: f32 = 880.0;
 
 /// How much history the chart shows while following.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -160,12 +162,14 @@ impl TemperatureGraphTab {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = theme::GAP;
+                let top = ui.cursor().top();
                 self.toolbar(ui, history, connected, has_power, last - first);
+                let toolbar_height = ui.cursor().top() - top;
                 let show_power = self.show_power && has_power;
                 let stats_height = 92.0 + 31.0 * series.len() as f32;
                 let power_height = if show_power { POWER_HEIGHT + 26.0 } else { 0.0 };
-                let main_height =
-                    (height - 44.0 - stats_height - power_height - 48.0).max(MIN_MAIN_HEIGHT);
+                let main_height = (height - toolbar_height - stats_height - power_height - 40.0)
+                    .max(MIN_MAIN_HEIGHT);
                 let follow_x = data::follow_range(self.window.secs(), first, last);
                 let follow_y = data::y_range(
                     series.iter().map(|s| s.points.as_slice()),
@@ -207,7 +211,8 @@ impl TemperatureGraphTab {
             });
     }
 
-    /// Title, status and the view controls.
+    /// Title, status and the view controls: one row on a wide tab, else
+    /// the title and export over the view controls.
     fn toolbar(
         &mut self,
         ui: &mut Ui,
@@ -216,75 +221,97 @@ impl TemperatureGraphTab {
         has_power: bool,
         span: f64,
     ) {
-        let p = theme::ui_palette(ui);
-        ui.horizontal(|ui| {
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
-                let exporting = self.export.is_some();
-                let export = ui.add_enabled(
-                    !exporting,
-                    ActionButton::new(if exporting {
-                        "Exporting…"
-                    } else {
-                        "Export CSV"
-                    })
-                    .icon(icons::DOWNLOAD)
-                    .tooltip("Save the whole history (up to 30 minutes) as a CSV file"),
-                );
-                if export.clicked() {
-                    self.export = Some(Export::start(
-                        ui.ctx(),
-                        data::history_csv(history),
-                        CSV_NAME.to_owned(),
-                    ));
-                }
-                if has_power {
-                    ui.add(Toggle::new(&mut self.show_power).label("Power"))
-                        .on_hover_text("Show the heater power below the chart");
-                }
-                let follow = ui.add(
-                    ActionButton::new("Follow")
-                        .icon(icons::LINK)
-                        .selected(self.follow)
-                        .tooltip(if self.follow {
-                            "Following the newest readings. Drag or zoom the chart to look around."
-                        } else {
-                            "Return to the newest readings"
-                        }),
-                );
-                if follow.clicked() {
-                    self.follow = true;
-                }
-                let mut window = self.window;
-                let r = ui.add(
-                    SegmentedControl::new(&mut window, &Window::CHOICES)
-                        .id_salt("sprint-temp-graph-window"),
-                );
-                if r.changed() {
-                    self.window = window;
-                    self.follow = true;
-                }
-                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+        if ui.available_width() >= ONE_ROW_TOOLBAR {
+            ui.horizontal(|ui| {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 8.0;
-                    ui.label(RichText::new(icons::CHART).color(p.text_dim).size(16.0));
-                    ui.label(
-                        RichText::new("Heater history")
-                            .font(theme::font(ui, TextRole::Title))
-                            .color(p.text),
-                    );
-                    if connected {
-                        ui.add(Badge::new("Live").tone(Tone::Success));
-                    } else {
-                        ui.add(Badge::new("Offline").tone(Tone::Neutral));
-                    }
-                    ui.label(
-                        RichText::new(format!("{} recorded", data::format_span(span)))
-                            .color(p.text_dim)
-                            .size(12.0),
-                    );
+                    self.export_button(ui, history);
+                    // Right to left: the controls appear in reverse.
+                    self.power_toggle(ui, has_power);
+                    self.follow_button(ui);
+                    self.window_choice(ui);
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                        title(ui, connected, span);
+                    });
                 });
             });
-        });
+        } else {
+            ui.horizontal(|ui| {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    self.export_button(ui, history);
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                        title(ui, connected, span);
+                    });
+                });
+            });
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = vec2(8.0, 6.0);
+                self.window_choice(ui);
+                self.follow_button(ui);
+                self.power_toggle(ui, has_power);
+            });
+        }
+    }
+
+    /// "Export CSV" (or the running export).
+    fn export_button(&mut self, ui: &mut Ui, history: &[&TempSample]) {
+        let exporting = self.export.is_some();
+        let export = ui.add_enabled(
+            !exporting,
+            ActionButton::new(if exporting {
+                "Exporting…"
+            } else {
+                "Export CSV"
+            })
+            .icon(icons::DOWNLOAD)
+            .tooltip("Save the whole history (up to 30 minutes) as a CSV file"),
+        );
+        if export.clicked() {
+            self.export = Some(Export::start(
+                ui.ctx(),
+                data::history_csv(history),
+                CSV_NAME.to_owned(),
+            ));
+        }
+    }
+
+    /// Show or hide the power plot (when any heater reports power).
+    fn power_toggle(&mut self, ui: &mut Ui, has_power: bool) {
+        if has_power {
+            ui.add(Toggle::new(&mut self.show_power).label("Power"))
+                .on_hover_text("Show the heater power below the chart");
+        }
+    }
+
+    /// Return to following the newest readings.
+    fn follow_button(&mut self, ui: &mut Ui) {
+        let follow = ui.add(
+            ActionButton::new("Follow")
+                .icon(icons::LINK)
+                .selected(self.follow)
+                .tooltip(if self.follow {
+                    "Following the newest readings. Drag or zoom the chart to look around."
+                } else {
+                    "Return to the newest readings"
+                }),
+        );
+        if follow.clicked() {
+            self.follow = true;
+        }
+    }
+
+    /// The time window shown while following.
+    fn window_choice(&mut self, ui: &mut Ui) {
+        let mut window = self.window;
+        let r = ui.add(
+            SegmentedControl::new(&mut window, &Window::CHOICES)
+                .id_salt("sprint-temp-graph-window"),
+        );
+        if r.changed() {
+            self.window = window;
+            self.follow = true;
+        }
     }
 
     /// Report a finished export.
@@ -305,6 +332,31 @@ impl TemperatureGraphTab {
             }
         }
     }
+}
+
+/// "Heater history", the connection badge and how much is recorded.
+fn title(ui: &mut Ui, connected: bool, span: f64) {
+    let p = theme::ui_palette(ui);
+    ui.spacing_mut().item_spacing.x = 8.0;
+    ui.label(RichText::new(icons::CHART).color(p.text_dim).size(16.0));
+    ui.label(
+        RichText::new("Heater history")
+            .font(theme::font(ui, TextRole::Title))
+            .color(p.text),
+    );
+    if connected {
+        ui.add(Badge::new("Live").tone(Tone::Success));
+    } else {
+        ui.add(Badge::new("Offline").tone(Tone::Neutral));
+    }
+    ui.add(
+        egui::Label::new(
+            RichText::new(format!("{} recorded", data::format_span(span)))
+                .color(p.text_dim)
+                .size(12.0),
+        )
+        .truncate(),
+    );
 }
 
 /// The placeholder without any history.
@@ -361,7 +413,7 @@ fn main_plot(
         .x_grid_spacer(uniform_grid_spacer(|input| {
             data::time_steps(input.base_step_size)
         }))
-        .x_axis_formatter(|mark, _| data::format_clock(mark.value))
+        .custom_x_axes(vec![time_axis()])
         .y_grid_spacer(uniform_grid_spacer(|input| {
             data::value_steps(input.base_step_size)
         }))
@@ -418,7 +470,7 @@ fn power_plot(ui: &mut Ui, series: &[Series], follow: Option<(f64, f64)>) -> Plo
             data::time_steps(input.base_step_size)
         }))
         .y_grid_spacer(uniform_grid_spacer(|_| [25.0, 50.0, 100.0]))
-        .x_axis_formatter(|mark, _| data::format_clock(mark.value))
+        .custom_x_axes(vec![time_axis()])
         .y_axis_formatter(|mark, _| format!("{:.0}%", mark.value))
         .y_axis_min_width(Y_AXIS_WIDTH)
         .link_axis(LINK, [true, false])
@@ -440,6 +492,14 @@ fn power_plot(ui: &mut Ui, series: &[Series], follow: Option<(f64, f64)>) -> Plo
                 }
             }
         })
+}
+
+/// The time axis: clock labels ("4:05"), which are short enough to sit
+/// closer together than egui_plot's default spacing allows.
+fn time_axis<'a>() -> AxisHints<'a> {
+    AxisHints::new_x()
+        .formatter(|mark, _| data::format_clock(mark.value))
+        .label_spacing(48.0..=60.0)
 }
 
 /// Grid lines: a muted tone of the theme (egui_plot fades the finer ones).
@@ -549,12 +609,28 @@ fn status(points: &[Point]) -> (&'static str, Tone) {
     }
 }
 
-/// Width of a numeric column in the statistics table.
+/// Widest numeric column in the statistics table.
 const NUMBER_WIDTH: f32 = 64.0;
+/// Narrowest numeric column (below it the table scrolls sideways).
+const MIN_NUMBER_WIDTH: f32 = 46.0;
+/// Room for the heater names and the status badges.
+const NAME_WIDTH: f32 = 112.0;
+const STATUS_WIDTH: f32 = 72.0;
+
+/// Numeric column width and column gap for a table `width` points wide
+/// with six numeric columns.
+fn stats_columns(width: f32) -> (f32, f32) {
+    let numbers = 6.0;
+    let gaps = 7.0;
+    let free = (width - NAME_WIDTH - STATUS_WIDTH).max(0.0);
+    let gap = ((free - numbers * NUMBER_WIDTH) / gaps).clamp(8.0, 18.0);
+    let number = ((free - gaps * gap) / numbers).clamp(MIN_NUMBER_WIDTH, NUMBER_WIDTH);
+    (number, gap)
+}
 
 /// A fixed-width table cell with right-aligned text.
-fn number_cell(ui: &mut Ui, text: &str, font: egui::FontId, color: Color32) {
-    let (rect, response) = ui.allocate_exact_size(vec2(NUMBER_WIDTH, 18.0), Sense::hover());
+fn number_cell(ui: &mut Ui, width: f32, text: &str, font: egui::FontId, color: Color32) {
+    let (rect, response) = ui.allocate_exact_size(vec2(width, 18.0), Sense::hover());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, text));
     ui.painter().text(
         rect.right_center(),
@@ -585,50 +661,67 @@ fn stats_card(ui: &mut Ui, series: &[Series], (from, to): (f64, f64), (first, la
             let p = theme::ui_palette(ui);
             let mono = theme::builtin_font(ui, TextStyle::Monospace);
             let header = theme::font(ui, TextRole::Section);
-            Grid::new("sprint-temp-graph-stats")
-                .num_columns(8)
-                .spacing(vec2(18.0, 8.0))
+            let (width, gap) = stats_columns(ui.available_width());
+            ScrollArea::horizontal()
+                .id_salt("sprint-temp-graph-stats-scroll")
                 .show(ui, |ui| {
-                    ui.label(
-                        RichText::new("HEATER")
-                            .font(header.clone())
-                            .color(p.text_dim),
-                    );
-                    for title in ["NOW \u{b0}C", "TARGET", "MIN", "MAX", "MEAN", "STD DEV"] {
-                        number_cell(ui, title, header.clone(), p.text_dim);
-                    }
-                    ui.label(
-                        RichText::new("STATUS")
-                            .font(header.clone())
-                            .color(p.text_dim),
-                    );
-                    ui.end_row();
-                    let number = |ui: &mut Ui, value: Option<f32>, decimals: usize| match value
-                        .filter(|v| v.is_finite())
-                    {
-                        Some(v) => {
-                            number_cell(ui, &format!("{v:.decimals$}"), mono.clone(), p.text)
-                        }
-                        None => number_cell(ui, "\u{2014}", mono.clone(), p.text_faint),
-                    };
-                    for s in series {
-                        swatch_label(ui, s.color, &s.name);
-                        let last = s.points.last();
-                        number(ui, last.map(|pt| pt.current), 1);
-                        number(ui, last.map(|pt| pt.target).filter(|t| *t > 0.0), 0);
-                        let stats = data::window_stats(&s.points, from, to);
-                        number(ui, stats.map(|st| st.min), 1);
-                        number(ui, stats.map(|st| st.max), 1);
-                        number(ui, stats.map(|st| st.mean), 1);
-                        number(ui, stats.map(|st| st.std_dev), 2);
-                        let (label, tone) = status(&s.points);
-                        ui.add(Badge::new(label).tone(tone)).on_hover_text(format!(
+                    Grid::new("sprint-temp-graph-stats")
+                        .num_columns(8)
+                        .spacing(vec2(gap, 8.0))
+                        .show(ui, |ui| {
+                            ui.label(
+                                RichText::new("HEATER")
+                                    .font(header.clone())
+                                    .color(p.text_dim),
+                            );
+                            for title in ["NOW \u{b0}C", "TARGET", "MIN", "MAX", "MEAN", "STD DEV"]
+                            {
+                                number_cell(ui, width, title, header.clone(), p.text_dim);
+                            }
+                            ui.label(
+                                RichText::new("STATUS")
+                                    .font(header.clone())
+                                    .color(p.text_dim),
+                            );
+                            ui.end_row();
+                            let number =
+                                |ui: &mut Ui, value: Option<f32>, decimals: usize| match value
+                                    .filter(|v| v.is_finite())
+                                {
+                                    Some(v) => number_cell(
+                                        ui,
+                                        width,
+                                        &format!("{v:.decimals$}"),
+                                        mono.clone(),
+                                        p.text,
+                                    ),
+                                    None => number_cell(
+                                        ui,
+                                        width,
+                                        "\u{2014}",
+                                        mono.clone(),
+                                        p.text_faint,
+                                    ),
+                                };
+                            for s in series {
+                                swatch_label(ui, s.color, &s.name);
+                                let last = s.points.last();
+                                number(ui, last.map(|pt| pt.current), 1);
+                                number(ui, last.map(|pt| pt.target).filter(|t| *t > 0.0), 0);
+                                let stats = data::window_stats(&s.points, from, to);
+                                number(ui, stats.map(|st| st.min), 1);
+                                number(ui, stats.map(|st| st.max), 1);
+                                number(ui, stats.map(|st| st.mean), 1);
+                                number(ui, stats.map(|st| st.std_dev), 2);
+                                let (label, tone) = status(&s.points);
+                                ui.add(Badge::new(label).tone(tone)).on_hover_text(format!(
                             "Stable: within \u{b1}{} \u{b0}C of the target for the last {} s",
                             data::STABLE_BAND,
                             data::STABLE_SECS
                         ));
-                        ui.end_row();
-                    }
+                                ui.end_row();
+                            }
+                        });
                 });
         });
 }
