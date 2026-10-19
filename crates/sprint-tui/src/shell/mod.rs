@@ -6,6 +6,8 @@
 //! and presets. Piped input runs as a script: no prompt, no questions
 //! (`eeprom reset` then needs `yes`), and at the end of the input the
 //! shell waits for the queue to drain and for a running print to finish.
+//! A print the script paused (and did not resume) is cancelled instead:
+//! nothing could resume it any more.
 
 mod echo;
 mod input;
@@ -147,6 +149,8 @@ pub(crate) struct Shell {
     last_target: Option<ConnectTarget>,
     /// How deep `source` files are nested.
     sourcing: usize,
+    /// `pause` paused the job and nothing resumed it since.
+    pause_asked: bool,
 }
 
 impl Shell {
@@ -172,6 +176,7 @@ impl Shell {
             base_dir: std::env::current_dir().unwrap_or_default(),
             last_target: None,
             sourcing: 0,
+            pause_asked: false,
         }
     }
 
@@ -579,12 +584,14 @@ impl Shell {
             Command::Pause => {
                 if self.job_active() {
                     self.printer.pause();
+                    self.pause_asked = true;
                     self.out.dim("Pausing…");
                 } else {
                     self.out.warn("No job is running");
                 }
             }
             Command::Resume => {
+                self.pause_asked = false;
                 let release = self.printer.with_state(|s| {
                     actions::waiting_for_user(s)
                         && !s.job.as_ref().is_some_and(|j| {
@@ -1083,6 +1090,7 @@ impl Shell {
         let Some(file) = &self.file else {
             return;
         };
+        self.pause_asked = false;
         match self
             .printer
             .start_print(file.file.clone(), actions::print_options(file))
@@ -1388,7 +1396,10 @@ impl Shell {
                         .lines(&printer.with_state(|s| report::sd_lines(&s.sd)));
                 }
             }
-            Command::Sd(SdCommand::Print(name)) => match printer.start_sd_print(&name) {
+            Command::Sd(SdCommand::Print(name)) => match printer
+                .start_sd_print(&name)
+                .inspect(|()| self.pause_asked = false)
+            {
                 Ok(()) => self.out.good(format!("Printing {name} from the SD card")),
                 Err(e) => self.out.error(format!("Cannot print {name}: {e}")),
             },
@@ -1555,11 +1566,38 @@ impl Shell {
                 self.cancel_and_wait();
                 return true;
             }
+            // Paused by the script: nothing that follows can resume it, and
+            // waiting would keep the heaters on for ever. (A pause by the
+            // printer, a filament change, is answered at the printer.)
+            if self.pause_asked {
+                self.out.warn(format!(
+                    "{name} is paused and a script cannot resume it: cancelling it \
+                     (the cancel script turns the heaters off)"
+                ));
+                self.cancel_and_wait();
+                return true;
+            }
             self.out
                 .dim(format!("Waiting for {name} to finish (Ctrl+C cancels it)"));
             self.interrupt.reset();
+            let out = self.out.clone();
+            let mut told = false;
             let finished =
                 session::wait_for(&self.printer, Duration::MAX, &self.interrupt, true, |s| {
+                    let paused = s.job.as_ref().is_some_and(|j| {
+                        matches!(
+                            j.status,
+                            sprint_host::JobStatus::Paused | sprint_host::JobStatus::Pausing
+                        )
+                    });
+                    if paused && !told {
+                        told = true;
+                        out.warn(
+                            "The printer paused the print: the script waits for it to go on \
+                             (resume or answer at the printer; Ctrl+C cancels it)",
+                        );
+                    }
+                    told &= paused;
                     !s.job_active()
                 });
             if finished == Err(WaitError::Interrupted) {

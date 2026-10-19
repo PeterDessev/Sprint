@@ -61,7 +61,8 @@ pub enum Command {
     /// shell -c T < script.txt) or from -e: they run in order, without a
     /// prompt or questions (eeprom reset then needs yes), and at the end
     /// the shell waits for the queued commands and for a running print to
-    /// finish (Ctrl+C cancels the print) before it disconnects.
+    /// finish (Ctrl+C cancels the print) before it disconnects; a print
+    /// the script paused and did not resume is cancelled.
     Shell(ShellArgs),
     /// Print a file without a UI, showing progress.
     Print(PrintArgs),

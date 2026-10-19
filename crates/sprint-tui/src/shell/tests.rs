@@ -1034,3 +1034,39 @@ fn sd_deletes_are_reported_when_the_printer_answers() {
     let next = text.find("Deleting small.gcode").unwrap_or(0);
     assert!(failed < next, "{text}");
 }
+
+#[test]
+fn a_script_that_ends_paused_cancels_instead_of_waiting_for_ever() {
+    let scratch = Scratch::new("paused-end");
+    let (mut shell, buffer) = connected_timed();
+    // If the end of the script waited for ever, this stops the wait (and
+    // the assertions below fail) instead of hanging the test.
+    let watchdog = shell.interrupt.clone();
+    let (done, finished) = crossbeam_channel::bounded::<()>(0);
+    let thread = std::thread::spawn(move || {
+        if finished.recv_timeout(Duration::from_secs(60))
+            == Err(crossbeam_channel::RecvTimeoutError::Timeout)
+        {
+            watchdog.raise();
+        }
+    });
+    let slow = scratch.slow_file();
+    script(
+        &mut shell,
+        &[&format!("load {}", slow.display()), "print", "pause"],
+    );
+    drop(done);
+    let _ = thread.join();
+    let text = buffer.text();
+    assert!(
+        text.contains("slow.gcode is paused and a script cannot resume it"),
+        "{text}"
+    );
+    assert_eq!(
+        shell
+            .printer
+            .with_state(|s| s.job.as_ref().map(|j| j.status.clone())),
+        Some(JobStatus::Cancelled)
+    );
+    assert!(received(&shell).iter().any(|c| c == "M104 S0"));
+}
