@@ -57,22 +57,19 @@ impl JobBar {
             ui.spacing_mut().item_spacing.x = 6.0;
             self.buttons(ui, ctx, job.as_ref(), active);
             ui.add_space(10.0);
-            let stats_width = if active { 470.0 } else { 380.0 };
-            let middle = (ui.available_width() - stats_width).max(160.0);
-            ui.allocate_ui_with_layout(
-                vec2(middle, ui.available_height()),
-                Layout::top_down(Align::Min),
-                |ui| {
-                    ui.set_width(middle);
-                    self.summary(ui, ctx, job.as_ref(), active, load, &p);
-                },
-            );
+            // Statistics from the right, the summary takes what is left.
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 18.0;
                 match job.as_ref().filter(|_| active) {
                     Some(job) => job_stats(ui, job, &p),
                     None => file_stats(ui, ctx, &p),
                 }
+                ui.add_space(6.0);
+                let size = vec2(ui.available_width(), ui.available_height());
+                ui.allocate_ui_with_layout(size, Layout::top_down(Align::Min), |ui| {
+                    ui.spacing_mut().item_spacing.y = 4.0;
+                    self.summary(ui, ctx, job.as_ref(), active, load, &p);
+                });
             });
         });
     }
@@ -234,10 +231,11 @@ impl JobBar {
                         ui.label(RichText::new(detail).color(p.text_dim).size(12.0));
                     }
                     None => {
-                        let ready = ctx.state.is_connected() && file.toolpath.is_some();
                         let text = if file.toolpath.is_none() {
                             "Not analyzed"
-                        } else if ready {
+                        } else if ctx.state.halted && ctx.state.status.is_open() {
+                            "Printer halted"
+                        } else if ctx.state.is_connected() {
                             "Ready to print"
                         } else {
                             "Connect a printer to print"
@@ -262,17 +260,29 @@ impl JobBar {
     }
 }
 
-/// A two-line statistic: dim caption over a value.
+/// A two-line statistic: dim caption over a value. Painted at a fixed
+/// size, so it lays out the same in any parent layout.
 fn stat(ui: &mut Ui, icon: &str, caption: &str, value: &str, p: &Palette) {
-    ui.vertical(|ui| {
-        ui.spacing_mut().item_spacing.y = 1.0;
-        ui.label(
-            RichText::new(icons::with_text(icon, caption))
-                .size(11.0)
-                .color(p.text_dim),
-        );
-        ui.label(RichText::new(value).size(14.0).color(p.text).strong());
+    let value_font = egui::FontId::new(14.0, theme::font(ui, TextRole::Title).family);
+    let caption_galley = ui.painter().layout_no_wrap(
+        icons::with_text(icon, caption),
+        egui::FontId::proportional(11.0),
+        p.text_dim,
+    );
+    let value_galley = ui
+        .painter()
+        .layout_no_wrap(value.to_owned(), value_font, p.text);
+    let width = caption_galley.size().x.max(value_galley.size().x);
+    let height = caption_galley.size().y + 1.0 + value_galley.size().y;
+    let (rect, response) = ui.allocate_exact_size(vec2(width, height), egui::Sense::hover());
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Label, true, format!("{caption}: {value}"))
     });
+    let value_y = rect.top() + caption_galley.size().y + 1.0;
+    ui.painter()
+        .galley(rect.left_top(), caption_galley, p.text_dim);
+    ui.painter()
+        .galley(egui::pos2(rect.left(), value_y), value_galley, p.text);
 }
 
 /// Statistics of a running job (drawn right to left).
