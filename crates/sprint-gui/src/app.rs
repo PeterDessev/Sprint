@@ -300,6 +300,9 @@ pub struct SprintApp {
     center_rect: Option<Rect>,
     /// The last pointer press landed on the controls sidebar.
     pressed_in_sidebar: bool,
+    /// A PID autotune was running when the firmware halted (see
+    /// [`end_halted_autotune`]).
+    autotune_halted: bool,
     egui_ctx: egui::Context,
 }
 
@@ -394,6 +397,7 @@ impl SprintApp {
             sidebar_rect: None,
             center_rect: None,
             pressed_in_sidebar: false,
+            autotune_halted: false,
             egui_ctx: ctx,
         };
         if let Some(path) = options.file {
@@ -616,11 +620,19 @@ impl SprintApp {
         // The console first: the notifier learns the M117 texts sent before
         // their echoes arrive as events.
         let notifier = &mut self.notifier;
+        let mut autotune_sent = false;
         self.panels.console.sync_with(&self.core.printer, |entry| {
             if entry.kind == sprint_host::ConsoleKind::Sent {
                 notifier.note_sent(&entry.text);
+                autotune_sent |=
+                    sprint_proto::gcode_doc(entry.text.trim()).is_some_and(|d| d.code == "M303");
             }
         });
+        end_halted_autotune(
+            &mut self.core.state,
+            &mut self.autotune_halted,
+            autotune_sent,
+        );
         self.poll_events(secs, cancelled);
         if self.reconnect_pending && self.connector.is_idle() {
             self.reconnect_pending = false;
@@ -1967,6 +1979,29 @@ impl Drop for SprintApp {
     }
 }
 
+/// Show a PID autotune that a halt of the firmware cut short as failed.
+/// The halted firmware never reports the end of the run and the restart
+/// (M999) does not either, so the host goes on reporting it running: the
+/// Calibration tab would say "Running" for good and refuse a new run.
+/// `halted` remembers such a run across frames; it is forgotten once the
+/// state no longer reports a run, or an M303 went out since (`sent`: a new
+/// autotune).
+fn end_halted_autotune(state: &mut PrinterState, halted: &mut bool, sent: bool) {
+    let running = state.autotune.as_ref().is_some_and(|a| a.running);
+    if sent || !running {
+        *halted = false;
+    }
+    if running && state.halted {
+        *halted = true;
+    }
+    if *halted && let Some(autotune) = &mut state.autotune {
+        autotune.running = false;
+        autotune
+            .error
+            .get_or_insert_with(|| "the printer halted".to_owned());
+    }
+}
+
 /// Galleys of a tab's icon and title.
 fn tab_galleys(ui: &Ui, tab: Tab, selected: bool) -> (Arc<egui::Galley>, Arc<egui::Galley>) {
     let font = if selected {
@@ -2098,4 +2133,58 @@ fn notice_strip(
             });
         });
     clicked
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_autotune_the_halt_cut_short_reads_failed_until_another_starts() {
+        let running = |halted: bool| PrinterState {
+            halted,
+            autotune: Some(sprint_host::AutotuneState {
+                heater: sprint_host::Heater::Hotend(0),
+                target: 210.0,
+                cycles: 8,
+                running: true,
+                result: None,
+                error: None,
+            }),
+            ..PrinterState::default()
+        };
+        let shown = |state: &PrinterState| {
+            state
+                .autotune
+                .as_ref()
+                .map(|a| (a.running, a.error.clone()))
+        };
+        let failed = Some((false, Some("the printer halted".to_owned())));
+        let mut remembered = false;
+        // A run goes on as long as the firmware runs.
+        let mut state = running(false);
+        end_halted_autotune(&mut state, &mut remembered, false);
+        assert_eq!(shown(&state), Some((true, None)));
+        // Halted, and after the restart the host still says running.
+        for halted in [true, false, false] {
+            let mut state = running(halted);
+            end_halted_autotune(&mut state, &mut remembered, false);
+            assert_eq!(shown(&state), failed, "halted {halted}");
+        }
+        // A new autotune (its M303 went out) runs.
+        let mut state = running(false);
+        end_halted_autotune(&mut state, &mut remembered, true);
+        assert_eq!(shown(&state), Some((true, None)));
+        assert!(!remembered);
+        // A run that ended for real is forgotten.
+        let mut state = running(true);
+        end_halted_autotune(&mut state, &mut remembered, false);
+        let mut ended = PrinterState::default();
+        end_halted_autotune(&mut ended, &mut remembered, false);
+        assert!(!remembered);
+        // An M303 sent and halted in the same frame: cut short too.
+        let mut state = running(true);
+        end_halted_autotune(&mut state, &mut remembered, true);
+        assert_eq!(shown(&state), failed);
+    }
 }

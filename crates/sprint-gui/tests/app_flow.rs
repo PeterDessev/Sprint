@@ -739,6 +739,42 @@ fn a_halted_printer_is_offered_no_actions() {
 }
 
 #[test]
+fn an_autotune_the_halt_cut_short_stays_failed_after_the_restart() {
+    // The host keeps reporting the autotune running: a halted firmware
+    // never reports its end, nor does the restart (M999) clear it.
+    let mut h = app(AppOptions::headless(), egui::vec2(1600.0, 1000.0));
+    let mut state = PrinterState {
+        status: ConnectionStatus::Connected,
+        halted: true,
+        autotune: Some(sprint_host::AutotuneState {
+            heater: sprint_host::Heater::Hotend(0),
+            target: 210.0,
+            cycles: 8,
+            running: true,
+            result: None,
+            error: None,
+        }),
+        ..PrinterState::default()
+    };
+    h.state_mut().set_state_override(Some(state.clone()));
+    h.state_mut()
+        .push_action(AppAction::ShowTab(Tab::Calibration));
+    settle(&mut h);
+    assert!(h.query_by_label_contains("Autotune failed").is_some());
+    // Restarted: still not running, and a new autotune can start.
+    state.halted = false;
+    h.state_mut().set_state_override(Some(state));
+    settle(&mut h);
+    assert!(h.query_by_label_contains("Autotune failed").is_some());
+    assert!(h.query_by_label("Abort").is_none());
+    assert!(
+        !h.get_by_label("Start autotune at 210 °C")
+            .accesskit_node()
+            .is_disabled()
+    );
+}
+
+#[test]
 fn an_emergency_stop_typed_in_the_console_goes_out_at_once() {
     let mut h = app(sim_options(), WINDOW);
     connect(&mut h);
