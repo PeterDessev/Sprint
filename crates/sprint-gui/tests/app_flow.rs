@@ -930,6 +930,17 @@ fn reconnect_reopens_the_same_connection() {
         app.state().is_connected()
     });
     assert_eq!(h.state().state().target.as_deref(), Some("Virtual printer"));
+    // The (locked) connection bar shows what is connected, not the profile.
+    settle(&mut h);
+    let shown: Vec<String> = h
+        .query_all_by_role(Role::ComboBox)
+        .filter_map(|n| n.value())
+        .collect();
+    assert!(
+        shown.iter().any(|v| v.contains("Virtual printer")),
+        "{shown:?}"
+    );
+    assert!(!shown.iter().any(|v| v.contains("Network")), "{shown:?}");
     h.state_mut().push_action(AppAction::Reconnect);
     expect(&mut h, "the connection to drop", |app| {
         !app.state().is_connected()

@@ -100,18 +100,31 @@ impl ConnectionBar {
             .update(&ctx.state.link, ctx.state.status.is_connected());
     }
 
-    /// Draw the bar. `connecting` is true while a connect worker runs.
-    pub fn ui(&mut self, ui: &mut Ui, ctx: &mut AppCtx<'_>, connecting: bool) {
+    /// Draw the bar. `connecting` is true while a connect worker runs;
+    /// `open` is the target of the open (or opening) connection, shown
+    /// instead of the profile's while the bar is locked (a session started
+    /// on the virtual printer keeps saying so whatever the profile names).
+    pub fn ui(
+        &mut self,
+        ui: &mut Ui,
+        ctx: &mut AppCtx<'_>,
+        connecting: bool,
+        open: Option<&ConnectTarget>,
+    ) {
         let p = theme::ui_palette(ui);
         let status = ctx.state.status.clone();
         let locked = status.is_open() || connecting;
         let now = ui.input(|i| i.time);
+        let shown = open
+            .filter(|_| locked)
+            .cloned()
+            .unwrap_or_else(|| ctx.config.active().connection.clone());
         ui.horizontal_centered(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
             self.profile_combo(ui, ctx, locked);
             ui.add_space(2.0);
-            self.target_combo(ui, ctx, locked, now);
-            self.target_details(ui, ctx, locked);
+            self.target_combo(ui, ctx, locked, now, &shown);
+            self.target_details(ui, ctx, locked, &shown);
             ui.add_space(4.0);
             self.connect_button(ui, ctx, &status, connecting);
             ui.add_space(4.0);
@@ -186,8 +199,15 @@ impl ConnectionBar {
         }
     }
 
-    fn target_combo(&mut self, ui: &mut Ui, ctx: &mut AppCtx<'_>, locked: bool, now: f64) {
-        let target = ctx.config.active().connection.clone();
+    fn target_combo(
+        &mut self,
+        ui: &mut Ui,
+        ctx: &mut AppCtx<'_>,
+        locked: bool,
+        now: f64,
+        target: &ConnectTarget,
+    ) {
+        let target = target.clone();
         let kind = TargetKind::of(&target);
         let selected = match &target {
             ConnectTarget::Serial { port, .. } => {
@@ -289,7 +309,35 @@ impl ConnectionBar {
     }
 
     /// The baud combo (serial) or the host:port field (TCP).
-    fn target_details(&mut self, ui: &mut Ui, ctx: &mut AppCtx<'_>, locked: bool) {
+    fn target_details(
+        &mut self,
+        ui: &mut Ui,
+        ctx: &mut AppCtx<'_>,
+        locked: bool,
+        shown: &ConnectTarget,
+    ) {
+        if locked {
+            // Nothing to edit: what is connected, read-only.
+            match shown {
+                ConnectTarget::Serial { baud, .. } => {
+                    ui.add_enabled_ui(false, |ui| {
+                        egui::ComboBox::from_id_salt("sprint-baud")
+                            .selected_text(baud_label(*baud))
+                            .width(84.0)
+                            .show_ui(ui, |_| {});
+                    });
+                }
+                ConnectTarget::Tcp { .. } => {
+                    let mut text = host_port_text(shown);
+                    ui.add_enabled(
+                        false,
+                        egui::TextEdit::singleline(&mut text).desired_width(150.0),
+                    );
+                }
+                ConnectTarget::Simulator(_) => {}
+            }
+            return;
+        }
         match ctx.config.active().connection.clone() {
             ConnectTarget::Serial { port, baud } => {
                 let mut chosen = None;

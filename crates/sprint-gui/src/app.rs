@@ -1228,7 +1228,8 @@ impl SprintApp {
             .show(ui, |ui| {
                 let connecting = self.connector.is_connecting();
                 let mut c = self.core.ctx();
-                self.panels.connection.ui(ui, &mut c, connecting);
+                let open = self.last_connect.as_ref().map(|(target, _)| target);
+                self.panels.connection.ui(ui, &mut c, connecting, open);
             });
         if self.core.state.halted && self.core.state.status.is_open() {
             egui::Panel::top("sprint-halted-banner")
