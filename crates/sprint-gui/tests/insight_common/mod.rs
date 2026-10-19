@@ -59,6 +59,8 @@ pub struct Host<T> {
     pub selected_line: Option<u32>,
     /// The state of the last frame.
     pub last_state: PrinterState,
+    /// Skip drawing the tab (another tab is shown), as the shell does.
+    pub hidden: bool,
 }
 
 impl<T: Panel + Default> Host<T> {
@@ -84,6 +86,7 @@ impl<T: Panel + Default> Host<T> {
             file: None,
             selected_line: None,
             last_state: PrinterState::default(),
+            hidden: false,
         }
     }
 }
@@ -105,7 +108,9 @@ impl<T: Panel> Host<T> {
             actions: &mut self.actions,
             selected_line: self.selected_line,
         };
-        self.tab.show(ui, &mut ctx);
+        if !self.hidden {
+            self.tab.show(ui, &mut ctx);
+        }
         self.last_state = state;
     }
 }

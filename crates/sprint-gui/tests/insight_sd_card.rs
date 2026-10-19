@@ -397,6 +397,42 @@ fn deleting_uploading_and_releasing_on_the_simulator() {
             .is_some_and(|j| j.kind == JobKind::SdPrint && j.status.is_finished())
     });
 
+    // "Print when done" only prints while the tab watches the upload end:
+    // coming back to the tab later must not start a print out of the blue.
+    h.get_by_label("Upload").click();
+    h.run_ok();
+    focus_name_field(&mut h);
+    type_in_focused(&mut h, "later.gco");
+    h.get_by_label("Print it when the upload finishes").click();
+    h.run_ok();
+    clear_received(&printer);
+    h.get_by_label("Upload as LATER.GCO").click();
+    // The click's frame starts the upload; then another tab is shown.
+    h.step();
+    h.state_mut().hidden = true;
+    assert_eq!(wait_for_command(&printer, "M28"), "M28 LATER.GCO");
+    run_until(&mut h, "the hidden upload", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.name == "LATER.GCO" && j.status == JobStatus::Completed)
+    });
+    for _ in 0..40 {
+        h.step();
+    }
+    h.state_mut().hidden = false;
+    h.run_ok();
+    for _ in 0..20 {
+        h.step();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(!received(&printer, "M23"), "no print started");
+    assert!(
+        h.state()
+            .toasts
+            .iter()
+            .any(|t| t.title() == "LATER.GCO is on the card")
+    );
+
     // Release and initialize the card.
     clear_received(&printer);
     h.get_by_label("Release").click();

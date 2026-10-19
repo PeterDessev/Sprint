@@ -47,6 +47,18 @@ const UPLOAD_NOTE: &str = concat!(
     "printer does nothing else meanwhile.",
 );
 
+/// How long (UI seconds) the tab may have been away when it sees an upload
+/// with "print when done" finish and still start the print. Panels only run
+/// while they are shown: an upload that finished while the tab was hidden
+/// is not printed when the user comes back, maybe hours later.
+const PRINT_AFTER_GRACE: f64 = 5.0;
+
+/// Shown when "print when done" did not start the print.
+const NOT_PRINTED_MESSAGE: &str = concat!(
+    "It was not started automatically: the upload finished while the SD card ",
+    "tab was not open. Print it from the list once the printer is ready.",
+);
+
 /// A question waiting for the user.
 #[derive(Clone, Debug, PartialEq)]
 enum Confirm {
@@ -76,6 +88,8 @@ pub struct SdCardTab {
     upload: Option<UploadPrompt>,
     /// Print this file when its upload completes.
     print_after_upload: Option<String>,
+    /// UI time when the tab last saw that upload running.
+    upload_seen: Option<f64>,
     /// The listing was requested for this connection.
     auto_requested: bool,
     /// The card was released (M22) from here.
@@ -109,7 +123,7 @@ fn status_tone(status: &JobStatus) -> Tone {
 impl SdCardTab {
     /// Draw the panel.
     pub fn ui(&mut self, ui: &mut Ui, ctx: &mut AppCtx<'_>) {
-        self.track(ctx);
+        self.track(ui, ctx);
         self.header(ui, ctx);
         ui.add_space(theme::GAP);
         if !ctx.connected() {
@@ -199,11 +213,12 @@ impl SdCardTab {
     }
 
     /// Connection bookkeeping, the automatic listing and print-after-upload.
-    fn track(&mut self, ctx: &mut AppCtx<'_>) {
+    fn track(&mut self, ui: &Ui, ctx: &mut AppCtx<'_>) {
         self.card_printing = self.live_card_progress(ctx.state);
         if !ctx.connected() {
             self.auto_requested = false;
             self.print_after_upload = None;
+            self.upload_seen = None;
             self.released = false;
             return;
         }
@@ -226,9 +241,20 @@ impl SdCardTab {
         if job.kind != JobKind::SdUpload || !job.name.eq_ignore_ascii_case(&wanted) {
             return;
         }
+        let now = ui.input(|i| i.time);
         match &job.status {
             JobStatus::Completed => {
                 self.print_after_upload = None;
+                let watched = self
+                    .upload_seen
+                    .take()
+                    .is_some_and(|seen| (0.0..=PRINT_AFTER_GRACE).contains(&(now - seen)));
+                if !watched {
+                    ctx.toasts
+                        .info(format!("{wanted} is on the card"))
+                        .message(NOT_PRINTED_MESSAGE);
+                    return;
+                }
                 match ctx.printer.start_sd_print(&wanted) {
                     Ok(()) => {
                         ctx.toasts
@@ -242,8 +268,11 @@ impl SdCardTab {
                     }
                 }
             }
-            JobStatus::Failed(_) | JobStatus::Cancelled => self.print_after_upload = None,
-            _ => {}
+            JobStatus::Failed(_) | JobStatus::Cancelled => {
+                self.print_after_upload = None;
+                self.upload_seen = None;
+            }
+            _ => self.upload_seen = Some(now),
         }
     }
 
@@ -793,10 +822,11 @@ impl SdCardTab {
             Ok(()) => {
                 self.released = false;
                 self.print_after_upload = print_after.then(|| name.clone());
+                self.upload_seen = print_after.then(|| ui.input(|i| i.time));
                 ctx.toasts
                     .info(format!("Uploading {name}"))
                     .message(if print_after {
-                        "The print starts when the upload is done."
+                        "Keep this tab open: the print starts when the upload is done."
                     } else {
                         "The progress shows at the top of this tab."
                     });
