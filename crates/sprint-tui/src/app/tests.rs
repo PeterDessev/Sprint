@@ -1640,3 +1640,29 @@ fn loading_a_file_keeps_changes_made_to_the_configuration_meanwhile() {
             .any(|m| m.name == "Added elsewhere")
     );
 }
+
+#[test]
+fn short_screens_keep_the_position_before_link_statistics() {
+    let mut app = printing_app();
+    // 18 rows: the temperatures, the position and the job fit; the link
+    // statistics (and the overrides) do not.
+    let text = screen(&mut app, 64, 18);
+    assert!(
+        text.contains("Position") && text.contains("X 104.30"),
+        "{text}"
+    );
+    assert!(text.contains("Job"), "{text}");
+    assert!(!text.contains("Link"), "{text}");
+    // Taller screens keep the layout they had.
+    for (w, h) in [(80, 24), (120, 40)] {
+        let text = screen(&mut app, w, h);
+        for panel in ["Temperatures", "Position", "Job", "Fan · Speed · Flow"] {
+            assert!(
+                text.contains(panel),
+                "{panel} missing at {w}x{h}:
+{text}"
+            );
+        }
+    }
+    assert!(screen(&mut app, 80, 24).contains("Link"));
+}

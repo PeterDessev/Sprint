@@ -250,23 +250,34 @@ impl App {
 
     fn draw_left(&self, frame: &mut Frame, area: Rect) {
         let heaters = u16::try_from(self.heater_rows().len()).unwrap_or(1);
-        let pos_h = if area.height >= 14 { 3 } else { 0 };
-        let ovr_h = if area.height >= 17 { 3 } else { 0 };
-        let gauges_h = heaters + 2;
-        // The job panel grows to three rows of content when there is room
-        // after the gauges; the chart takes what is left if that is enough
-        // to read it.
-        let job_h = if area.height >= pos_h + ovr_h + gauges_h + 5 {
-            5
-        } else {
-            4
+        let gauges_h = heaters.saturating_add(2);
+        // The rows go, in order of importance, to the heater gauges, the
+        // job, the position, the overrides and a third row of the job;
+        // the chart takes what is left if that is enough to read it, else
+        // the link statistics do.
+        let mut left = area.height.saturating_sub(gauges_h);
+        let mut take = |rows: u16| {
+            if left >= rows {
+                left -= rows;
+                rows
+            } else {
+                0
+            }
         };
-        let rest = area.height.saturating_sub(pos_h + ovr_h + job_h);
-        let chart = rest >= gauges_h + 1 + 6;
-        let temp_h = if chart { rest } else { gauges_h.min(rest) };
-        // Rows the chart cannot use show the link statistics.
-        let spare = rest - temp_h;
-        let link_h = if spare >= 3 { spare.min(4) } else { 0 };
+        let mut job_h = take(4);
+        let pos_h = take(3);
+        let ovr_h = take(3);
+        if job_h > 0 {
+            job_h += take(1);
+        }
+        // A blank row and six chart rows below the gauges.
+        let (temp_h, link_h) = if left > 6 {
+            (gauges_h + left, 0)
+        } else if left >= 3 {
+            (gauges_h, left.min(4))
+        } else {
+            (gauges_h, 0)
+        };
         let [temps, position, job, overrides, link, _] = Layout::vertical([
             Constraint::Length(temp_h),
             Constraint::Length(pos_h),
