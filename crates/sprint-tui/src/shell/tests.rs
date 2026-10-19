@@ -536,11 +536,12 @@ fn pause_resume_cancel_and_the_prompt() {
     // Moves are allowed while paused, but nothing that lowers the nozzle
     // to the bed (homing Z, probing): the part is there.
     received(&shell);
-    buffer.clear();
+    let before = buffer.text().len();
     let mut input = Script::new(["home", "home z", "mesh probe", "home x y"], false);
     shell.run_lines_until_eof_without_leaving(&mut input);
     let text = buffer.text();
-    assert_eq!(text.matches("would lower the nozzle").count(), 3, "{text}");
+    let refused = text[before..].matches("would lower the nozzle").count();
+    assert_eq!(refused, 3, "{text}");
     let mut input = Script::new(["move z 1", "resume"], false);
     shell.run_lines_until_eof_without_leaving(&mut input);
     wait_for(&shell, "the resume", |s| {
