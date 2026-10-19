@@ -13,8 +13,9 @@
 //! * [`commands`]: the shell command set and its parser;
 //! * [`report`]: text reports of the printer state (status, settings, bed
 //!   mesh, firmware, ...);
-//! * [`loader`], [`paths`], [`actions`]: loading files in the background,
-//!   path completion and small decisions shared by the front ends.
+//! * [`loader`], [`paths`], [`actions`], [`config`]: loading files in the
+//!   background, path completion, small decisions shared by the front ends
+//!   and where the configuration lives.
 //!
 //! Widgets take their own small input types, never host types, and draw
 //! with a [`Theme`]. `cargo run -p sprint-tui --example widgets_demo` shows
@@ -24,6 +25,7 @@
 
 pub mod actions;
 pub mod commands;
+pub mod config;
 pub mod format;
 pub mod loader;
 pub mod paths;
