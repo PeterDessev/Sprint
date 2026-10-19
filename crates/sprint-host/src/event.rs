@@ -80,7 +80,10 @@ pub struct EventBus {
 impl EventBus {
     /// A new receiver of every future event.
     pub fn subscribe(&self) -> Receiver<Event> {
-        let (tx, rx) = crossbeam_channel::bounded(EVENT_QUEUE_LIMIT);
+        // Unbounded (allocated as events arrive) with the limit enforced in
+        // `emit`: a bounded channel would allocate every slot up front,
+        // megabytes per subscriber.
+        let (tx, rx) = crossbeam_channel::unbounded();
         self.subscribers.lock().push(tx);
         rx
     }
@@ -91,9 +94,17 @@ impl EventBus {
         if subs.is_empty() {
             return;
         }
-        subs.retain(|tx| match tx.try_send(event.clone()) {
-            Ok(()) | Err(TrySendError::Full(_)) => true,
-            Err(TrySendError::Disconnected(_)) => false,
+        subs.retain(|tx| {
+            if tx.len() >= EVENT_QUEUE_LIMIT {
+                // A stuck subscriber: drop the event for it. (Dropping a
+                // receiver empties its queue, so it is pruned below on
+                // the next event.)
+                return true;
+            }
+            match tx.try_send(event.clone()) {
+                Ok(()) | Err(TrySendError::Full(_)) => true,
+                Err(TrySendError::Disconnected(_)) => false,
+            }
         });
     }
 
