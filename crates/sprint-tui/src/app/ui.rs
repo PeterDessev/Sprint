@@ -114,6 +114,12 @@ impl App {
             left.push(Span::styled(format!("  {fw}"), theme.dim()));
         }
         let mut right: Vec<Span> = Vec::new();
+        if self.hidden_prompt.is_some() {
+            // Hidden, but the printer still waits for the answer.
+            right.push(Span::styled("▲ The printer asks ", theme.warning()));
+            right.push(Span::styled("p", theme.key()));
+            right.push(Span::raw("  "));
+        }
         if view.halted {
             right.push(Span::styled(" HALTED ", theme.selected().bg(theme.error)));
             right.push(Span::raw(" "));
@@ -805,7 +811,11 @@ impl App {
                     Some(JobStatus::Paused | JobStatus::Pausing) => "Resume",
                     _ => "Pause",
                 };
-                vec![
+                let mut hints = Vec::new();
+                if self.hidden_prompt.is_some() {
+                    hints.push(("p", "Printer asks"));
+                }
+                hints.extend([
                     ("F1", "Help"),
                     ("F2", "Connect"),
                     ("F3", "Open"),
@@ -819,7 +829,8 @@ impl App {
                     ("j", "Jog"),
                     ("t", "Temps"),
                     ("Tab", "Focus"),
-                ]
+                ]);
+                hints
             }
         }
     }
@@ -1017,6 +1028,7 @@ pub(crate) fn help_sections() -> Vec<HelpSection<'static>> {
                 ("F8 F8", "EMERGENCY STOP (M112), press twice"),
                 ("j", "Jog mode: arrows X/Y, PgUp/PgDn Z, +/- step, h home"),
                 ("t", "Temperatures and presets"),
+                ("p", "The printer's question again (after Esc hid it)"),
             ],
         ),
         HelpSection::new(

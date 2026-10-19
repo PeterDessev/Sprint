@@ -1666,3 +1666,32 @@ fn short_screens_keep_the_position_before_link_statistics() {
     }
     assert!(screen(&mut app, 80, 24).contains("Link"));
 }
+
+#[test]
+fn a_hidden_prompt_can_be_shown_again() {
+    let mut app = printing_app();
+    app.view.prompt = Some(sprint_host::HostPrompt {
+        message: "Nozzle Parked".into(),
+        buttons: vec!["Continue".into()],
+    });
+    app.sync_prompt();
+    let Some(Modal::Prompt(prompt)) = &mut app.modal else {
+        panic!("the prompt shows");
+    };
+    prompt.shown -= dialogs::PROMPT_GRACE;
+    // Esc hides it; the printer still waits for an answer, so the screen
+    // says so and p brings the question back.
+    press(&mut app, KeyCode::Esc);
+    assert!(app.modal.is_none());
+    app.sync_prompt();
+    assert!(app.modal.is_none(), "a hidden prompt stays hidden");
+    let text = screen(&mut app, 120, 40);
+    assert!(text.contains("The printer asks"), "{text}");
+    crate::snapshot::save(&render(&mut app, 120, 40), "tui-prompt-hidden-120x40");
+    press(&mut app, KeyCode::Char('p'));
+    assert!(
+        matches!(&app.modal, Some(Modal::Prompt(p)) if p.prompt.message == "Nozzle Parked"),
+        "{:?}",
+        app.toast
+    );
+}

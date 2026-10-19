@@ -414,6 +414,16 @@ impl App {
         }
     }
 
+    /// `p`: show the host prompt the user hid again (the printer still
+    /// waits for its answer).
+    fn show_hidden_prompt(&mut self) {
+        if self.hidden_prompt.take().is_some() {
+            self.sync_prompt();
+        } else {
+            self.info("The printer is not asking anything");
+        }
+    }
+
     // ----- timers -----
 
     /// Advance timers: status messages, the E-stop arm, loads, connects
@@ -1334,7 +1344,7 @@ impl App {
                 let outcome = d.handle_key(key);
                 if outcome == Outcome::Close {
                     self.hidden_prompt = Some(d.prompt.clone());
-                    self.info("Prompt hidden; it stays open on the printer");
+                    self.info("Prompt hidden; the printer still waits (p shows it again)");
                 }
                 outcome
             }
@@ -1412,6 +1422,7 @@ impl App {
             KeyCode::Char('q') => self.request_quit(),
             KeyCode::Char('j') => self.enter_jog(),
             KeyCode::Char('t') => self.open_temp_dialog(),
+            KeyCode::Char('p') => self.show_hidden_prompt(),
             KeyCode::Char('a') => {
                 self.show_auto = !self.show_auto;
                 self.info(if self.show_auto {
