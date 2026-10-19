@@ -20,13 +20,13 @@ use crossterm::event::{
     Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
 };
 use ratatui::layout::{Position, Rect};
-use sprint_host::sprint_proto::{gcode_doc, setting_def};
+use sprint_host::sprint_proto::{JobContext, gcode_doc, setting_def};
 use sprint_host::{
     AppConfig, Axes, Axis, ConnectTarget, ConsoleKind as HostKind, Event, Heater, HostPrompt,
     JobKind, JobStatus, Printer, PrinterProfile, list_ports,
 };
 
-use crate::actions;
+use crate::actions::{self, Motion};
 use crate::commands::{
     self, Command, Eeprom, Input, SdCommand, command_candidates, command_spec, looks_like_gcode,
 };
@@ -1296,6 +1296,21 @@ impl App {
                 };
                 self.guard(&safety, guard, Action::SetTempsAnyway(targets));
             }
+            Action::Motion(motion) => {
+                motion.run(&self.printer);
+                match motion {
+                    Motion::Tool(t) => self.info(format!("Tool T{t}")),
+                    Motion::Home { zero_e: true, .. } => {
+                        self.info("Extruder position set to 0 (G92 E0)");
+                    }
+                    // Probing takes minutes; the mesh shows when it ends.
+                    Motion::ProbeMesh => {
+                        let pending = Pending::new(PROBE_TIMEOUT, false);
+                        self.open_report("Bed mesh", ReportSource::Mesh, pending);
+                    }
+                    _ => {}
+                }
+            }
             Action::ApplySetting(setting) => {
                 self.printer.apply_setting(&setting);
                 self.info(format!(
@@ -1806,12 +1821,14 @@ impl App {
 
     // ----- jog mode -----
 
+    /// `j`: jog mode, also while a host print is paused (the resume
+    /// brings the head back); not while a job prints.
     fn enter_jog(&mut self) {
         if !self.connected_or_warn() {
             return;
         }
-        if self.view.job_active() {
-            self.warn("Jogging is disabled while a job runs");
+        if self.view.job_context() == JobContext::Printing {
+            self.warn("Jogging is disabled while a job prints (pause it first)");
             return;
         }
         self.jog = Some(DEFAULT_JOG_STEP);
@@ -1821,28 +1838,34 @@ impl App {
         let Some(step_index) = self.jog else {
             return;
         };
-        if self.view.job_active() {
+        if self.view.job_context() == JobContext::Printing {
             self.jog = None;
-            self.warn("Jogging is disabled while a job runs");
+            self.warn("Jogging is disabled while a job prints (pause it first)");
             return;
         }
         let step = JOG_STEPS[step_index.min(JOG_STEPS.len() - 1)];
         let xy = self.profile.jog_feedrate_xy;
         let z = self.profile.jog_feedrate_z;
+        let jog = |axis, mm, feedrate| Motion::Jog { axis, mm, feedrate };
+        let home = |axes| Motion::Home {
+            axes,
+            zero_e: false,
+        };
         match key.code {
             KeyCode::Esc | KeyCode::Char('j' | 'q') => self.jog = None,
-            KeyCode::Left => self.printer.jog(Axis::X, -step, xy),
-            KeyCode::Right => self.printer.jog(Axis::X, step, xy),
-            KeyCode::Up => self.printer.jog(Axis::Y, step, xy),
-            KeyCode::Down => self.printer.jog(Axis::Y, -step, xy),
-            KeyCode::PageUp => self.printer.jog(Axis::Z, step.min(MAX_Z_STEP), z),
-            KeyCode::PageDown => self.printer.jog(Axis::Z, -step.min(MAX_Z_STEP), z),
+            KeyCode::Left => self.motion(jog(Axis::X, -step, xy)),
+            KeyCode::Right => self.motion(jog(Axis::X, step, xy)),
+            KeyCode::Up => self.motion(jog(Axis::Y, step, xy)),
+            KeyCode::Down => self.motion(jog(Axis::Y, -step, xy)),
+            KeyCode::PageUp => self.motion(jog(Axis::Z, step.min(MAX_Z_STEP), z)),
+            KeyCode::PageDown => self.motion(jog(Axis::Z, -step.min(MAX_Z_STEP), z)),
             KeyCode::Char('+' | '=') => self.jog = Some((step_index + 1).min(JOG_STEPS.len() - 1)),
             KeyCode::Char('-' | '_') => self.jog = Some(step_index.saturating_sub(1)),
-            KeyCode::Char('h') => self.printer.home(Axes::ALL),
-            KeyCode::Char('x') => self.printer.home(Axes::X),
-            KeyCode::Char('y') => self.printer.home(Axes::Y),
-            KeyCode::Char('z') => self.printer.home(Axes::Z),
+            // Homing Z onto a paused print asks first.
+            KeyCode::Char('h') => self.motion(home(Axes::ALL)),
+            KeyCode::Char('x') => self.motion(home(Axes::X)),
+            KeyCode::Char('y') => self.motion(home(Axes::Y)),
+            KeyCode::Char('z') => self.motion(home(Axes::Z)),
             KeyCode::Tab => {
                 self.jog = None;
                 self.cycle_focus(true);
@@ -2126,12 +2149,7 @@ impl App {
                 };
                 self.guard(&safety, guard, Action::EverythingOff);
             }
-            Command::Tool(t) => {
-                if self.motion_allowed() {
-                    printer.select_tool(t);
-                    self.info(format!("Tool T{t}"));
-                }
-            }
+            Command::Tool(t) => self.motion(Motion::Tool(t)),
             Command::Reset => {
                 if self.view.job_active() {
                     self.warn("Not while a job runs: resetting the board stops it (F7 cancels)");
@@ -2162,32 +2180,19 @@ impl App {
                     heaters.into_iter().map(|h| (h, 0.0)).collect(),
                 ));
             }
-            Command::Home { axes, zero_e } => {
-                if self.motion_allowed() {
-                    if axes != Axes::default() {
-                        printer.home(axes);
-                    }
-                    if zero_e {
-                        printer.send("G92 E0");
-                        self.info("Extruder position set to 0 (G92 E0)");
-                    }
-                }
-            }
+            Command::Home { axes, zero_e } => self.motion(Motion::Home { axes, zero_e }),
             Command::Move { axis, mm, feedrate } => {
-                if self.motion_allowed() {
-                    let feed = feedrate.unwrap_or(match axis {
-                        Axis::Z => self.profile.jog_feedrate_z,
-                        Axis::E => self.profile.extrude_feedrate,
-                        _ => self.profile.jog_feedrate_xy,
-                    });
-                    printer.jog(axis, mm, feed);
-                }
+                let feedrate = feedrate.unwrap_or(match axis {
+                    Axis::Z => self.profile.jog_feedrate_z,
+                    Axis::E => self.profile.extrude_feedrate,
+                    _ => self.profile.jog_feedrate_xy,
+                });
+                self.motion(Motion::Jog { axis, mm, feedrate });
             }
             Command::Extrude { mm, feedrate } => {
-                if self.motion_allowed() {
-                    let feed = feedrate.unwrap_or(self.profile.extrude_feedrate);
-                    printer.extrude(self.view.active_tool, mm, feed);
-                }
+                let feedrate = feedrate.unwrap_or(self.profile.extrude_feedrate);
+                let tool = self.view.active_tool;
+                self.motion(Motion::Extrude { tool, mm, feedrate });
             }
             Command::Fan(pct) => {
                 printer.set_fan(0, actions::fan_value(pct));
@@ -2246,22 +2251,13 @@ impl App {
                 let pending = Pending::new(REPORT_TIMEOUT, false);
                 self.open_report("Endstops", ReportSource::Endstops, pending);
             }
-            Command::Mesh { probe } => {
-                if probe {
-                    if !self.motion_allowed() {
-                        return;
-                    }
-                    printer.probe_bed_mesh();
-                } else {
-                    printer.request_bed_mesh();
-                }
-                // Probing takes minutes; without a mesh, M420 V reports
-                // none.
-                let pending = if probe {
-                    Pending::new(PROBE_TIMEOUT, false)
-                } else {
-                    Pending::new(REPORT_TIMEOUT, true)
-                };
+            // Probing goes through the motion checks; its report opens
+            // when it starts (see `run_action`).
+            Command::Mesh { probe: true } => self.motion(Motion::ProbeMesh),
+            Command::Mesh { probe: false } => {
+                printer.request_bed_mesh();
+                // Without a mesh, M420 V reports none.
+                let pending = Pending::new(REPORT_TIMEOUT, true);
                 self.open_report("Bed mesh", ReportSource::Mesh, pending);
             }
             Command::Stats => {
@@ -2521,14 +2517,28 @@ impl App {
         self.config = config;
     }
 
-    /// Manual moves are refused while a job runs.
-    fn motion_allowed(&mut self) -> bool {
-        if self.view.job_active() {
-            self.warn("Not while a job runs");
-            false
-        } else {
-            true
+    /// Run a manual motion command: refused while a job prints; while a
+    /// host print is paused, as the classifier's rules say (moves and
+    /// extrusion go, homing Z and probing ask first).
+    fn motion(&mut self, motion: Motion) {
+        if self.view.job_context() == JobContext::Printing {
+            self.warn(actions::NOT_WHILE_PRINTING);
+            return;
         }
+        let safety = actions::check_gcode(&motion.gcode(), self.view.job_context());
+        let guard = Guard {
+            title: match motion {
+                Motion::ProbeMesh => "Probe the bed during the job?".to_string(),
+                Motion::Tool(t) => format!("Switch to T{t} during the job?"),
+                _ => "Move during the job?".to_string(),
+            },
+            preview: Vec::new(),
+            yes: "Go ahead",
+            no: "Don't",
+            refused: "Not done",
+            always_ask: false,
+        };
+        self.guard(&safety, guard, Action::Motion(motion));
     }
 }
 

@@ -63,6 +63,8 @@ pub(crate) enum Action {
     ApplySetting(SettingCommand),
     /// Start a PID autotune (heater, target, cycles).
     Autotune(Heater, f32, u32),
+    /// A manual motion command (already checked).
+    Motion(crate::actions::Motion),
 }
 
 /// The result of a key in a dialog.

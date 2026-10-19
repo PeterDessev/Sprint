@@ -9,8 +9,8 @@ use sprint_host::sprint_proto::{
     classify,
 };
 use sprint_host::{
-    ConnectTarget, Heater, JobInfo, JobKind, JobStatus, Macro, PrintOptions, PrinterProfile,
-    PrinterState, TempPreset,
+    Axes, Axis, ConnectTarget, Heater, JobInfo, JobKind, JobStatus, Macro, PrintOptions, Printer,
+    PrinterProfile, PrinterState, TempPreset,
 };
 
 use crate::commands::TempTarget;
@@ -588,6 +588,100 @@ pub fn check_gcode(gcode: &str, ctx: JobContext) -> Safety {
         }
     }
     safety
+}
+
+/// Why manual motion is refused while a job prints.
+pub const NOT_WHILE_PRINTING: &str = "Not while a job runs (pause it first)";
+
+/// A manual motion command (jog, move, extrude, home, tool change,
+/// probing). They are refused while a job prints and checked with the
+/// classifier's rules otherwise: while a host print is paused moves and
+/// extrusion are fine (the host restores the position and modes on
+/// resume), homing Z and probing ask first.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Motion {
+    /// Move one axis by `mm` (E extrudes with the active tool).
+    Jog {
+        /// The axis.
+        axis: Axis,
+        /// Distance, signed.
+        mm: f32,
+        /// mm/min.
+        feedrate: f32,
+    },
+    /// Extrude (negative: retract) with `tool`.
+    Extrude {
+        /// The tool.
+        tool: u8,
+        /// Length, signed.
+        mm: f32,
+        /// mm/min.
+        feedrate: f32,
+    },
+    /// Home these axes; `zero_e` also sets the extruder position to 0.
+    Home {
+        /// Axes to home (none: only `zero_e`).
+        axes: Axes,
+        /// `G92 E0`.
+        zero_e: bool,
+    },
+    /// Select a tool.
+    Tool(u8),
+    /// Probe the bed mesh (homing first unless homed).
+    ProbeMesh,
+}
+
+impl Motion {
+    /// The G-code it sends, for the safety check.
+    pub fn gcode(&self) -> String {
+        let number = |v: f32| sprint_host::script::format_number(f64::from(v), 3);
+        match *self {
+            Motion::Jog {
+                axis: Axis::E,
+                mm,
+                feedrate,
+            } => format!("M83\nG1 E{} F{}", number(mm), number(feedrate)),
+            Motion::Jog { axis, mm, feedrate } => format!(
+                "G91\nG1 {}{} F{}\nG90",
+                axis.letter(),
+                number(mm),
+                number(feedrate)
+            ),
+            Motion::Extrude { mm, feedrate, .. } => {
+                format!("M83\nG1 E{} F{}", number(mm), number(feedrate))
+            }
+            Motion::Home { axes, zero_e } => {
+                let mut lines = Vec::new();
+                if axes != Axes::default() {
+                    lines.push(axes.home_command());
+                }
+                if zero_e {
+                    lines.push("G92 E0".to_string());
+                }
+                lines.join("\n")
+            }
+            Motion::Tool(t) => format!("T{t}"),
+            Motion::ProbeMesh => "G29".to_string(),
+        }
+    }
+
+    /// Send it.
+    pub fn run(&self, printer: &Printer) {
+        match *self {
+            Motion::Jog { axis, mm, feedrate } => printer.jog(axis, mm, feedrate),
+            Motion::Extrude { tool, mm, feedrate } => printer.extrude(tool, mm, feedrate),
+            Motion::Home { axes, zero_e } => {
+                if axes != Axes::default() {
+                    printer.home(axes);
+                }
+                if zero_e {
+                    printer.send("G92 E0");
+                }
+            }
+            Motion::Tool(t) => printer.select_tool(t),
+            Motion::ProbeMesh => printer.probe_bed_mesh(),
+        }
+    }
 }
 
 /// "cube.gcode is printing." / "cube.gcode is paused." for messages about

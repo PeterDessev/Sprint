@@ -566,15 +566,21 @@ fn pause_resume_cancel_and_the_prompt() {
         "{}",
         shell.prompt()
     );
-    // Moves are allowed while paused, but nothing that lowers the nozzle
-    // to the bed (homing Z, probing): the part is there.
+    // Moves are allowed while paused, but what lowers the nozzle to the
+    // bed (homing Z, probing) asks first, and a script is told why instead.
     received(&shell);
     let before = buffer.text().len();
     let mut input = Script::new(["home", "home z", "mesh probe", "home x y"], false);
     shell.run_lines_until_eof_without_leaving(&mut input);
     let text = buffer.text();
-    let refused = text[before..].matches("would lower the nozzle").count();
+    let refused = text[before..]
+        .matches("Not done: slow.gcode is paused. ")
+        .count();
     assert_eq!(refused, 3, "{text}");
+    assert!(
+        text[before..].contains("lowers the nozzle onto the bed"),
+        "{text}"
+    );
     // A macro asks first on a terminal: here the answer is no.
     let mut input = Script::new(["macro home", "n"], true);
     shell.run_lines_until_eof_without_leaving(&mut input);

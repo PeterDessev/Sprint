@@ -27,7 +27,7 @@ use sprint_host::{
 };
 
 use crate::TuiOptions;
-use crate::actions;
+use crate::actions::{self, Motion};
 use crate::commands::{self, Command, Eeprom, Input, SdCommand, command_spec};
 use crate::format;
 use crate::interrupt::Interrupt;
@@ -347,30 +347,32 @@ impl Shell {
             .with_state(sprint_host::PrinterState::job_active)
     }
 
-    /// Manual moves: refused while a print runs, allowed while it is
-    /// paused.
-    fn motion_allowed(&self) -> bool {
-        let printing = self.printer.with_state(|s| {
-            s.job
-                .as_ref()
-                .is_some_and(|j| j.status.is_active() && j.status != sprint_host::JobStatus::Paused)
-        });
-        if printing {
-            self.out.warn("Not while a job runs (pause it first)");
-        }
-        !printing
-    }
-
-    /// Homing Z and probing lower the nozzle to the bed: never while a job,
-    /// even a paused one, has a part there.
-    fn bed_motion_allowed(&self, what: &str) -> bool {
-        if self.job_active() {
-            self.out.warn(format!(
-                "Not while a job runs: {what} would lower the nozzle onto the print"
-            ));
+    /// Whether a manual motion command may run now: refused while a job
+    /// prints; while a host print is paused, as the classifier's rules say
+    /// (moves and extrusion go, homing Z and probing ask first on a
+    /// terminal and are not done by a script).
+    fn motion_allowed(&self, motion: &Motion, input: &mut dyn LineSource) -> bool {
+        if self.printer.with_state(actions::job_context) == JobContext::Printing {
+            self.out.warn(actions::NOT_WHILE_PRINTING);
             return false;
         }
-        true
+        let check = SendCheck {
+            question: "Do it?",
+            refused: "Not done",
+            declined: "Not done",
+            always_ask: None,
+            raw: false,
+        };
+        self.safe_to_send(&motion.gcode(), &check, input)
+    }
+
+    /// Run a manual motion command if [`Shell::motion_allowed`].
+    fn motion(&self, motion: Motion, input: &mut dyn LineSource) -> bool {
+        let allowed = self.motion_allowed(&motion, input);
+        if allowed {
+            motion.run(&self.printer);
+        }
+        allowed
     }
 
     /// Wait for an expected answer: Ok when it arrived, or why not.
@@ -589,18 +591,17 @@ impl Shell {
         if check.raw {
             return true;
         }
-        let question = if safety.needs_confirmation() {
-            let mut question = String::new();
+        let (question, why) = if safety.needs_confirmation() {
+            let mut why = String::new();
             if safety.job_related()
                 && let Some(sentence) = &sentence
             {
-                question.push_str(&format!("{sentence} "));
+                why.push_str(&format!("{sentence} "));
             }
-            question.push_str(safety.reasons().join("; ").trim_end_matches('.'));
-            question.push_str(&format!(". {}", check.question));
-            question
+            why.push_str(safety.reasons().join("; ").trim_end_matches('.'));
+            (format!("{why}. {}", check.question), Some(why))
         } else if let Some(always) = check.always_ask {
-            always.to_string()
+            (always.to_string(), None)
         } else {
             return true;
         };
@@ -608,7 +609,11 @@ impl Shell {
         if self.confirm(input, &question, default) {
             return true;
         }
-        self.out.dim(check.declined);
+        // A script is not asked: it is told why.
+        match why.filter(|_| !input.interactive()) {
+            Some(why) => self.out.warn(format!("{}: {why}", check.declined)),
+            None => self.out.dim(check.declined),
+        }
         false
     }
 
@@ -1291,8 +1296,7 @@ impl Shell {
                 }
             }
             Command::Tool(t) => {
-                if self.motion_allowed() {
-                    printer.select_tool(t);
+                if self.motion(Motion::Tool(t), input) {
                     self.out.dim(format!("Tool T{t}"));
                 }
             }
@@ -1316,35 +1320,21 @@ impl Shell {
                 self.set_temps(&targets, input);
             }
             Command::Home { axes, zero_e } => {
-                let allowed = if axes.z {
-                    self.bed_motion_allowed("homing Z (home x y works while paused)")
-                } else {
-                    self.motion_allowed()
-                };
-                if allowed {
-                    if axes != sprint_host::Axes::default() {
-                        printer.home(axes);
-                    }
-                    if zero_e {
-                        printer.send("G92 E0");
-                        self.out.dim("Extruder position set to 0 (G92 E0)");
-                    }
+                if self.motion(Motion::Home { axes, zero_e }, input) && zero_e {
+                    self.out.dim("Extruder position set to 0 (G92 E0)");
                 }
             }
             Command::Move { axis, mm, feedrate } => {
-                if self.motion_allowed() {
-                    let feed = feedrate.unwrap_or(match axis {
-                        Axis::Z => self.profile.jog_feedrate_z,
-                        Axis::E => self.profile.extrude_feedrate,
-                        Axis::X | Axis::Y => self.profile.jog_feedrate_xy,
-                    });
-                    printer.jog(axis, mm, feed);
-                }
+                let feedrate = feedrate.unwrap_or(match axis {
+                    Axis::Z => self.profile.jog_feedrate_z,
+                    Axis::E => self.profile.extrude_feedrate,
+                    Axis::X | Axis::Y => self.profile.jog_feedrate_xy,
+                });
+                self.motion(Motion::Jog { axis, mm, feedrate }, input);
             }
             Command::Extrude { mm, feedrate } => {
-                if self.motion_allowed() {
-                    printer.extrude(tool, mm, feedrate.unwrap_or(self.profile.extrude_feedrate));
-                }
+                let feedrate = feedrate.unwrap_or(self.profile.extrude_feedrate);
+                self.motion(Motion::Extrude { tool, mm, feedrate }, input);
             }
             Command::Fan(pct) => {
                 printer.set_fan(0, actions::fan_value(pct));
@@ -1461,7 +1451,7 @@ impl Shell {
             }
             Command::Mesh { probe } => {
                 let shown = if probe {
-                    if !self.bed_motion_allowed("probing the bed") {
+                    if !self.motion_allowed(&Motion::ProbeMesh, input) {
                         return;
                     }
                     self.out.dim("Probing the bed (G29); Ctrl+C stops waiting");

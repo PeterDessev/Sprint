@@ -8,6 +8,7 @@ use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
+use sprint_host::sprint_proto::JobContext;
 use sprint_host::{BedOrigin, ConnectionStatus, JobStatus};
 
 use super::{App, Center, Focus, InputMode, JOG_STEPS, Modal};
@@ -828,13 +829,19 @@ impl App {
                 }
                 if self.view.job_active() {
                     // The job's controls first (a narrow terminal shows
-                    // only the first hints); nothing the job refuses.
+                    // only the first hints); nothing the job refuses
+                    // (jogging only while a host print is paused).
                     hints.extend([
                         ("F6", pause),
                         ("F7", "Cancel"),
                         ("F8", "E-stop"),
                         ("F1", "Help"),
                         ("t", "Temps"),
+                    ]);
+                    if self.view.job_context() == JobContext::Paused {
+                        hints.push(("j", "Jog"));
+                    }
+                    hints.extend([
                         (":", "Command"),
                         ("i", "G-code"),
                         ("F3", "Open"),
@@ -1059,7 +1066,10 @@ pub(crate) fn help_sections() -> Vec<HelpSection<'static>> {
                 ("F6", "Pause / resume"),
                 ("F7", "Cancel the job (print, SD print or upload)"),
                 ("F8 F8", "EMERGENCY STOP (M112), press twice"),
-                ("j", "Jog mode: arrows X/Y, PgUp/PgDn Z, +/- step, h home"),
+                (
+                    "j",
+                    "Jog mode: arrows X/Y, PgUp/PgDn Z, +/- step, h home (also while paused)",
+                ),
                 ("t", "Temperatures and presets"),
                 ("p", "The printer's question again (after Esc hid it)"),
             ],

@@ -848,6 +848,68 @@ fn jog_mode_ends_when_a_print_starts() {
 }
 
 #[test]
+fn a_paused_print_can_be_jogged_and_extruded() {
+    let scratch = Scratch::new("paused-jog");
+    let mut app = timed_app();
+    app.open_file(slow_file(&scratch.0));
+    wait_app(&mut app, "the analysis", |a| a.loader.is_none());
+    app.run_action(dialogs::Action::StartPrint(scratch.0.join("slow.gcode")));
+    wait(&mut app, "the print", |s| {
+        s.job.as_ref().is_some_and(|j| j.current_line > 8)
+    });
+    // While printing: no jogging, no moves.
+    press(&mut app, KeyCode::Char('j'));
+    assert!(app.jog.is_none());
+    app.run_line("move x 5");
+    assert!(
+        app.toast
+            .as_ref()
+            .is_some_and(|t| t.text.starts_with("Not while a job runs")),
+        "{:?}",
+        app.toast
+    );
+    app.printer.pause();
+    wait(&mut app, "the pause", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Paused)
+    });
+    wait_idle(&mut app);
+    received(&app);
+    // Paused: jog mode, moves and extrusion go straight out.
+    press(&mut app, KeyCode::Char('j'));
+    assert!(app.jog.is_some());
+    press(&mut app, KeyCode::Right);
+    press(&mut app, KeyCode::Char('x'));
+    press(&mut app, KeyCode::Esc);
+    app.run_line("extrude 2");
+    assert!(app.modal.is_none(), "{:?}", app.toast);
+    wait_idle(&mut app);
+    let got = received(&app);
+    for want in ["G1 X10 F3000", "G28 X", "G1 E2 F300"] {
+        assert!(got.iter().any(|c| c == want), "missing {want} in {got:?}");
+    }
+    // Homing Z (and so every axis) asks first, in jog mode too.
+    app.run_line("home");
+    let Some(Modal::Confirm(confirm)) = &app.modal else {
+        panic!("homing Z while paused asks: {:?}", app.toast);
+    };
+    assert!(confirm.danger);
+    assert_eq!(confirm.message[0], "slow.gcode is paused.");
+    press(&mut app, KeyCode::Esc);
+    press(&mut app, KeyCode::Char('j'));
+    press(&mut app, KeyCode::Char('z'));
+    assert!(matches!(&app.modal, Some(Modal::Confirm(c)) if c.danger));
+    press(&mut app, KeyCode::Char('y'));
+    assert!(app.jog.is_some(), "jog mode goes on after the answer");
+    wait_idle(&mut app);
+    assert!(received(&app).iter().any(|c| c == "G28 Z"));
+    press(&mut app, KeyCode::Esc);
+    app.printer.cancel();
+    wait(&mut app, "the cancel", |s| !s.job_active());
+}
+
+#[test]
 fn jog_mode_moves_and_homes() {
     let mut app = connected_app();
     received(&app);
@@ -1810,6 +1872,13 @@ fn key_hints_during_a_job_lead_with_its_controls() {
         assert!(!hints.contains(&refused), "{hints:?}");
     }
     assert!(screen(&mut app, 64, 18).contains("F8 E-stop"));
+    // Paused: jogging is offered (the resume brings the head back).
+    if let Some(job) = app.view.job.as_mut() {
+        job.status = JobStatus::Paused;
+    }
+    let hints = app.hints();
+    assert_eq!(hints[0], ("F6", "Resume"));
+    assert!(hints.contains(&("j", "Jog")), "{hints:?}");
     // Idle: printing and jogging are offered again.
     app.view.job = None;
     let hints = app.hints();
