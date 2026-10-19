@@ -5,7 +5,8 @@ mod common;
 mod insight_common;
 
 use common::{harness_state, snapshot};
-use egui_kittest::kittest::Queryable as _;
+use egui_kittest::Harness;
+use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use insight_common::*;
 use sprint_gui::panels::TuningTab;
 use sprint_gui::theme::Theme;
@@ -135,6 +136,58 @@ fn tuning_tab_search_and_categories_filter_cards() {
             .map(|e| e.draft.to_gcode()),
         Some("M569 S1 X Y".to_owned())
     );
+}
+
+#[test]
+fn raw_settings_cannot_become_other_commands() {
+    let mut h = harness_state(
+        Theme::Dark,
+        (1180.0, 900.0),
+        Host::<TuningTab>::synthetic(demo_state()),
+        |ui, host| host.frame(ui),
+    );
+    h.run_ok();
+    // The demo's only raw entry is "G21" (units), under "Other".
+    h.get_by_label("Other").click();
+    h.run_ok();
+    // The search box comes first, the raw field last.
+    let raw_field = |h: &Harness<'_, Host<TuningTab>>| {
+        h.get_all_by_role(egui::accesskit::Role::TextInput)
+            .last()
+            .expect("raw G-code field")
+            .accesskit_node()
+            .id()
+    };
+    for text in ["M502", "G28", "M112"] {
+        let id = raw_field(&h);
+        h.get_by(|n| n.id() == id).click();
+        h.run_ok();
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.run_ok();
+        h.key_press(egui::Key::Backspace);
+        h.run_ok();
+        h.get_by(|n| n.id() == id).type_text(text);
+        h.run_ok();
+        // A factory reset, homing or an emergency stop would go out with
+        // "Apply", without the confirmation they need.
+        assert!(
+            h.state().tab.draft().changes().is_empty(),
+            "{text} must not be applied as the G21 setting"
+        );
+        assert!(
+            h.query_by_label_contains("Keep the G21 command").is_some(),
+            "{text}"
+        );
+        assert!(h.get_by_label("Apply").accesskit_node().is_disabled());
+        assert!(
+            h.query_by_label("1 raw line is not a valid setting and will not be applied.")
+                .is_some()
+        );
+    }
+    // Back to the reported command.
+    h.get_by_label("Reset to G21").click();
+    h.run_ok();
+    assert_eq!(h.state().tab.pending_changes(), 0);
 }
 
 #[test]

@@ -576,10 +576,11 @@ impl TuningTab {
                     }
                 };
                 let mut buttons = |ui: &mut Ui| {
-                    let label = if changes.len() == 1 {
-                        "Apply change".to_owned()
-                    } else {
-                        format!("Apply {} changes", changes.len())
+                    // Edits that are not valid settings are not counted.
+                    let label = match changes.len() {
+                        0 => "Apply".to_owned(),
+                        1 => "Apply change".to_owned(),
+                        n => format!("Apply {n} changes"),
                     };
                     let tip = if connected {
                         "Send the changed settings to the printer, then reload them (M503)"
@@ -624,8 +625,8 @@ impl TuningTab {
                 if invalid > 0 {
                     ui.label(
                         RichText::new(format!(
-                            "{invalid} raw line{} cannot be parsed and will not be applied.",
-                            if invalid == 1 { "" } else { "s" }
+                            "{invalid} raw line{} not a valid setting and will not be applied.",
+                            if invalid == 1 { " is" } else { "s are" }
                         ))
                         .size(12.0)
                         .color(p.danger),

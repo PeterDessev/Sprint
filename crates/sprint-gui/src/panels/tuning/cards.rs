@@ -409,7 +409,8 @@ pub(super) fn raw_card(ui: &mut Ui, draft: &mut Draft, indices: &[usize]) {
             |ui| {
                 ui.add(IconButton::new(icons::INFO).ghost().small().tooltip(
                     "Commands the firmware reported that Sprint has no description for. Edit \
-                         them as G-code; they are sent as written.",
+                         their values as G-code (the command itself stays); they are sent as \
+                         written.",
                 ));
             },
             |ui| {
@@ -419,6 +420,8 @@ pub(super) fn raw_card(ui: &mut Ui, draft: &mut Draft, indices: &[usize]) {
                     };
                     let modified = entry.is_modified();
                     let invalid = entry.is_invalid();
+                    let other_code = entry.changes_code();
+                    let code = entry.draft.code.clone();
                     let original = entry
                         .original
                         .as_ref()
@@ -466,13 +469,15 @@ pub(super) fn raw_card(ui: &mut Ui, draft: &mut Draft, indices: &[usize]) {
                             }
                         });
                         if invalid {
-                            ui.label(
-                                RichText::new(
-                                    "Not a valid setting command: it will not be applied.",
+                            let text = if other_code {
+                                format!(
+                                    "Keep the {code} command: only its values can change here. \
+                                     It will not be applied."
                                 )
-                                .size(12.0)
-                                .color(p.danger),
-                            );
+                            } else {
+                                "Not a valid setting command: it will not be applied.".to_owned()
+                            };
+                            ui.label(RichText::new(text).size(12.0).color(p.danger));
                         }
                     });
                     if reset {

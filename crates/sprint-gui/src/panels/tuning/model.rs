@@ -45,17 +45,28 @@ impl Entry {
     }
 
     /// The command the draft stands for: the edited command, or the parsed
-    /// raw text (`None` when it does not parse).
+    /// raw text (`None` when it does not parse, or names another command:
+    /// only a setting's values can be edited, so "Apply" never sends a
+    /// factory reset, homing or an emergency stop typed over a setting).
     pub fn command(&self) -> Option<SettingCommand> {
         match &self.raw {
-            Some(text) => SettingCommand::parse(text.trim()),
+            Some(text) => SettingCommand::parse(text.trim()).filter(|c| c.code == self.draft.code),
             None => Some(self.draft.clone()),
         }
     }
 
-    /// The raw text does not parse as a setting command.
+    /// The raw text does not stand for this setting (see
+    /// [`Entry::command`]).
     pub fn is_invalid(&self) -> bool {
         self.raw.is_some() && self.command().is_none()
+    }
+
+    /// The raw text parses, but as another command than this setting's.
+    pub fn changes_code(&self) -> bool {
+        self.raw
+            .as_deref()
+            .and_then(|text| SettingCommand::parse(text.trim()))
+            .is_some_and(|c| c.code != self.draft.code)
     }
 
     /// The draft differs from what the printer reported.
@@ -753,8 +764,6 @@ mod tests {
         let mut d = Draft::new(&report());
         d.entry_mut("G21").expect("G21").raw = Some("  g21 ".into());
         assert_eq!(d.modified_count(), 0, "case and spacing do not matter");
-        d.entry_mut("G21").expect("G21").raw = Some("G20".into());
-        assert_eq!(d.changes()[0].lines(), vec!["G21 → G20"]);
         d.entry_mut("G21").expect("G21").raw = Some("hello".into());
         assert_eq!(d.invalid_count(), 1);
         assert!(d.changes().is_empty(), "invalid raw edits are not applied");
@@ -764,6 +773,20 @@ mod tests {
             d.entry("G21").and_then(|e| e.raw.clone()).as_deref(),
             Some("G21")
         );
+        // Values of an unknown setting can change...
+        let mut d = Draft::new(&settings(&["M575 P0 B250"]));
+        d.entry_mut("M575").expect("M575").raw = Some("m575 p0 b115".into());
+        assert_eq!(d.changes()[0].lines(), vec!["M575 P0 B250 → M575 P0 B115"]);
+        // ...but not the command: that would send something else entirely.
+        for other in ["M502", "G28", "M112", "M576 P0 B115"] {
+            let e = d.entry_mut("M575").expect("M575");
+            e.raw = Some(other.into());
+            assert!(e.is_invalid() && e.changes_code(), "{other}");
+            assert!(d.changes().is_empty(), "{other}");
+        }
+        let e = d.entry_mut("M575").expect("M575");
+        e.raw = Some("M575 P0 Bx".into());
+        assert!(e.is_invalid() && !e.changes_code());
     }
 
     #[test]
