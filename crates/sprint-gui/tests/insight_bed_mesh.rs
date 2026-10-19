@@ -72,6 +72,21 @@ fn a_narrow_header_keeps_its_title_readable() {
 }
 
 #[test]
+fn a_narrow_tab_keeps_the_screw_card_inside() {
+    let width = 380.0;
+    let mut h = tab(Theme::Dark, (width, 2400.0), demo_state());
+    // The direction switch used to push the screw card (bed plan, list,
+    // surface) past the tab's edge.
+    assert_eq!(overflowing(&h, width - 24.0), Vec::<String>::new());
+    h.get_by_label("Clockwise raises").click();
+    h.run_ok();
+    assert!(
+        h.query_by_label_contains("Front right: Turn counter-clockwise")
+            .is_some()
+    );
+}
+
+#[test]
 fn screw_helper_follows_the_reference_and_thread() {
     // Tall enough for the screw editor.
     let mut h = tab(Theme::Light, (1180.0, 1700.0), demo_state());

@@ -232,6 +232,14 @@ impl ScrewHelper {
     }
 
     fn controls(&mut self, ui: &mut Ui) {
+        // The direction labels shrink rather than push the card wider than
+        // the tab.
+        let long = ["Clockwise lowers the bed", "Clockwise raises it"];
+        let directions = if kit::segmented_width(ui, &long) <= ui.available_width() {
+            [(true, long[0]), (false, long[1])]
+        } else {
+            [(true, "Clockwise lowers"), (false, "Clockwise raises")]
+        };
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = vec2(8.0, 6.0);
             let threads: Vec<(usize, String)> = THREADS
@@ -245,10 +253,6 @@ impl ScrewHelper {
                 })
                 .collect();
             ui.add(SegmentedControl::new(&mut self.thread, &threads).id_salt("screw-thread"));
-            let directions = [
-                (true, "Clockwise lowers the bed"),
-                (false, "Clockwise raises it"),
-            ];
             ui.add(
                 SegmentedControl::new(&mut self.clockwise_lowers, &directions)
                     .id_salt("screw-direction"),
