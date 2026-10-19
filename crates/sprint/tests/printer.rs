@@ -90,7 +90,7 @@ fn the_shell_runs_a_script_from_stdin() {
         "Connected to Virtual printer",
         "Ready  Marlin",
         "FIRMWARE_NAME:Marlin",
-        "Printer   ● Connected",
+        "Printer    ● Connected",
         "usage: temp <celsius|preset|off> [tool]",
         "unknown command 'bogus'",
     ] {

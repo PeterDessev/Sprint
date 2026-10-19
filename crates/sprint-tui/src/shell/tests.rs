@@ -457,7 +457,7 @@ fn offline_commands_explain_instead_of_failing() {
     let text = buffer.text();
     for fact in [
         "Not connected",
-        "Printer   ● Disconnected",
+        "Printer    ● Disconnected",
         "No file loaded",
         "Not connected to a printer",
         "No job is running",
@@ -829,7 +829,7 @@ fn pronsole_commands_do_what_they_did_in_pronsole() {
     );
     let text = buffer.text();
     for fact in [
-        "Hotend    ",
+        "Hotend     ",
         "No job is running",
         "Extruder position set to 0 (G92 E0)",
         "run_script is a pronsole command",

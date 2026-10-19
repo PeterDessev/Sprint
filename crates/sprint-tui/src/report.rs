@@ -84,11 +84,14 @@ impl ReportLine {
         ReportLine::toned(text, Tone::Accent)
     }
 
-    /// A `label  value` row with the label padded to `width` columns.
+    /// A `label  value` row with the label padded to `width` columns; a
+    /// label that fills them still gets a space before the value.
     pub fn row(label: &str, width: usize, value: impl AsRef<str>, tone: Tone) -> ReportLine {
-        ReportLine::new()
-            .with(format!("{label:<width$}"), Tone::Label)
-            .with(value, tone)
+        let mut label = format!("{label:<width$}");
+        if !label.ends_with(' ') {
+            label.push(' ');
+        }
+        ReportLine::new().with(label, Tone::Label).with(value, tone)
     }
 
     /// Append text (sanitized) in a tone.
@@ -286,8 +289,9 @@ fn color_code(color: Color) -> Option<String> {
     }
 }
 
-/// Width of the label column of the status report.
-const LABEL: usize = 10;
+/// Width of the label column of the status report: one more than its
+/// longest label ("Last error").
+const LABEL: usize = 11;
 
 /// `current / target °C` of a heater reading (`--` for unknown values).
 pub fn heater_text(current: f32, target: Option<f32>) -> String {
@@ -1388,19 +1392,22 @@ mod tests {
     fn status_reports_everything_at_a_glance() {
         let text = joined(&status_lines(&connected_state(), None));
         for fact in [
-            "Printer   ● Connected  Virtual printer  Marlin 2.1.2.1",
-            "Hotend    205.3 / 210 °C  heating  power 64%",
-            "Bed       60.0 / 60 °C  at target  power 30%",
-            "Position  X 110.00  Y 110.50  Z 0.20  E 3.25",
-            "Overrides fan 100%  speed 100%  flow 100%",
-            "Job       Printing  cube.gcode  42.0%  layer 12/100  elapsed 12:00  ETA 20:00",
-            "Link      0 lines",
-            "Loaded    no file (load <file>)",
+            "Printer    ● Connected  Virtual printer  Marlin 2.1.2.1",
+            "Hotend     205.3 / 210 °C  heating  power 64%",
+            "Bed        60.0 / 60 °C  at target  power 30%",
+            "Position   X 110.00  Y 110.50  Z 0.20  E 3.25",
+            "Overrides  fan 100%  speed 100%  flow 100%",
+            "Job        Printing  cube.gcode  42.0%  layer 12/100  elapsed 12:00  ETA 20:00",
+            "Link       0 lines",
+            "Loaded     no file (load <file>)",
         ] {
             assert!(text.contains(fact), "missing {fact:?} in\n{text}");
         }
         let offline = joined(&status_lines(&PrinterState::default(), None));
-        assert!(offline.starts_with("Printer   ● Disconnected"), "{offline}");
+        assert!(
+            offline.starts_with("Printer    ● Disconnected"),
+            "{offline}"
+        );
         assert!(!offline.contains("Position"), "{offline}");
         let mut halted = connected_state();
         halted.halted = true;
@@ -1411,8 +1418,41 @@ mod tests {
         let text = joined(&status_lines(&halted, None));
         assert!(text.contains("HALTED"), "{text}");
         assert!(
-            text.contains("Prompt    Filament runout  [Continue] [Purge]"),
+            text.contains("Prompt     Filament runout  [Continue] [Purge]"),
             "{text}"
+        );
+    }
+
+    #[test]
+    fn every_status_label_leaves_a_space_before_its_value() {
+        let mut state = connected_state();
+        state.last_error = Some("open failed, File: arcs-test.gcode.".into());
+        state.busy = Some("processing".into());
+        state.temps.hotends.push(HeaterReading {
+            current: 20.0,
+            target: None,
+            power: None,
+        });
+        state.temps.chamber = Some(HeaterReading {
+            current: 30.0,
+            target: Some(40.0),
+            power: None,
+        });
+        let text = joined(&status_lines(&state, None));
+        assert!(
+            text.contains("Last error open failed, File: arcs-test.gcode."),
+            "{text}"
+        );
+        for line in text.lines() {
+            let label = &line[..line
+                .char_indices()
+                .nth(LABEL)
+                .map_or(line.len(), |(i, _)| i)];
+            assert!(label.ends_with(' '), "no space after the label: {line:?}");
+        }
+        assert_eq!(
+            ReportLine::row("Long label", 4, "value", Tone::Plain).text(),
+            "Long label value"
         );
     }
 
