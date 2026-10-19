@@ -1,0 +1,100 @@
+//! The GPU the tests of one test binary render on: created once and shared
+//! by every harness (`tests/common` and `tests/app_support` include this
+//! module). A wgpu device per test meant dozens of devices created at once
+//! by the parallel tests, which some drivers do not survive
+//! (`STATUS_ACCESS_VIOLATION` on Windows under load).
+
+#![allow(dead_code)]
+
+use std::panic::AssertUnwindSafe;
+use std::sync::{Arc, OnceLock};
+
+use egui_kittest::wgpu::WgpuTestRenderer;
+use egui_wgpu::wgpu;
+
+/// The wgpu setup: prefer a real GPU over CPU rasterizers (the DX12 WARP
+/// adapter crashes on some Windows machines), Vulkan/Metal over DX12/GL.
+/// `WGPU_BACKEND` still narrows the backends.
+fn wgpu_setup() -> egui_wgpu::WgpuSetup {
+    let mut setup = egui_wgpu::WgpuSetupCreateNew::without_display_handle();
+    setup
+        .instance_descriptor
+        .backends
+        .remove(wgpu::Backends::BROWSER_WEBGPU);
+    setup.native_adapter_selector = Some(Arc::new(|adapters, _surface| {
+        let mut adapters: Vec<_> = adapters
+            .iter()
+            .filter(|a| {
+                let info = a.get_info();
+                !(info.backend == wgpu::Backend::Dx12 && info.device_type == wgpu::DeviceType::Cpu)
+            })
+            .collect();
+        adapters.sort_by_key(|a| {
+            let info = a.get_info();
+            let backend = match info.backend {
+                wgpu::Backend::Vulkan | wgpu::Backend::Metal => 0,
+                wgpu::Backend::Dx12 => 1,
+                wgpu::Backend::Gl => 2,
+                _ => 3,
+            };
+            let device = match info.device_type {
+                wgpu::DeviceType::DiscreteGpu => 0,
+                wgpu::DeviceType::IntegratedGpu => 1,
+                wgpu::DeviceType::Other | wgpu::DeviceType::VirtualGpu => 2,
+                wgpu::DeviceType::Cpu => 3,
+            };
+            (backend, device)
+        });
+        adapters
+            .first()
+            .map(|a| (*a).clone())
+            .ok_or_else(|| "no usable wgpu adapter".to_owned())
+    }));
+    egui_wgpu::WgpuSetup::CreateNew(setup)
+}
+
+/// Run `f` with the panic message silenced: a missing adapter is a skip,
+/// not a test failure.
+fn quietly<T>(f: impl FnOnce() -> T) -> Option<T> {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let result = std::panic::catch_unwind(AssertUnwindSafe(f)).ok();
+    std::panic::set_hook(previous);
+    result
+}
+
+/// The shared GPU, created on first use (`None` when the machine has no
+/// usable adapter).
+fn shared_gpu() -> Option<egui_wgpu::WgpuSetupExisting> {
+    static GPU: OnceLock<Option<(wgpu::Instance, wgpu::Adapter, wgpu::Device, wgpu::Queue)>> =
+        OnceLock::new();
+    let (instance, adapter, device, queue) = GPU
+        .get_or_init(|| {
+            quietly(|| {
+                egui_kittest::wgpu::create_render_state(
+                    wgpu_setup(),
+                    egui_wgpu::RendererOptions::PREDICTABLE,
+                )
+            })
+            .map(|s| (s.instance, s.adapter, s.device, s.queue))
+        })
+        .clone()?;
+    Some(egui_wgpu::WgpuSetupExisting {
+        instance,
+        adapter,
+        device,
+        queue,
+    })
+}
+
+/// A wgpu renderer on the shared GPU (its own egui renderer, the device
+/// shared), or `None` when the machine has no usable adapter.
+pub fn renderer() -> Option<WgpuTestRenderer> {
+    let renderer = shared_gpu().and_then(|gpu| {
+        quietly(|| WgpuTestRenderer::from_setup(egui_wgpu::WgpuSetup::Existing(gpu)))
+    });
+    if renderer.is_none() {
+        eprintln!("no wgpu adapter: rendering is unavailable and snapshots are skipped");
+    }
+    renderer
+}
