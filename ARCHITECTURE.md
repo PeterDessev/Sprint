@@ -356,6 +356,9 @@ pub fn resume_preamble(file: &GcodeFile, line: usize, options: &ResumeOptions) -
 files into `samples/` (PrusaSlicer-style calibration cube with thumbnails and
 `;TYPE:` annotations, Cura-style twisted vase with `;LAYER:`, an arcs test
 with G2/G3). The generated files are committed.
+`cargo run --release -p sprint-gcode --example gcode_bench` times loading,
+cleaning and analysing a ~2M-line synthetic print (example names are unique
+across the workspace: sprint-viewer's benchmark is `viewer_bench`).
 
 ---
 

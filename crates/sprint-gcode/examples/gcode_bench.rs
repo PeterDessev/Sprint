@@ -5,7 +5,7 @@
 //! Run in release mode:
 //!
 //! ```text
-//! cargo run --release -p sprint-gcode --example bench
+//! cargo run --release -p sprint-gcode --example gcode_bench
 //! ```
 
 use std::fmt::Write as _;

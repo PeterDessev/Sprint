@@ -1,7 +1,7 @@
 //! Headless performance check for big toolpaths.
 //!
 //! ```text
-//! cargo run -p sprint-viewer --release --example bench [-- <segments>]
+//! cargo run -p sprint-viewer --release --example viewer_bench [-- <segments>]
 //! ```
 //!
 //! Reports how long `set_toolpath` blocks, the worst per-frame CPU cost while
