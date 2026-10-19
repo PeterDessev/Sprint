@@ -298,6 +298,9 @@ impl StartPrintDialog {
             self.refresh_preamble_in_background(file, egui_ctx);
         }
         let toolpath = file.toolpath.clone();
+        // The title and the buttons stay put; on a short window the rest
+        // scrolls between them (room for the frame and a margin).
+        let body_max = (egui_ctx.content_rect().height() - 150.0).max(120.0);
         let modal = Modal::new(Id::new("sprint-start-print"))
             .frame(modal_frame(egui_ctx))
             .backdrop_color(backdrop(egui_ctx))
@@ -305,36 +308,11 @@ impl StartPrintDialog {
                 ui.set_width(520.0);
                 ui.spacing_mut().item_spacing.y = 8.0;
                 dialog_title(ui, icons::PLAY, "Start print", p.accent);
-                ui.label(
-                    RichText::new(format::sanitize(file.file.name(), 70))
-                        .color(p.text_dim),
-                );
-                if let Some(tp) = &toolpath {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 16.0;
-                        let stat = |ui: &mut Ui, icon: &str, text: String| {
-                            ui.label(RichText::new(icons::with_text(icon, &text)).color(p.text));
-                        };
-                        stat(ui, icons::TIMER, format::duration(f64::from(tp.stats.estimated_time)));
-                        stat(ui, icons::FILAMENT, format::length_mm(f64::from(tp.stats.filament_length)));
-                        stat(ui, icons::LAYERS, format!("{} layers", format::count(tp.layers.len() as u64)));
-                    });
-                } else {
-                    ui.label(
-                        RichText::new("The analysis has not finished: progress will be counted in lines and layers cannot be picked.")
-                            .size(12.5)
-                            .color(p.warning),
-                    );
-                }
-                ui.separator();
-                self.start_point(ui, file, toolpath.as_deref(), &p);
-                if self.start_line(toolpath.as_deref()) > 0 {
-                    self.preamble_editor(ui, file, &p);
-                }
-                ui.add(Toggle::new(&mut self.emit_m73).label("Show progress on the printer's display (M73)"));
-                if let Some(error) = &self.error {
-                    ui.label(RichText::new(icons::with_text(icons::ERROR, error)).color(p.danger));
-                }
+                egui::ScrollArea::vertical()
+                    .id_salt("sprint-start-print-body")
+                    .max_height(body_max)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| self.body(ui, file, toolpath.as_deref(), &p));
                 let blocker = print_blocker(ctx.state, true).or_else(|| {
                     (self.is_preparing() && self.start_line(toolpath.as_deref()) > 0)
                         .then_some("Preparing the resume preamble…")
@@ -362,6 +340,53 @@ impl StartPrintDialog {
             outcome = Some(StartOutcome::Closed);
         }
         outcome
+    }
+
+    /// What scrolls between the title and the buttons.
+    fn body(&mut self, ui: &mut Ui, file: &LoadedFile, toolpath: Option<&Toolpath>, p: &Palette) {
+        ui.label(RichText::new(format::sanitize(file.file.name(), 70)).color(p.text_dim));
+        if let Some(tp) = toolpath {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 16.0;
+                let stat = |ui: &mut Ui, icon: &str, text: String| {
+                    ui.label(RichText::new(icons::with_text(icon, &text)).color(p.text));
+                };
+                stat(
+                    ui,
+                    icons::TIMER,
+                    format::duration(f64::from(tp.stats.estimated_time)),
+                );
+                stat(
+                    ui,
+                    icons::FILAMENT,
+                    format::length_mm(f64::from(tp.stats.filament_length)),
+                );
+                stat(
+                    ui,
+                    icons::LAYERS,
+                    format!("{} layers", format::count(tp.layers.len() as u64)),
+                );
+            });
+        } else {
+            ui.label(
+                RichText::new(
+                    "The analysis has not finished: progress will be counted in lines and layers cannot be picked.",
+                )
+                .size(12.5)
+                .color(p.warning),
+            );
+        }
+        ui.separator();
+        self.start_point(ui, file, toolpath, p);
+        if self.start_line(toolpath) > 0 {
+            self.preamble_editor(ui, file, p);
+        }
+        ui.add(
+            Toggle::new(&mut self.emit_m73).label("Show progress on the printer's display (M73)"),
+        );
+        if let Some(error) = &self.error {
+            ui.label(RichText::new(icons::with_text(icons::ERROR, error)).color(p.danger));
+        }
     }
 
     fn start_point(&mut self, ui: &mut Ui, file: &LoadedFile, tp: Option<&Toolpath>, p: &Palette) {
@@ -488,9 +513,12 @@ impl StartPrintDialog {
                 .color(p.warning),
             );
         }
+        // Shorter on short windows, so the dialog fits without scrolling
+        // in most cases.
+        let box_h = (ui.ctx().content_rect().height() - 500.0).clamp(80.0, 170.0);
         let edited = egui::ScrollArea::vertical()
             .id_salt("sprint-preamble-scroll")
-            .max_height(170.0)
+            .max_height(box_h)
             .show(ui, |ui| {
                 ui.add(
                     egui::TextEdit::multiline(&mut self.preamble)

@@ -1215,6 +1215,41 @@ fn the_start_dialog_closes_when_another_file_loads() {
 }
 
 #[test]
+fn the_start_dialog_fits_the_smallest_window() {
+    let size = egui::Vec2::from(sprint_gui::MIN_WINDOW_SIZE);
+    let options = with_file(AppOptions::headless(), sample("calibration-cube.gcode"));
+    let mut h = app(options, size);
+    expect(&mut h, "the cube to be analyzed", analyzed);
+    h.state_mut().set_state_override(Some(PrinterState {
+        status: ConnectionStatus::Connected,
+        ..PrinterState::default()
+    }));
+    h.state_mut()
+        .push_action(AppAction::StartPrintDialog { start_line: 0 });
+    settle(&mut h);
+    let dialog = h.state_mut().start_print_dialog_mut().expect("dialog");
+    dialog.set_mode(sprint_gui::dialogs::StartMode::Layer);
+    dialog.set_layer(12);
+    settle(&mut h);
+    // Its warning makes the dialog taller still.
+    h.get_by_label("Home Z").click();
+    settle(&mut h);
+    // The whole frame (20 points of margin around the content) is on
+    // screen: the title at the top, the buttons at the bottom.
+    let rects: Vec<egui::Rect> = h
+        .query_all_by_label("Start print")
+        .map(|n| n.rect())
+        .collect();
+    let top = rects.iter().map(|r| r.top()).fold(f32::INFINITY, f32::min);
+    let bottom = rects.iter().map(|r| r.bottom()).fold(0.0, f32::max);
+    assert!(top >= 20.0, "the title is cut off: {rects:?}");
+    assert!(
+        bottom <= size.y - 20.0,
+        "the buttons are cut off: {rects:?}"
+    );
+}
+
+#[test]
 fn the_3d_view_ignores_keys_and_wheel_behind_a_dialog() {
     let options = with_file(AppOptions::headless(), sample("calibration-cube.gcode"));
     let mut h = app(options, WINDOW);
