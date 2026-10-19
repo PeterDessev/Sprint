@@ -167,8 +167,9 @@ fn a_halt_closes_the_host_prompt() {
     printer.emergency_stop();
     wait_for(&printer, "halted", |s| s.halted);
     assert_eq!(printer.with_state(|s| s.prompt.clone()), None);
-    let closed = events
-        .try_iter()
+    // (The event follows the state change: wait for it rather than look.)
+    let deadline = std::time::Instant::now() + PATIENCE;
+    let closed = std::iter::from_fn(|| events.recv_deadline(deadline).ok())
         .any(|e| matches!(e, sprint_host::Event::Prompt(None)));
     assert!(closed, "an Event::Prompt(None) tells the UIs");
 }

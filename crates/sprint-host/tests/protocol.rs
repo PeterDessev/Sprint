@@ -281,7 +281,11 @@ fn fatal_errors_halt_and_m999_restarts() {
     let events = printer.subscribe();
     out.line("Error:Printer stopped due to errors. Fix the error and use M999 to restart.");
     wait_for(&printer, "halted", |s| s.halted);
-    assert!(events.try_iter().any(|e| matches!(e, Event::Error(_))));
+    // (The event follows the state change: wait for it rather than look.)
+    let deadline = Instant::now() + PATIENCE;
+    let error = std::iter::from_fn(|| events.recv_deadline(deadline).ok())
+        .any(|e| matches!(e, Event::Error(_)));
+    assert!(error, "no Event::Error");
     assert!(
         printer
             .with_state(|s| s.last_error.clone())
@@ -302,7 +306,11 @@ fn fatal_errors_halt_and_m999_restarts() {
     printer.firmware_restart();
     wait_for(&printer, "running again", |s| !s.halted);
     printer.send("G28");
-    wait_idle(&printer);
+    // (An idle link could be seen before the engine took the G28 on a
+    // loaded machine: wait for the firmware to get it.)
+    wait_for(&printer, "the G28", |_| {
+        log.lock().unwrap().iter().any(|c| c == "G28")
+    });
     let log = log.lock().unwrap().clone();
     // After the restart the line counter is reset before G28.
     let m999 = log.iter().position(|c| c == "M999").unwrap();
