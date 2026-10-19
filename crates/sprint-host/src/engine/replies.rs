@@ -424,15 +424,15 @@ impl Engine {
                 }
             }
             SdReply::Progress { done, total } => {
-                self.shared.update(|s| s.sd.printing = Some((done, total)));
+                self.sd_progress_reported(done, total, now);
                 self.sd_progress(done, total);
             }
             SdReply::NotPrinting => {
-                self.shared.update(|s| s.sd.printing = None);
+                self.sd_stopped();
                 self.sd_not_printing(now);
             }
             SdReply::DonePrinting => {
-                self.shared.update(|s| s.sd.printing = None);
+                self.sd_stopped();
                 self.sd_done(now);
             }
             SdReply::Saved => self.upload_saved(now),
@@ -620,6 +620,10 @@ impl Engine {
             }
             (b'M', 27) => {
                 if let Some(s) = int('S') {
+                    if s > 0 {
+                        self.sd_report_interval =
+                            Duration::from_secs(u64::try_from(s.min(3600)).unwrap_or(1));
+                    }
                     self.sd_autoreport = s > 0
                         && self
                             .shared

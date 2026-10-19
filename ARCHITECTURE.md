@@ -1455,6 +1455,14 @@ Every public item is also re-exported at the crate root.
   with M27 S0 afterwards) else M27 polling; "open failed" or a missing card
   fails the job; "Not SD printing" while printing ends it (Completed when
   the whole file was reported read, else Failed); cancel = M108 + M524.
+  `SdState::printing` means "the card prints now": each progress report
+  sets it (Sprint's SD print, or one started on the printer, which the
+  host then follows with M27 polls every 2 s unless SD auto-reports run);
+  "Not SD printing", "Done printing file", the end of Sprint's SD print
+  (however it ends; cleared before the final job status is published), a
+  halt, a board reset and the connection closing clear it, and so does
+  missing 3 report intervals (6 s by default; 3 x n with `M27 S<n>`) while
+  no M27 waits for its answer and Sprint's own SD print is not running.
   Uploads stream only after "Writing to file" (M28's `ok` without it fails
   the job), skip the file's own M28/M29, end with M29 (complete on "Done
   saving file." or on M29's `ok`); cancel = M29 + M30 <name>. An M303

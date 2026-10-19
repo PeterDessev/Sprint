@@ -1067,6 +1067,11 @@ impl Engine {
         if status.is_finished() {
             self.job = None;
             self.job_hook(&info, &status);
+            if kind == JobKind::SdPrint {
+                // Whatever ended it, the card is not printing it any more
+                // (cleared before the status shows, so no UI sees both).
+                self.sd_stopped();
+            }
         }
         self.shared.update(|s| s.job = Some(info.clone()));
         self.shared.emit(Event::Job(status.clone()));

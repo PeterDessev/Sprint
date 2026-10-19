@@ -173,6 +173,8 @@ fn sd_print_reports_progress_and_completes() {
     let job = printer.with_state(|s| s.job.clone()).unwrap();
     assert_eq!(job.status, JobStatus::Completed);
     assert_eq!(job.progress, 1.0);
+    // The card is not printing any more.
+    assert_eq!(printer.with_state(|s| s.sd.printing), None);
     let sent: Vec<String> = console(&printer)
         .into_iter()
         .filter(|e| e.kind == ConsoleKind::Sent)
@@ -237,6 +239,8 @@ fn sd_print_pause_resume_and_cancel() {
         printer.with_state(|s| s.job.as_ref().map(|j| j.status.clone())),
         Some(JobStatus::Cancelled)
     );
+    // The last progress report does not outlive the cancelled print.
+    assert_eq!(printer.with_state(|s| s.sd.printing), None);
     let got = control.received_commands();
     for cmd in ["M23 long.gcode", "M24", "M25", "M108", "M524"] {
         assert!(got.iter().any(|c| c == cmd), "{cmd}: {got:?}");
@@ -244,6 +248,55 @@ fn sd_print_pause_resume_and_cancel() {
     wait_for(&printer, "the print to stop", |_| {
         !control.snapshot().sd_printing
     });
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert_eq!(printer.with_state(|s| s.sd.printing), None);
+}
+
+#[test]
+fn a_print_started_on_the_printer_is_followed_until_it_ends() {
+    let sim = SimConfig {
+        sd_files: vec![("menu.gcode".into(), 30_000)],
+        instant_moves: false,
+        ..fast_sim(200.0)
+    };
+    let printer = connect(sim, options());
+    let control = printer.sim_control().unwrap();
+    // Started on the printer's own menu: the host knows nothing yet.
+    control.run_command("M23 menu.gcode\nM24");
+    wait_for(&printer, "the card to print", |_| {
+        control.snapshot().sd_printing
+    });
+    assert_eq!(printer.with_state(|s| s.sd.printing), None);
+    // One report (asked by the user) and the host follows the print.
+    printer.send("M27");
+    wait_for(&printer, "the progress", |s| s.sd.printing.is_some());
+    let first = printer.with_state(|s| s.sd.printing).unwrap();
+    assert_eq!(first.1, 30_000);
+    wait_for(&printer, "later progress", |s| {
+        s.sd.printing.is_some_and(|(done, _)| done > first.0)
+    });
+    assert!(!printer.with_state(|s| s.job_active()), "not Sprint's job");
+    assert!(
+        console(&printer)
+            .iter()
+            .any(|e| e.kind == ConsoleKind::Sent && e.text == "M27" && e.auto),
+        "followed with automatic M27 polls"
+    );
+    // "Done printing file": the card prints no more.
+    wait_for(&printer, "the end of the print", |s| {
+        s.sd.printing.is_none()
+    });
+    assert!(!control.snapshot().sd_printing);
+    wait_idle(&printer);
+    let polls = || {
+        console(&printer)
+            .iter()
+            .filter(|e| e.kind == ConsoleKind::Sent && e.text == "M27")
+            .count()
+    };
+    let before = polls();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert_eq!(polls(), before, "polling stops with the print");
 }
 
 #[test]
@@ -295,4 +348,28 @@ fn deleting_a_file_updates_the_listing() {
             .iter()
             .all(|f| f.long_name.as_deref() != Some("first layer test.gcode"))
     }));
+}
+
+#[test]
+fn a_halt_or_a_disconnect_forgets_the_card_progress() {
+    for end in ["halt", "disconnect"] {
+        let sim = SimConfig {
+            sd_files: vec![("menu.gcode".into(), 300_000)],
+            instant_moves: false,
+            ..fast_sim(200.0)
+        };
+        let printer = connect(sim, options());
+        let control = printer.sim_control().unwrap();
+        control.run_command("M23 menu.gcode");
+        control.run_command("M24");
+        printer.send("M27");
+        wait_for(&printer, "the progress", |s| s.sd.printing.is_some());
+        if end == "halt" {
+            printer.emergency_stop();
+            wait_for(&printer, "halted", |s| s.halted);
+        } else {
+            printer.disconnect();
+        }
+        assert_eq!(printer.with_state(|s| s.sd.printing), None, "{end}");
+    }
 }

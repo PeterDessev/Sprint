@@ -890,7 +890,70 @@ fn sd_print_that_stops_reporting(progress: &'static [u64]) -> Option<JobStatus> 
     wait_for_within(&printer, "the job to end", Duration::from_secs(10), |s| {
         !s.job_active()
     });
+    // The last progress report does not outlive the print.
+    assert_eq!(printer.with_state(|s| s.sd.printing), None);
     printer.with_state(|s| s.job.as_ref().map(|j| j.status.clone()))
+}
+
+#[test]
+fn sd_progress_expires_when_the_reports_stop() {
+    // A firmware that stops reporting SD progress without saying the
+    // print ended (no "Not SD printing", no "Done printing file").
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut fw = Mini::new(Arc::clone(&log));
+    let hold = Arc::new(Mutex::new(true));
+    let held = Arc::new(Mutex::new(0usize));
+    let (fw_hold, fw_held) = (Arc::clone(&hold), Arc::clone(&held));
+    let (link, out) = fake(
+        |out| out.line("start"),
+        move |line, out| {
+            let Some(cmd) = fw.accept(line, out) else {
+                return;
+            };
+            // The first M27 is held back (a heat-up in the card's file
+            // keeps it in the queue), later ones get a bare ok.
+            if cmd == "M27" && *fw_hold.lock().unwrap() {
+                *fw_held.lock().unwrap() += 1;
+                return;
+            }
+            out.line("ok");
+        },
+    );
+    let printer = connect_fake(
+        link,
+        ConnectOptions {
+            temp_poll_secs: 0.0,
+            query_on_connect: false,
+            ok_timeout_secs: 60.0,
+            ..options()
+        },
+    );
+    wait_for(&printer, "connected", |s| s.is_connected());
+    // A print started at the printer, reported once: the host follows it.
+    out.line("SD printing byte 100/1000");
+    wait_for(&printer, "the progress", |s| {
+        s.sd.printing == Some((100, 1000))
+    });
+    wait_for(&printer, "an M27 to follow the print", |_| {
+        *held.lock().unwrap() == 1
+    });
+    // While the M27 waits for its answer the progress stands.
+    std::thread::sleep(Duration::from_secs(7));
+    assert_eq!(printer.with_state(|s| s.sd.printing), Some((100, 1000)));
+    // Answered without a report: six seconds without one is enough.
+    *hold.lock().unwrap() = false;
+    out.line("ok");
+    wait_for_within(
+        &printer,
+        "the progress to expire",
+        Duration::from_secs(5),
+        |s| s.sd.printing.is_none(),
+    );
+    // Nothing is followed any more.
+    let polls = || log.lock().unwrap().iter().filter(|c| *c == "M27").count();
+    let before = polls();
+    std::thread::sleep(Duration::from_millis(2500));
+    assert_eq!(polls(), before, "no more M27 polls");
 }
 
 #[test]

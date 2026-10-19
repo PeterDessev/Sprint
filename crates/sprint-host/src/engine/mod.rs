@@ -56,6 +56,10 @@ const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 const RATE_WINDOW: Duration = Duration::from_secs(2);
 /// M27 polling interval without SD auto-reports.
 const SD_POLL_INTERVAL: Duration = Duration::from_secs(2);
+/// SD progress no report has confirmed for this many report intervals
+/// (polls or auto-reports) no longer counts as a print, unless an M27 is
+/// still waiting for its answer or Sprint's own SD print is running.
+const SD_PROGRESS_MISSED_REPORTS: u32 = 3;
 /// `apply_setting` refreshes the settings this long after the last edit.
 const SETTINGS_REFRESH_DELAY: Duration = Duration::from_millis(1500);
 /// Long-running commands get this many ok timeouts.
@@ -440,6 +444,11 @@ pub(crate) struct Engine {
     temp_poll_outstanding: bool,
     next_sd_poll: Instant,
     sd_poll_outstanding: bool,
+    /// When the SD progress in the state was last reported (`None`: the
+    /// card is not known to print).
+    sd_progress_at: Option<Instant>,
+    /// Interval of SD status auto-reports (M27 S<n>) in effect.
+    sd_report_interval: Duration,
     last_temp_sample: Option<Instant>,
     /// Axes known to be homed (mirrors `PrinterState::homed`).
     homed: Option<Axes>,
@@ -500,6 +509,8 @@ impl Engine {
             temp_poll_outstanding: false,
             next_sd_poll: now,
             sd_poll_outstanding: false,
+            sd_progress_at: None,
+            sd_report_interval: SD_POLL_INTERVAL,
             last_temp_sample: None,
             homed: None,
             printer_modes: MachineState::new(),
@@ -608,6 +619,7 @@ impl Engine {
         }
         // Whatever happens to the printer now goes unseen.
         self.set_homed(None);
+        self.sd_stopped();
         self.exit = Some(status);
     }
 
@@ -661,8 +673,52 @@ impl Engine {
         }
         self.advance_job(now);
         self.job_tick(now);
+        self.expire_sd_progress(now);
         self.publish_stats(now);
         self.shared.flush_wake();
+    }
+
+    /// SD progress was reported: the card prints.
+    pub(super) fn sd_progress_reported(&mut self, done: u64, total: u64, now: Instant) {
+        self.sd_progress_at = Some(now);
+        self.shared.update(|s| s.sd.printing = Some((done, total)));
+    }
+
+    /// The card is not printing (any more), as far as the host knows:
+    /// forget its progress.
+    pub(super) fn sd_stopped(&mut self) {
+        self.sd_progress_at = None;
+        let printing = self.shared.state.read().sd.printing.is_some();
+        if printing {
+            self.shared.update(|s| s.sd.printing = None);
+        }
+    }
+
+    /// Forget SD progress no report has confirmed for a while, unless an
+    /// M27 still waits for its answer (a heat-up in the card's file holds
+    /// it back) or Sprint's own SD print runs (it ends with the job).
+    fn expire_sd_progress(&mut self, now: Instant) {
+        let Some(at) = self.sd_progress_at else {
+            return;
+        };
+        let expiry = self
+            .sd_report_interval
+            .max(SD_POLL_INTERVAL)
+            .saturating_mul(SD_PROGRESS_MISSED_REPORTS);
+        if now.saturating_duration_since(at) < expiry {
+            return;
+        }
+        let own_print = self
+            .job
+            .as_ref()
+            .is_some_and(|j| j.kind() == JobKind::SdPrint && j.is_active());
+        let asking = self.flow.in_flight().any(|e| e.meta.is('M', 27));
+        if !own_print && !asking {
+            log::debug!(
+                "no SD progress report for {expiry:?}: the card no longer counts as printing"
+            );
+            self.sd_stopped();
+        }
     }
 
     fn check_timeout(&mut self, now: Instant) {
@@ -843,11 +899,11 @@ impl Engine {
         self.pending_stats = None;
         self.prompt = None;
         self.end_autotune("the printer reset");
+        self.sd_stopped();
         let had_prompt = self.shared.update(|s| {
             s.halted = false;
             s.restartable = false;
             s.busy = None;
-            s.sd.printing = None;
             s.sd.listing = false;
             s.prompt.take().is_some()
         });
@@ -1037,10 +1093,12 @@ impl Engine {
             self.next_temp_poll = now + Duration::from_secs_f32(interval);
             return Some(CmdMeta::new("M105", Source::Poll(PollKind::Temperature)));
         }
-        let sd_printing = self
-            .job
-            .as_ref()
-            .is_some_and(|j| j.kind() == JobKind::SdPrint && j.is_polling_sd());
+        // Sprint's SD print, or one started on the printer that the host
+        // learned about from a report (followed until it ends).
+        let sd_printing = match self.job.as_ref().filter(|j| j.is_active()) {
+            Some(j) => j.kind() == JobKind::SdPrint && j.is_polling_sd(),
+            None => self.sd_progress_at.is_some(),
+        };
         if sd_printing
             && !self.sd_autoreport
             && !self.sd_poll_outstanding
@@ -1347,6 +1405,8 @@ impl Engine {
             // Steppers off (kill) or position untrusted: home again.
             self.set_homed(Some(Axes::NONE));
             self.shared.update(|s| s.babystep_z = 0.0);
+            // A halted firmware prints nothing, from the card neither.
+            self.sd_stopped();
         }
         // Before the M303 is released below: it did not finish, the halt
         // cut it short.

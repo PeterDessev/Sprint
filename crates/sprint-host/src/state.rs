@@ -240,7 +240,12 @@ pub struct SdState {
     pub files: Vec<SdFile>,
     /// A listing is being received.
     pub listing: bool,
-    /// (bytes done, total bytes) of a running SD print.
+    /// (bytes done, total bytes) of the print the card runs now: Sprint's
+    /// SD print or one started on the printer (which the host follows with
+    /// M27 once a report told it about one). `None` once the card reports
+    /// it is not printing or done, Sprint's SD print ends, the printer
+    /// halts or resets, the connection closes, or no report has confirmed
+    /// it for three report intervals (6 s by default).
     pub printing: Option<(u64, u64)>,
     /// File selected with M23.
     pub selected: Option<String>,
