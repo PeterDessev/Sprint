@@ -52,8 +52,6 @@ const CANCEL_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long the end of a script gives a `pause` asked just before it to
 /// take effect.
 const PAUSE_SETTLE: Duration = Duration::from_secs(2);
-/// How long `resume` waits for commands typed while paused.
-const RESUME_WAIT: Duration = Duration::from_secs(600);
 /// Default `monitor` interval.
 const MONITOR_INTERVAL: f32 = 2.0;
 /// How deep `source` files may run each other.
@@ -696,11 +694,8 @@ impl Shell {
                     self.out.dim("Continuing (M108)");
                 } else if !self.job_active() {
                     self.out.warn("No job is running");
-                } else if self.paused() {
-                    self.resume();
                 } else {
-                    self.printer.resume();
-                    self.out.dim("Resuming…");
+                    self.resume();
                 }
             }
             Command::Cancel => {
@@ -1115,34 +1110,12 @@ impl Shell {
         self.config = config;
     }
 
-    /// Whether the job is paused.
-    fn paused(&self) -> bool {
-        self.printer.with_state(|s| {
-            s.job
-                .as_ref()
-                .is_some_and(|j| j.status == sprint_host::JobStatus::Paused)
-        })
-    }
-
-    /// Resume once the commands typed while paused are done: the printer
-    /// would run the resume script (back to the print) before them
-    /// otherwise, and a purge or a move would land on the part. A command
-    /// sent a moment ago may not show as queued yet, so the link must stay
-    /// idle for a moment first.
+    /// Resume the job. Commands typed while it was paused (a purge, a
+    /// move) are still sent first: the engine puts what was queued before
+    /// the resume script ahead of it.
     fn resume(&self) {
-        if !self.printer.with_state(session::link_idle) {
-            self.out
-                .dim("Resuming once the queued commands are done (Ctrl+C keeps the job paused)…");
-        }
-        self.interrupt.reset();
-        match session::wait_idle(&self.printer, RESUME_WAIT, &self.interrupt) {
-            Ok(()) => {
-                self.printer.resume();
-                self.out.dim("Resuming…");
-            }
-            Err(WaitError::Interrupted) => self.out.warn("Still paused"),
-            Err(e) => self.out.error(format!("Not resumed: {e}")),
-        }
+        self.printer.resume();
+        self.out.dim("Resuming…");
     }
 
     fn help(&self, topic: Option<&str>) {

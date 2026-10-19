@@ -751,19 +751,17 @@ fn f6_pauses_and_resumes_and_f7_cancels_after_asking() {
     let text = screen(&mut app, 120, 40);
     assert!(text.contains("‖ Paused"), "{text}");
     assert!(text.contains("F6 Resume"), "{text}");
-    // A move typed while paused, still running when F6 is pressed: the
-    // resume waits for it (the resume script would go first otherwise).
+    // A move typed while paused, still queued when F6 is pressed: the
+    // engine sends it before the resume script, so F6 resumes at once.
     wait_idle(&mut app);
     received(&app);
     app.send_gcode("G1 X60 F300");
     press(&mut app, KeyCode::F(6));
-    assert!(app.resume_pending.is_some(), "{:?}", app.toast);
     wait(&mut app, "the resume", |s| {
         s.job
             .as_ref()
             .is_some_and(|j| j.status == JobStatus::Printing)
     });
-    assert!(app.resume_pending.is_none());
     let got = received(&app);
     let at = |want: &str| got.iter().position(|c| c == want);
     assert!(
