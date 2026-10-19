@@ -73,11 +73,16 @@ impl Shown {
     }
 }
 
+/// Opens the lines of standard input (see [`stdin_lines`]).
+type OpenInput = Box<dyn FnOnce() -> Receiver<String>>;
+
 /// Follows the printer's questions; see the module docs.
 pub struct PromptWatch {
     policy: AnswerPrompts,
-    /// Lines typed on standard input, once the first question came.
+    /// Lines typed on standard input, once they are read.
     answers: Option<Receiver<String>>,
+    /// Starts reading them (once).
+    open_input: Option<OpenInput>,
     /// Standard input has ended (nothing more can be typed).
     input_closed: bool,
     /// The question shown last (until it goes away).
@@ -95,17 +100,36 @@ pub struct PromptWatch {
 
 impl PromptWatch {
     /// A watch answering as `policy` says; answers are read from standard
-    /// input when the first question comes.
+    /// input.
     pub fn new(policy: AnswerPrompts) -> PromptWatch {
-        PromptWatch {
+        PromptWatch::with_input(
+            policy,
+            Box::new(stdin_lines),
+            std::io::stdin().is_terminal(),
+        )
+    }
+
+    /// A watch reading its answers from what `open` returns, typed at a
+    /// terminal (`terminal`) or piped.
+    fn with_input(policy: AnswerPrompts, open: OpenInput, terminal: bool) -> PromptWatch {
+        let mut watch = PromptWatch {
             policy,
             answers: None,
+            open_input: Some(open),
             input_closed: false,
             shown: None,
-            forget_early_lines: std::io::stdin().is_terminal(),
+            forget_early_lines: terminal,
             answered: None,
             reask: REASK,
+        };
+        // On a terminal, read from the start: a line typed before a
+        // question is then seen, and forgotten, instead of waiting in the
+        // terminal to answer the first question. Piped answers are read
+        // when the first question comes.
+        if policy == AnswerPrompts::Ask && terminal {
+            watch.start_input();
         }
+        watch
     }
 
     /// A watch reading its answers from `answers` (tests), typed at a
@@ -116,11 +140,9 @@ impl PromptWatch {
         answers: Receiver<String>,
         terminal: bool,
     ) -> PromptWatch {
-        PromptWatch {
-            answers: Some(answers),
-            forget_early_lines: terminal,
-            ..PromptWatch::new(policy)
-        }
+        let mut watch = PromptWatch::with_input(policy, Box::new(move || answers), terminal);
+        watch.start_input();
+        watch
     }
 
     /// Look at what the printer waits for now (`None`: nothing).
@@ -231,8 +253,11 @@ impl PromptWatch {
 
     /// Read lines from standard input from now on.
     fn start_input(&mut self) {
-        if self.answers.is_none() && !self.input_closed {
-            self.answers = Some(stdin_lines());
+        if self.answers.is_none()
+            && !self.input_closed
+            && let Some(open) = self.open_input.take()
+        {
+            self.answers = Some(open());
         }
     }
 
@@ -404,6 +429,23 @@ mod tests {
         // Closed, then asked again: shown again; Enter answers the first.
         assert_eq!(watch.update(None), []);
         assert!(!watch.update(ask()).is_empty());
+        tx.send(String::new()).expect("send");
+        assert!(watch.update(ask()).contains(&Effect::Answer(0)));
+    }
+
+    #[test]
+    fn a_line_typed_before_the_first_question_does_not_answer_it() {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        // Typed at the terminal long before anything was asked.
+        tx.send(String::new()).expect("send");
+        let mut watch = PromptWatch::with_input(AnswerPrompts::Ask, Box::new(move || rx), true);
+        assert_eq!(watch.update(None), []);
+        let magnets = prompt("Insert magnets", &["Continue"]);
+        let ask = || Some(Question::Prompt(&magnets));
+        assert!(!watch.update(ask()).is_empty());
+        let effects = watch.update(ask());
+        assert!(!effects.contains(&Effect::Answer(0)), "{effects:?}");
+        // What is typed now answers it.
         tx.send(String::new()).expect("send");
         assert!(watch.update(ask()).contains(&Effect::Answer(0)));
     }
