@@ -192,6 +192,11 @@ pub struct PrintArgs {
     /// line N (they are still set); for heaters that are already hot.
     #[arg(long, requires = "start_line")]
     pub no_wait_temps: bool,
+    /// Pause before layer L (1 = the first layer) with the pause script,
+    /// as Printrun's ;@pause would; repeat for several layers. Enter
+    /// resumes the print (Ctrl+C cancels it).
+    #[arg(long, value_name = "L", value_parser = clap::value_parser!(u64).range(1..))]
+    pub pause_at_layer: Vec<u64>,
     /// Do not show the progress line on stderr.
     #[arg(long)]
     pub no_progress: bool,
@@ -456,6 +461,20 @@ mod tests {
         assert_eq!(p.start_line, Some(120));
         assert!(p.no_progress);
         assert_eq!(p.answer_prompts, AnswerPrompts::Continue);
+        assert!(p.pause_at_layer.is_empty());
+        let Ok(Command::Print(p)) = parse(&[
+            "print",
+            "a.gcode",
+            "-c",
+            "sim",
+            "--pause-at-layer",
+            "12",
+            "--pause-at-layer",
+            "3",
+        ]) else {
+            panic!("print");
+        };
+        assert_eq!(p.pause_at_layer, [12, 3]);
         let Ok(Command::Send(s)) = parse(&["send", "--connect", "sim", "G28", "M105"]) else {
             panic!("send");
         };
@@ -566,6 +585,8 @@ mod tests {
             &["print", "a.gcode", "-c", "sim", "--start-line", "x"],
             &["print", "a.gcode", "-c", "sim", "--answer-prompts", "maybe"],
             &["print", "a.gcode", "-c", "sim", "--board-reset"],
+            &["print", "a.gcode", "-c", "sim", "--pause-at-layer", "0"],
+            &["print", "a.gcode", "-c", "sim", "--pause-at-layer", "x"],
             &["print", "a.gcode", "-c", "sim", "--no-wait-temps"],
             &[
                 "print",

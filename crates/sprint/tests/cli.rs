@@ -107,7 +107,7 @@ fn help_says_what_the_configuration_and_targets_do() {
 }
 
 #[test]
-fn print_help_explains_recovery() {
+fn print_help_explains_recovery_and_pauses() {
     let output = sprint(&["print", "--help"]);
     assert!(output.status.success(), "{}", stderr(&output));
     let text = stdout(&output)
@@ -119,6 +119,8 @@ fn print_help_explains_recovery() {
         "Recover an interrupted print: start at line N of the file",
         "after a resume preamble that heats to the temperatures in effect at line N",
         "homes X and Y (never Z: the part is below the nozzle)",
+        "--pause-at-layer <L>",
+        "Enter resumes the print",
     ] {
         assert!(text.contains(fact), "missing {fact:?} in\n{text}");
     }

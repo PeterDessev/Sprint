@@ -342,6 +342,37 @@ fn a_failed_print_turns_the_heaters_off_before_exiting() {
 }
 
 #[test]
+fn print_pauses_at_the_layers_asked_for() {
+    let scratch = Scratch::new("print-pause-layer");
+    let cube = sample("calibration-cube.gcode");
+    // A layer the file does not have: refused before connecting.
+    let output = scratch.run(&["print", &cube, "-c", PRINT_SIM, "--pause-at-layer", "101"]);
+    assert_eq!(output.status.code(), Some(1));
+    let err = stderr(&output);
+    assert!(
+        err.contains("--pause-at-layer 101: calibration-cube.gcode has 100 layers"),
+        "{err}"
+    );
+    assert!(!err.contains("Connecting"), "{err}");
+    // Paused before layer 2; Enter on standard input resumes it.
+    let output = scratch.run_with_input(
+        &["print", &cube, "-c", PRINT_SIM, "--pause-at-layer", "2"],
+        "\n",
+    );
+    let err = stderr(&output);
+    assert!(output.status.success(), "{err}");
+    assert!(
+        err.contains("Pausing before layer 2 (Enter resumes)"),
+        "{err}"
+    );
+    assert!(
+        err.contains("Paused before layer 2 (--pause-at-layer)"),
+        "{err}"
+    );
+    assert!(stdout(&output).contains("Completed calibration-cube.gcode"));
+}
+
+#[test]
 fn print_fails_when_the_printer_is_unreachable() {
     let scratch = Scratch::new("print-refused");
     let cube = sample("calibration-cube.gcode");

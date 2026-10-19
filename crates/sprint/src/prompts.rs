@@ -50,6 +50,10 @@ pub enum Question<'a> {
     /// The printer paused the print by itself (`//action:paused`, a
     /// runout) and shows no prompt.
     Paused,
+    /// The print paused before this layer (1-based) as `--pause-at-layer`
+    /// asked: Enter resumes it, whatever `--answer-prompts` says (the user
+    /// asked for the pause to do something there).
+    PausedAtLayer(u64),
 }
 
 /// What [`PromptWatch::update`] asks the caller to do.
@@ -70,6 +74,7 @@ enum Shown {
     Prompt(HostPrompt),
     WaitingForUser,
     Paused,
+    PausedAtLayer(u64),
 }
 
 impl Shown {
@@ -78,6 +83,7 @@ impl Shown {
             Question::Prompt(prompt) => Shown::Prompt(prompt.clone()),
             Question::WaitingForUser => Shown::WaitingForUser,
             Question::Paused => Shown::Paused,
+            Question::PausedAtLayer(layer) => Shown::PausedAtLayer(layer),
         }
     }
 }
@@ -158,7 +164,7 @@ impl PromptWatch {
         } else if let Some(line) = self.next_line(&mut effects) {
             match question {
                 Question::Prompt(prompt) => answer_line(prompt, &line, &mut effects),
-                Question::WaitingForUser | Question::Paused => {
+                Question::WaitingForUser | Question::Paused | Question::PausedAtLayer(_) => {
                     effects.push(Effect::Continue);
                     effects.push(Effect::Say(continuing(question).to_string()));
                 }
@@ -174,6 +180,19 @@ impl PromptWatch {
     }
 
     fn ask(&mut self, question: Question<'_>, effects: &mut Vec<Effect>) {
+        // A pause the user asked for is resumed from here, however the
+        // printer's own questions are answered.
+        if let Question::PausedAtLayer(layer) = question {
+            effects.push(Effect::Say(format!(
+                "Paused before layer {layer} (--pause-at-layer)"
+            )));
+            self.drain();
+            self.start_input();
+            effects.push(Effect::Say(
+                self.how_to_answer("Press Enter to resume the print"),
+            ));
+            return;
+        }
         match question {
             Question::Prompt(prompt) => {
                 effects.push(Effect::Say(format!(
@@ -191,6 +210,7 @@ impl PromptWatch {
                 "The printer paused the print (a filament runout, or paused at the printer)"
                     .to_string(),
             )),
+            Question::PausedAtLayer(_) => {}
         }
         match self.policy {
             AnswerPrompts::Continue => match question {
@@ -199,7 +219,7 @@ impl PromptWatch {
                 Question::Prompt(prompt) if resumes_a_pause(prompt) => {
                     effects.push(Effect::Say(PAUSED_AT_THE_PRINTER.to_string()));
                 }
-                Question::Paused => {
+                Question::Paused | Question::PausedAtLayer(_) => {
                     effects.push(Effect::Say(PAUSED_AT_THE_PRINTER.to_string()));
                 }
                 Question::Prompt(prompt) => {
@@ -227,7 +247,9 @@ impl PromptWatch {
                     }
                     Question::Prompt(_) => "Press Enter to answer",
                     Question::WaitingForUser => "Press Enter to continue (sends M108)",
-                    Question::Paused => "Press Enter to resume the print",
+                    Question::Paused | Question::PausedAtLayer(_) => {
+                        "Press Enter to resume the print"
+                    }
                 };
                 effects.push(Effect::Say(self.how_to_answer(typed)));
             }
@@ -298,7 +320,7 @@ fn resumes_a_pause(prompt: &HostPrompt) -> bool {
 /// What is said when the printer is told to go on.
 fn continuing(question: Question<'_>) -> &'static str {
     match question {
-        Question::Paused => "Resuming the print",
+        Question::Paused | Question::PausedAtLayer(_) => "Resuming the print",
         _ => "Continuing (M108)",
     }
 }

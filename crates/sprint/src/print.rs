@@ -78,6 +78,7 @@ pub fn run(args: &PrintArgs) -> Result<ExitCode> {
         options.start_line = index;
         options.preamble = resume_preamble(&loaded.file, index, &resume_options(args));
     }
+    let pauses = pause_points(&loaded, &args.pause_at_layer, options.start_line)?;
 
     let printer = Printer::with_console_capacity(config.console_max_lines);
     printer.set_profile(profile.clone());
@@ -93,6 +94,10 @@ pub fn run(args: &PrintArgs) -> Result<ExitCode> {
     printer
         .start_print(loaded.file.clone(), options)
         .map_err(|e| anyhow!("cannot print {}: {e}", loaded.name()))?;
+    if !pauses.is_empty() {
+        let lines: Vec<usize> = pauses.iter().map(|p| p.line).collect();
+        printer.pause_at_lines(&lines);
+    }
     if show_progress {
         let stats = &loaded.toolpath.stats;
         eprintln!(
@@ -101,11 +106,15 @@ pub fn run(args: &PrintArgs) -> Result<ExitCode> {
             loaded.toolpath.layers.len(),
             format::duration(f64::from(stats.estimated_time))
         );
+        if !pauses.is_empty() {
+            let layers: Vec<String> = pauses.iter().map(|p| p.layer.to_string()).collect();
+            eprintln!("Pausing before layer {} (Enter resumes)", layers.join(", "));
+        }
     }
 
     let mut progress = Progress::new(show_progress, stderr_tty);
     let mut prompts = PromptWatch::new(args.answer_prompts);
-    let outcome = follow_or_close(&printer, &interrupt, &mut prompts, &mut progress);
+    let outcome = follow_or_close(&printer, &interrupt, &mut prompts, &mut progress, &pauses);
     progress.finish();
     let heaters = stop_safely(&printer, &outcome, &mut |text| eprintln!("{text}"));
     printer.disconnect();
@@ -154,6 +163,45 @@ pub fn run(args: &PrintArgs) -> Result<ExitCode> {
             other.label()
         )),
     }
+}
+
+/// A `--pause-at-layer` point: the print pauses before `line`, the first
+/// line of `layer`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PausePoint {
+    /// 0-based file line the job pauses before.
+    pub line: usize,
+    /// The layer, 1-based as the user gave it.
+    pub layer: u64,
+}
+
+/// The pause points of `--pause-at-layer` (1-based layers), in file order:
+/// each layer must exist and start at or after the line the print starts
+/// from (`start_line`, 0-based).
+fn pause_points(loaded: &LoadedFile, layers: &[u64], start_line: usize) -> Result<Vec<PausePoint>> {
+    let count = loaded.toolpath.layers.len();
+    let mut points = Vec::new();
+    for &layer in layers {
+        let found = usize::try_from(layer)
+            .ok()
+            .and_then(|l| l.checked_sub(1))
+            .and_then(|i| loaded.toolpath.layers.get(i));
+        let Some(found) = found else {
+            bail!(
+                "--pause-at-layer {layer}: {} has {count} layer{}",
+                loaded.name(),
+                if count == 1 { "" } else { "s" }
+            );
+        };
+        let line = usize::try_from(found.lines.start).unwrap_or(usize::MAX);
+        if line < start_line {
+            bail!("--pause-at-layer {layer} starts before the line the print starts from");
+        }
+        points.push(PausePoint { line, layer });
+    }
+    points.sort_by_key(|p| p.line);
+    points.dedup();
+    Ok(points)
 }
 
 /// The command that resumes this print from `stopped_at` (the 0-based
@@ -291,12 +339,14 @@ pub trait Report {
 /// quickly a second one follows; a second one (or a cancel that takes too
 /// long) then stops waiting for the cancel to finish. The printer's
 /// messages and questions are reported as they come, and the questions
-/// are answered as `prompts` says.
+/// are answered as `prompts` says; a pause at one of `pauses` (the
+/// `--pause-at-layer` points) waits for Enter.
 pub fn follow(
     printer: &Printer,
     interrupt: &Interrupt,
     prompts: &mut PromptWatch,
     report: &mut dyn Report,
+    pauses: &[PausePoint],
 ) -> Outcome {
     let events = printer.subscribe();
     let mut last_message: Option<String> = None;
@@ -304,8 +354,12 @@ pub fn follow(
     // Since when the printer has paused the print without asking anything
     // and without working on something (parking, unloading filament).
     let mut quiet_pause: Option<Instant> = None;
+    // The pause points still ahead at the last look, and the layer of the
+    // last one the job passed: the pause that follows is the one asked for.
+    let mut points_ahead: Vec<usize> = pauses.iter().map(|p| p.line).collect();
+    let mut paused_at_layer: Option<u64> = None;
     loop {
-        let (view, elapsed, prompt, waiting, busy, stopped_at) = printer.with_state(|s| {
+        let (view, elapsed, prompt, waiting, busy, ahead, stopped_at) = printer.with_state(|s| {
             let job = s.job.as_ref();
             (
                 JobView {
@@ -317,6 +371,7 @@ pub fn follow(
                 s.prompt.clone(),
                 sprint_tui::actions::waiting_for_user(s),
                 s.busy.is_some(),
+                job.map(|j| j.pause_at.clone()).unwrap_or_default(),
                 job.and_then(|j| j.stopped_at),
             )
         });
@@ -329,6 +384,10 @@ pub fn follow(
                 last_message = Some(text);
             }
         }
+        for passed in points_ahead.iter().filter(|line| !ahead.contains(line)) {
+            paused_at_layer = pauses.iter().find(|p| p.line == *passed).map(|p| p.layer);
+        }
+        points_ahead = ahead;
         report.show(&view);
         let percent = format::percent(f64::from(view.progress));
         if view.status.is_finished() {
@@ -356,12 +415,17 @@ pub fn follow(
                 stopped_at,
             };
         }
-        let quiet = view.status == JobStatus::Paused && prompt.is_none() && !busy;
+        let paused = view.status == JobStatus::Paused;
+        let quiet = paused && prompt.is_none() && !busy;
         quiet_pause = quiet.then(|| quiet_pause.unwrap_or_else(Instant::now));
         if cancelled_at.is_none() {
             let question = match &prompt {
                 Some(prompt) => Some(Question::Prompt(prompt)),
                 None if waiting => Some(Question::WaitingForUser),
+                // The pause asked for with --pause-at-layer.
+                None if paused && paused_at_layer.is_some() => {
+                    paused_at_layer.map(Question::PausedAtLayer)
+                }
                 // A filament change pauses first and asks once parked.
                 None if quiet_pause.is_some_and(|t| t.elapsed() >= PAUSE_GRACE) => {
                     Some(Question::Paused)
@@ -374,7 +438,10 @@ pub fn follow(
                     Effect::Answer(button) => printer.answer_prompt(button),
                     // Resuming a print the printer paused also releases a
                     // firmware waiting for the user.
-                    Effect::Continue if view.status == JobStatus::Paused => printer.resume(),
+                    Effect::Continue if paused => {
+                        paused_at_layer = None;
+                        printer.resume();
+                    }
                     Effect::Continue => printer.send("M108"),
                 }
             }
@@ -392,9 +459,10 @@ pub fn follow_or_close(
     interrupt: &Interrupt,
     prompts: &mut PromptWatch,
     report: &mut dyn Report,
+    pauses: &[PausePoint],
 ) -> Outcome {
     let followed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        follow(printer, interrupt, prompts, report)
+        follow(printer, interrupt, prompts, report, pauses)
     }));
     match followed {
         Ok(outcome) => outcome,
@@ -556,7 +624,7 @@ mod tests {
     fn watch(printer: &Printer, interrupt: &Interrupt, policy: AnswerPrompts) -> (Outcome, Seen) {
         let (_typing, typed) = crossbeam_channel::unbounded();
         let mut prompts = PromptWatch::with_answers(policy, typed, true);
-        follow_at_most(printer, interrupt, &mut prompts)
+        follow_at_most(printer, interrupt, &mut prompts, &[])
     }
 
     /// [`follow`], with a double Ctrl+C after a minute so that a job
@@ -565,6 +633,7 @@ mod tests {
         printer: &Printer,
         interrupt: &Interrupt,
         prompts: &mut PromptWatch,
+        pauses: &[PausePoint],
     ) -> (Outcome, Seen) {
         let (done, finished) = crossbeam_channel::bounded::<()>(0);
         let watchdog = interrupt.clone();
@@ -577,7 +646,7 @@ mod tests {
             }
         });
         let mut seen = Seen::default();
-        let outcome = follow(printer, interrupt, prompts, &mut seen);
+        let outcome = follow(printer, interrupt, prompts, &mut seen, pauses);
         drop(done);
         let _ = thread.join();
         (outcome, seen)
@@ -790,7 +859,7 @@ mod tests {
             let _ = typing.send(String::new());
             shown.is_ok()
         });
-        let (outcome, seen) = follow_at_most(&printer, &Interrupt::new(), &mut prompts);
+        let (outcome, seen) = follow_at_most(&printer, &Interrupt::new(), &mut prompts, &[]);
         assert!(user.join().unwrap_or(false), "no prompt");
         assert_eq!(outcome.last.0, JobStatus::Completed, "{:?}", seen.said);
         let said = seen.said.join("\n");
@@ -837,7 +906,7 @@ mod tests {
         let (_typing, typed) = crossbeam_channel::unbounded();
         let mut prompts = PromptWatch::with_answers(AnswerPrompts::Ask, typed, true);
         let ended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            follow_or_close(&printer, &Interrupt::new(), &mut prompts, &mut Breaks)
+            follow_or_close(&printer, &Interrupt::new(), &mut prompts, &mut Breaks, &[])
         }));
         assert!(ended.is_err(), "the panic goes on");
         assert_eq!(
@@ -893,6 +962,54 @@ mod tests {
         assert!(reset.iter().any(|l| l.starts_with("M104")), "{reset:?}");
     }
 
+    /// A file with `layers` layers of a few short real-time moves each.
+    fn layered(layers: usize) -> sprint_gcode::GcodeFile {
+        let mut text = String::from("G28\nG90\nM83\n");
+        for layer in 0..layers {
+            text.push_str(&format!("G1 Z{:.1} F600\n", 0.2 * (layer + 1) as f64));
+            for i in 0..4 {
+                text.push_str(&format!("G1 X{} Y20 E0.5 F1200\n", 20 + (i % 2) * 10));
+            }
+        }
+        sprint_gcode::GcodeFile::from_text("layers.gcode", &text)
+    }
+
+    fn layered_loaded(layers: usize) -> LoadedFile {
+        let file = layered(layers);
+        let toolpath =
+            sprint_gcode::analyze_simple(&file, &sprint_gcode::AnalyzeOptions::default());
+        LoadedFile::new("layers.gcode".into(), file, toolpath, Duration::ZERO)
+    }
+
+    #[test]
+    fn pause_points_are_layer_starts() {
+        let loaded = layered_loaded(4);
+        assert_eq!(loaded.toolpath.layers.len(), 4);
+        let start = |i: usize| loaded.toolpath.layers[i].lines.start as usize;
+        let points = pause_points(&loaded, &[3, 2, 3], 0).expect("points");
+        assert_eq!(
+            points,
+            [
+                PausePoint {
+                    line: start(1),
+                    layer: 2
+                },
+                PausePoint {
+                    line: start(2),
+                    layer: 3
+                },
+            ]
+        );
+        assert!(pause_points(&loaded, &[], 0).expect("none").is_empty());
+        let err = pause_points(&loaded, &[5], 0).expect_err("no layer 5");
+        assert_eq!(
+            err.to_string(),
+            "--pause-at-layer 5: layers.gcode has 4 layers"
+        );
+        let err = pause_points(&loaded, &[2], start(2)).expect_err("before the start");
+        assert!(err.to_string().contains("starts before"), "{err}");
+    }
+
     #[test]
     fn the_resume_command_names_the_line_after_the_last_acknowledged() {
         let args = print_args(&["--profile", "Bench 2"]);
@@ -910,6 +1027,54 @@ mod tests {
         assert_eq!(shell_word("sim://?a=1&b=2"), r#""sim://?a=1&b=2""#);
         assert_eq!(shell_word(r"C:\x\cube.gcode"), r"C:\x\cube.gcode");
         assert_eq!(shell_word(""), r#""""#);
+    }
+
+    #[test]
+    fn a_pause_at_a_layer_waits_for_enter() {
+        let printer = connect(SimConfig {
+            boot_delay_ms: 20,
+            time_scale: 20.0,
+            instant_moves: false,
+            ..SimConfig::default()
+        });
+        let loaded = layered_loaded(4);
+        let points = pause_points(&loaded, &[3], 0).expect("points");
+        printer
+            .start_print(loaded.file.clone(), Default::default())
+            .expect("start");
+        printer.pause_at_lines(&[points[0].line]);
+        let (typing, typed) = crossbeam_channel::unbounded();
+        // --answer-prompts continue does not resume a pause asked for.
+        let mut prompts = PromptWatch::with_answers(AnswerPrompts::Continue, typed, false);
+        let asked = printer.clone();
+        let user = std::thread::spawn(move || {
+            let paused = session::wait_for(
+                &asked,
+                Duration::from_secs(30),
+                &Interrupt::new(),
+                true,
+                |s| {
+                    s.job
+                        .as_ref()
+                        .is_some_and(|j| j.status == JobStatus::Paused)
+                },
+            );
+            std::thread::sleep(POLL * 5);
+            let _ = typing.send(String::new());
+            paused.is_ok()
+        });
+        let (outcome, seen) = follow_at_most(&printer, &Interrupt::new(), &mut prompts, &points);
+        assert!(user.join().unwrap_or(false), "never paused");
+        assert_eq!(outcome.last.0, JobStatus::Completed, "{:?}", seen.said);
+        let said = seen.said.join("\n");
+        assert!(
+            said.contains("Paused before layer 3 (--pause-at-layer)"),
+            "{said}"
+        );
+        assert!(said.contains("Press Enter to resume the print"), "{said}");
+        assert!(said.contains("Resuming the print"), "{said}");
+        assert!(!said.contains("Paused at the printer"), "{said}");
+        printer.disconnect();
     }
 
     #[test]
