@@ -876,8 +876,13 @@ full, giving realistic streaming timing.
 
 ```rust
 pub use sprint_proto; pub use sprint_gcode; pub use sprint_sim; // re-exports for UIs
-pub mod config; pub mod transport; pub mod state; pub mod event; pub mod job; pub mod console; pub mod script;
+pub mod config; pub mod transport; pub mod state; pub mod event; pub mod job; pub mod console; pub mod script; pub mod fs;
 pub use host::Printer;
+
+// ---- fs ----
+/// Write a file atomically (temporary file next to it, flushed, renamed over it; missing parent
+/// directories created; on failure the old file stays and the temporary file is removed). For exports.
+pub fn write_atomic(path: impl AsRef<std::path::Path>, bytes: impl AsRef<[u8]>) -> std::io::Result<()>;
 
 // ---- transport ----
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -1283,6 +1288,9 @@ Every public item is also re-exported at the crate root.
   placeholders stay verbatim; comments and blank lines are dropped; a line
   using `{e}` is dropped while extrusion is relative (that is how the
   resume script's `G92 E{e}` disappears for M83 files).
+* `fs`: `write_atomic` (also at the root) is what `AppConfig::save_to`
+  uses. Each call writes its own `<name>.<pid>-<n>.tmp`, so concurrent
+  writers of one path never mix (the last rename wins).
 * `console`: `Console` (the bounded ring; `seq` starts at 1 and survives
   `clear`; `push_stream` adds a `stream` entry). Sent entries carry the clean command and its `line` number;
   resent lines are logged again.

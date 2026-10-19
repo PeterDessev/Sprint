@@ -7,8 +7,9 @@
 //! so a portable setup or a test pointing `SPRINT_CONFIG` at a scratch file
 //! never reads, auto-connects from or writes the user's real configuration.
 //!
-//! [`AppConfig::save_to`] writes atomically (temporary file + rename), so a
-//! crash never leaves a half-written file behind. [`AppConfig::load`] never
+//! [`AppConfig::save_to`] writes atomically ([`write_atomic`](crate::fs::write_atomic):
+//! temporary file + rename), so a crash never leaves a half-written file
+//! behind. [`AppConfig::load`] never
 //! fails: a missing file gives the defaults, and a file that does not fully
 //! parse keeps every valid profile, macro and value; only the broken lines
 //! and values fall back to defaults ([`AppConfig::load_checked`] reports
@@ -606,21 +607,7 @@ impl AppConfig {
         let text = toml::to_string_pretty(self).map_err(|e| {
             HostError::Config(format!("could not serialize the configuration: {e}"))
         })?;
-        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-            fs::create_dir_all(parent)?;
-        }
-        let tmp = sibling_with_suffix(path, ".tmp");
-        let result = (|| -> io::Result<()> {
-            let mut file = fs::File::create(&tmp)?;
-            file.write_all(text.as_bytes())?;
-            file.sync_all()?;
-            drop(file);
-            fs::rename(&tmp, path)
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(&tmp);
-        }
-        Ok(result?)
+        Ok(crate::fs::write_atomic(path, text)?)
     }
 
     /// The configuration file in use: the file named by `SPRINT_CONFIG`

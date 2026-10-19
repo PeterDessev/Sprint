@@ -20,6 +20,7 @@
 //! * [`config`]: profiles and options, stored as TOML.
 //! * [`state`], [`console`], [`event`], [`job`]: what the engine reports.
 //! * [`script`]: placeholder templating for pause/resume/cancel scripts.
+//! * [`fs`]: [`write_atomic`] for files that must never be half-written.
 //!
 //! **Never point tests or examples at a real serial port**; use
 //! [`ConnectTarget::Simulator`] (or TCP loopback to the simulator).
@@ -65,6 +66,7 @@ pub mod console;
 mod engine;
 mod error;
 pub mod event;
+pub mod fs;
 mod hooks;
 mod host;
 pub mod job;
@@ -80,6 +82,7 @@ pub use config::{
 pub use console::{Console, ConsoleEntry, ConsoleKind};
 pub use error::HostError;
 pub use event::{EVENT_QUEUE_LIMIT, Event, EventBus};
+pub use fs::write_atomic;
 pub use host::Printer;
 pub use job::{JobInfo, JobKind, JobStatus, PrintOptions, Progress, ProgressModel};
 pub use script::{
