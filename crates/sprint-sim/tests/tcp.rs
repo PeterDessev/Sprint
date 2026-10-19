@@ -78,6 +78,24 @@ fn shutdown_disconnects_the_client() {
 }
 
 #[test]
+fn the_server_can_be_watched_until_it_ends() {
+    let server = SimServer::bind("127.0.0.1:0", fast(50.0)).expect("bind");
+    assert!(!server.is_finished());
+    let (_stream, mut reader) = connect(server.local_addr());
+    read_until(&mut reader, "echo:SD card ok");
+    assert!(!server.is_finished(), "serving a client");
+    std::thread::scope(|s| {
+        let waiter = s.spawn(|| server.wait());
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!waiter.is_finished(), "wait blocks while serving");
+        server.stop();
+        waiter.join().unwrap().expect("a clean stop");
+    });
+    assert!(server.is_finished());
+    server.wait().expect("later waits return at once");
+}
+
+#[test]
 fn bind_errors_are_reported() {
     let server = SimServer::bind("127.0.0.1:0", fast(50.0)).expect("bind");
     let taken = server.local_addr();

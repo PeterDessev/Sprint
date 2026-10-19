@@ -5,8 +5,8 @@ use crate::config::SimConfig;
 use crate::link::{SimLink, spawn};
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -31,10 +31,14 @@ pub fn serve_tcp(addr: &str, config: SimConfig) -> io::Result<()> {
 
 /// A TCP server running on a background thread (for tests and embedding).
 /// Dropping it stops the server.
+///
+/// The accept loop ends only when it is stopped or the listener fails;
+/// [`SimServer::is_finished`] and [`SimServer::wait`] let a program that
+/// serves until it is killed notice the second case.
 pub struct SimServer {
     addr: SocketAddr,
     stop: Arc<AtomicBool>,
-    thread: Option<JoinHandle<io::Result<()>>>,
+    thread: Mutex<Option<JoinHandle<io::Result<()>>>>,
 }
 
 impl SimServer {
@@ -51,7 +55,7 @@ impl SimServer {
         Ok(SimServer {
             addr: local,
             stop,
-            thread: Some(thread),
+            thread: Mutex::new(Some(thread)),
         })
     }
 
@@ -60,25 +64,49 @@ impl SimServer {
         self.addr
     }
 
-    /// Stop serving (disconnecting any client) and wait for the thread.
-    pub fn shutdown(mut self) -> io::Result<()> {
-        self.stop_and_join()
+    /// The accept loop has ended: stopped, or the listener failed
+    /// ([`SimServer::wait`] tells which).
+    pub fn is_finished(&self) -> bool {
+        self.thread
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .is_none_or(JoinHandle::is_finished)
     }
 
-    fn stop_and_join(&mut self) -> io::Result<()> {
-        self.stop.store(true, Ordering::Release);
-        match self.thread.take() {
+    /// Block until the accept loop ends and return how: `Ok` after
+    /// [`SimServer::stop`], the listener's error otherwise. Later calls
+    /// return `Ok(())` at once.
+    pub fn wait(&self) -> io::Result<()> {
+        let thread = self
+            .thread
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        match thread {
             Some(t) => t
                 .join()
                 .unwrap_or_else(|_| Err(io::Error::other("server thread panicked"))),
             None => Ok(()),
         }
     }
+
+    /// Ask the server to stop (disconnecting any client) without waiting.
+    pub fn stop(&self) {
+        self.stop.store(true, Ordering::Release);
+    }
+
+    /// Stop serving (disconnecting any client) and wait for the thread.
+    pub fn shutdown(self) -> io::Result<()> {
+        self.stop();
+        self.wait()
+    }
 }
 
 impl Drop for SimServer {
     fn drop(&mut self) {
-        let _ = self.stop_and_join();
+        self.stop();
+        let _ = self.wait();
     }
 }
 

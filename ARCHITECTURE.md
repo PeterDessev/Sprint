@@ -688,6 +688,16 @@ pub struct SimSnapshot {
 /// Serve the virtual printer over TCP (one client at a time) so other hosts,
 /// including Printrun or OctoPrint, can connect to it. Blocks.
 pub fn serve_tcp(addr: &str, config: SimConfig) -> std::io::Result<()>;
+/// The same on a background thread (dropping it stops it).
+pub struct SimServer;
+impl SimServer {
+    pub fn bind(addr: impl ToSocketAddrs, config: SimConfig) -> std::io::Result<SimServer>;
+    pub fn local_addr(&self) -> SocketAddr;
+    pub fn is_finished(&self) -> bool;               // the accept loop ended (stopped, or the listener failed)
+    pub fn wait(&self) -> std::io::Result<()>;      // block until it ends: Ok after stop(), else the listener's error
+    pub fn stop(&self);                              // ask it to stop without waiting
+    pub fn shutdown(self) -> std::io::Result<()>;   // stop + wait
+}
 ```
 Behaviour: Marlin 2.1-like replies byte-for-byte where practical (boot banner,
 `ok`, `Error:checksum mismatch, Last Line: N` + `Resend: N+1`, `Error:Line
