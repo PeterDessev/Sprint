@@ -171,8 +171,12 @@ pub fn graph(theme: Theme, size: impl Into<Vec2>, rig: Rig) -> Harness<'static, 
     common::harness_state(theme, size, rig, |ui, rig| rig.draw_graph(ui))
 }
 
-/// Shrink the window to the drawn content (twice: wrapping may change).
+/// Fit the window to the drawn content (twice: wrapping may change). The
+/// window first grows tall: the sidebar scrolls, so content taller than the
+/// window would be measured at the window's height.
 pub fn fit_height(h: &mut Harness<'_, Rig>, width: f32) {
+    h.set_size(Vec2::new(width, 4000.0));
+    settle(h);
     for _ in 0..2 {
         let content = h.state().content;
         if content.is_positive() {
