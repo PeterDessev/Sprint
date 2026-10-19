@@ -65,7 +65,7 @@ pub fn run(args: &PrintArgs) -> Result<ExitCode> {
         }
         Err(e) => return Err(e),
     };
-    let mut options = sprint_tui::actions::print_options(&loaded);
+    let mut options = sprint_tui::actions::print_options(&loaded, &profile);
     if let Some(line) = args.start_line {
         let total = loaded.file.len();
         let index = usize::try_from(line - 1).unwrap_or(usize::MAX);

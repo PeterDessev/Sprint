@@ -1160,10 +1160,9 @@ impl Shell {
             return;
         };
         self.pause_asked = None;
-        match self
-            .printer
-            .start_print(file.file.clone(), actions::print_options(file))
-        {
+        let options = actions::print_options(file, &self.profile);
+        let note = actions::progress_note(&options);
+        match self.printer.start_print(file.file.clone(), options) {
             // The printer's console says "Printing ..."; add the plan.
             Ok(()) => {
                 let stats = &file.toolpath.stats;
@@ -1173,6 +1172,9 @@ impl Shell {
                     file.toolpath.layers.len(),
                     format::duration(f64::from(stats.estimated_time))
                 ));
+                if let Some(note) = note {
+                    self.out.dim(note);
+                }
             }
             Err(e) => self.out.error(format!("Cannot print: {e}")),
         }

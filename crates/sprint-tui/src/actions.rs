@@ -430,13 +430,24 @@ pub fn sd_name(path: &Path) -> String {
     format!("{name}.GCO")
 }
 
-/// Print options for a loaded file: its analysis drives progress, ETA and
-/// layer tracking.
-pub fn print_options(loaded: &LoadedFile) -> PrintOptions {
+/// Print options for a loaded file with `profile`: its analysis drives
+/// progress, ETA and layer tracking, and the progress shows on the
+/// printer's display (M73) when the profile's `emit_progress` says so.
+/// The scripts and hooks come from the profile the printer has.
+pub fn print_options(loaded: &LoadedFile, profile: &PrinterProfile) -> PrintOptions {
     PrintOptions {
         toolpath: Some(Arc::clone(&loaded.toolpath)),
+        emit_progress: profile.emit_progress,
         ..PrintOptions::default()
     }
+}
+
+/// "Progress shows on the printer (M73)." when a print with `options`
+/// sends it.
+pub fn progress_note(options: &PrintOptions) -> Option<&'static str> {
+    options
+        .emit_progress
+        .then_some("Progress shows on the printer's display (M73).")
 }
 
 /// What the job is doing, as the command-safety classifier
@@ -1175,6 +1186,29 @@ mod tests {
         );
         let fresh = SettingCommand::parse("M900 K0.05").expect("edit");
         assert_eq!(merged_setting(&settings, &fresh).to_gcode(), "M900 K0.05");
+    }
+
+    #[test]
+    fn print_options_follow_the_profile() {
+        let file = sprint_host::sprint_gcode::GcodeFile::from_text(
+            "a.gcode",
+            "G28
+G1 X1
+",
+        );
+        let toolpath = sprint_host::sprint_gcode::analyze_simple(
+            &file,
+            &sprint_host::sprint_gcode::AnalyzeOptions::default(),
+        );
+        let loaded = LoadedFile::new("a.gcode".into(), file, toolpath, Default::default());
+        let mut profile = PrinterProfile::default();
+        let options = print_options(&loaded, &profile);
+        assert!(options.toolpath.is_some() && !options.emit_progress);
+        assert_eq!(progress_note(&options), None);
+        profile.emit_progress = true;
+        let options = print_options(&loaded, &profile);
+        assert!(options.emit_progress);
+        assert!(progress_note(&options).is_some_and(|n| n.contains("M73")));
     }
 
     #[test]

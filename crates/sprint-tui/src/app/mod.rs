@@ -875,7 +875,7 @@ impl App {
         };
         let stats = &file.toolpath.stats;
         let target = self.view.target.clone().unwrap_or_default();
-        let message = vec![
+        let mut message = vec![
             file.name().to_string(),
             format!(
                 "{} layers · {} estimated · {} filament",
@@ -885,6 +885,8 @@ impl App {
             ),
             format!("on {target}"),
         ];
+        let options = actions::print_options(file, &self.profile);
+        message.extend(actions::progress_note(&options).map(str::to_string));
         self.modal = Some(Modal::Confirm(Confirm::new(
             "Start print?",
             message,
@@ -909,7 +911,7 @@ impl App {
             ));
             return;
         }
-        let options = actions::print_options(file);
+        let options = actions::print_options(file, &self.profile);
         let name = file.name().to_string();
         match self.printer.start_print(file.file.clone(), options) {
             Ok(()) => {

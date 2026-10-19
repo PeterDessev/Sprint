@@ -1720,6 +1720,31 @@ fn terminal_events_resize_paste_and_cancel_typing() {
 }
 
 #[test]
+fn the_profile_can_show_the_progress_on_the_printer() {
+    let mut app = connected_app();
+    load(&mut app, "arcs-test.gcode");
+    // The TUI's profile only (the printer's own copy says no): the print
+    // asks for M73 itself.
+    app.profile.emit_progress = true;
+    assert!(!app.printer.profile().emit_progress);
+    received(&app);
+    press(&mut app, KeyCode::F(5));
+    let Some(Modal::Confirm(confirm)) = &app.modal else {
+        panic!("no question: {:?}", app.toast);
+    };
+    assert_eq!(
+        confirm.message.last().map(String::as_str),
+        Some("Progress shows on the printer's display (M73).")
+    );
+    press(&mut app, KeyCode::Char('y'));
+    wait(&mut app, "the print", |s| {
+        s.job.as_ref().is_some_and(|j| j.status.is_finished())
+    });
+    let got = received(&app);
+    assert!(got.iter().any(|c| c.starts_with("M73 P")), "{got:?}");
+}
+
+#[test]
 fn the_print_confirmation_starts_the_file_it_named() {
     let mut app = connected_app();
     load(&mut app, "calibration-cube.gcode");

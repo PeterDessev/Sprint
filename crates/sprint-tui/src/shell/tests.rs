@@ -334,6 +334,8 @@ fn a_script_prints_a_file_and_waits_for_it() {
         "{text}"
     );
     assert!(text.contains("100 layers"), "{text}");
+    // The default profile does not show the progress on the printer.
+    assert!(!text.contains("(M73)"), "{text}");
     let status = shell
         .printer
         .with_state(|s| s.job.as_ref().map(|j| j.status.clone()));
@@ -345,6 +347,21 @@ fn a_script_prints_a_file_and_waits_for_it() {
 }
 
 #[test]
+fn the_profile_can_show_the_progress_on_the_printer() {
+    let (mut shell, buffer) = connected();
+    shell.profile.emit_progress = true;
+    let arcs = sample("arcs-test.gcode");
+    script(&mut shell, &[&format!("load {}", arcs.display()), "print"]);
+    let text = buffer.text();
+    assert!(
+        text.contains("Progress shows on the printer's display (M73)."),
+        "{text}"
+    );
+    let got = received(&shell);
+    assert!(got.iter().any(|c| c.starts_with("M73 P")), "{got:?}");
+}
+
+#[test]
 fn monitor_follows_a_print_until_it_ends() {
     let (mut shell, buffer) = connected();
     let cube = sample("calibration-cube.gcode");
@@ -352,7 +369,10 @@ fn monitor_follows_a_print_until_it_ends() {
     let file = shell.file.clone().expect("loaded");
     shell
         .printer
-        .start_print(file.file.clone(), actions::print_options(&file))
+        .start_print(
+            file.file.clone(),
+            actions::print_options(&file, &shell.profile),
+        )
         .expect("start");
     buffer.clear();
     script(&mut shell, &["monitor 0.2"]);
