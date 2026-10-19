@@ -408,16 +408,7 @@ mod tests {
         assert_eq!(seen[7].as_deref(), Some("other.stl"));
         assert_eq!(seen[9].as_deref(), Some("vase.stl"));
         // The end of a layer ends the mesh Cura left open.
-        let text = ";MESH:vase.stl
-G1 X1
-;TIME_ELAPSED:12.5
-G1 E-2
-;LAYER:1
-G0 Z1
-;MESH:vase.stl
-G1 X2
-;TIME_ELAPSED:20
-G1 X0 Y200";
+        let text = ";MESH:vase.stl\nG1 X1\n;TIME_ELAPSED:12.5\nG1 E-2\n;LAYER:1\nG0 Z1\n;MESH:vase.stl\nG1 X2\n;TIME_ELAPSED:20\nG1 X0 Y200";
         let mut o = scan(text);
         assert_eq!(o.names, ["vase.stl"]);
         let seen = track(&mut o, text);
@@ -426,15 +417,7 @@ G1 X0 Y200";
         assert_eq!(seen[7].as_deref(), Some("vase.stl"));
         assert_eq!(seen[9], None, "the end G-code is no object's");
         // ";LAYER:" alone (other slicers) names no object.
-        assert!(
-            scan(
-                ";LAYER:0
-G1 X1
-;LAYER:1"
-            )
-            .names
-            .is_empty()
-        );
+        assert!(scan(";LAYER:0\nG1 X1\n;LAYER:1").names.is_empty());
     }
 
     #[test]
