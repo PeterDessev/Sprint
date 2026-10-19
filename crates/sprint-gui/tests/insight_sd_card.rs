@@ -360,6 +360,36 @@ fn a_narrow_tab_keeps_the_card_buttons_apart() {
 }
 
 #[test]
+fn thousands_of_files_draw_only_the_visible_rows() {
+    let mut state = sd_state();
+    state.sd.files = (0..3000)
+        .map(|i| sprint_host::sprint_proto::SdFile {
+            name: format!("F{i:05}.GCO"),
+            long_name: Some(format!("batch part {i:04}.gcode")),
+            size: Some(1000 + i as u64),
+        })
+        .collect();
+    let mut h = tab(Theme::Dark, (1000.0, 760.0), state);
+    assert!(h.query_by_label("Print batch part 0000.gcode").is_some());
+    // Rows below the fold are not built (they used to be, every frame:
+    // 3000 files took ~40 ms a frame)...
+    assert!(h.query_by_label("Print batch part 2999.gcode").is_none());
+    // ...but they keep their place: scrolling reaches the last one.
+    h.hover_at(egui::pos2(500.0, 400.0));
+    for _ in 0..40 {
+        h.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Page,
+            delta: egui::vec2(0.0, -10.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.run_ok();
+    }
+    assert!(h.query_by_label("Print batch part 2999.gcode").is_some());
+    assert!(h.query_by_label("Print batch part 0000.gcode").is_none());
+}
+
+#[test]
 fn odd_file_lists_never_panic() {
     let mut state = sd_state();
     state.sd.files = vec![

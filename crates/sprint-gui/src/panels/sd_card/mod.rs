@@ -603,6 +603,17 @@ impl SdCardTab {
                         }
                         let selected = sd.selected.as_deref();
                         for (n, &i) in rows.iter().enumerate() {
+                            // Rows scrolled out of view only take their
+                            // space: a card with thousands of files stays
+                            // cheap to draw.
+                            let row_rect = egui::Rect::from_min_size(
+                                ui.cursor().min,
+                                egui::vec2(ui.available_width(), table::ROW_H),
+                            );
+                            if !ui.is_rect_visible(row_rect) {
+                                ui.allocate_exact_size(row_rect.size(), egui::Sense::hover());
+                                continue;
+                            }
                             let file = &sd.files[i];
                             let is_selected = selected.is_some_and(|s| {
                                 s.eq_ignore_ascii_case(&file.name)

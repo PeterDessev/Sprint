@@ -149,7 +149,7 @@ const SIZE_W: f32 = 84.0;
 /// Width of the actions column.
 const ACTIONS_W: f32 = 64.0;
 /// Row height.
-const ROW_H: f32 = 46.0;
+pub(super) const ROW_H: f32 = 46.0;
 
 /// The column headers; clicking one sorts by it.
 pub fn header(ui: &mut Ui, sort: &mut Sort) {
