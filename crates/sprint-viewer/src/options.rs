@@ -315,6 +315,51 @@ impl ViewerOptions {
     }
 }
 
+/// Margins of the view, in logical points, that camera fits keep the part
+/// out of: cards or toolbars an application draws over the view's edges
+/// (see [`GcodeViewer::set_fit_insets`](crate::GcodeViewer::set_fit_insets)).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ViewInsets {
+    /// From the left edge.
+    pub left: f32,
+    /// From the right edge.
+    pub right: f32,
+    /// From the top edge.
+    pub top: f32,
+    /// From the bottom edge.
+    pub bottom: f32,
+}
+
+impl ViewInsets {
+    /// No insets: fits use the whole view.
+    pub const NONE: ViewInsets = ViewInsets {
+        left: 0.0,
+        right: 0.0,
+        top: 0.0,
+        bottom: 0.0,
+    };
+
+    /// `[left, right, top, bottom]`.
+    pub fn to_array(self) -> [f32; 4] {
+        [self.left, self.right, self.top, self.bottom]
+    }
+
+    /// Whether no edge is inset (by half a point or more).
+    pub fn is_none(&self) -> bool {
+        self.to_array().iter().all(|v| !v.is_finite() || *v < 0.5)
+    }
+
+    /// Whether `other` differs from these by more than `tolerance` points on
+    /// any edge.
+    pub fn differs(&self, other: &ViewInsets, tolerance: f32) -> bool {
+        let clean = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
+        self.to_array()
+            .iter()
+            .zip(other.to_array())
+            .any(|(a, b)| (clean(*a) - clean(b)).abs() > tolerance)
+    }
+}
+
 /// Printer bed and build volume.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BedSpec {

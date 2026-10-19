@@ -346,15 +346,27 @@ impl Camera {
     /// Choose target and distance so the box `min..max` fills the view for
     /// the current orientation. Degenerate boxes are grown to 10 mm.
     pub fn fit_bounds(&mut self, min: Vec3, max: Vec3, aspect: f32) {
+        self.fit_bounds_framed(min, max, aspect, FitFrame::FULL);
+    }
+
+    /// Like [`Camera::fit_bounds`], but the box fills `frame`, a part of
+    /// the view (cards drawn over the rest of it keep clear of the part):
+    /// the distance fits the box into the frame and the target is shifted
+    /// so the box's centre lands in the frame's centre. Exact for the
+    /// orthographic projection, very close for perspective.
+    pub fn fit_bounds_framed(&mut self, min: Vec3, max: Vec3, aspect: f32, frame: FitFrame) {
         if !min.is_finite() || !max.is_finite() || min.cmpgt(max).any() {
             return;
         }
+        let frame = frame.sanitized();
         let center = (min + max) * 0.5;
         let half = ((max - min) * 0.5).max(Vec3::splat(5.0));
         let aspect = sane_aspect(aspect);
         let (r, u, f) = (self.right(), self.up(), self.forward());
-        let tan_y = (self.fov_y * 0.5).tan() / Self::FIT_MARGIN;
-        let tan_x = tan_y * aspect;
+        // The frame's share of the view scales the field of view it offers.
+        let (width, height) = (frame.width() * 0.5, frame.height() * 0.5);
+        let tan_y = (self.fov_y * 0.5).tan() / Self::FIT_MARGIN * height;
+        let tan_x = (self.fov_y * 0.5).tan() / Self::FIT_MARGIN * aspect * width;
         let mut needed = 0.0f32;
         for i in 0..8 {
             let s = Vec3::new(
@@ -370,8 +382,13 @@ impl Camera {
                 Projection::Orthographic => needed.max(y / tan_y).max(x / tan_x),
             };
         }
-        self.target = center;
         self.distance = needed.clamp(Self::MIN_DISTANCE, Self::MAX_DISTANCE);
+        // Shift the target so the centre projects to the frame's centre:
+        // at the target's depth one NDC unit is `half_height` world units
+        // tall (times the aspect ratio across).
+        let (cx, cy) = frame.center();
+        let hh = self.half_height();
+        self.target = center - r * (cx * hh * aspect) - u * (cy * hh);
         self.scene_radius = self.scene_radius.max(half.length());
     }
 
@@ -398,6 +415,114 @@ impl Camera {
             projection: other.projection,
             scene_radius: self.scene_radius.max(other.scene_radius),
         }
+    }
+}
+
+/// The part of the view a fit frames the scene in
+/// ([`Camera::fit_bounds_framed`]), in normalized device coordinates
+/// (`-1..=1`, Y up).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FitFrame {
+    /// Left edge.
+    pub left: f32,
+    /// Right edge.
+    pub right: f32,
+    /// Bottom edge.
+    pub bottom: f32,
+    /// Top edge.
+    pub top: f32,
+}
+
+impl FitFrame {
+    /// The whole view.
+    pub const FULL: FitFrame = FitFrame {
+        left: -1.0,
+        right: 1.0,
+        bottom: -1.0,
+        top: 1.0,
+    };
+
+    /// Smallest share of the view's width or height a frame keeps: insets
+    /// that would leave less are scaled down until this much is left.
+    pub const MIN_SHARE: f32 = 0.3;
+
+    /// The part of a view of `size` left inside `insets` (`[left, right,
+    /// top, bottom]`, in the units of `size`, e.g. logical points). Negative
+    /// or non-finite insets count as 0; insets leaving less than
+    /// [`FitFrame::MIN_SHARE`] of a dimension are scaled down.
+    pub fn from_insets(size: Vec2, insets: [f32; 4]) -> FitFrame {
+        let clean = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
+        let [l, r, t, b] = insets.map(clean);
+        let span = |lo: f32, hi: f32, total: f32| -> (f32, f32) {
+            if !total.is_finite() || total < 1.0 {
+                return (0.0, 0.0);
+            }
+            let room = total * (1.0 - Self::MIN_SHARE);
+            let scale = if lo + hi > room {
+                room / (lo + hi)
+            } else {
+                1.0
+            };
+            (lo * scale / total, hi * scale / total)
+        };
+        let (l, r) = span(l, r, size.x);
+        let (t, b) = span(t, b, size.y);
+        FitFrame {
+            left: -1.0 + 2.0 * l,
+            right: 1.0 - 2.0 * r,
+            bottom: -1.0 + 2.0 * b,
+            top: 1.0 - 2.0 * t,
+        }
+    }
+
+    /// Edges within `-1..=1`, in order and at least [`FitFrame::MIN_SHARE`]
+    /// apart; anything non-finite gives the whole view.
+    fn sanitized(self) -> FitFrame {
+        let edges = [self.left, self.right, self.bottom, self.top];
+        if !edges.iter().all(|v| v.is_finite()) {
+            return FitFrame::FULL;
+        }
+        let axis = |lo: f32, hi: f32| -> (f32, f32) {
+            let (lo, hi) = (lo.clamp(-1.0, 1.0), hi.clamp(-1.0, 1.0));
+            let min = 2.0 * Self::MIN_SHARE;
+            if hi - lo >= min {
+                return (lo, hi);
+            }
+            let mid = ((lo + hi) * 0.5).clamp(-1.0 + min * 0.5, 1.0 - min * 0.5);
+            (mid - min * 0.5, mid + min * 0.5)
+        };
+        let (left, right) = axis(self.left, self.right);
+        let (bottom, top) = axis(self.bottom, self.top);
+        FitFrame {
+            left,
+            right,
+            bottom,
+            top,
+        }
+    }
+
+    /// Width in NDC units (2 = the whole view).
+    pub fn width(&self) -> f32 {
+        self.right - self.left
+    }
+
+    /// Height in NDC units (2 = the whole view).
+    pub fn height(&self) -> f32 {
+        self.top - self.bottom
+    }
+
+    /// The frame's centre in NDC.
+    pub fn center(&self) -> (f32, f32) {
+        (
+            (self.left + self.right) * 0.5,
+            (self.bottom + self.top) * 0.5,
+        )
+    }
+}
+
+impl Default for FitFrame {
+    fn default() -> Self {
+        FitFrame::FULL
     }
 }
 

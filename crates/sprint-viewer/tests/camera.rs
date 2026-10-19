@@ -5,7 +5,7 @@ use std::f32::consts::{FRAC_PI_2, PI};
 
 use glam::{Vec2, Vec3};
 use sprint_viewer::ViewPreset;
-use sprint_viewer::camera::{Camera, Frustum, Projection, wrap_angle};
+use sprint_viewer::camera::{Camera, FitFrame, Frustum, Projection, wrap_angle};
 
 const SIZE: Vec2 = Vec2::new(1280.0, 720.0);
 
@@ -143,6 +143,109 @@ fn fit_keeps_every_corner_on_screen_and_is_tight() {
             }
         }
     }
+}
+
+#[test]
+fn framed_fits_keep_the_box_inside_the_frame() {
+    let min = Vec3::new(20.0, 40.0, 0.0);
+    let max = Vec3::new(180.0, 110.0, 35.0);
+    let size = Vec2::new(1200.0, 800.0);
+    // A legend on the left, a card and a slider on the right, a scrub bar
+    // at the bottom.
+    let insets = [300.0, 360.0, 20.0, 60.0];
+    let frame = FitFrame::from_insets(size, insets);
+    let to_screen = |ndc_x: f32, ndc_y: f32| {
+        Vec2::new((ndc_x + 1.0) * 0.5 * size.x, (1.0 - ndc_y) * 0.5 * size.y)
+    };
+    let lo = to_screen(frame.left, frame.top);
+    let hi = to_screen(frame.right, frame.bottom);
+    assert!((lo.x - 300.0).abs() < 0.01 && (hi.x - 840.0).abs() < 0.01);
+    assert!((lo.y - 20.0).abs() < 0.01 && (hi.y - 740.0).abs() < 0.01);
+    for projection in [Projection::Perspective, Projection::Orthographic] {
+        for preset in ViewPreset::ALL {
+            let mut cam = Camera {
+                projection,
+                ..Camera::default()
+            };
+            cam.set_preset(preset);
+            cam.fit_bounds_framed(min, max, size.x / size.y, frame);
+            // Perspective shifts near and far corners a little differently.
+            let slack = if projection == Projection::Orthographic {
+                0.5
+            } else {
+                12.0
+            };
+            let mut extent = 0.0f32;
+            for i in 0..8 {
+                let c = Vec3::new(
+                    if i & 1 == 0 { min.x } else { max.x },
+                    if i & 2 == 0 { min.y } else { max.y },
+                    if i & 4 == 0 { min.z } else { max.z },
+                );
+                let s = cam.project_to_screen(c, size).expect("corner visible");
+                assert!(
+                    s.x >= lo.x - slack
+                        && s.x <= hi.x + slack
+                        && s.y >= lo.y - slack
+                        && s.y <= hi.y + slack,
+                    "{projection:?} {preset:?}: corner {c:?} at {s:?} outside {lo:?}..{hi:?}"
+                );
+                let half = (hi - lo) * 0.5;
+                let rel = ((s.truncate() - (lo + half)) / half).abs();
+                extent = extent.max(rel.max_element());
+            }
+            assert!(extent > 0.75, "{projection:?} {preset:?}: loose ({extent})");
+            let centre = cam
+                .project_to_screen((min + max) * 0.5, size)
+                .expect("centre visible");
+            let want = (lo + hi) * 0.5;
+            assert!(
+                (centre.truncate() - want).length() < slack.max(2.0),
+                "{projection:?} {preset:?}: centre at {centre:?}, frame centre {want:?}"
+            );
+        }
+    }
+    // The whole view is the plain fit.
+    let mut plain = Camera::default();
+    plain.fit_bounds(min, max, 1.5);
+    let mut framed = Camera::default();
+    framed.fit_bounds_framed(min, max, 1.5, FitFrame::FULL);
+    assert_eq!(plain, framed);
+    assert_eq!(FitFrame::from_insets(size, [0.0; 4]), FitFrame::FULL);
+}
+
+#[test]
+fn frames_keep_room_whatever_the_insets() {
+    let size = Vec2::new(600.0, 400.0);
+    // Insets covering everything are scaled down to leave 30% of the view.
+    let frame = FitFrame::from_insets(size, [500.0, 500.0, 1e9, f32::INFINITY]);
+    assert!((frame.width() - 0.6).abs() < 1e-4, "{frame:?}");
+    assert!((frame.height() - 0.6).abs() < 1e-4, "{frame:?}");
+    // The proportions between the two sides are kept.
+    assert!((frame.center().0).abs() < 1e-4, "{frame:?}");
+    // Garbage counts as no inset.
+    let frame = FitFrame::from_insets(size, [f32::NAN, -20.0, 0.0, 0.0]);
+    assert_eq!(frame, FitFrame::FULL);
+    assert_eq!(FitFrame::from_insets(Vec2::ZERO, [10.0; 4]), FitFrame::FULL);
+    // Fitting into a nonsensical frame still gives a usable camera.
+    let mut cam = Camera::default();
+    let broken = FitFrame {
+        left: 0.9,
+        right: -0.9,
+        bottom: f32::NAN,
+        top: 1.0,
+    };
+    cam.fit_bounds_framed(Vec3::ZERO, Vec3::splat(20.0), 1.5, broken);
+    assert!(cam.target.is_finite() && cam.distance.is_finite() && cam.distance > 0.0);
+    let squeezed = FitFrame {
+        left: 0.95,
+        right: 0.96,
+        bottom: -1.0,
+        top: 1.0,
+    };
+    let mut cam = Camera::default();
+    cam.fit_bounds_framed(Vec3::ZERO, Vec3::splat(20.0), 1.5, squeezed);
+    assert!(cam.target.is_finite() && cam.distance < 5_000.0, "{cam:?}");
 }
 
 #[test]

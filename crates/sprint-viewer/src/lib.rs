@@ -44,7 +44,7 @@ pub mod scene;
 mod viewer;
 
 pub use options::{
-    BedSpec, ColorMode, GhostStyle, RenderStyle, ViewMode, ViewPreset, ViewerOptions,
+    BedSpec, ColorMode, GhostStyle, RenderStyle, ViewInsets, ViewMode, ViewPreset, ViewerOptions,
 };
 pub use viewer::{DEFAULT_LOD_PIXELS, GcodeViewer, ViewerResponse, headless_device};
 

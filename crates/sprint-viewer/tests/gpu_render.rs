@@ -573,11 +573,18 @@ fn a_new_analysis_keeps_the_layers_and_both_cameras() {
     viewer.render_offscreen(W, H);
     viewer.set_toolpath(Arc::new(block()));
     viewer.wait_until_loaded();
-    // The user looks at layers 3..=6 in the layer view after orbiting the
-    // 3D view (fits are no longer automatic).
+    // The user looks at layers 3..=6 in the layer view, framed off a card
+    // on the left, then orbits the 3D view (fits are no longer automatic)
+    // and the card goes away.
     viewer.options_mut().layer_range = (2, 5);
-    viewer.camera_mut().orbit(0.4, -0.2);
     viewer.options_mut().view_mode = ViewMode::LayerTop;
+    viewer.fit_to_view_within(sprint_viewer::ViewInsets {
+        left: 100.0,
+        ..Default::default()
+    });
+    viewer.render_offscreen(W, H);
+    viewer.camera_mut().orbit(0.4, -0.2);
+    viewer.set_fit_insets(sprint_viewer::ViewInsets::NONE);
     let camera = *viewer.camera();
     let top_before = render(&mut viewer);
     // The same file analyzed again (other times, same geometry).
@@ -601,6 +608,64 @@ fn a_new_analysis_keeps_the_layers_and_both_cameras() {
     // A new file (set_toolpath) shows every layer and fits again.
     viewer.set_toolpath(Arc::new(block()));
     assert_eq!(viewer.options().layer_range, (0, 9));
+}
+
+#[test]
+fn fit_insets_keep_the_part_clear_of_the_cards() {
+    let Some((device, queue)) = device() else {
+        return;
+    };
+    let size = Vec2::new(W as f32, H as f32);
+    let centre_x = |viewer: &mut GcodeViewer| {
+        viewer.render_offscreen(W, H);
+        viewer
+            .camera()
+            .project_to_screen(Vec3::new(110.0, 110.0, 1.0), size)
+            .expect("visible")
+            .x
+    };
+    let mut viewer = GcodeViewer::new_headless(&device, &queue);
+    viewer.render_offscreen(W, H);
+    viewer.set_toolpath(Arc::new(block()));
+    viewer.wait_until_loaded();
+    let plain = centre_x(&mut viewer);
+    assert!((plain - W as f32 / 2.0).abs() < 4.0, "{plain}");
+    // A card over the left 120 points: the part moves right, into the
+    // middle of what is left, and is drawn there.
+    let insets = sprint_viewer::ViewInsets {
+        left: 120.0,
+        ..Default::default()
+    };
+    viewer.set_fit_insets(insets);
+    assert_eq!(viewer.fit_insets(), insets);
+    let shifted = centre_x(&mut viewer);
+    let want = 120.0 + (W as f32 - 120.0) / 2.0;
+    assert!((shifted - want).abs() < 6.0, "{shifted}, want {want}");
+    viewer.options_mut().show_bed = false;
+    viewer.options_mut().show_axes = false;
+    let img = render(&mut viewer);
+    assert!(
+        (0..110).all(|x| near(px(&img, x, H / 2), BACKGROUND, 12)),
+        "the card's area stays clear"
+    );
+    assert!(
+        !near(px(&img, want as u32, H / 2), BACKGROUND, 12),
+        "the part is drawn"
+    );
+    // The layer view frames it the same way.
+    viewer.options_mut().view_mode = ViewMode::LayerTop;
+    viewer.fit_to_view();
+    assert!((centre_x(&mut viewer) - want).abs() < 6.0);
+    // Back to no insets with fit_to_view_within.
+    viewer.options_mut().view_mode = ViewMode::Perspective;
+    viewer.fit_to_view_within(sprint_viewer::ViewInsets::NONE);
+    assert!((centre_x(&mut viewer) - W as f32 / 2.0).abs() < 4.0);
+    // A camera the user moved stays put when the insets change.
+    viewer.camera_mut().orbit(0.3, 0.0);
+    let moved = *viewer.camera();
+    viewer.set_fit_insets(insets);
+    viewer.render_offscreen(W, H);
+    assert_eq!(*viewer.camera(), moved);
 }
 
 #[test]

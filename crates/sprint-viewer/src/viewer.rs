@@ -8,7 +8,7 @@ use egui_wgpu::wgpu;
 use glam::{Mat4, Vec2, Vec3};
 use sprint_gcode::{Feature, Toolpath};
 
-use crate::camera::{Camera, Frustum, Projection, Ray};
+use crate::camera::{Camera, FitFrame, Frustum, Projection, Ray};
 use crate::color::{
     self, Legend, LegendData, ScalarRanges, format_duration, format_value, ramp_color,
     srgb_to_linear, srgb_to_linear_rgb,
@@ -16,7 +16,7 @@ use crate::color::{
 use crate::gpu::{self, DrawParams, Globals, Renderer, Slot, flags};
 use crate::instance::{self, CLUSTER_SIZE, Cluster, LayerRanges, MAX_COORD, SceneData};
 use crate::options::{
-    BedSpec, ColorMode, GhostStyle, RenderStyle, ViewMode, ViewPreset, ViewerOptions,
+    BedSpec, ColorMode, GhostStyle, RenderStyle, ViewInsets, ViewMode, ViewPreset, ViewerOptions,
 };
 use crate::pick::{PickFilter, PickHit, PickIndex, PickKind};
 use crate::scene;
@@ -58,6 +58,10 @@ const DEPTH_CUE: f32 = 0.35;
 const EXPOSURE: f32 = 1.18;
 /// Opacity of translucent ghosts.
 const GHOST_ALPHA: f32 = 0.24;
+/// View size (logical points) assumed for insets until the widget is drawn.
+const DEFAULT_VIEW_POINTS: [f32; 2] = [1280.0, 800.0];
+/// Inset changes smaller than this (logical points) do not refit.
+const INSET_TOLERANCE: f32 = 1.0;
 /// On-screen height the tool head marker aims for (logical points).
 const HEAD_POINTS: f32 = 46.0;
 /// Limits of the tool head scale (1 = real size, about 7 mm tall).
@@ -256,6 +260,10 @@ pub struct GcodeViewer {
     anim: Option<Anim>,
     auto_fit: bool,
     fit_aspect: f32,
+    /// Size of the view in logical points (for the fit insets).
+    view_points: Vec2,
+    /// Margins fits keep the part out of.
+    fit_insets: ViewInsets,
     toolpath: Option<Arc<Toolpath>>,
     loader: Option<Loader>,
     info: Option<SceneInfo>,
@@ -300,6 +308,8 @@ impl GcodeViewer {
             anim: None,
             auto_fit: true,
             fit_aspect: 16.0 / 10.0,
+            view_points: Vec2::from(DEFAULT_VIEW_POINTS),
+            fit_insets: ViewInsets::NONE,
             toolpath: None,
             loader: None,
             info: None,
@@ -468,19 +478,72 @@ impl GcodeViewer {
         to.set_preset(preset);
         if self.auto_fit {
             let (min, max) = self.fit_box();
-            to.fit_bounds(min, max, self.fit_aspect);
+            to.fit_bounds_framed(min, max, self.fit_aspect, self.fit_frame());
         }
         self.start_anim(to, false);
     }
 
-    /// Fit the active camera to the toolpath (or the bed when empty).
+    /// Fit the active camera to the toolpath (or the bed when empty),
+    /// within the fit insets (see [`GcodeViewer::set_fit_insets`]).
     pub fn fit_to_view(&mut self) {
         self.auto_fit = true;
         let (min, max) = self.fit_box();
         let top = self.options.view_mode == ViewMode::LayerTop;
         let mut to = if top { self.camera_top } else { self.camera };
-        to.fit_bounds(min, max, self.fit_aspect);
+        to.fit_bounds_framed(min, max, self.fit_aspect, self.fit_frame());
         self.start_anim(to, top);
+    }
+
+    /// [`GcodeViewer::fit_to_view`] framing the part inside `insets`, which
+    /// stay for later fits (see [`GcodeViewer::set_fit_insets`]).
+    pub fn fit_to_view_within(&mut self, insets: ViewInsets) {
+        self.fit_insets = insets;
+        self.fit_to_view();
+    }
+
+    /// Keep the part clear of `insets`, margins of the view in logical
+    /// points that the application covers (floating cards, a scrub bar):
+    /// every fit from now on (fit to view, presets, the automatic fit of a
+    /// new toolpath and after resizes) frames the part in the rest of the
+    /// view. Insets leaving less than 30% of a dimension are scaled down.
+    /// While fits are automatic (the user has not moved the camera), a
+    /// change of more than a point refits the cameras, the active one
+    /// animated.
+    pub fn set_fit_insets(&mut self, insets: ViewInsets) {
+        if !insets.differs(&self.fit_insets, INSET_TOLERANCE) {
+            return;
+        }
+        self.fit_insets = insets;
+        if !self.auto_fit {
+            return;
+        }
+        let (min, max) = self.fit_box();
+        let frame = self.fit_frame();
+        let aspect = self.fit_aspect;
+        let top = self.options.view_mode == ViewMode::LayerTop;
+        let other = if top {
+            &mut self.camera
+        } else {
+            &mut self.camera_top
+        };
+        other.fit_bounds_framed(min, max, aspect, frame);
+        let mut to = match &self.anim {
+            Some(anim) if anim.top == top => anim.to,
+            _ if top => self.camera_top,
+            _ => self.camera,
+        };
+        to.fit_bounds_framed(min, max, aspect, frame);
+        self.start_anim(to, top);
+    }
+
+    /// The insets fits keep the part out of.
+    pub fn fit_insets(&self) -> ViewInsets {
+        self.fit_insets
+    }
+
+    /// The part of the view fits frame the part in.
+    fn fit_frame(&self) -> FitFrame {
+        FitFrame::from_insets(self.view_points, self.fit_insets.to_array())
     }
 
     /// Level of detail: beads narrower than `pixels` on screen are drawn as
@@ -694,7 +757,7 @@ impl GcodeViewer {
 
         let dt = ui.input(|i| i.stable_dt).clamp(0.0, 0.1);
         self.step_anim(dt);
-        self.prepare_cameras(aspect);
+        self.prepare_cameras(aspect, Vec2::new(rect.width(), rect.height()));
 
         let mut clicked_line = None;
         self.handle_input(ui, &response, rect, &mut clicked_line);
@@ -884,7 +947,8 @@ impl GcodeViewer {
         let Some(size) = self.renderer.targets(Slot::Offscreen).map(|t| t.size) else {
             return false;
         };
-        self.prepare_cameras(size.0 as f32 / size.1 as f32);
+        let points = Vec2::new(size.0 as f32, size.1 as f32) / self.pixels_per_point;
+        self.prepare_cameras(size.0 as f32 / size.1 as f32, points);
         let params = self.build_params(size);
         self.renderer.render(Slot::Offscreen, &params);
         true
@@ -971,18 +1035,19 @@ impl GcodeViewer {
         let aspect = self.fit_aspect;
         let (min, max) = self.fit_box();
         let radius = self.scene_radius();
+        let frame = self.fit_frame();
         match self.anim.as_mut() {
             None => self.fit_now(aspect),
             Some(anim) => {
                 anim.to.scene_radius = radius;
-                anim.to.fit_bounds(min, max, aspect);
+                anim.to.fit_bounds_framed(min, max, aspect, frame);
                 let other = if anim.top {
                     &mut self.camera
                 } else {
                     &mut self.camera_top
                 };
                 other.scene_radius = radius;
-                other.fit_bounds(min, max, aspect);
+                other.fit_bounds_framed(min, max, aspect, frame);
                 self.top_fitted = true;
             }
         }
@@ -1022,26 +1087,37 @@ impl GcodeViewer {
     fn fit_now(&mut self, aspect: f32) {
         let (min, max) = self.fit_box();
         let radius = self.scene_radius();
+        let frame = self.fit_frame();
         self.camera.scene_radius = radius;
         self.camera_top.scene_radius = radius;
-        self.camera.fit_bounds(min, max, aspect);
-        self.camera_top.fit_bounds(min, max, aspect);
+        self.camera.fit_bounds_framed(min, max, aspect, frame);
+        self.camera_top.fit_bounds_framed(min, max, aspect, frame);
         self.top_fitted = true;
         self.fit_aspect = aspect;
     }
 
     /// Keep scene radius current and re-fit when auto-fitting and the
-    /// aspect ratio changed.
-    fn prepare_cameras(&mut self, aspect: f32) {
+    /// aspect ratio changed (or, with fit insets, the size of the view in
+    /// logical points, `view`).
+    fn prepare_cameras(&mut self, aspect: f32, view: Vec2) {
+        let view = if view.is_finite() {
+            view.max(Vec2::ONE)
+        } else {
+            self.view_points
+        };
+        let regrown = !self.fit_insets.is_none()
+            && (view - self.view_points).abs().max_element() > INSET_TOLERANCE;
+        self.view_points = view;
         let radius = self.scene_radius();
         self.camera.scene_radius = radius;
         self.camera_top.scene_radius = radius;
         if !self.top_fitted {
             let (min, max) = self.fit_box();
-            self.camera_top.fit_bounds(min, max, aspect);
+            let frame = self.fit_frame();
+            self.camera_top.fit_bounds_framed(min, max, aspect, frame);
             self.top_fitted = true;
         }
-        let resized = (aspect / self.fit_aspect - 1.0).abs() > 0.01;
+        let resized = (aspect / self.fit_aspect - 1.0).abs() > 0.01 || regrown;
         self.fit_aspect = aspect;
         if resized {
             // Retargets a running animation rather than skipping the refit.
