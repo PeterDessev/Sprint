@@ -1,0 +1,309 @@
+//! The Calibration tab: every wizard in snapshots, and the commands each
+//! one sends to the simulator.
+
+mod common;
+mod insight_common;
+
+use common::{harness_state, snapshot};
+use egui::accesskit::Role;
+use egui_kittest::Harness;
+use egui_kittest::kittest::Queryable as _;
+use insight_common::*;
+use sprint_gui::panels::CalibrationTab;
+use sprint_gui::theme::Theme;
+use sprint_host::sprint_sim::SimConfig;
+use sprint_host::{AutotuneState, Heater, PrinterState, TempSample};
+
+type H<'a> = Harness<'a, Host<CalibrationTab>>;
+
+fn tab(
+    theme: Theme,
+    size: (f32, f32),
+    state: Option<PrinterState>,
+    printer: Option<sprint_host::Printer>,
+) -> H<'static> {
+    let host = match (state, printer) {
+        (Some(state), None) => Host::<CalibrationTab>::synthetic(state),
+        (state, Some(printer)) => {
+            let mut host = Host::<CalibrationTab>::live(printer);
+            host.state = state;
+            host
+        }
+        (None, None) => Host::<CalibrationTab>::synthetic(PrinterState::default()),
+    };
+    let mut h = harness_state(theme, size, host, |ui, host| host.frame(ui));
+    h.run_ok();
+    h
+}
+
+/// Type `text` into the `index`-th number field and confirm with Enter.
+fn type_number(h: &mut H<'_>, index: usize, text: &str) {
+    h.get_all_by_role(Role::SpinButton)
+        .nth(index)
+        .expect("number field")
+        .click();
+    h.run_ok();
+    // Replace whatever the field showed.
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.run_ok();
+    h.key_press(egui::Key::Backspace);
+    h.run_ok();
+    h.get_all_by_role(Role::SpinButton)
+        .nth(index)
+        .expect("number field")
+        .type_text(text);
+    h.run_ok();
+    h.key_press(egui::Key::Enter);
+    h.run_ok();
+}
+
+fn pointer_away(h: &mut H<'_>) {
+    h.event(egui::Event::PointerGone);
+    h.run_ok();
+}
+
+/// A state with an autotune of the hotend in progress: 150 s of swings
+/// around 210 °C.
+fn autotune_running() -> PrinterState {
+    let mut state = demo_state();
+    let start = state.temp_history.back().map_or(0.0, |s| s.t);
+    for i in 1..=150 {
+        let t = start + f64::from(i);
+        let x = i as f32;
+        let temp = if i < 40 {
+            30.0 + 180.0 * (x / 40.0)
+        } else {
+            210.0 + 4.0 * ((x - 40.0) / 22.0 * std::f32::consts::TAU).sin()
+        };
+        state.temp_history.push_back(TempSample {
+            t,
+            hotends: vec![(temp, 210.0)],
+            bed: Some((60.0, 60.0)),
+            hotend_power: vec![if temp < 210.0 { 1.0 } else { 0.0 }],
+            bed_power: Some(0.35),
+            ..TempSample::default()
+        });
+    }
+    state.autotune = Some(AutotuneState {
+        heater: Heater::Hotend(0),
+        target: 210.0,
+        cycles: 8,
+        running: true,
+        result: None,
+        error: None,
+    });
+    state.temps.hotends[0].current = 212.4;
+    state
+}
+
+#[test]
+fn pid_wizard_snapshots() {
+    // Running: progress, estimated cycles and the temperature trace.
+    let mut h = tab(Theme::Dark, (1100.0, 900.0), Some(autotune_running()), None);
+    // The trace starts when the wizard started the autotune.
+    if let Some(s) = h.state_mut().state.as_mut() {
+        s.temp_history.retain(|x| x.t > 240.0);
+    }
+    h.run_ok();
+    assert!(h.query_by_label("Abort").is_some());
+    snapshot(&mut h, "insight_calibration_pid_running_dark");
+
+    // Finished: the new gains against the old ones.
+    let mut done = demo_state();
+    done.autotune = Some(AutotuneState {
+        heater: Heater::Hotend(0),
+        target: 210.0,
+        cycles: 8,
+        running: false,
+        result: Some((21.73, 1.54, 76.9)),
+        error: None,
+    });
+    let mut h = tab(Theme::Light, (1100.0, 900.0), Some(done), None);
+    assert!(h.query_by_label("Apply gains").is_some());
+    snapshot(&mut h, "insight_calibration_pid_result_light");
+}
+
+#[test]
+fn pid_wizard_shows_failures() {
+    let mut failed = demo_state();
+    failed.autotune = Some(AutotuneState {
+        heater: Heater::Bed,
+        target: 60.0,
+        cycles: 8,
+        running: false,
+        result: None,
+        error: Some("PID Autotune failed! timeout".into()),
+    });
+    let h = tab(Theme::Dark, (1100.0, 700.0), Some(failed), None);
+    assert!(
+        h.query_by_label_contains("Autotune failed: PID Autotune failed! timeout")
+            .is_some()
+    );
+}
+
+#[test]
+fn esteps_wizard_walks_through_the_steps() {
+    let mut h = tab(Theme::Dark, (1100.0, 900.0), Some(demo_state()), None);
+    h.get_by_label("Extruder E-steps").click();
+    h.run_ok();
+    // The demo hotend sits at its target: ready.
+    h.get_by_label("Next").click();
+    h.run_ok();
+    h.get_by_label("Marked").click();
+    h.run_ok();
+    h.get_by_label("Extrude 100 mm").click();
+    h.run_ok();
+    h.get_by_label("Measure").click();
+    h.run_ok();
+    // 120 mm mark, 22 mm left: 98 mm went in, 93 -> 94.90 steps/mm.
+    type_number(&mut h, 0, "22");
+    assert!(h.query_by_label("Apply 94.90 steps/mm").is_some());
+    pointer_away(&mut h);
+    snapshot(&mut h, "insight_calibration_esteps_dark");
+    // A silly measurement is explained, not applied.
+    type_number(&mut h, 0, "90");
+    assert!(h.query_by_label_contains("Apply").is_none());
+    assert!(h.query_by_label("Cannot compute E-steps").is_some());
+}
+
+#[test]
+fn zoffset_and_flow_snapshots() {
+    let mut h = tab(Theme::Light, (1100.0, 900.0), Some(demo_state()), None);
+    h.get_by_label("Z offset").click();
+    h.run_ok();
+    h.get_by_label("Lower the nozzle 0.025 mm").click();
+    h.run_ok();
+    h.get_by_label("Lower the nozzle 0.025 mm").click();
+    h.run_ok();
+    h.get_by_label("Raise the nozzle 0.025 mm").click();
+    h.run_ok();
+    h.get_by_label("Lower the nozzle 0.025 mm").click();
+    h.run_ok();
+    assert!(
+        h.query_by_label_contains("Probe Z offset: -1.520 → -1.570 mm")
+            .is_some()
+    );
+    pointer_away(&mut h);
+    snapshot(&mut h, "insight_calibration_zoffset_light");
+
+    h.get_by_label("Flow").click();
+    h.run_ok();
+    for (i, wall) in ["0.48", "0.47", "0.49", "0.48"].iter().enumerate() {
+        type_number(&mut h, 2 + i, wall);
+    }
+    assert!(h.query_by_label("Set flow to 94 % (M221)").is_some());
+    pointer_away(&mut h);
+    snapshot(&mut h, "insight_calibration_flow_light");
+}
+
+#[test]
+fn calibration_tab_narrow_and_disconnected() {
+    let mut h = tab(
+        Theme::Dark,
+        (600.0, 800.0),
+        Some(PrinterState::default()),
+        None,
+    );
+    assert!(h.query_by_label("Not connected").is_some());
+    // The wizard list becomes a segmented control.
+    h.get_by_label("Flow").click();
+    h.run_ok();
+    assert!(h.query_by_label("Flow used").is_some());
+    snapshot(&mut h, "insight_calibration_narrow_dark");
+}
+
+#[test]
+fn pid_autotune_runs_on_the_simulator() {
+    let printer = sim_printer(SimConfig {
+        time_scale: 400.0,
+        ..fast_sim()
+    });
+    let mut h = tab(Theme::Dark, (1100.0, 900.0), None, Some(printer.clone()));
+    clear_received(&printer);
+    h.get_by_label("Start autotune at 210 °C").click();
+    h.run_ok();
+    assert_eq!(wait_for_command(&printer, "M303"), "M303 E0 S210 C8 U1");
+    run_until(&mut h, "the autotune result", |s| {
+        s.autotune
+            .as_ref()
+            .is_some_and(|a| !a.running && (a.result.is_some() || a.error.is_some()))
+    });
+    run_until(&mut h, "the refreshed settings", |s| {
+        let (Some(a), Some(pid)) = (s.autotune.as_ref(), s.settings.hotend_pid(0)) else {
+            return false;
+        };
+        a.result.is_some_and(|r| (r.0 - pid.0).abs() < 0.01)
+    });
+    h.run_ok();
+    // M303 U1 already made the firmware use the gains: save them.
+    assert!(h.query_by_label("ACTIVE").is_some());
+    clear_received(&printer);
+    h.get_by_label("Save to EEPROM").click();
+    h.run_ok();
+    wait_for_command(&printer, "M500");
+    printer.disconnect();
+}
+
+#[test]
+fn esteps_zoffset_and_flow_reach_the_simulator() {
+    let printer = sim_printer(SimConfig {
+        time_scale: 200.0,
+        ..fast_sim()
+    });
+    let mut h = tab(Theme::Dark, (1100.0, 900.0), None, Some(printer.clone()));
+    h.get_by_label("Extruder E-steps").click();
+    h.run_ok();
+    clear_received(&printer);
+    h.get_by_label("Heat to 205 °C").click();
+    h.run_ok();
+    assert_eq!(wait_for_command(&printer, "M104"), "M104 T0 S205");
+    run_until(&mut h, "the hotend at temperature", |s| {
+        s.temps
+            .hotends
+            .first()
+            .is_some_and(|r| (r.current - 205.0).abs() <= 2.0)
+    });
+    h.get_by_label("Next").click();
+    h.run_ok();
+    h.get_by_label("Marked").click();
+    h.run_ok();
+    clear_received(&printer);
+    h.get_by_label("Extrude 100 mm").click();
+    h.run_ok();
+    assert_eq!(wait_for_command(&printer, "G1 E"), "G1 E100 F50");
+    h.get_by_label("Measure").click();
+    h.run_ok();
+    type_number(&mut h, 0, "22");
+    clear_received(&printer);
+    h.get_by_label("Apply 94.90 steps/mm").click();
+    h.run_ok();
+    assert_eq!(wait_for_command(&printer, "M92"), "M92 X80 Y80 Z400 E94.9");
+
+    // Z offset: babystep and store it in the probe offset.
+    h.get_by_label("Z offset").click();
+    h.run_ok();
+    clear_received(&printer);
+    h.get_by_label("Lower the nozzle 0.025 mm").click();
+    h.run_ok();
+    h.get_by_label("Lower the nozzle 0.025 mm").click();
+    h.run_ok();
+    assert_eq!(wait_for_command(&printer, "M290"), "M290 Z-0.025");
+    h.get_by_label("Apply to probe offset").click();
+    h.run_ok();
+    assert_eq!(wait_for_command(&printer, "M851"), "M851 X10 Y10 Z-0.05");
+    run_until(&mut h, "the new probe offset", |s| {
+        s.settings.value("M851", 'Z') == Some(-0.05)
+    });
+
+    // Flow: M221 with the corrected percentage.
+    h.get_by_label("Flow").click();
+    h.run_ok();
+    for (i, wall) in ["0.48", "0.48"].iter().enumerate() {
+        type_number(&mut h, 2 + i, wall);
+    }
+    clear_received(&printer);
+    h.get_by_label("Set flow to 94 % (M221)").click();
+    h.run_ok();
+    assert_eq!(wait_for_command(&printer, "M221"), "M221 T0 S93.8");
+    printer.disconnect();
+}
