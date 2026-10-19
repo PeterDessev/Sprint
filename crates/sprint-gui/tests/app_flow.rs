@@ -13,11 +13,11 @@ use app_support::{WINDOW, app, expect, fast_sim, sample, settle, sim_options};
 use egui::accesskit::Role;
 use egui::{Key, Modifiers};
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 use sprint_gui::app::{AppOptions, DialogKind, SprintApp};
 use sprint_gui::context::{AppAction, Tab};
 use sprint_host::sprint_sim::SimConfig;
-use sprint_host::{ConnectTarget, JobStatus};
+use sprint_host::{ConnectTarget, ConnectionStatus, JobInfo, JobKind, JobStatus, PrinterState};
 
 /// Options with the fast simulator, slowed down to `time_scale` with real
 /// move times (so a print lasts long enough to pause it).
@@ -654,6 +654,50 @@ fn console_history_steps_through_single_word_commands() {
         settle(&mut h);
         assert_eq!(h.state().console().input(), expected, "after {key:?}");
     }
+}
+
+/// A synthetic state: connected and printing `cube.gcode`.
+fn printing_state(status: JobStatus) -> PrinterState {
+    let mut job = JobInfo::new(JobKind::HostPrint, "cube.gcode", 1000, 10_000);
+    job.status = status;
+    job.current_line = 400;
+    PrinterState {
+        status: ConnectionStatus::Connected,
+        job: Some(job),
+        ..PrinterState::default()
+    }
+}
+
+#[test]
+fn console_motion_is_guarded_while_a_job_runs() {
+    let mut h = app(AppOptions::headless(), WINDOW);
+    h.state_mut()
+        .set_state_override(Some(printing_state(JobStatus::Printing)));
+    settle(&mut h);
+    // Homing would interleave with the print: its chip is off, the
+    // queries stay available.
+    assert!(h.get_by_label("G28").accesskit_node().is_disabled());
+    assert!(!h.get_by_label("M105").accesskit_node().is_disabled());
+    // Typed moves ask first; harmless commands go straight out.
+    type_command(&mut h, "G1 X10 F3000");
+    assert!(h.state().console().is_confirming());
+    h.get_by_label("Cancel").click();
+    settle(&mut h);
+    assert!(!h.state().console().is_confirming());
+    type_command(&mut h, "M106 S255");
+    assert!(!h.state().console().is_confirming());
+    // While paused nothing is streamed: moves are the user's business.
+    h.state_mut()
+        .set_state_override(Some(printing_state(JobStatus::Paused)));
+    settle(&mut h);
+    type_command(&mut h, "G1 X10 F3000");
+    assert!(!h.state().console().is_confirming());
+    // Without a job the chip is back.
+    let mut idle = printing_state(JobStatus::Completed);
+    idle.job = None;
+    h.state_mut().set_state_override(Some(idle));
+    settle(&mut h);
+    assert!(!h.get_by_label("G28").accesskit_node().is_disabled());
 }
 
 #[test]

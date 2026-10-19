@@ -2,7 +2,7 @@
 //! by kind, with filters, search, timestamps, autoscroll, copy / clear /
 //! export, and a command line with history, G-code autocomplete,
 //! multi-line paste, quick commands and confirmation for dangerous
-//! commands.
+//! commands (and for moves typed while a job prints).
 //!
 //! The panel keeps its own bounded copy of the log, fetched incrementally
 //! with [`Printer::console_since`] (see [`ConsolePanel::sync`]), and an
@@ -121,6 +121,40 @@ pub fn dangerous_commands(lines: &[String]) -> Vec<&'static GcodeDoc> {
         .collect()
 }
 
+/// Whether a command moves the axes (moves, homing, probing, leveling),
+/// changes how positions or extrusion are read, or switches the motors
+/// off: sent while a job streams, it runs between the job's own moves.
+pub fn interferes_with_job(doc: &GcodeDoc) -> bool {
+    use sprint_proto::GcodeCategory as C;
+    if doc.code.starts_with('G') {
+        matches!(doc.category, C::Motion | C::Leveling | C::Calibration)
+    } else {
+        matches!(
+            doc.code,
+            "M18" | "M84" | "M82" | "M83" | "M48" | "M303" | "M306" | "M420"
+        )
+    }
+}
+
+/// The commands among `lines` that would disturb a running job (see
+/// [`interferes_with_job`]).
+pub fn job_interfering_commands(lines: &[String]) -> Vec<&'static GcodeDoc> {
+    lines
+        .iter()
+        .filter_map(|l| sprint_proto::gcode_doc(l.trim()))
+        .filter(|d| interferes_with_job(d))
+        .collect()
+}
+
+/// True while a job streams commands to the printer (active and not
+/// paused): typed moves would interleave with it.
+fn job_streaming(state: &sprint_host::PrinterState) -> bool {
+    state
+        .job
+        .as_ref()
+        .is_some_and(|j| j.status.is_active() && !j.status.is_paused())
+}
+
 /// The commands in a submitted text: trimmed non-empty lines.
 pub fn command_lines(text: &str) -> Vec<String> {
     text.lines()
@@ -128,6 +162,13 @@ pub fn command_lines(text: &str) -> Vec<String> {
         .filter(|l| !l.is_empty())
         .map(str::to_owned)
         .collect()
+}
+
+/// Commands waiting for the user's confirmation.
+struct PendingSend {
+    lines: Vec<String>,
+    /// They were typed while a job streamed and some would disturb it.
+    during_job: bool,
 }
 
 #[derive(Default)]
@@ -156,7 +197,7 @@ pub struct ConsolePanel {
     history_pos: Option<usize>,
     draft: String,
     completion: Completion,
-    pending: Option<Vec<String>>,
+    pending: Option<PendingSend>,
     jump: bool,
     unseen: usize,
     at_bottom: bool,
@@ -323,7 +364,8 @@ impl ConsolePanel {
     }
 
     /// Send `text` (one or more lines) as typed by the user: dangerous
-    /// commands ask first. Returns true when it was sent right away.
+    /// commands, and moves while a job streams, ask first. Returns true
+    /// when it was sent right away.
     pub fn submit(&mut self, ctx: &mut AppCtx<'_>, text: &str) -> bool {
         let lines = command_lines(text);
         if lines.is_empty() {
@@ -336,8 +378,9 @@ impl ConsolePanel {
                 .message("Connect to a printer to send commands.");
             return false;
         }
-        if !dangerous_commands(&lines).is_empty() {
-            self.pending = Some(lines);
+        let during_job = job_streaming(ctx.state) && !job_interfering_commands(&lines).is_empty();
+        if during_job || !dangerous_commands(&lines).is_empty() {
+            self.pending = Some(PendingSend { lines, during_job });
             return false;
         }
         ctx.printer.send(&lines.join("\n"));
@@ -634,6 +677,7 @@ impl ConsolePanel {
         ui.painter()
             .hline(rect.x_range(), rect.top(), egui::Stroke::new(1.0, p.border));
         let open = ctx.state.status.is_open();
+        let job = ctx.job_active();
         egui::Frame::new()
             .inner_margin(Margin {
                 left: 10,
@@ -645,11 +689,18 @@ impl ConsolePanel {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
                     for &cmd in QUICK_COMMANDS {
-                        let tip = sprint_proto::gcode_doc(cmd).map_or("", |d| d.name);
+                        let doc = sprint_proto::gcode_doc(cmd);
+                        let tip = doc.map_or("", |d| d.name);
+                        // Like the jog controls: no homing while a job runs.
+                        let moves = doc.is_some_and(interferes_with_job);
                         let chip = ui
-                            .add_enabled(open, Chip::new(cmd))
+                            .add_enabled(open && !(moves && job), Chip::new(cmd))
                             .on_hover_text(tip)
-                            .on_disabled_hover_text("Connect to a printer first");
+                            .on_disabled_hover_text(if open {
+                                "Not while a job is running"
+                            } else {
+                                "Connect to a printer first"
+                            });
                         if chip.clicked() {
                             self.submit(ctx, cmd);
                         }
@@ -790,18 +841,32 @@ impl ConsolePanel {
     }
 
     fn confirm_dangerous(&mut self, egui_ctx: &egui::Context, ctx: &mut AppCtx<'_>) {
-        let Some(lines) = &self.pending else {
+        let Some(pending) = &self.pending else {
             return;
         };
-        let docs = dangerous_commands(lines);
-        let message = docs
+        let dangerous = dangerous_commands(&pending.lines);
+        let mut message: Vec<String> = dangerous
             .iter()
             .map(|d| format!("{} — {}: {}", d.code, d.name, d.description))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let details = lines.join("\n");
-        let answer = ConfirmDialog::new("sprint-console-dangerous", "Send a dangerous command?")
-            .message(&message)
+            .collect();
+        if pending.during_job {
+            let codes: Vec<&str> = job_interfering_commands(&pending.lines)
+                .iter()
+                .map(|d| d.code)
+                .collect();
+            message.push(format!(
+                "A job is printing: {} would run between its own moves and can ruin the part.",
+                codes.join(", ")
+            ));
+        }
+        let title = if dangerous.is_empty() {
+            "Send this during the print?"
+        } else {
+            "Send a dangerous command?"
+        };
+        let details = pending.lines.join("\n");
+        let answer = ConfirmDialog::new("sprint-console-dangerous", title)
+            .message(&message.join("\n"))
             .details(&details)
             .confirm_label("Send anyway")
             .danger(true)
@@ -809,8 +874,8 @@ impl ConsolePanel {
             .show(egui_ctx);
         match answer {
             Some(DialogResult::Confirmed) => {
-                if let Some(lines) = self.pending.take() {
-                    ctx.printer.send(&lines.join("\n"));
+                if let Some(pending) = self.pending.take() {
+                    ctx.printer.send(&pending.lines.join("\n"));
                     self.jump = true;
                 }
             }
@@ -1151,5 +1216,49 @@ mod tests {
         let danger = dangerous_commands(&["G28".into(), "M502".into(), "m112".into()]);
         let codes: Vec<_> = danger.iter().map(|d| d.code).collect();
         assert_eq!(codes, vec!["M502", "M112"]);
+    }
+
+    #[test]
+    fn commands_that_disturb_a_running_job() {
+        let disturbing = |c: &str| sprint_proto::gcode_doc(c).is_some_and(interferes_with_job);
+        for code in [
+            "G0 X1",
+            "G1 E5",
+            "g28",
+            "G29",
+            "G30",
+            "G90",
+            "G91",
+            "G92 E0",
+            "M84",
+            "M18",
+            "M83",
+            "M82",
+            "M303 S200",
+            "M420 S0",
+        ] {
+            assert!(disturbing(code), "{code}");
+        }
+        // Tuning stays available during a print (like the sidebar's).
+        for code in [
+            "M105",
+            "M104 S200",
+            "M106 S255",
+            "M220 S120",
+            "M221 S95",
+            "M290 Z0.05",
+            "M117 hi",
+            "M600",
+            "M114",
+            "M503",
+        ] {
+            assert!(!disturbing(code), "{code}");
+        }
+        let lines = command_lines("M105\nG28 X\nM106");
+        let found: Vec<_> = job_interfering_commands(&lines)
+            .iter()
+            .map(|d| d.code)
+            .collect();
+        assert_eq!(found, ["G28"]);
     }
 }
