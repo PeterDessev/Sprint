@@ -122,6 +122,8 @@ impl Engine {
             Reply::Busy(message) => {
                 self.flow.note_activity(now);
                 self.shared.update(|s| s.busy = Some(message));
+                // A pause is waiting for an M0 the M108 came too early for.
+                self.break_stream_wait(now);
             }
             Reply::Wait => self.on_wait(now),
             Reply::Start => self.board_reset(now),
@@ -339,6 +341,8 @@ impl Engine {
         if self.flow.in_flight().any(|e| e.meta.blocks_polling()) {
             // Heat waits and autotune report temperatures: they are alive.
             self.flow.note_activity(now);
+            // A pause is waiting for a heat-up the M108 came too early for.
+            self.break_stream_wait(now);
         }
         let sample = self
             .last_temp_sample

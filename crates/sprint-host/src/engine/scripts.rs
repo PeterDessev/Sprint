@@ -213,6 +213,32 @@ pub(super) fn guard_unhomed(lines: Vec<String>, homed: Option<Axes>) -> (Vec<Str
     (out, skipped)
 }
 
+/// Whether hotend `tool` is not short of its target: false while it heats
+/// up (or cooled down) to more than a few degrees below a target above 0,
+/// true otherwise, also when nothing is reported or nothing is heated (a
+/// file that allows cold extrusion).
+pub(super) fn hotend_hot(temps: &TempReport, tool: u8) -> bool {
+    temps.hotends.get(usize::from(tool)).is_none_or(|r| {
+        r.target
+            .is_none_or(|t| t <= 0.0 || r.current >= t - REHEAT_MARGIN)
+    })
+}
+
+/// `lines` without the moves that only drive the extruder (a retract or a
+/// prime): G0/G1 with `E` and no X/Y/Z.
+pub(super) fn without_extruder_moves(lines: Vec<String>) -> Vec<String> {
+    lines
+        .into_iter()
+        .filter(|l| {
+            let p = parse_line(l);
+            let moves = p
+                .code
+                .is_some_and(|c| c.letter == b'G' && c.sub.is_none() && c.number <= 1);
+            !(moves && p.has('E') && !p.has('X') && !p.has('Y') && !p.has('Z'))
+        })
+        .collect()
+}
+
 /// [`guard_unhomed`], saying in the console what the `script` (pause,
 /// cancel) leaves out.
 pub(super) fn guarded(
@@ -316,6 +342,30 @@ mod tests {
                 "M83"
             ]
         );
+    }
+
+    #[test]
+    fn extruder_only_moves_and_hot_hotends() {
+        let script = vec![
+            "G91".to_string(),
+            "G1 E-2 F2700".to_string(),
+            "G1 Z10 E-1".to_string(),
+            "G0 E1".to_string(),
+            "G90".to_string(),
+        ];
+        assert_eq!(without_extruder_moves(script), ["G91", "G1 Z10 E-1", "G90"]);
+        let temps = TempReport {
+            hotends: vec![
+                reading(150.0, 200.0),
+                reading(219.0, 220.0),
+                reading(30.0, 0.0),
+            ],
+            ..TempReport::default()
+        };
+        assert!(!hotend_hot(&temps, 0));
+        assert!(hotend_hot(&temps, 1));
+        assert!(hotend_hot(&temps, 2), "not heated at all");
+        assert!(hotend_hot(&temps, 7), "unknown: assume it is fine");
     }
 
     fn reading(current: f32, target: f32) -> HeaterReading {

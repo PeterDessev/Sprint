@@ -657,3 +657,102 @@ fn resume_heats_back_up_and_restores_the_fan() {
     assert_eq!(cold, 0);
     assert_eq!(control.snapshot().hotend_targets, [200.0]);
 }
+
+#[test]
+fn a_pause_during_a_heat_up_ends_it_and_the_resume_heats_again() {
+    // Real-time heating: the M109 would hold the pause for a minute.
+    let printer = connect(fast_sim(1.0), options());
+    let control = printer.sim_control().unwrap();
+    let mut text = String::from("M104 S200\nM109 S200\nG28\nM83\nG1 Z0.3 F600\n");
+    for i in 0..50 {
+        text.push_str(&format!("G1 X{} Y20 E0.5 F3000\n", 20 + i));
+    }
+    let file = Arc::new(GcodeFile::from_text("heat-up.gcode", text));
+    control.clear_received();
+    printer
+        .start_print(Arc::clone(&file), PrintOptions::default())
+        .unwrap();
+    wait_for(&printer, "the heat-up", |_| {
+        control.received_commands().iter().any(|c| c == "M109 S200")
+    });
+    let seq = last_seq(&printer);
+    let asked = std::time::Instant::now();
+    printer.pause();
+    wait_for(&printer, "paused", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Paused)
+    });
+    assert!(asked.elapsed() < std::time::Duration::from_secs(5));
+    let got = control.received_commands();
+    assert!(got.iter().any(|c| c == "M108"), "{got:?}");
+    assert!(
+        !got.iter().any(|c| c.starts_with("G1 E")),
+        "no cold retract: {got:?}"
+    );
+
+    control.clear_received();
+    control.set_time_scale(100.0);
+    printer.resume();
+    wait_for(&printer, "completed", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Completed)
+    });
+    let got = control.received_commands();
+    let heat = got
+        .iter()
+        .position(|c| c == "M109 S200")
+        .expect("heats again");
+    let home = got
+        .iter()
+        .position(|c| c == "G28")
+        .expect("the rest of the file");
+    assert!(heat < home, "{got:?}");
+    assert!(
+        !got.iter().any(|c| c == "G1 E2 F2700"),
+        "no prime without a retract"
+    );
+    let cold = printer
+        .console_since(seq, usize::MAX)
+        .iter()
+        .filter(|e| e.text.contains("cold extrusion"))
+        .count();
+    assert_eq!(cold, 0, "{:?}", tail(&printer, 30));
+}
+
+#[test]
+fn a_pause_during_a_wait_for_the_user_ends_it() {
+    let printer = connect(sim(), options());
+    let control = printer.sim_control().unwrap();
+    let mut text = String::from("G28\nM302 P1\nM83\nG1 Z0.3 F600\nM0 Insert the magnets\n");
+    for i in 0..50 {
+        text.push_str(&format!("G1 X{} Y20 E0.5 F3000\n", 20 + i));
+    }
+    let file = Arc::new(GcodeFile::from_text("magnets.gcode", text));
+    control.clear_received();
+    printer
+        .start_print(Arc::clone(&file), PrintOptions::default())
+        .unwrap();
+    wait_for(&printer, "the M0", |_| {
+        control
+            .received_commands()
+            .iter()
+            .any(|c| c.starts_with("M0"))
+    });
+    printer.pause();
+    // The M0 may still wait for the moves before it when the first M108
+    // arrives: the pause repeats it while the printer waits.
+    wait_for_within(&printer, "paused", std::time::Duration::from_secs(5), |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Paused)
+    });
+    assert!(control.received_commands().iter().any(|c| c == "M108"));
+    printer.resume();
+    wait_for(&printer, "completed", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Completed)
+    });
+}

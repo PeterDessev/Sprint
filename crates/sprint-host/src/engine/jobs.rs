@@ -9,7 +9,8 @@ use sprint_gcode::{GcodeFile, MachineState, ParsedLine, clean_line, state_at_lin
 
 use super::meta::{CmdMeta, JobLine, Meta, Source};
 use super::scripts::{
-    ResumeExtras, guarded, in_script_modes, modes_after, render_job_script, resume_script,
+    ResumeExtras, guarded, hotend_hot, in_script_modes, modes_after, render_job_script,
+    resume_script, without_extruder_moves,
 };
 use super::{Engine, PROGRESS_INTERVAL, Phase};
 use crate::console::ConsoleKind;
@@ -17,6 +18,9 @@ use crate::error::HostError;
 use crate::event::Event;
 use crate::job::{JobInfo, JobKind, JobStatus, PrintOptions, ProgressModel};
 use crate::script::format_number;
+
+/// A pause repeats its M108 this often while the firmware still waits.
+const WAIT_BREAK_REPEAT: Duration = Duration::from_secs(1);
 
 /// A running job.
 pub(super) struct JobRuntime {
@@ -53,6 +57,11 @@ pub(super) struct JobRuntime {
     m29_queued: bool,
     /// SD print: M524 was not understood and M25 + M26 S0 were sent.
     abort_fallback: bool,
+    /// The pause script did not retract (the hotend was not at
+    /// temperature), so the resume script does not prime either.
+    retract_skipped: bool,
+    /// When a pause last sent M108 to end a wait of the stream.
+    wait_broken_at: Option<Instant>,
 }
 
 impl JobRuntime {
@@ -95,6 +104,8 @@ impl JobRuntime {
             upload_open: false,
             m29_queued: false,
             abort_fallback: false,
+            retract_skipped: false,
+            wait_broken_at: None,
             options,
         }
     }
@@ -354,7 +365,11 @@ impl Engine {
                 JobStatus::Starting | JobStatus::Printing | JobStatus::Resuming,
             ) => {
                 job.pause_script_queued = false;
+                job.wait_broken_at = None;
                 self.set_job_status(JobStatus::Pausing, now);
+                if let Some(what) = self.break_stream_wait(now) {
+                    self.info(format!("Pausing: ending {what} (M108)"));
+                }
                 self.advance_job(now);
             }
             (JobKind::SdPrint, JobStatus::Printing | JobStatus::Resuming) => {
@@ -365,6 +380,39 @@ impl Engine {
             (JobKind::SdUpload, _) => self.warn("An SD upload cannot be paused"),
             _ => {}
         }
+    }
+
+    /// While a host print is pausing, end a heat-up or a wait for the user
+    /// (M0/M1) of the stream with M108, so the pause does not wait for
+    /// minutes (M600 keeps its own dialogue). Called again while the
+    /// firmware reports that it still waits (at most once a second): an
+    /// M108 that arrives before the wait begins is lost. Returns what was
+    /// ended.
+    pub(super) fn break_stream_wait(&mut self, now: Instant) -> Option<&'static str> {
+        let wait = self.flow.in_flight().find_map(|e| {
+            if !matches!(e.meta.job_line(), Some(JobLine::Stream(_))) {
+                None
+            } else if e.meta.is_heat_wait() {
+                Some("the heat-up")
+            } else if e.meta.is('M', 0) || e.meta.is('M', 1) {
+                Some("the wait for the user")
+            } else {
+                None
+            }
+        })?;
+        let job = self.job.as_mut()?;
+        let pausing = job.info.kind == JobKind::HostPrint
+            && job.info.status == JobStatus::Pausing
+            && !job.pause_script_queued;
+        let due = job
+            .wait_broken_at
+            .is_none_or(|t| now.saturating_duration_since(t) >= WAIT_BREAK_REPEAT);
+        if !pausing || !due {
+            return None;
+        }
+        job.wait_broken_at = Some(now);
+        self.send_immediate("M108", Source::User);
+        Some(wait)
     }
 
     pub(super) fn resume_job(&mut self, now: Instant) {
@@ -401,7 +449,11 @@ impl Engine {
                     .resume_script
                     .clone()
                     .unwrap_or_else(|| self.shared.profile.read().resume_script.clone());
-                let lines = render_job_script(&self.shared, &template, &snapshot);
+                let mut lines = render_job_script(&self.shared, &template, &snapshot);
+                if std::mem::take(&mut job.retract_skipped) {
+                    // Nothing was retracted at the pause: no prime either.
+                    lines = without_extruder_moves(lines);
+                }
                 let printer = modes_after(&self.printer_modes, &self.manual);
                 let extras = {
                     let s = self.shared.state.read();
@@ -621,7 +673,20 @@ impl Engine {
                 .pause_script
                 .clone()
                 .unwrap_or_else(|| self.shared.profile.read().pause_script.clone());
-            let lines = render_job_script(&self.shared, &template, &snapshot);
+            let mut lines = render_job_script(&self.shared, &template, &snapshot);
+            let hot = hotend_hot(&self.shared.state.read().temps, snapshot.tool);
+            if !hot {
+                // The firmware would refuse a cold retract ("cold extrusion
+                // prevented"); the resume leaves out the prime to match.
+                lines = without_extruder_moves(lines);
+                job.retract_skipped = true;
+                self.shared.log(
+                    ConsoleKind::Warning,
+                    "The hotend is not at temperature: the pause script does not retract",
+                    false,
+                    None,
+                );
+            }
             let lines = guarded(&self.shared, lines, self.homed, "pause");
             let printer = modes_after(&self.printer_modes, &self.manual);
             let lines = in_script_modes(lines, &printer);

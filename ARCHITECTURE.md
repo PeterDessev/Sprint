@@ -1195,6 +1195,13 @@ Every public item is also re-exported at the crate root.
   `T<n>` when there are several), and after the template a part fan
   changed while paused gets its speed back (`M106 S<n>`/`M107`), so
   cooling down during a long pause never resumes with a cold nozzle.
+  A pause while a heat wait (M109/M190/M191) or a wait for the user
+  (M0/M1) of the stream is in flight ends it with M108 (repeated at most
+  once a second while the firmware reports it still waits: an M108 that
+  arrives before the wait begins is lost), so `Pausing` does not last
+  minutes; M600 keeps its own dialogue. When the active hotend is more
+  than 5 °C short of its target the pause script's extruder-only moves
+  (the retract) are left out, and the resume's (the prime) with them.
   `//action:pause|paused` pause
   without scripts and `//action:resume|resumed` continue; `resume()` after
   such a pause sends
