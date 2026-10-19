@@ -32,6 +32,10 @@ fn main() -> ExitCode {
     // Started from Explorer in GUI mode: do not leave a console window
     // behind the GUI.
     let detached = matches!(command, Command::Gui(_)) && console::release_own_console();
+    if detached {
+        // stderr is gone: panics would vanish without a trace.
+        console::show_panics("Sprint");
+    }
     init_logging(&command);
     match run(command) {
         Ok(code) => code,

@@ -4,9 +4,13 @@
 //! it when it is started from Explorer (double-click, file association,
 //! drag and drop). In GUI mode that window would linger behind the GUI.
 //! When the console belongs to this process alone it is released, and
-//! errors are then shown in a message box instead. A console shared with
-//! a shell (`sprint` typed in a terminal) is left alone. On other
-//! platforms these functions do nothing.
+//! errors and panics are then shown in a message box instead
+//! ([`show_error`], [`show_panics`]). A console shared with a shell
+//! (`sprint` typed in a terminal) is left alone. On other platforms these
+//! functions do nothing.
+
+use std::panic::{self, PanicHookInfo};
+use std::thread;
 
 /// Number of processes attached to this process's console (0 without a
 /// console, always 0 on other platforms).
@@ -27,6 +31,65 @@ pub fn release_own_console() -> bool {
 /// Show an error to a user who has no console: a message box on Windows.
 pub fn show_error(title: &str, message: &str) {
     imp::show_error(title, message);
+}
+
+/// After [`release_own_console`]: show panics in a message box as well,
+/// since their report on stderr goes nowhere. The previous hook still
+/// runs first. A panic on the main thread ends the program, so its box is
+/// shown before the program goes on unwinding; one on another thread
+/// (which the GUI may survive) is shown from a helper thread, so the
+/// panicking thread does not keep the locks it holds while the box is
+/// open.
+pub fn show_panics(title: &'static str) {
+    let previous = panic::take_hook();
+    panic::set_hook(Box::new(move |info| {
+        previous(info);
+        let current = thread::current();
+        let main = current.name() == Some("main");
+        let message = panic_message(current.name(), main, info);
+        if main {
+            show_error(title, &message);
+        } else {
+            let _ = thread::Builder::new()
+                .name("sprint-error-box".into())
+                .spawn(move || show_error(title, &message));
+        }
+    }));
+}
+
+/// The text of a panic report for a message box.
+fn panic_message(thread: Option<&str>, main: bool, info: &PanicHookInfo<'_>) -> String {
+    let what = info.payload_as_str().unwrap_or("an unknown error");
+    let location = info
+        .location()
+        .map(|l| format!("{}:{}", l.file(), l.line()));
+    panic_text(thread, main, what, location.as_deref())
+}
+
+/// See [`panic_message`].
+fn panic_text(thread: Option<&str>, main: bool, what: &str, location: Option<&str>) -> String {
+    let mut text = if main {
+        format!(
+            "Sprint stopped because of an internal error:
+
+{what}"
+        )
+    } else {
+        let name = thread.unwrap_or("a background thread");
+        format!(
+            "Internal error in {name}:
+
+{what}"
+        )
+    };
+    if let Some(location) = location {
+        text.push_str(&format!(
+            "
+
+(at {location})"
+        ));
+    }
+    text
 }
 
 #[cfg(windows)]
@@ -103,6 +166,30 @@ mod imp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn panic_reports_name_the_error_and_where() {
+        assert_eq!(
+            panic_text(Some("main"), true, "boom", Some("src/app.rs:12")),
+            "Sprint stopped because of an internal error:
+
+boom
+
+(at src/app.rs:12)"
+        );
+        assert_eq!(
+            panic_text(Some("sprint-load"), false, "bad file", None),
+            "Internal error in sprint-load:
+
+bad file"
+        );
+        assert_eq!(
+            panic_text(None, false, "x", None),
+            "Internal error in a background thread:
+
+x"
+        );
+    }
 
     #[test]
     fn a_shared_console_is_kept() {
