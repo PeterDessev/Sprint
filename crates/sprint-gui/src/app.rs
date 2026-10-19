@@ -1693,8 +1693,9 @@ impl SprintApp {
                     .show(ctx);
                 match answer {
                     Some(DialogResult::Confirmed) => {
+                        // The job bar says CANCELLING; the notifier toasts
+                        // the outcome ("Print cancelled").
                         self.core.printer.cancel();
-                        self.core.toasts.info("Cancelling the print");
                         None
                     }
                     Some(DialogResult::Cancelled) => None,

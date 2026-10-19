@@ -117,6 +117,12 @@ fn connects_prints_pauses_resumes_and_cancels() {
     expect(&mut h, "the cancel toast", |app| {
         toast_titles(app).contains(&"Print cancelled".to_owned())
     });
+    // One toast for one cancel.
+    let titles = toast_titles(h.state());
+    assert!(
+        !titles.iter().any(|t| t.starts_with("Cancelling")),
+        "{titles:?}"
+    );
     // Commands of the cancel script reached the printer.
     assert!(received(h.state()).iter().any(|c| c.starts_with("M104 S0")));
 }
