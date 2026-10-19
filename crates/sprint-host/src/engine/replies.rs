@@ -172,14 +172,14 @@ impl Engine {
             }
             Reply::HostAction(action) => self.on_host_action(action, now),
             Reply::ActiveExtruder(tool) => self.shared.update(|s| s.active_tool = tool),
-            // The "echo:; Steps per unit:" headers of a settings report
-            // belong to that report, they are not messages.
-            Reply::Echo(message)
-                if message.trim_start().starts_with(';')
-                    && self
-                        .flow
-                        .in_flight()
-                        .any(|e| e.meta.is('M', 503) || e.meta.is('M', 501)) => {}
+            // The headers of a settings report ("echo:; Steps per unit:",
+            // Marlin 1.1 / Prusa "echo:Steps per unit:") belong to that
+            // report, they are not messages (the console keeps them).
+            Reply::Echo(_)
+                if self
+                    .flow
+                    .in_flight()
+                    .any(|e| e.meta.is('M', 503) || e.meta.is('M', 501)) => {}
             Reply::Echo(message) | Reply::Info(message) => self.firmware_message(message),
             Reply::PrintTime(_) | Reply::Other(_) => {}
         }

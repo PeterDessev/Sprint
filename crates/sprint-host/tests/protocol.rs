@@ -594,6 +594,49 @@ fn an_engine_panic_leaves_a_consistent_state() {
     wait_for(&printer, "connected again", |s| s.is_connected());
 }
 
+#[test]
+fn marlin_1_settings_report_headers_are_not_messages() {
+    // Marlin 1.1 and Prusa print report headers without the ';'.
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut fw = Mini::new(Arc::clone(&log));
+    let (link, _) = fake(
+        |out| out.line("start"),
+        move |line, out| {
+            let Some(cmd) = fw.accept(line, out) else {
+                return;
+            };
+            if cmd == "M503" {
+                out.line("echo:Steps per unit:");
+                out.line("echo:  M92 X100.00 Y100.00 Z400.00 E280.00");
+                out.line("echo:Maximum feedrates (mm/s):");
+                out.line("echo:  M203 X200.00 Y200.00 Z12.00 E120.00");
+                out.line("echo:Filament settings: Disabled");
+            }
+            if cmd == "M118 E1 hello" {
+                out.line("echo:hello");
+            }
+            out.line("ok");
+        },
+    );
+    let printer = connect_fake(
+        link,
+        ConnectOptions {
+            temp_poll_secs: 0.0,
+            query_on_connect: false,
+            ..options()
+        },
+    );
+    wait_for(&printer, "connected", |s| s.is_connected());
+    printer.request_settings();
+    printer.send("M118 E1 hello");
+    wait_for(&printer, "the settings", |s| {
+        s.settings_loaded && s.firmware_messages.iter().any(|m| m == "hello")
+    });
+    let s = printer.snapshot();
+    assert!(s.settings.steps_per_mm().is_some());
+    assert_eq!(s.firmware_messages, ["hello"], "{:?}", s.firmware_messages);
+}
+
 /// An SD print on firmware that reports `polls` progress lines and then
 /// "Not SD printing" (its "Done printing file" was lost, or the print was
 /// stopped at the printer).
