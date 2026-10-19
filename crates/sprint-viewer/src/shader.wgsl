@@ -562,20 +562,22 @@ fn vs_extrusion_line(@builtin(vertex_index) vi: u32, s: SegmentIn) -> FlatOut {
         out.clip = HIDDEN_POS;
         return out;
     }
-    let p = select(s.start, s.end, vi == 1u) - vec3<f32>(0.0, 0.0, 0.5 * s.height);
+    let drop = vec3<f32>(0.0, 0.0, 0.5 * s.height);
+    let p = select(s.start, s.end, vi == 1u) - drop;
     out.clip = g.view_proj * vec4<f32>(p, 1.0);
     let c = segment_shade(s);
-    // Cheap line lighting (Kajiya-Kay style diffuse from the tangent) so
-    // line mode keeps some depth cues.
+    // Lit per vertex from the bead's macro normal, like distant tubes, so
+    // the part keeps its form in line mode too.
     let d = s.end - s.start;
-    var t = vec3<f32>(1.0, 0.0, 0.0);
+    var dir = vec3<f32>(1.0, 0.0, 0.0);
     if (length(d) > 1e-6) {
-        t = normalize(d);
+        dir = normalize(d);
     }
-    let tl = dot(t, g.key_light.xyz);
-    let tv = dot(t, view_vector(p));
-    let lit = 0.3 + 0.45 * sqrt(max(1.0 - tl * tl, 0.0)) + 0.4 * sqrt(max(1.0 - tv * tv, 0.0));
-    out.color = vec4<f32>(c.rgb * lit * (1.0 + c.a), 1.0);
+    let right = segment_right(dir);
+    let up = cross(right, dir);
+    let bm = bead_macro(feature_of(s), right, up, 0.5 * s.width, 0.5 * s.height, (s.start + s.end) * 0.5 - drop);
+    let lit = light(p, bm.normal, c.rgb, c.a, 0.3) * (1.0 - 0.18 * g.shading.x);
+    out.color = vec4<f32>(post(p, lit), 1.0);
     return out;
 }
 
