@@ -417,8 +417,13 @@ fn class_of(cmd: &Lexed<'_>) -> Class {
             ..
         } => classic_class(letter, number, &words(params)),
         Lexed::Words(params) => {
+            let words = words(params);
+            // RepRapFirmware's `T-1` deselects every tool.
+            if words.first().is_some_and(|w| w.0 == b'T') {
+                return Class::Tool;
+            }
             // A modal move on firmware that repeats the last motion mode.
-            let moves = words(params)
+            let moves = words
                 .iter()
                 .any(|w| matches!(w.0, b'X' | b'Y' | b'Z' | b'E' | b'A' | b'B' | b'C'));
             if moves { Class::Move } else { Class::Other }
@@ -500,8 +505,11 @@ fn classic_class(letter: u8, number: u32, w: &[Word]) -> Class {
         (b'M', 303) => Class::Calibration,
         // M306 T: MPC autotune (other M306 forms set the model).
         (b'M', 306) if has(w, b'T') => Class::Calibration,
-        (b'M', 48) => Class::Probe,
+        // M45: Prusa bed skew calibration.
+        (b'M', 45 | 48) => Class::Probe,
         (b'M', 420) if has_any(b"SZ") => Class::Leveling,
+        // RepRapFirmware: clear the bed transform (mesh off).
+        (b'M', 561) => Class::Leveling,
         (b'M', 410) => Class::QuickStop,
         (b'M', 28) => Class::SdWrite,
         (b'M', 24 | 32) => Class::SdPrint,
@@ -536,6 +544,11 @@ const EXTENDED: &[(&str, Class)] = &[
     ("TURN_OFF_HEATERS", Class::HeatersOff),
     ("TEMPERATURE_WAIT", Class::Wait),
     ("ACTIVATE_EXTRUDER", Class::Tool),
+    // Prusa MMU: choose a filament on the printer, load to the nozzle.
+    ("T?", Class::Tool),
+    ("TX", Class::Tool),
+    ("TC", Class::Tool),
+    ("BED_MESH_CLEAR", Class::Leveling),
     ("STEPPER_BUZZ", Class::Move),
     ("MANUAL_STEPPER", Class::Move),
     ("SDCARD_PRINT_FILE", Class::SdPrint),
@@ -573,10 +586,26 @@ fn extended_class(name: &str, args: &str) -> Class {
             Class::Other
         };
     }
-    EXTENDED
-        .iter()
-        .find(|(n, _)| n.eq_ignore_ascii_case(name))
-        .map_or(Class::Other, |&(_, class)| class)
+    if name.eq_ignore_ascii_case("BED_MESH_PROFILE") {
+        // LOAD swaps the mesh the print is leveled with; SAVE and REMOVE
+        // only manage stored profiles.
+        return if ext_param(args, "LOAD").is_some() {
+            Class::Leveling
+        } else {
+            Class::Other
+        };
+    }
+    if let Some(&(_, class)) = EXTENDED.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)) {
+        return class;
+    }
+    // Every PROBE* command probes (PROBE_EDDY_CURRENT_CALIBRATE, ...).
+    if name
+        .get(..5)
+        .is_some_and(|p| p.eq_ignore_ascii_case("PROBE"))
+    {
+        return Class::Probe;
+    }
+    Class::Other
 }
 
 /// Value of a Klipper `KEY=value` argument (key case-insensitive, quotes
@@ -929,6 +958,18 @@ mod tests {
             ("Z_TILT_ADJUST", Allow, home, home),
             ("QUAD_GANTRY_LEVEL", Allow, home, home),
             ("SCREWS_TILT_CALCULATE", Allow, home, home),
+            // Every Klipper PROBE* command probes (eddy-current probes,
+            // plug-in probes); QUERY_PROBE only reads the probe.
+            (
+                "PROBE_EDDY_CURRENT_CALIBRATE CHIP=btt_eddy",
+                Allow,
+                home,
+                home,
+            ),
+            ("probe_z_accuracy", Allow, home, home),
+            ("QUERY_PROBE", Allow, Allow, Allow),
+            // Prusa bed skew calibration probes the bed.
+            ("M45", Allow, home, home),
             ("M303 E0 S210 C8", Allow, cal, cal),
             ("M306 T", Allow, cal, cal),
             ("M306 E0 P40", Allow, Allow, Allow),
@@ -937,6 +978,12 @@ mod tests {
             ("M420 S0", Allow, level, level),
             ("M420 Z10", Allow, level, level),
             ("M420 V", Allow, Allow, Allow),
+            // Klipper and RepRapFirmware ways to drop or swap the mesh.
+            ("BED_MESH_CLEAR", Allow, level, level),
+            ("BED_MESH_PROFILE LOAD=default", Allow, level, level),
+            ("bed_mesh_profile load=\"pei\"", Allow, level, level),
+            ("BED_MESH_PROFILE SAVE=pei", Allow, Allow, Allow),
+            ("M561", Allow, level, level),
         ]);
     }
 
@@ -949,6 +996,13 @@ mod tests {
         check(&[
             ("T1", Allow, tool, tool),
             ("t0", Allow, tool, tool),
+            // RepRapFirmware deselects every tool with T-1; Prusa's MMU
+            // asks for a filament with T? and loads with Tx / Tc.
+            ("T-1", Allow, tool, tool),
+            ("T?", Allow, tool, tool),
+            ("Tx", Allow, tool, tool),
+            ("TC", Allow, tool, tool),
+            ("TEMPERATURE_WAIT SENSOR=bed MAXIMUM=40", Allow, wait, Allow),
             ("ACTIVATE_EXTRUDER EXTRUDER=extruder1", Allow, tool, tool),
             ("M84", Allow, motors, motors),
             ("M18 X Y", Allow, motors, motors),

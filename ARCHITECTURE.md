@@ -738,16 +738,17 @@ commands are known by name. Rules:
   except M112: Allow with `emergency` (never asked).
 * Printing: moves (G0-G3, G5, G6, G10/G11 retraction, G12, G27, G42, G61,
   M125, parameter-only lines, `STEPPER_BUZZ`), homing and probing (G28,
-  G26, G29-G30, G32-G35, G38.x, G76, G80, M48, `BED_MESH_CALIBRATE`,
-  `PROBE*`, `Z_TILT_ADJUST`, `QUAD_GANTRY_LEVEL`, ...), mode changes
+  G26, G29-G30, G32-G35, G38.x, G76, G80, M45, M48, `BED_MESH_CALIBRATE`,
+  every `PROBE*`, `Z_TILT_ADJUST`, `QUAD_GANTRY_LEVEL`, ...), mode changes
   (G90/G91/G20/G21/M82/M83), coordinate shifts (G92, G53-G59, M206, M428,
-  G10 L, `SET_GCODE_OFFSET X/Y`), tool changes (T<n>, `ACTIVATE_EXTRUDER`),
-  motors off (M18/M84 except `S<timeout>` alone, `SET_STEPPER_ENABLE
-  ENABLE=0`), heaters off (hotend target below `MIN_EXTRUSION_TEMP`, bed or
+  G10 L, `SET_GCODE_OFFSET X/Y`), tool changes (T<n>, T-1, Prusa MMU
+  `T?`/`Tx`/`Tc`, `ACTIVATE_EXTRUDER`), motors off (M18/M84 except
+  `S<timeout>` alone, `SET_STEPPER_ENABLE ENABLE=0`), heaters off (hotend target below `MIN_EXTRUSION_TEMP`, bed or
   chamber below `HEATER_OFF_BELOW`, `TURN_OFF_HEATERS`,
   `SET_HEATER_TEMPERATURE` without `TARGET`), temperature waits
   (M109/M190/M191/M116, `TEMPERATURE_WAIT`), calibration (M303, M306 T,
-  `PID_CALIBRATE`, `SHAPER_CALIBRATE`, ...), leveling changes (M420 S/Z),
+  `PID_CALIBRATE`, `SHAPER_CALIBRATE`, ...), leveling changes (M420 S/Z,
+  M561, `BED_MESH_CLEAR`, `BED_MESH_PROFILE LOAD=`),
   M410, start/end/cancel macros (`PRINT_START`, `START_PRINT`, `PRINT_END`,
   `END_PRINT`, `CANCEL_PRINT`) Confirm; M28 and starting an SD print (M24,
   M32, `SDCARD_PRINT_FILE`) Block. Tuning (temperatures, fans, M220/M221,
