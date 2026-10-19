@@ -243,7 +243,10 @@ pub struct PrinterProfile {
     /// `SPRINT_ELAPSED_SECS`, `SPRINT_PRINTER` (profile name) and, for
     /// failures, `SPRINT_REASON` in the environment; the exit status
     /// and the first lines of output go to the console. Printrun's start
-    /// command.
+    /// command. Quote the variables (`"%SPRINT_FILE%"` for cmd,
+    /// `"$SPRINT_FILE"` for sh): a file name such as `a & b.gcode`, a
+    /// profile name or a failure reason may hold characters the shell
+    /// would otherwise act on.
     pub on_start_command: String,
     /// Shell command run when a print completes (Printrun's final
     /// command); see [`PrinterProfile::on_start_command`].
