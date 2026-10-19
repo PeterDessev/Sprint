@@ -43,6 +43,9 @@ pub struct ConsoleFilter {
     pub hide_auto: bool,
     /// Hide bare `ok` replies.
     pub hide_ok: bool,
+    /// Hide the lines of a streamed print (the file's lines, its preamble
+    /// and progress lines, and the oks answering them).
+    pub hide_stream: bool,
     /// Only entries containing this text (case-insensitive); empty = all.
     pub search: String,
 }
@@ -65,6 +68,9 @@ pub fn is_bare_ok(text: &str) -> bool {
 /// search text.
 pub fn is_visible(entry: &ConsoleEntry, filter: &ConsoleFilter, search_lower: &str) -> bool {
     if filter.hide_auto && entry.auto {
+        return false;
+    }
+    if filter.hide_stream && entry.stream {
         return false;
     }
     if filter.hide_ok && entry.kind == ConsoleKind::Received && is_bare_ok(&entry.text) {
@@ -337,6 +343,7 @@ impl ConsolePanel {
     fn apply_filter(&mut self) {
         self.filter.hide_auto = self.prefs.hide_auto;
         self.filter.hide_ok = self.prefs.hide_ok;
+        self.filter.hide_stream = self.prefs.hide_stream;
         self.search_lower = self.filter.search.to_lowercase();
         let front = self.pushed - self.entries.len() as u64;
         self.visible = self
@@ -572,6 +579,17 @@ impl ConsolePanel {
                     .clicked()
                 {
                     self.prefs.hide_auto = show_auto;
+                    changed = true;
+                }
+                let show_stream = !self.prefs.hide_stream;
+                if ui
+                    .add(Chip::new("Print").selected(show_stream))
+                    .on_hover_text(
+                        "Show the lines a print streams (the file's lines and their oks)",
+                    )
+                    .clicked()
+                {
+                    self.prefs.hide_stream = show_stream;
                     changed = true;
                 }
                 let search = ui.add(
@@ -1179,6 +1197,37 @@ mod tests {
         }
     }
 
+    fn streamed(seq: u64, kind: ConsoleKind, text: &str) -> ConsoleEntry {
+        ConsoleEntry {
+            stream: true,
+            line: (kind == ConsoleKind::Sent).then_some(seq as u32),
+            ..entry(seq, kind, text, false)
+        }
+    }
+
+    #[test]
+    fn streamed_print_lines_are_hidden_by_default() {
+        let mut c = ConsolePanel::default();
+        assert!(c.prefs.hide_stream, "on by default");
+        c.push_entries(vec![
+            entry(1, ConsoleKind::Sent, "M105", false),
+            streamed(2, ConsoleKind::Sent, "G1 X10 Y10 E0.5"),
+            streamed(3, ConsoleKind::Received, "ok"),
+            entry(4, ConsoleKind::Info, "Print started", false),
+            entry(5, ConsoleKind::Received, "echo:busy: processing", false),
+        ]);
+        let shown: Vec<_> = c.visible_entries().map(|e| e.seq).collect();
+        assert_eq!(shown, vec![1, 4, 5]);
+        // The filter can be turned off (and is remembered).
+        c.prefs.hide_stream = false;
+        c.apply_filter();
+        let shown: Vec<_> = c.visible_entries().map(|e| e.seq).collect();
+        assert_eq!(shown, vec![1, 2, 3, 4, 5]);
+        // A search still finds streamed lines while they are shown.
+        c.set_search("x10");
+        assert_eq!(c.visible_entries().count(), 1);
+    }
+
     #[test]
     fn bare_ok_detection() {
         assert!(is_bare_ok("ok"));
@@ -1195,6 +1244,7 @@ mod tests {
         let f = ConsoleFilter {
             hide_auto: true,
             hide_ok: true,
+            hide_stream: false,
             search: String::new(),
         };
         assert!(!is_visible(

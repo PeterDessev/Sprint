@@ -191,6 +191,9 @@ pub struct ConsolePrefs {
     pub hide_auto: bool,
     /// Hide bare "ok" replies.
     pub hide_ok: bool,
+    /// Hide the lines of a streamed print and their oks (on by default:
+    /// thousands of them would push everything else out of view).
+    pub hide_stream: bool,
     /// Show timestamps.
     pub timestamps: bool,
 }
@@ -200,6 +203,7 @@ impl Default for ConsolePrefs {
         ConsolePrefs {
             hide_auto: true,
             hide_ok: false,
+            hide_stream: true,
             timestamps: false,
         }
     }
@@ -245,6 +249,16 @@ mod tests {
         let partial = UiPrefs::load(Some(&store));
         assert_eq!(partial.tab, Tab::Tuning);
         assert!(partial.console.hide_auto);
+        // Preferences saved before the print filter existed hide the
+        // print's lines too.
+        eframe::Storage::set_string(
+            &mut store,
+            STORAGE_KEY,
+            "(console: (hide_auto: false, hide_ok: true))".into(),
+        );
+        let older = UiPrefs::load(Some(&store));
+        assert!(!older.console.hide_auto && older.console.hide_ok);
+        assert!(older.console.hide_stream);
         // Garbage gives the defaults.
         eframe::Storage::set_string(&mut store, STORAGE_KEY, "{{{ nope".into());
         assert_eq!(UiPrefs::load(Some(&store)), UiPrefs::default());
