@@ -537,7 +537,6 @@ impl Engine {
 
     /// State changes implied by a completed command.
     fn apply_effects(&mut self, meta: &CmdMeta, code: sprint_gcode::Code, now: Instant) {
-        let _ = now;
         let parsed = sprint_gcode::parse_line(&meta.text);
         let int = |letter: char| {
             parsed
@@ -637,6 +636,7 @@ impl Engine {
                 }
             }
             (b'M', 28) => self.upload_open_acknowledged(),
+            (b'M', 29) => self.upload_closed(now),
             // M303 blocks until it is done and reports the result (or the
             // failure) before its ok: without either the firmware did not
             // run it (no PID autotune, "Unknown command").

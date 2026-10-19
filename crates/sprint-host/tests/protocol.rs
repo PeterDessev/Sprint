@@ -638,6 +638,50 @@ fn marlin_1_settings_report_headers_are_not_messages() {
 }
 
 #[test]
+fn an_upload_completes_when_m29_is_acknowledged_without_its_message() {
+    // "Done saving file." got lost (or the firmware does not print it).
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut fw = Mini::new(Arc::clone(&log));
+    let (link, _) = fake(
+        |out| out.line("start"),
+        move |line, out| {
+            let Some(cmd) = fw.accept(line, out) else {
+                return;
+            };
+            if cmd == "M28 up.gco" {
+                out.line("Writing to file: up.gco");
+            }
+            out.line("ok");
+        },
+    );
+    let printer = connect_fake(
+        link,
+        ConnectOptions {
+            temp_poll_secs: 0.0,
+            query_on_connect: false,
+            ..options()
+        },
+    );
+    wait_for(&printer, "connected", |s| s.is_connected());
+    let file = Arc::new(GcodeFile::from_text("up.gcode", "G28\nG1 X10\nG1 Y10\n"));
+    printer.upload_to_sd(file, "up.gco").unwrap();
+    wait_for_within(&printer, "the upload to end", Duration::from_secs(5), |s| {
+        !s.job_active()
+    });
+    assert_eq!(
+        printer.with_state(|s| s.job.as_ref().map(|j| j.status.clone())),
+        Some(JobStatus::Completed)
+    );
+    wait_idle(&printer);
+    let log = log.lock().unwrap().clone();
+    assert_eq!(
+        &log[1..],
+        ["M28 up.gco", "G28", "G1 X10", "G1 Y10", "M29", "M20"],
+        "{log:?}"
+    );
+}
+
+#[test]
 fn an_autotune_the_firmware_does_not_run_does_not_stay_running() {
     // Firmware built without PID autotune: "Unknown command" and ok.
     let log = Arc::new(Mutex::new(Vec::new()));

@@ -893,6 +893,18 @@ impl Engine {
         }
     }
 
+    /// The final M29 was acknowledged: the firmware closed the file. Normally
+    /// "Done saving file." came first; if that line was lost the upload is
+    /// still done.
+    pub(super) fn upload_closed(&mut self, now: Instant) {
+        let closing = self.job.as_ref().is_some_and(|j| {
+            j.info.kind == JobKind::SdUpload && j.info.status == JobStatus::Printing && j.m29_queued
+        });
+        if closing {
+            self.upload_saved(now);
+        }
+    }
+
     /// "Done saving file.".
     pub(super) fn upload_saved(&mut self, now: Instant) {
         let uploading = self.job.as_ref().is_some_and(|j| {
