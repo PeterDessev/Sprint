@@ -126,8 +126,10 @@ fn upload_is_numbered_even_without_checksums() {
 fn upload_can_be_cancelled_and_deletes_the_partial_file() {
     let printer = connect(fast_sim(50.0), options());
     let control = printer.sim_control().unwrap();
+    // Large enough that the cancel always arrives mid-upload, even on a
+    // loaded machine (3000 lines could be done before it).
     let mut text = String::new();
-    for i in 0..3000 {
+    for i in 0..60_000 {
         text.push_str(&format!("G1 X{} F3000\n", i % 100));
     }
     printer
