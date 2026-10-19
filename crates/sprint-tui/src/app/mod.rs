@@ -127,6 +127,9 @@ pub(crate) struct App {
     pub file: Option<LoadedFile>,
     pub loader: Option<LoadJob>,
     connecting: Option<Receiver<Result<(), String>>>,
+    /// Work running off the UI thread; each ends with a status message
+    /// (`Err` for a failure).
+    background: Vec<Receiver<Result<String, String>>>,
     pub focus: Focus,
     /// The panel to return to when the input line is left.
     return_focus: Focus,
@@ -214,6 +217,7 @@ impl App {
             file: None,
             loader: None,
             connecting: None,
+            background: Vec::new(),
             focus: Focus::Layers,
             return_focus: Focus::Layers,
             input_mode: InputMode::Gcode,
@@ -424,7 +428,49 @@ impl App {
             }
             self.dirty = true;
         }
+        self.poll_background();
         self.tick_report(now);
+    }
+
+    /// Run `work` on a helper thread named `name`; its message shows when
+    /// it ends.
+    fn spawn_background(
+        &mut self,
+        name: &str,
+        work: impl FnOnce() -> Result<String, String> + Send + 'static,
+    ) {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let spawned = std::thread::Builder::new()
+            .name(name.to_string())
+            .spawn(move || {
+                let _ = tx.send(work());
+            });
+        match spawned {
+            Ok(_) => self.background.push(rx),
+            Err(e) => self.error(format!("Cannot start {name}: {e}")),
+        }
+    }
+
+    /// Show the messages of finished background work.
+    fn poll_background(&mut self) {
+        let mut finished = Vec::new();
+        self.background.retain(|rx| match rx.try_recv() {
+            Ok(result) => {
+                finished.push(result);
+                false
+            }
+            Err(crossbeam_channel::TryRecvError::Empty) => true,
+            Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                finished.push(Err("A background task stopped".to_string()));
+                false
+            }
+        });
+        for result in finished {
+            match result {
+                Ok(text) => self.info(text),
+                Err(why) => self.error(why),
+            }
+        }
     }
 
     /// End a report's wait: on timeout, or once the link has been idle for
@@ -1571,30 +1617,32 @@ impl App {
                     Action::SdDelete(name),
                 )));
             }
-            Command::Sd(SdCommand::Upload { file, name }) => {
-                let loaded = match file {
-                    Some(path) => {
-                        let path = crate::paths::resolve(&path.to_string_lossy(), &self.base_dir);
-                        match crate::loader::read_file(&path) {
-                            Ok(f) => (std::sync::Arc::new(f), path),
-                            Err(why) => {
-                                self.error(why);
-                                return;
-                            }
-                        }
-                    }
-                    None => match &self.file {
-                        Some(f) => (f.file.clone(), f.path.clone()),
-                        None => {
-                            self.warn("No file loaded (F3 opens one)");
-                            return;
-                        }
-                    },
+            Command::Sd(SdCommand::Upload {
+                file: Some(path),
+                name,
+            }) => {
+                // Reading a large file takes a while: off the UI thread.
+                let path = crate::paths::resolve(&path.to_string_lossy(), &self.base_dir);
+                let shown = path.file_name().map_or_else(
+                    || path.display().to_string(),
+                    |n| n.to_string_lossy().into_owned(),
+                );
+                self.info(format!("Reading {shown}…"));
+                self.spawn_background("sprint-upload", move || {
+                    let file = crate::loader::read_file(&path)?;
+                    let sd_name = name.unwrap_or_else(|| actions::sd_name(&path));
+                    upload(&printer, std::sync::Arc::new(file), &sd_name)
+                });
+            }
+            Command::Sd(SdCommand::Upload { file: None, name }) => {
+                let Some(loaded) = &self.file else {
+                    self.warn("No file loaded (F3 opens one)");
+                    return;
                 };
-                let sd_name = name.unwrap_or_else(|| actions::sd_name(&loaded.1));
-                match printer.upload_to_sd(loaded.0, &sd_name) {
-                    Ok(()) => self.info(format!("Uploading to the SD card as {sd_name}")),
-                    Err(e) => self.error(format!("Cannot upload: {e}")),
+                let sd_name = name.unwrap_or_else(|| actions::sd_name(&loaded.path));
+                match upload(&printer, loaded.file.clone(), &sd_name) {
+                    Ok(text) => self.info(text),
+                    Err(why) => self.error(why),
                 }
             }
             Command::Autotune {
@@ -1660,6 +1708,18 @@ impl App {
             true
         }
     }
+}
+
+/// Start writing `file` to the SD card as `sd_name`: the status message.
+fn upload(
+    printer: &Printer,
+    file: std::sync::Arc<sprint_host::sprint_gcode::GcodeFile>,
+    sd_name: &str,
+) -> Result<String, String> {
+    printer
+        .upload_to_sd(file, sd_name)
+        .map(|()| format!("Uploading to the SD card as {sd_name}"))
+        .map_err(|e| format!("Cannot upload: {e}"))
 }
 
 /// The lines of a report from the current printer state.

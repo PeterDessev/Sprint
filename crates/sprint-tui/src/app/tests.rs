@@ -1232,6 +1232,69 @@ fn palette_reports_open_as_dialogs() {
     assert!(!got.iter().any(|c| c == "G29"), "{got:?}");
 }
 
+/// Wait until the SD upload job ends and return what the printer got.
+fn finish_upload(app: &mut App) -> Vec<String> {
+    wait(app, "the upload", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.kind == JobKind::SdUpload && j.status.is_finished())
+    });
+    wait_idle(app);
+    received(app)
+}
+
+#[test]
+fn sd_uploads_read_files_off_the_ui_thread() {
+    let mut app = connected_app();
+    received(&app);
+    // A file named on the line is read by a helper thread.
+    let path = sample("calibration-cube.gcode");
+    app.run_line(&format!("sd upload \"{}\" cube.gco", path.display()));
+    assert_eq!(app.background.len(), 1, "{:?}", app.toast);
+    assert!(
+        app.toast
+            .as_ref()
+            .is_some_and(|t| t.text.starts_with("Reading calibration-cube"))
+    );
+    wait_app(&mut app, "the upload message", |a| {
+        a.toast
+            .as_ref()
+            .is_some_and(|t| t.text.contains("Uploading to the SD card as cube.gco"))
+    });
+    assert!(app.background.is_empty());
+    let got = finish_upload(&mut app);
+    assert!(
+        got.iter().any(|c| c == "M28 cube.gco"),
+        "{:?}",
+        &got[..got.len().min(5)]
+    );
+    assert!(got.iter().any(|c| c.starts_with("M29")), "no M29");
+    // A missing file fails with a message, not a freeze.
+    app.run_line("sd upload no-such-file.gcode");
+    wait_app(&mut app, "the failure", |a| {
+        a.background.is_empty()
+            && a.toast
+                .as_ref()
+                .is_some_and(|t| t.text.contains("no such file"))
+    });
+    // Without a file: the loaded one, named after it.
+    load(&mut app, "calibration-cube.gcode");
+    app.run_line("sd upload");
+    assert!(
+        app.toast
+            .as_ref()
+            .is_some_and(|t| t.text == "Uploading to the SD card as CALIBRAT.GCO"),
+        "{:?}",
+        app.toast
+    );
+    let got = finish_upload(&mut app);
+    assert!(
+        got.iter().any(|c| c == "M28 CALIBRAT.GCO"),
+        "{:?}",
+        &got[..got.len().min(5)]
+    );
+}
+
 #[test]
 fn terminal_events_resize_paste_and_cancel_typing() {
     let mut app = app();
