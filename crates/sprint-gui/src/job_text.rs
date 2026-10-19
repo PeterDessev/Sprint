@@ -19,6 +19,56 @@ pub struct JobQuestion {
     pub keep: &'static str,
 }
 
+/// The question before cancelling the job `kind` named `name`, `percent`
+/// done (see [`format::progress_percent`]). `cancel_script` is the printer
+/// profile's cancel script (host prints run it; empty: none is set). The
+/// job bar, the Printer menu and the SD card tab all ask this.
+pub fn cancel_question(
+    kind: JobKind,
+    name: &str,
+    percent: u32,
+    cancel_script: &str,
+) -> JobQuestion {
+    let name = format::sanitize(name, 60);
+    match kind {
+        JobKind::HostPrint => {
+            let script = if cancel_script.trim().is_empty() {
+                "No cancel script is set in the printer profile: the heaters stay as they are."
+            } else {
+                "The printer profile's cancel script then runs (by default it parks the head \
+                 and turns the heaters off)."
+            };
+            JobQuestion {
+                title: "Cancel the print?".to_owned(),
+                message: format!(
+                    "{name} stops at {percent}%. {script} The rest can be printed later by \
+                     starting from a line."
+                ),
+                confirm: "Cancel print",
+                keep: "Keep printing",
+            }
+        }
+        JobKind::SdPrint => JobQuestion {
+            title: "Stop the SD print?".to_owned(),
+            message: format!(
+                "{name} stops at {percent}%: the printer stops reading it from its card \
+                 (M524). What it does then, parking or heaters, is up to its firmware."
+            ),
+            confirm: "Stop print",
+            keep: "Keep printing",
+        },
+        JobKind::SdUpload => JobQuestion {
+            title: "Cancel the upload?".to_owned(),
+            message: format!(
+                "The upload of {name} stops at {percent}% and the partly written file is \
+                 deleted from the card (M29, M30)."
+            ),
+            confirm: "Cancel upload",
+            keep: "Keep uploading",
+        },
+    }
+}
+
 /// What closes the link while a job runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Closing {
@@ -99,5 +149,25 @@ mod tests {
         let q = close_question(JobKind::HostPrint, "x\u{1b}[2J", Closing::Reconnect);
         assert_eq!(q.confirm, "Cancel and reconnect");
         assert!(!q.message.contains('\u{1b}'), "{q:?}");
+    }
+
+    #[test]
+    fn cancel_questions_say_what_each_job_kind_does() {
+        let q = cancel_question(JobKind::HostPrint, "cube.gcode", 42, "M104 S0");
+        assert_eq!(q.title, "Cancel the print?");
+        assert!(q.message.starts_with("cube.gcode stops at 42%."), "{q:?}");
+        assert!(q.message.contains("cancel script"), "{q:?}");
+        assert!(q.message.contains("starting from a line"), "{q:?}");
+        assert!(!q.message.contains("cannot be resumed"), "{q:?}");
+        let q = cancel_question(JobKind::HostPrint, "cube.gcode", 42, "  ");
+        assert!(q.message.contains("No cancel script"), "{q:?}");
+        let q = cancel_question(JobKind::SdPrint, "CUBE.GCO", 10, "M104 S0");
+        assert_eq!(q.title, "Stop the SD print?");
+        assert!(q.message.contains("M524"), "{q:?}");
+        assert!(!q.message.contains("cancel script"), "{q:?}");
+        let q = cancel_question(JobKind::SdUpload, "CUBE.GCO", 52, "M104 S0");
+        assert_eq!(q.title, "Cancel the upload?");
+        assert!(q.message.contains("deleted from the card"), "{q:?}");
+        assert_eq!((q.confirm, q.keep), ("Cancel upload", "Keep uploading"));
     }
 }

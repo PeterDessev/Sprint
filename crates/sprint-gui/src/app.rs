@@ -131,7 +131,7 @@ pub enum DialogKind {
     About,
     /// Keyboard shortcuts.
     Shortcuts,
-    /// "Cancel the print?"
+    /// "Cancel the print?" (or the upload, or the SD print)
     ConfirmCancel,
     /// "Disconnect (or reconnect) and cancel the print?"
     ConfirmDisconnect,
@@ -1680,15 +1680,16 @@ impl SprintApp {
                     .job
                     .as_ref()
                     .filter(|j| j.status.is_active())?;
-                let message = format!(
-                    "{} stops at {}%. The cancel script parks the head and turns the heaters off.",
-                    format::sanitize(&job.name, 60),
-                    format::progress_percent(job.progress)
+                let question = job_text::cancel_question(
+                    job.kind,
+                    &job.name,
+                    format::progress_percent(job.progress),
+                    &self.core.config.active().cancel_script,
                 );
-                let answer = ConfirmDialog::new("sprint-cancel-job", "Cancel the print?")
-                    .message(&message)
-                    .confirm_label("Cancel print")
-                    .cancel_label("Keep printing")
+                let answer = ConfirmDialog::new("sprint-cancel-job", &question.title)
+                    .message(&question.message)
+                    .confirm_label(question.confirm)
+                    .cancel_label(question.keep)
                     .danger(true)
                     .show(ctx);
                 match answer {

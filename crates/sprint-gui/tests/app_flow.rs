@@ -996,6 +996,39 @@ fn disconnecting_during_an_upload_closes_and_deletes_the_file_first() {
 }
 
 #[test]
+fn the_cancel_question_says_what_cancelling_the_job_does() {
+    // A host print runs the cancel script.
+    let mut h = app(AppOptions::headless(), WINDOW);
+    h.state_mut()
+        .set_state_override(Some(printing_state(JobStatus::Printing)));
+    h.state_mut().push_action(AppAction::CancelJob);
+    settle(&mut h);
+    assert!(h.query_by_label("Cancel the print?").is_some());
+    assert!(h.query_by_label_contains("cancel script").is_some());
+    assert!(h.query_by_label("Cancel print").is_some());
+    h.key_press(Key::Escape);
+    settle(&mut h);
+    // An upload deletes its partly written file: nothing about a print.
+    let mut upload = printing_state(JobStatus::Printing);
+    if let Some(job) = upload.job.as_mut() {
+        job.kind = JobKind::SdUpload;
+        job.name = "CUBE.GCO".into();
+        job.progress = 0.52;
+    }
+    h.state_mut().set_state_override(Some(upload));
+    h.state_mut().push_action(AppAction::CancelJob);
+    settle(&mut h);
+    assert_eq!(h.state().dialog(), Some(DialogKind::ConfirmCancel));
+    assert!(h.query_by_label("Cancel the upload?").is_some());
+    assert!(
+        h.query_by_label_contains("CUBE.GCO stops at 52% and the partly written file is deleted")
+            .is_some()
+    );
+    assert!(h.query_by_label("Keep uploading").is_some());
+    assert!(h.query_by_label("Cancel print").is_none());
+}
+
+#[test]
 fn dropping_the_app_during_a_print_cancels_it() {
     // What also happens when the UI thread panics.
     let (h, control) = heating_print();

@@ -344,9 +344,9 @@ fn the_cancel_question_goes_away_with_its_job() {
     let mut h = tab(Theme::Dark, (1000.0, 760.0), printing_state());
     h.get_by_label("Cancel print").click();
     h.run_ok();
-    assert!(h.query_by_label("Cancel the SD print?").is_some());
+    assert!(h.query_by_label("Stop the SD print?").is_some());
     // The print ends (and another job may start) while the question is
-    // open: "Cancel job" must not cancel whatever runs by then.
+    // open: "Stop print" must not cancel whatever runs by then.
     if let Some(s) = h.state_mut().state.as_mut() {
         s.sd.printing = None;
         let mut job = JobInfo::new(JobKind::HostPrint, "cube.gcode", 10, 100);
@@ -354,8 +354,8 @@ fn the_cancel_question_goes_away_with_its_job() {
         s.job = Some(job);
     }
     h.run_ok();
-    assert!(h.query_by_label("Cancel the SD print?").is_none());
-    assert!(h.query_by_label("Cancel job").is_none());
+    assert!(h.query_by_label("Stop the SD print?").is_none());
+    assert!(h.query_by_label("Stop print").is_none());
 }
 
 #[test]
@@ -528,7 +528,7 @@ fn listing_printing_and_cancelling_on_the_simulator() {
     h.get_by_label("Cancel print").click();
     h.run_ok();
     clear_received(&printer);
-    h.get_by_label("Cancel job").click();
+    h.get_by_label("Stop print").click();
     h.run_ok();
     run_until(&mut h, "the end of the print", |s| {
         s.job.as_ref().is_some_and(|j| j.status.is_finished())

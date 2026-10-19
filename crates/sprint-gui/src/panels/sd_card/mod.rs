@@ -11,13 +11,13 @@ use egui::{Align, Layout, RichText, Ui};
 use sprint_host::{JobInfo, JobKind, JobStatus, PrinterState};
 
 use crate::context::{AppAction, AppCtx};
-use crate::icons;
 use crate::insight::{format, sdname, ui as kit};
 use crate::theme::{self, Tone};
 use crate::widgets::{
     ActionButton, Card, ConfirmDialog, DialogResult, EmptyState, IconButton, LinearProgress,
     StatusPill, Toggle,
 };
+use crate::{icons, job_text};
 
 /// Shown after releasing the card.
 const RELEASED_HELP: &str = concat!(
@@ -51,12 +51,6 @@ const BUSY: &str = "Not while a job runs";
 const PRINT_MESSAGE: &str = concat!(
     "The printer reads the file from its card while Sprint shows the progress. Make ",
     "sure the bed is clear and ready.",
-);
-
-/// Body of the cancel confirmation.
-const CANCEL_PRINT_MESSAGE: &str = concat!(
-    "The printer stops reading the file and runs the cancel script. The print cannot ",
-    "be resumed.",
 );
 
 /// Note in the upload prompt.
@@ -825,18 +819,20 @@ impl SdCardTab {
                     .show(ui.ctx())
             }
             Confirm::CancelJob(kind) => {
-                let (title, message) = if *kind == JobKind::SdUpload {
-                    (
-                        "Cancel the upload?",
-                        "The partly written file is deleted from the card.",
-                    )
-                } else {
-                    ("Cancel the SD print?", CANCEL_PRINT_MESSAGE)
-                };
-                ConfirmDialog::new("sd-cancel", title)
-                    .message(message)
-                    .confirm_label("Cancel job")
-                    .cancel_label("Keep going")
+                // Worded like the job bar's question (job_text).
+                let (name, percent) = sd_job(ctx.state).map_or((String::new(), 0), |j| {
+                    (j.name.clone(), crate::format::progress_percent(j.progress))
+                });
+                let question = job_text::cancel_question(
+                    *kind,
+                    &name,
+                    percent,
+                    &ctx.config.active().cancel_script,
+                );
+                ConfirmDialog::new("sd-cancel", &question.title)
+                    .message(&question.message)
+                    .confirm_label(question.confirm)
+                    .cancel_label(question.keep)
                     .danger(true)
                     .show(ui.ctx())
             }
