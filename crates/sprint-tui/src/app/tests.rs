@@ -55,13 +55,16 @@ fn connected_app() -> App {
     app
 }
 
-/// Sync the app until `cond` holds for the printer state.
+/// Sync the app until `cond` holds for the printer state; the app's view
+/// is synced once more then, so it shows what `cond` saw (the state may
+/// have changed between a sync and the look at it).
 fn wait(app: &mut App, what: &str, cond: impl Fn(&PrinterState) -> bool) {
     let deadline = Instant::now() + PATIENCE;
     loop {
         app.sync();
         app.tick(Instant::now());
         if app.printer.with_state(&cond) {
+            app.sync();
             return;
         }
         assert!(
