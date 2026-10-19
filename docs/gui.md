@@ -375,8 +375,9 @@ Everything Sprint sends (`>`) and the printer answers, colored by kind
 * **Pause at layer** pauses the print (with the pause script) when it
   reaches a layer, for a filament swap or inserts.
 * **Show progress on the printer's display (M73)** sends the percentage
-  and remaining minutes to the printer's screen; its default is the
-  profile's setting.
+  and remaining minutes to the printer's screen during this print. A
+  profile with this setting turned on sends it for every print (see
+  [Configuration](configuration.md#progress-on-the-printers-display)).
 
 Sprint refuses to start while the printer prints from its own card, while
 it is halted or without a connection, and says why.

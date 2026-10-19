@@ -310,7 +310,8 @@ With `emit_progress = true` (in the GUI: the profile's printing options),
 host prints send `M73 P<percent> R<minutes left>` whenever the percentage
 changes, so the printer's screen shows Sprint's progress and remaining
 time (Pronterface's "Display progress on printer"). The profile's setting
-is the default for prints started from every front end; the GUI's start
-dialog can change it for one print, and `sprint print
---progress-on-printer` turns it on for one run. Firmware without M73
-support ignores it.
+applies to host prints started from every front end. With it off, the
+GUI's start dialog and `sprint print --progress-on-printer` turn it on for
+a single print; with it on, every host print sends it (a single print
+cannot turn it off). SD prints show the printer's own progress. Firmware
+without M73 support ignores it.
