@@ -34,6 +34,8 @@ const SWATCHES: [[u8; 3]; 8] = [
 const TILE_HEIGHT: f32 = 34.0;
 /// Lines of G-code shown in tooltips and confirmations.
 const PREVIEW_LINES: usize = 12;
+/// Preview lines longer than this many characters are cut.
+const PREVIEW_LINE_CHARS: usize = 72;
 /// Height of everything in the macro editor but the G-code field, plus a
 /// margin to the window edges (points).
 const EDITOR_CHROME: f32 = 440.0;
@@ -68,19 +70,27 @@ pub(super) fn dangerous_commands(text: &str) -> Vec<&'static str> {
 
 /// A short preview of a macro's G-code (first lines, "…" when cut).
 fn preview(text: &str) -> String {
-    let lines: Vec<&str> = text
+    let mut lines = text
         .lines()
         .map(str::trim_end)
-        .filter(|l| !l.trim().is_empty())
-        .collect();
+        .filter(|l| !l.trim().is_empty());
     let mut out = lines
-        .iter()
+        .by_ref()
         .take(PREVIEW_LINES)
-        .copied()
+        .map(|line| {
+            if line.chars().count() > PREVIEW_LINE_CHARS {
+                let mut cut: String = line.chars().take(PREVIEW_LINE_CHARS - 1).collect();
+                cut.push('…');
+                cut
+            } else {
+                line.to_owned()
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n");
-    if lines.len() > PREVIEW_LINES {
-        out.push_str(&format!("\n… {} more lines", lines.len() - PREVIEW_LINES));
+    let more = lines.count();
+    if more > 0 {
+        out.push_str(&format!("\n… {more} more lines"));
     }
     out
 }
@@ -522,7 +532,6 @@ fn macro_tile(ui: &mut Ui, m: &Macro, width: f32, runnable: bool, index: usize) 
             with_alpha(fg, alpha),
         );
     }
-    let gcode = preview(&m.gcode);
     let name = label;
     response
         .on_hover_cursor(if runnable {
@@ -531,6 +540,8 @@ fn macro_tile(ui: &mut Ui, m: &Macro, width: f32, runnable: bool, index: usize) 
             CursorIcon::Default
         })
         .on_hover_ui(|ui| {
+            // Built only while hovered: a macro can be long.
+            let gcode = preview(&m.gcode);
             let p = theme::ui_palette(ui);
             ui.label(RichText::new(name).font(theme::font(ui, TextRole::Title)));
             if gcode.is_empty() {
@@ -921,5 +932,12 @@ mod tests {
         assert_eq!(p.lines().count(), PREVIEW_LINES + 1);
         assert!(p.ends_with("… 18 more lines"));
         assert_eq!(preview("G28\n\n  \nM84"), "G28\nM84");
+        // A huge line is cut, so a tooltip or confirmation stays small.
+        let wide = format!("M117 {}", "é".repeat(10_000));
+        let p = preview(&wide);
+        assert_eq!(p.chars().count(), PREVIEW_LINE_CHARS);
+        assert!(p.starts_with("M117 éé") && p.ends_with('…'));
+        let exact = "x".repeat(PREVIEW_LINE_CHARS);
+        assert_eq!(preview(&exact), exact);
     }
 }
