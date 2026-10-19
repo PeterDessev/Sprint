@@ -4,7 +4,8 @@
 
 mod common;
 
-use common::{fit, snapshot};
+use common::{fit, fit_state, hover, snapshot};
+use egui_kittest::kittest::Queryable as _;
 use sprint_gui::{
     icons,
     theme::{Theme, Tone},
@@ -315,6 +316,45 @@ fn forms(ui: &mut egui::Ui) {
     });
 }
 
+fn jog(ui: &mut egui::Ui, (length, speed): &mut (f32, f32)) {
+    card(
+        ui,
+        icons::MOVE,
+        "Jog",
+        |_| {},
+        |ui| {
+            ui.horizontal(|ui| {
+                let _ = JogPad::new().size(240.0).show(ui);
+                ui.add_space(8.0);
+                let _ = ZJog::new().height(240.0).show(ui);
+            });
+        },
+    );
+    ui.add_space(12.0);
+    card(
+        ui,
+        icons::EXTRUDE,
+        "Extruder",
+        |_| {},
+        |ui| {
+            let _ = ExtruderControl::new(length, speed).show(ui);
+        },
+    );
+    ui.add_space(8.0);
+    card(
+        ui,
+        icons::EXTRUDE,
+        "Extruder (cold)",
+        |_| {},
+        |ui| {
+            let _ = ExtruderControl::new(&mut 10.0, &mut 4.0)
+                .presets(&[])
+                .blocked(Some("Hotend below 170 °C: heat up to extrude"))
+                .show(ui);
+        },
+    );
+}
+
 #[test]
 fn buttons_snapshot() {
     for theme in Theme::ALL {
@@ -360,5 +400,19 @@ fn forms_snapshot() {
     for theme in Theme::ALL {
         let mut h = fit(theme, 460.0, forms);
         snapshot(&mut h, &name("forms", theme));
+    }
+}
+
+#[test]
+fn jog_snapshot() {
+    for theme in Theme::ALL {
+        let mut h = fit_state(theme, 400.0, (10.0_f32, 5.0_f32), jog);
+        snapshot(&mut h, &name("jog", theme));
+        // Hover the 10 mm ring towards Y+.
+        let pad = h.get_by_label("XY jog").rect();
+        let geo = JogGeometry::new(pad, true);
+        let (r0, r1) = geo.ring_radii(2);
+        hover(&mut h, geo.center - egui::vec2(0.0, (r0 + r1) / 2.0));
+        snapshot(&mut h, &name("jog_hover", theme));
     }
 }

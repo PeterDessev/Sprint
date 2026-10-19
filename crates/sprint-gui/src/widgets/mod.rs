@@ -38,6 +38,7 @@
 mod button;
 mod card;
 mod chart;
+mod jog;
 mod keyvalue;
 mod numeric;
 mod progress;
@@ -49,6 +50,10 @@ pub use card::{
     Card, EmptyState, EmptyStateResponse, SectionHeader, card, card_frame, section_header,
 };
 pub use chart::{ChartSeries, MiniChart, Sparkline, finite_runs, nice_ticks, smooth_points};
+pub use jog::{
+    Axis, ExtruderAction, ExtruderControl, HomeTarget, JOG_RINGS, JogAction, JogCorner,
+    JogDirection, JogGeometry, JogPad, JogRegion, ZJog, signed_step, step_label,
+};
 pub use keyvalue::{KeyValueGrid, KeyValueRows};
 pub use numeric::{NumericField, format_number, is_modified};
 pub use progress::{LinearProgress, ProgressRing, percent_label};

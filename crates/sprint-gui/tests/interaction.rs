@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::harness_state;
+use common::{click_at, harness_state};
 use egui_kittest::kittest::Queryable as _;
 use sprint_gui::{theme::Theme, widgets::*};
 
@@ -169,4 +169,151 @@ fn key_value_click_copies_value() {
     h.get_by_label("").click();
     h.run_ok();
     assert_eq!(h.state().as_deref(), Some("Marlin 2.1.2"));
+}
+
+fn jog_harness() -> egui_kittest::Harness<'static, Vec<JogAction>> {
+    harness_state(Theme::Dark, (420.0, 340.0), Vec::new(), |ui, actions| {
+        ui.horizontal(|ui| {
+            if let Some(a) = JogPad::new().show(ui).action {
+                actions.push(a);
+            }
+            if let Some(a) = ZJog::new().show(ui).action {
+                actions.push(a);
+            }
+        });
+    })
+}
+
+#[test]
+fn jog_pad_reports_moves_home_and_corners() {
+    let mut h = jog_harness();
+    let geo = JogGeometry::new(h.get_by_label("XY jog").rect(), true);
+    let mid = |ring: usize| {
+        let (r0, r1) = geo.ring_radii(ring);
+        (r0 + r1) / 2.0
+    };
+    click_at(&mut h, geo.center + egui::vec2(mid(3), 0.0));
+    click_at(&mut h, geo.center - egui::vec2(0.0, mid(0)));
+    click_at(&mut h, geo.center + egui::vec2(0.0, mid(1)));
+    click_at(&mut h, geo.center);
+    click_at(&mut h, geo.corner_rect(JogCorner::BottomRight).center());
+    click_at(&mut h, geo.corner_rect(JogCorner::TopLeft).center());
+    // Outside every region: nothing.
+    click_at(&mut h, egui::pos2(geo.center.x, geo.rect.min.y + 1.0));
+    assert_eq!(
+        h.state().as_slice(),
+        &[
+            JogAction::Move {
+                axis: Axis::X,
+                distance: 100.0
+            },
+            JogAction::Move {
+                axis: Axis::Y,
+                distance: 0.1
+            },
+            JogAction::Move {
+                axis: Axis::Y,
+                distance: -1.0
+            },
+            JogAction::Home(HomeTarget::XY),
+            JogAction::MotorsOff,
+            JogAction::Home(HomeTarget::X),
+        ]
+    );
+}
+
+#[test]
+fn z_strip_reports_moves_and_home() {
+    let mut h = jog_harness();
+    h.get_by_label("Move Z +10 mm").click();
+    h.run_ok();
+    h.get_by_label("Move Z \u{2212}0.1 mm").click();
+    h.run_ok();
+    h.get_by_label("Home Z (G28 Z)").click();
+    h.run_ok();
+    assert_eq!(
+        h.state().as_slice(),
+        &[
+            JogAction::Move {
+                axis: Axis::Z,
+                distance: 10.0
+            },
+            JogAction::Move {
+                axis: Axis::Z,
+                distance: -0.1
+            },
+            JogAction::Home(HomeTarget::Z),
+        ]
+    );
+}
+
+#[test]
+fn disabled_jog_pad_does_nothing() {
+    let mut h = harness_state(Theme::Light, (300.0, 300.0), Vec::new(), |ui, actions| {
+        ui.add_enabled_ui(false, |ui| {
+            if let Some(a) = JogPad::new().show(ui).action {
+                actions.push(a);
+            }
+        });
+    });
+    let geo = JogGeometry::new(h.get_by_label("XY jog").rect(), true);
+    click_at(&mut h, geo.center);
+    assert!(h.state().is_empty());
+}
+
+#[test]
+fn extruder_buttons_report_length_and_speed() {
+    let mut h = harness_state(
+        Theme::Dark,
+        (360.0, 260.0),
+        (10.0_f32, 5.0_f32, Vec::new()),
+        |ui, (length, speed, actions)| {
+            if let Some(a) = ExtruderControl::new(length, speed).show(ui).action {
+                actions.push(a);
+            }
+        },
+    );
+    h.get_by_label("50").click();
+    h.run_ok();
+    assert_eq!(h.state().0, 50.0);
+    h.get_by_label("Extrude").click();
+    h.run_ok();
+    h.get_by_label("Retract").click();
+    h.run_ok();
+    assert_eq!(
+        h.state().2,
+        vec![
+            ExtruderAction::Extrude {
+                length: 50.0,
+                speed: 5.0
+            },
+            ExtruderAction::Retract {
+                length: 50.0,
+                speed: 5.0
+            },
+        ]
+    );
+}
+
+#[test]
+fn blocked_extruder_ignores_clicks_and_repairs_bad_values() {
+    let mut h = harness_state(
+        Theme::Dark,
+        (360.0, 260.0),
+        (f32::NAN, -3.0_f32, 0_usize),
+        |ui, (length, speed, clicks)| {
+            let r = ExtruderControl::new(length, speed)
+                .blocked(Some("Too cold"))
+                .show(ui);
+            if r.action.is_some() {
+                *clicks += 1;
+            }
+        },
+    );
+    h.get_by_label("Extrude").click();
+    h.run_ok();
+    let (length, speed, clicks) = *h.state();
+    assert_eq!(clicks, 0);
+    assert!(length.is_finite() && length > 0.0);
+    assert!(speed.is_finite() && speed > 0.0);
 }
