@@ -185,6 +185,82 @@ fn selection(ui: &mut egui::Ui) {
     );
 }
 
+/// A heater warming up towards `target` (first-order response), sampled
+/// once per second.
+fn heating_curve(start: f32, target: f32, n: usize) -> Vec<f32> {
+    (0..n)
+        .map(|i| target - (target - start) * (-(i as f32) / 18.0).exp())
+        .collect()
+}
+
+fn charts(ui: &mut egui::Ui) {
+    let p = sprint_gui::theme::ui_palette(ui);
+    section_header(ui, "Sparklines");
+    let hot = heating_curve(24.0, 215.0, 90);
+    let bed = heating_curve(22.0, 60.0, 90);
+    let mut gappy = heating_curve(30.0, 45.0, 60);
+    for v in &mut gappy[20..26] {
+        *v = f32::NAN;
+    }
+    ui.add(Sparkline::new(&hot).color(p.hotend).reference(Some(215.0)));
+    ui.add(
+        Sparkline::new(&bed)
+            .color(p.bed)
+            .reference(Some(60.0))
+            .height(28.0),
+    );
+    ui.horizontal(|ui| {
+        ui.add(
+            Sparkline::new(&gappy)
+                .color(p.chamber)
+                .width(160.0)
+                .height(24.0),
+        );
+        ui.add(Sparkline::new(&[]).width(80.0).height(24.0));
+        ui.add(Sparkline::new(&[f32::NAN, 1.0]).width(80.0).height(24.0));
+    });
+    ui.add_space(6.0);
+    section_header(ui, "Mini chart");
+    let temps: Vec<[f64; 2]> = hot
+        .iter()
+        .enumerate()
+        .map(|(i, v)| [i as f64, f64::from(*v)])
+        .collect();
+    let targets = [[0.0, 215.0], [89.0, 215.0]];
+    let beds: Vec<[f64; 2]> = bed
+        .iter()
+        .enumerate()
+        .map(|(i, v)| [i as f64, f64::from(*v)])
+        .collect();
+    MiniChart::new()
+        .series(ChartSeries::new("Hotend", &temps, p.hotend).fill(true))
+        .series(ChartSeries::new("Target", &targets, p.hotend).dashed(true))
+        .series(ChartSeries::new("Bed", &beds, p.bed))
+        .unit("°C")
+        .show(ui);
+    MiniChart::new().height(48.0).show(ui);
+    ui.add_space(6.0);
+    section_header(ui, "Progress");
+    ui.horizontal(|ui| {
+        ui.add(ProgressRing::new(0.42).sublabel("1:23 left").animate(false));
+        ui.add(
+            ProgressRing::new(1.0)
+                .tone(Tone::Success)
+                .text("Done")
+                .animate(false),
+        );
+        ui.add(ProgressRing::new(f32::NAN).size(64.0).animate(false));
+        ui.add(ProgressRing::new(0.08).size(48.0).animate(false));
+    });
+    ui.add(
+        LinearProgress::new(0.66)
+            .label("Uploading to SD card")
+            .show_percentage(true),
+    );
+    ui.add(LinearProgress::new(0.25).tone(Tone::Info).height(4.0));
+    ui.add(LinearProgress::new(f32::NAN).tone(Tone::Warning));
+}
+
 #[test]
 fn buttons_snapshot() {
     for theme in Theme::ALL {
@@ -214,5 +290,13 @@ fn selection_snapshot() {
     for theme in Theme::ALL {
         let mut h = fit(theme, 420.0, selection);
         snapshot(&mut h, &name("selection", theme));
+    }
+}
+
+#[test]
+fn charts_snapshot() {
+    for theme in Theme::ALL {
+        let mut h = fit(theme, 460.0, charts);
+        snapshot(&mut h, &name("charts", theme));
     }
 }

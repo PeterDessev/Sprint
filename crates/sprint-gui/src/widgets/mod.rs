@@ -37,6 +37,8 @@
 
 mod button;
 mod card;
+mod chart;
+mod progress;
 mod status;
 mod toggle;
 
@@ -44,6 +46,8 @@ pub use button::{ActionButton, ButtonKind, ButtonSize, EStopButton, EStopStyle, 
 pub use card::{
     Card, EmptyState, EmptyStateResponse, SectionHeader, card, card_frame, section_header,
 };
+pub use chart::{ChartSeries, MiniChart, Sparkline, finite_runs, nice_ticks, smooth_points};
+pub use progress::{LinearProgress, ProgressRing, percent_label};
 pub use status::{Badge, Chip, StatusPill, status_dot};
 pub use toggle::{SegmentedControl, Toggle};
 
