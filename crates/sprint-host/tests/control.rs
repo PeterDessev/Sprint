@@ -219,7 +219,7 @@ fn without_auto_reports_temperatures_are_polled() {
         },
     );
     wait_for(&printer, "polled temperatures", |s| {
-        !s.temps.hotends.is_empty() && s.temp_history.len() >= 1
+        !s.temps.hotends.is_empty() && !s.temp_history.is_empty()
     });
     let entries = console(&printer);
     let polls: Vec<_> = entries
