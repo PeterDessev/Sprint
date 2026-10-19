@@ -334,8 +334,10 @@ impl Printer {
 
     /// Queue G-code typed by the user or produced by UI controls. Several
     /// lines are allowed; comments and blank lines are dropped. These are
-    /// sent before pending print-stream lines. Emergency commands (M112,
-    /// M108, M410, M876) bypass the queue automatically.
+    /// sent before pending print-stream lines, and before a pause, resume
+    /// or cancel script requested after them (a purge typed while paused
+    /// runs before the resume script moves back onto the part). Emergency
+    /// commands (M112, M108, M410, M876) bypass the queue automatically.
     pub fn send(&self, gcode: &str) {
         let mut queued = Vec::new();
         for line in command_lines(gcode) {

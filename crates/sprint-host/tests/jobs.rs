@@ -153,6 +153,49 @@ fn pause_and_resume_run_the_scripts_between_stream_lines() {
 }
 
 #[test]
+fn commands_typed_while_paused_run_before_the_resume_script() {
+    // A purge typed while paused must not run after the head went back
+    // onto the part: the resume script waits for the commands queued
+    // before it.
+    let printer = connect(sim(), options());
+    let file = file();
+    start(&printer, &file, PrintOptions::default());
+    printer.pause();
+    wait_for(&printer, "paused", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Paused)
+    });
+    wait_idle(&printer);
+    let control = printer.sim_control().unwrap();
+    control.clear_received();
+    // The dwell keeps the rest of the purge queued when resume arrives.
+    let purge = [
+        "G4 S30",
+        "M117 purge-start",
+        "G91",
+        "G1 E5 F300",
+        "G90",
+        "M117 purge-end",
+    ];
+    printer.send(&purge.join("\n"));
+    printer.resume();
+    wait_for(&printer, "completed", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Completed)
+    });
+    let got = control.received_commands();
+    let head = &got[..got.len().min(20)];
+    assert_eq!(&got[..purge.len()], purge, "{head:?}");
+    let back = got
+        .iter()
+        .position(|c| c.starts_with("G1 X"))
+        .expect("the resume move");
+    assert!(back >= purge.len(), "{head:?}");
+}
+
+#[test]
 fn scripts_run_in_millimetres_when_the_file_uses_inches() {
     // The scripts' "G1 Z10" and the resume position (in mm) would be read
     // as inches while the stream is in G20.

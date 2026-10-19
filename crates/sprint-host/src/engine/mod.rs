@@ -402,6 +402,10 @@ pub(crate) struct Engine {
     internal: VecDeque<Meta>,
     /// User commands.
     manual: VecDeque<Meta>,
+    /// How many commands at the front of `manual` were queued before the
+    /// job's pending scripts: they go first (a purge typed while paused runs
+    /// before the resume script moves back onto the part).
+    manual_ahead: usize,
     job: Option<JobRuntime>,
 
     halted: bool,
@@ -464,6 +468,7 @@ impl Engine {
             exit: None,
             internal: VecDeque::new(),
             manual: VecDeque::new(),
+            manual_ahead: 0,
             job: None,
             halted: false,
             restarting: false,
@@ -876,8 +881,9 @@ impl Engine {
         self.write(&out);
     }
 
-    /// The next command to send, by priority: setup/recovery, job scripts,
-    /// user commands, polls, progress reports, the job stream.
+    /// The next command to send, by priority: setup/recovery, user
+    /// commands queued before the job's scripts, job scripts, other user
+    /// commands, polls, progress reports, the job stream.
     fn next_command(&mut self, now: Instant) -> Option<Next> {
         // Nothing but the upload itself may reach the printer while it writes
         // to the card: it would be stored in the file.
@@ -885,23 +891,17 @@ impl Engine {
         if !uploading && let Some(m) = self.internal.pop_front() {
             return Some(Next::Command(m));
         }
+        if !uploading && self.manual_ahead > 0 {
+            if !self.manual.is_empty() {
+                return self.next_manual();
+            }
+            self.manual_ahead = 0;
+        }
         if let Some(m) = self.job.as_mut().and_then(JobRuntime::next_script) {
             return Some(Next::Command(m));
         }
-        if !uploading && let Some(front) = self.manual.front() {
-            if front.is('M', 110) {
-                // A line counter reset needs an idle link.
-                if !self.flow.is_idle() {
-                    return None;
-                }
-                let value = parse_line(&front.text)
-                    .get('N')
-                    .filter(|v| v.is_finite() && *v >= 0.0 && *v < f64::from(LINE_NUMBER_LIMIT))
-                    .map_or(0, |v| v as u32);
-                let meta = self.manual.pop_front()?;
-                return Some(Next::LineReset(value, meta));
-            }
-            return self.manual.pop_front().map(Next::Command);
+        if !uploading && !self.manual.is_empty() {
+            return self.next_manual();
         }
         if let Some(m) = self.poll_due(now) {
             return Some(Next::Command(m));
@@ -913,6 +913,39 @@ impl Engine {
             .as_mut()
             .and_then(|j| j.next_stream_command())
             .map(Next::Command)
+    }
+
+    /// The front of the manual queue (`None` while an M110 there waits for
+    /// an idle link).
+    fn next_manual(&mut self) -> Option<Next> {
+        let front = self.manual.front()?;
+        let next = if front.is('M', 110) {
+            // A line counter reset needs an idle link.
+            if !self.flow.is_idle() {
+                return None;
+            }
+            let value = parse_line(&front.text)
+                .get('N')
+                .filter(|v| v.is_finite() && *v >= 0.0 && *v < f64::from(LINE_NUMBER_LIMIT))
+                .map_or(0, |v| v as u32);
+            Next::LineReset(value, self.manual.pop_front()?)
+        } else {
+            Next::Command(self.manual.pop_front()?)
+        };
+        self.manual_ahead = self.manual_ahead.saturating_sub(1);
+        Some(next)
+    }
+
+    /// Job scripts were just queued: the user commands already waiting go
+    /// before them.
+    pub(super) fn manual_before_scripts(&mut self) {
+        self.manual_ahead = self.manual.len();
+    }
+
+    /// Drop the manual queue.
+    fn clear_manual(&mut self) {
+        self.manual.clear();
+        self.manual_ahead = 0;
     }
 
     /// A temperature or SD status poll, if one is due.
@@ -1121,7 +1154,7 @@ impl Engine {
 
     fn emergency_stop(&mut self) {
         self.send_immediate("M112", Source::User);
-        self.manual.clear();
+        self.clear_manual();
         self.internal.clear();
         let now = Instant::now();
         if self.job.is_some() {

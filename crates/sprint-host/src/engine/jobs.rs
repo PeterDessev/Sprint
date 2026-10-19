@@ -314,6 +314,7 @@ impl Engine {
             Some(JobStatus::Printing),
         );
         self.begin_job(job);
+        self.manual_before_scripts();
         Ok(())
     }
 
@@ -334,6 +335,7 @@ impl Engine {
         let mut job = JobRuntime::new(info, Some(file), PrintOptions::default(), now);
         job.queue_scripts(vec![format!("M28 {name}")], None);
         self.begin_job(job);
+        self.manual_before_scripts();
         Ok(())
     }
 
@@ -354,6 +356,7 @@ impl Engine {
             }
             (JobKind::SdPrint, JobStatus::Printing | JobStatus::Resuming) => {
                 job.queue_scripts(vec!["M25".to_string()], Some(JobStatus::Paused));
+                self.manual_before_scripts();
                 self.set_job_status(JobStatus::Pausing, now);
             }
             (JobKind::SdUpload, _) => self.warn("An SD upload cannot be paused"),
@@ -407,6 +410,9 @@ impl Engine {
                 }
                 let lines = in_millimetres(lines, &snapshot, true);
                 job.queue_scripts(lines, Some(JobStatus::Printing));
+                // Commands typed while paused (a purge, the rest of a
+                // filament change) run before the head returns to the part.
+                self.manual_before_scripts();
                 self.set_job_status(JobStatus::Resuming, now);
                 self.advance_job(now);
             }
@@ -417,6 +423,7 @@ impl Engine {
             (JobKind::SdPrint, JobStatus::Paused) => {
                 job.paused_by_firmware = false;
                 job.queue_scripts(vec!["M24".to_string()], Some(JobStatus::Printing));
+                self.manual_before_scripts();
                 self.set_job_status(JobStatus::Resuming, now);
             }
             _ => {}
@@ -473,6 +480,7 @@ impl Engine {
                 job.m29_queued = true;
             }
         }
+        self.manual_before_scripts();
         self.set_job_status(JobStatus::Cancelling, now);
         self.advance_job(now);
     }
@@ -614,6 +622,7 @@ impl Engine {
             let lines = in_millimetres(lines, &snapshot, false);
             job.pause_snapshot = Some(snapshot);
             job.queue_scripts(lines, Some(JobStatus::Paused));
+            self.manual_ahead = self.manual.len();
         }
         // Every script line acknowledged: enter the status that follows.
         if job.scripts.is_empty()

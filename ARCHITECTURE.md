@@ -1135,7 +1135,10 @@ Every public item is also re-exported at the crate root.
   acknowledged, then `Paused` (manual commands work meanwhile); resume:
   `Resuming` while the resume script (followed by `G91` or `M83` when the
   stream used relative modes) is acknowledged, streaming continues right
-  behind it. The scripts start with `G21` while the stream is in inches
+  behind it. User commands queued before a script (pause, resume, cancel,
+  SD control) are sent before it, so a purge typed while paused runs
+  before the head returns to the part; commands queued afterwards follow
+  the script. The scripts start with `G21` while the stream is in inches
   (the resume script ends with `G20`). `//action:pause|paused` pause
   without scripts and `//action:resume|resumed` continue; `resume()` after
   such a pause sends
