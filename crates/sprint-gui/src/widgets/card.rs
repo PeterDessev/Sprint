@@ -228,6 +228,21 @@ fn header_row(
     } else {
         Sense::hover()
     };
+    // Header controls first, right-aligned, so the title can be truncated
+    // to the space they leave instead of running underneath them.
+    let mut right = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(Layout::right_to_left(Align::Center)),
+    );
+    right.spacing_mut().item_spacing.x = 4.0;
+    header_right(&mut right);
+    let used_right = right.min_rect();
+    let text_end = if used_right.width() > 0.0 {
+        used_right.min.x - 8.0
+    } else {
+        rect.max.x
+    };
     let mut x = rect.min.x;
     let painter = ui.painter().clone();
     if let Some(openness) = openness {
@@ -256,29 +271,30 @@ fn header_row(
         x += 24.0;
     }
     let title_font = theme::font(ui, TextRole::Title);
-    let title = painter.layout_no_wrap(card.title.to_owned(), title_font, p.text);
+    let title = truncated(&painter, card.title, title_font, p.text, text_end - x);
+    let elided = title.elided;
     let title_rect = Rect::from_min_size(
         Pos2::new(x, rect.center().y - title.size().y / 2.0),
         title.size(),
     );
     painter.galley(title_rect.min, title, p.text);
     x = title_rect.max.x;
-    if let Some(sub) = card.subtitle {
-        let sub = painter.layout_no_wrap(sub.to_owned(), FontId::proportional(12.0), p.text_dim);
+    // The subtitle only gets the room that is left (none when the title
+    // was cut short).
+    if let Some(sub) = card.subtitle
+        && !elided
+        && text_end - (x + 8.0) >= 24.0
+    {
+        let sub = truncated(
+            &painter,
+            sub,
+            FontId::proportional(12.0),
+            p.text_dim,
+            text_end - (x + 8.0),
+        );
         let pos = Pos2::new(x + 8.0, rect.center().y - sub.size().y / 2.0);
-        x = pos.x + sub.size().x;
         painter.galley(pos, sub, p.text_dim);
     }
-    // Header controls, right-aligned.
-    let right_rect = Rect::from_min_max(Pos2::new(x + 8.0, rect.min.y), rect.max);
-    let mut right = ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(right_rect)
-            .layout(Layout::right_to_left(Align::Center)),
-    );
-    right.spacing_mut().item_spacing.x = 4.0;
-    header_right(&mut right);
-    let used_right = right.min_rect();
     // The clickable part excludes the header controls.
     let click_rect = Rect::from_min_max(
         rect.min,
@@ -296,6 +312,11 @@ fn header_row(
         super::widget_id(ui, ("card-header", card.title)),
         sense,
     );
+    let response = if elided {
+        response.on_hover_text(card.title)
+    } else {
+        response
+    };
     if openness.is_some() {
         response.widget_info(|| {
             WidgetInfo::labeled(WidgetType::CollapsingHeader, ui.is_enabled(), card.title)
@@ -303,6 +324,19 @@ fn header_row(
         return response.on_hover_cursor(CursorIcon::PointingHand);
     }
     response
+}
+
+/// `text` on one line, cut with "…" when wider than `max_width`.
+fn truncated(
+    painter: &egui::Painter,
+    text: &str,
+    font: FontId,
+    color: Color32,
+    max_width: f32,
+) -> std::sync::Arc<egui::Galley> {
+    let mut job = LayoutJob::simple_singleline(text.to_owned(), font, color);
+    job.wrap = egui::text::TextWrapping::truncate_at_width(max_width.max(0.0));
+    painter.layout_job(job)
 }
 
 /// An uppercase section label with a hairline to the right.
@@ -361,6 +395,11 @@ impl<'a> SectionHeader<'a> {
                 ..TextFormat::default()
             },
         );
+        // A label wider than the panel is cut with "…" instead of
+        // spilling out of it.
+        let icon_w = if self.icon.is_some() { 18.0 } else { 0.0 };
+        job.wrap =
+            egui::text::TextWrapping::truncate_at_width((ui.available_width() - icon_w).max(0.0));
         let galley = ui.painter().layout_job(job);
         let height = galley.size().y.max(16.0) + 4.0;
         let (rect, response) =

@@ -731,3 +731,33 @@ fn key_value_custom_row_stays_in_the_value_column() {
         "Beta spilled into a third column: {beta:?} vs {long:?}"
     );
 }
+
+#[test]
+fn long_card_title_is_cut_short_with_a_tooltip() {
+    let title = "Part cooling fan and the auxiliary chamber fan";
+    let mut h = harness_state(Theme::Dark, (240.0, 160.0), (), move |ui, ()| {
+        card(
+            ui,
+            sprint_gui::icons::FAN,
+            title,
+            |ui| {
+                ui.add(
+                    IconButton::new(sprint_gui::icons::OFF)
+                        .ghost()
+                        .small()
+                        .tooltip("Fan off"),
+                );
+            },
+            |ui| {
+                ui.label("100%");
+            },
+        );
+    });
+    assert!(h.query_by_label(title).is_none());
+    // The header control stays where it was, inside the card.
+    let off = h.get_by_label("Fan off").rect();
+    assert!(off.max.x <= 240.0);
+    // Hovering the cut title shows it in full.
+    common::hover(&mut h, egui::pos2(off.min.x - 40.0, off.center().y));
+    assert!(h.query_by_label(title).is_some(), "full title tooltip");
+}

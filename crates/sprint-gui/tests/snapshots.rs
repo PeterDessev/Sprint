@@ -149,6 +149,28 @@ fn cards(ui: &mut egui::Ui) {
         ui.label("hidden");
     });
     ui.add_space(8.0);
+    // Narrow cards: long titles are cut short, header controls stay put.
+    ui.columns(2, |cols| {
+        card(
+            &mut cols[0],
+            icons::FAN,
+            "Part cooling and auxiliary fans",
+            |ui| {
+                ui.add(IconButton::new(icons::OFF).ghost().small());
+            },
+            |ui| {
+                ui.label("100%");
+            },
+        );
+        Card::new("Macros of the second extruder")
+            .icon(icons::MACRO)
+            .subtitle("3 defined")
+            .collapsible(true)
+            .show(&mut cols[1], |ui| {
+                section_header(ui, "Purge and park routines");
+            });
+    });
+    ui.add_space(8.0);
     card(
         ui,
         icons::FILE,
