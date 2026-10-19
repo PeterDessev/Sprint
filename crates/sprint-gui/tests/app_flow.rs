@@ -668,17 +668,85 @@ fn the_estop_halts_and_the_banner_recovers() {
     assert!(h.query_by_label("Printer halted").is_some());
     assert!(received(h.state()).iter().any(|c| c == "M112"));
     assert!(toast_titles(h.state()).contains(&"Emergency stop sent".to_owned()));
-    // M999 is offered (a killed Marlin ignores it, the board needs a reset).
-    h.get_by_label("Restart firmware (M999)").click();
+    // A killed Marlin ignores M999: the banner offers the board reset
+    // instead (and Reconnect).
+    assert!(!h.state().state().restartable);
+    assert!(h.query_by_label("Restart firmware (M999)").is_none());
+    h.get_by_label("Reset board").click();
+    expect(&mut h, "the board to restart", |app| {
+        !app.state().halted && app.state().is_connected()
+    });
     settle(&mut h);
-    assert!(toast_titles(h.state()).contains(&"Restarting the firmware (M999)".to_owned()));
-    // Reconnecting resets the (virtual) board.
+    assert!(h.query_by_label("Printer halted").is_none());
+    assert!(toast_titles(h.state()).contains(&"Resetting the board".to_owned()));
+    // Reconnecting resets the (virtual) board too.
+    h.get_by_label("E-STOP").click();
+    expect(&mut h, "the firmware to halt again", |app| {
+        app.state().halted
+    });
+    settle(&mut h);
     h.get_by_label("Reconnect").click();
     expect(&mut h, "a fresh connection", |app| {
         !app.state().halted && app.state().is_connected()
     });
     settle(&mut h);
     assert!(h.query_by_label("Printer halted").is_none());
+}
+
+#[test]
+fn a_stopped_firmware_is_offered_m999_and_the_reset() {
+    let mut h = app(sim_options(), WINDOW);
+    connect(&mut h);
+    let control = h.state().printer().sim_control().expect("simulator");
+    // Marlin's stop() (not a kill): M999 brings it back.
+    control.inject_line(
+        "Error:Printer stopped due to errors. Fix the error and use M999 to restart. \
+         (Temperature is reset. Set it after restarting)",
+    );
+    expect(&mut h, "the firmware to stop", |app| {
+        app.state().halted && app.state().restartable
+    });
+    settle(&mut h);
+    assert!(h.query_by_label("Reset board").is_some());
+    h.get_by_label("Restart firmware (M999)").click();
+    expect(&mut h, "M999", |app| {
+        received(app).iter().any(|c| c == "M999")
+    });
+    assert!(toast_titles(h.state()).contains(&"Restarting the firmware (M999)".to_owned()));
+}
+
+#[test]
+fn a_board_behind_a_network_bridge_says_why_it_cannot_be_reset() {
+    let server = sprint_host::sprint_sim::SimServer::bind("127.0.0.1:0", fast_sim())
+        .expect("virtual printer on TCP");
+    let addr = server.local_addr();
+    let mut options = sim_options();
+    options.config.profiles[0].connection = ConnectTarget::Tcp {
+        host: addr.ip().to_string(),
+        port: addr.port(),
+    };
+    let mut h = app(options, WINDOW);
+    connect(&mut h);
+    h.get_by_label("E-STOP").click();
+    expect(&mut h, "the firmware to halt", |app| app.state().halted);
+    settle(&mut h);
+    h.get_by_label("Reset board").click();
+    expect(&mut h, "the explanation", |app| {
+        toast_titles(app).contains(&"Could not reset the board".to_owned())
+    });
+    let message = h
+        .state()
+        .toasts()
+        .iter()
+        .find(|t| t.title() == "Could not reset the board")
+        .and_then(|t| t.message_text().map(str::to_owned))
+        .unwrap_or_default();
+    assert!(message.contains("reset button"), "{message}");
+    // Still halted, still connected: Reconnect stays available.
+    assert!(h.state().state().halted);
+    assert!(h.query_by_label("Reconnect").is_some());
+    drop(h);
+    let _ = server.shutdown();
 }
 
 #[test]
@@ -1813,9 +1881,30 @@ fn the_menu_restarts_only_a_halted_firmware() {
     };
     // A running firmware answers M999 with a resend: not offered.
     assert!(restart_item(&mut h));
+    // Nor after an emergency stop, which M999 does not recover: the board
+    // reset is.
     h.state().printer().emergency_stop();
     expect(&mut h, "the firmware to halt", |app| app.state().halted);
-    // Halted: the banner offers it too, so look at the menu's item.
+    assert!(restart_item(&mut h));
+    open_printer_menu(&mut h);
+    settle(&mut h);
+    assert!(
+        !h.get_by_label_contains("Reset the board")
+            .accesskit_node()
+            .is_disabled()
+    );
+    h.get_by_label_contains("Reset the board").click();
+    expect(&mut h, "the board to restart", |app| {
+        !app.state().halted && app.state().is_connected()
+    });
+    // A firmware that stopped (not killed) is offered M999, in the menu
+    // and in the banner.
+    let control = h.state().printer().sim_control().expect("simulator");
+    control
+        .inject_line("Error:Printer stopped due to errors. Fix the error and use M999 to restart.");
+    expect(&mut h, "the firmware to stop", |app| {
+        app.state().halted && app.state().restartable
+    });
     open_printer_menu(&mut h);
     settle(&mut h);
     let enabled = h
@@ -2396,8 +2485,7 @@ fn long_texts_are_cut_before_the_buttons() {
     let stats = h.get_by_label_contains("Elapsed").rect();
     assert!(right_of(name, stats), "{name:?} runs into {stats:?}");
 
-    // A long halt reason stops before the banner's buttons, a long prompt
-    // before its notice's button.
+    // A long halt reason stops before the banner's buttons.
     let mut state = printing_state(JobStatus::Failed("halted".into()));
     state.halted = true;
     state.last_error = Some(
@@ -2405,6 +2493,14 @@ fn long_texts_are_cut_before_the_buttons() {
          Thermal runaway protection triggered on the hotend"
             .into(),
     );
+    h.state_mut().set_state_override(Some(state));
+    settle(&mut h);
+    let reason = h.get_by_label_contains("Heating failed").rect();
+    let reset = h.get_by_label("Reset board").rect();
+    assert!(right_of(reason, reset), "{reason:?} runs into {reset:?}");
+    // A long prompt (of a printer that runs) stops before its notice's
+    // button.
+    let mut state = printing_state(JobStatus::Paused);
     state.prompt = Some(sprint_host::HostPrompt {
         message: "Filament runout detected on extruder 1: insert new filament, then press \
                   Continue on the printer or here to purge and resume printing"
@@ -2415,12 +2511,6 @@ fn long_texts_are_cut_before_the_buttons() {
     settle(&mut h);
     h.get_by_label("Hide").click();
     settle(&mut h);
-    let reason = h.get_by_label_contains("Heating failed").rect();
-    let restart = h.get_by_label("Restart firmware (M999)").rect();
-    assert!(
-        right_of(reason, restart),
-        "{reason:?} runs into {restart:?}"
-    );
     let waiting = h.get_by_label_contains("The printer is waiting").rect();
     let answer = h.get_by_label("Answer").rect();
     assert!(

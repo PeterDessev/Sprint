@@ -140,7 +140,7 @@ impl ConnectionBar {
                         ctx.printer.emergency_stop();
                         ctx.toasts
                             .warning("Emergency stop sent")
-                            .message("M112: the firmware halted. Restart it (M999) or reconnect.");
+                            .message(crate::job_text::ESTOP_MESSAGE);
                     } else {
                         ctx.toasts
                             .warning("Emergency stop: not connected")

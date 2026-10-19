@@ -155,6 +155,9 @@ pub enum AppAction {
     /// Open the loaded file in an external text editor; Sprint reloads it
     /// when it is saved there.
     EditFile,
+    /// Reset the printer's board (the way out of an emergency stop:
+    /// `Printer::reset_board`), off the UI thread.
+    ResetBoard,
 }
 
 /// Everything a panel may use during one frame.
@@ -212,14 +215,15 @@ impl AppCtx<'_> {
 }
 
 /// Why the printer takes no commands now: it is not connected, or its
-/// firmware is halted (it ignores everything but M999 until it restarts).
+/// firmware is halted (it ignores everything until its board is reset, or
+/// after some errors until M999 restarts it).
 /// Panels disable their actions with this as the hover text, and skip
 /// their automatic queries.
 pub fn command_blocker(state: &PrinterState) -> Option<&'static str> {
     if !state.is_connected() {
         Some("Connect to a printer first")
     } else if state.halted {
-        Some("The printer is halted: restart its firmware (M999) or reconnect")
+        Some("The printer is halted: reset its board first (the red banner offers it)")
     } else {
         None
     }

@@ -29,7 +29,7 @@ pub fn print_blocker(state: &PrinterState, file: Option<&GcodeFile>) -> Option<&
     } else if !state.is_connected() {
         Some("Connect to a printer first")
     } else if state.halted {
-        Some("The printer is halted: restart the firmware (M999) or reconnect")
+        Some("The printer is halted: reset its board first (the red banner offers it)")
     } else if state.job_active() {
         Some("A job is already running")
     } else if crate::context::printer_busy(state) {

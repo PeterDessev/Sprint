@@ -272,9 +272,10 @@ fn smallest_window() {
 }
 
 #[test]
-fn smallest_window_halted_with_a_hidden_prompt() {
-    // The banner and the prompt's notice leave the 3D view little height:
-    // the file card scrolls instead of running under the scrub bar.
+fn smallest_window_halted() {
+    // The banner leaves the 3D view little height: the file card scrolls
+    // instead of running under the scrub bar. The firmware's prompt is not
+    // shown while it is halted (it ignores the answer).
     let size = egui::Vec2::from(sprint_gui::MIN_WINDOW_SIZE);
     let mut h = with_cube_at(AppOptions::headless(), size);
     let mut state = connected_state();
@@ -287,9 +288,8 @@ fn smallest_window_halted_with_a_hidden_prompt() {
     h.state_mut().set_state_override(Some(state));
     h.state_mut().viewer_tab_mut().prefs.show_legend = false;
     settle(&mut h);
-    h.get_by_label("Hide").click();
-    settle(&mut h);
-    assert!(h.query_by_label("Answer").is_some());
+    assert!(h.query_by_label("Hide").is_none());
+    assert!(h.query_by_label("Reset board").is_some());
     h.remove_cursor();
     settle(&mut h);
     snapshot(&mut h, "app_smallest_halted");

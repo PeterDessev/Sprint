@@ -346,3 +346,27 @@ fn files_that_are_not_gcode_are_never_printed() {
     drop(h);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn no_prompt_is_shown_while_the_printer_is_halted() {
+    // A halted firmware ignores M876: the engine drops its prompt, and the
+    // app never shows one meanwhile.
+    let mut h = app(AppOptions::headless(), WINDOW);
+    let mut state = sprint_host::PrinterState {
+        status: sprint_host::ConnectionStatus::Connected,
+        halted: true,
+        prompt: Some(sprint_host::HostPrompt {
+            message: "Insert filament".into(),
+            buttons: vec!["Continue".into()],
+        }),
+        ..sprint_host::PrinterState::default()
+    };
+    h.state_mut().set_state_override(Some(state.clone()));
+    settle(&mut h);
+    assert!(h.query_by_label("The printer is asking").is_none());
+    assert!(h.query_by_label("Printer halted").is_some());
+    state.halted = false;
+    h.state_mut().set_state_override(Some(state));
+    settle(&mut h);
+    assert!(h.query_by_label("The printer is asking").is_some());
+}

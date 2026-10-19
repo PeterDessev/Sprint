@@ -10,6 +10,9 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, Sender};
 use sprint_host::{ConnectOptions, ConnectTarget, JobKind, LinkStats, PortInfo, Printer};
 
+/// What a board reset is called while it runs ([`Connector::reset_board`]).
+pub const RESET_LABEL: &str = "Board reset";
+
 /// Seconds between automatic port scans while disconnected.
 pub const PORT_REFRESH_SECS: f64 = 3.0;
 
@@ -87,6 +90,12 @@ pub enum ConnectOutcome {
     },
     /// The connection is closed.
     Closed,
+    /// A board reset ([`Connector::reset_board`]) has ended: `None` when
+    /// the board is restarting, else why it cannot be reset from here.
+    Reset {
+        /// Why the reset failed.
+        error: Option<String>,
+    },
 }
 
 /// Runs connects and disconnects on worker threads.
@@ -162,6 +171,38 @@ impl Connector {
         }
     }
 
+    /// Reset the printer's board ([`Printer::reset_board`], the way out of
+    /// an emergency stop) on a worker thread: over serial it closes the
+    /// port and opens it again with a DTR pulse, which blocks like a
+    /// connect, so it counts as one ([`Connector::is_connecting`]) and is
+    /// ignored while a connect runs. Reports [`ConnectOutcome::Reset`].
+    pub fn reset_board(&mut self, printer: &Printer) {
+        if self.connecting.is_some() {
+            return;
+        }
+        self.connecting = Some(RESET_LABEL.to_owned());
+        self.cancelled = false;
+        let worker = printer.clone();
+        let tx = self.tx.clone();
+        let repaint = self.repaint.clone();
+        let spawned = std::thread::Builder::new()
+            .name("sprint-gui-reset".to_owned())
+            .spawn(move || {
+                let error = worker.reset_board().err().map(|e| e.to_string());
+                drop(worker);
+                let _ = tx.send(ConnectOutcome::Reset { error });
+                if let Some(ctx) = repaint {
+                    ctx.request_repaint();
+                }
+            });
+        if let Err(e) = spawned {
+            self.connecting = None;
+            let _ = self.tx.send(ConnectOutcome::Reset {
+                error: Some(format!("could not start a worker thread: {e}")),
+            });
+        }
+    }
+
     /// Close the connection on a worker thread, safely (see
     /// [`close_link`]): a print the host streams, or an SD upload, is
     /// cancelled first and the link closes once it has stopped. A connect
@@ -205,6 +246,11 @@ impl Connector {
         self.connecting.is_some()
     }
 
+    /// True while a board reset runs ([`Connector::reset_board`]).
+    pub fn is_resetting(&self) -> bool {
+        self.connecting.as_deref() == Some(RESET_LABEL)
+    }
+
     /// True while a cancelled connect is still running.
     pub fn is_cancelling(&self) -> bool {
         self.connecting.is_some() && self.cancelled
@@ -245,6 +291,19 @@ impl Connector {
                 ConnectOutcome::Closed => {
                     self.disconnecting = self.disconnecting.saturating_sub(1);
                     ConnectOutcome::Closed
+                }
+                ConnectOutcome::Reset { error } => {
+                    let label = self.connecting.take().unwrap_or_default();
+                    // A disconnect meanwhile wins: a link the reset opened
+                    // again is closed (see ConnectOutcome::Cancelled).
+                    if std::mem::take(&mut self.cancelled) {
+                        ConnectOutcome::Cancelled {
+                            label,
+                            opened: error.is_none(),
+                        }
+                    } else {
+                        ConnectOutcome::Reset { error }
+                    }
                 }
                 cancelled @ ConnectOutcome::Cancelled { .. } => cancelled,
             };

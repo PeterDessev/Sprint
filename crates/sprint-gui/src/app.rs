@@ -771,6 +771,18 @@ impl SprintApp {
             // A pending reconnect starts once nothing is opening or closing
             // any more (see begin_frame).
             ConnectOutcome::Closed => {}
+            ConnectOutcome::Reset { error: None } => {
+                self.core
+                    .toasts
+                    .info("Resetting the board")
+                    .message("The printer restarts; Sprint talks to it again once it is up.");
+            }
+            ConnectOutcome::Reset { error: Some(error) } => {
+                self.core
+                    .toasts
+                    .error("Could not reset the board")
+                    .message(format::sanitize(&error, 300));
+            }
         }
     }
 
@@ -1042,6 +1054,27 @@ impl SprintApp {
             AppAction::CancelLoading => self.loader.cancel(),
             AppAction::Reanalyze => self.reanalyze(),
             AppAction::EditFile => self.edit_file(),
+            AppAction::ResetBoard => self.reset_board(),
+        }
+    }
+
+    /// Reset the printer's board on a worker thread (see
+    /// [`Connector::reset_board`]): not while a job would be lost (a halt
+    /// has failed it already) or a connect runs.
+    fn reset_board(&mut self) {
+        let state = &self.core.state;
+        if !state.status.is_open() {
+            self.core
+                .toasts
+                .warning("Not connected")
+                .message("Connect to the printer first.");
+        } else if state.job_active() && !state.halted {
+            self.core
+                .toasts
+                .warning("Not while a job runs")
+                .message("Resetting the board would end it: cancel it first.");
+        } else if !self.connector.is_connecting() {
+            self.connector.reset_board(&self.core.printer);
         }
     }
 
@@ -1325,6 +1358,7 @@ impl SprintApp {
                 printer.firmware_restart();
                 self.core.toasts.info("Restarting the firmware (M999)");
             }
+            MenuCommand::ResetBoard => self.core.actions.push(AppAction::ResetBoard),
             MenuCommand::HomeAll => printer.home(sprint_host::Axes::ALL),
             MenuCommand::MotorsOff => printer.motors_off(),
             MenuCommand::RefreshFirmware => {
@@ -1349,7 +1383,7 @@ impl SprintApp {
             self.core
                 .toasts
                 .warning("Emergency stop sent")
-                .message("M112: the firmware halted. Restart it (M999) or reconnect.");
+                .message(crate::job_text::ESTOP_MESSAGE);
         } else {
             self.core
                 .toasts
@@ -1508,8 +1542,10 @@ impl SprintApp {
         self.panels.controls.set_keys_elsewhere(!to_controls);
     }
 
+    /// The firmware's host prompt is on screen (never while it is halted:
+    /// a halted firmware ignores the answer, the engine drops the prompt).
     fn prompt_is_open(&self) -> bool {
-        self.core.state.prompt.is_some() && self.prompt.is_none()
+        self.core.state.prompt.is_some() && self.prompt.is_none() && !self.core.state.halted
     }
 
     // ----- drawing -----
@@ -1571,8 +1607,9 @@ impl SprintApp {
                         .inner_margin(Margin::symmetric(14, 6)),
                 )
                 .show(ui, |ui| {
+                    let resetting = self.connector.is_resetting();
                     let mut c = self.core.ctx();
-                    dialogs::halted_banner(ui, &mut c);
+                    dialogs::halted_banner(ui, &mut c, resetting);
                 });
         }
         egui::Panel::bottom("sprint-status-bar")
@@ -1749,9 +1786,11 @@ impl SprintApp {
                 self.core.printer.send_immediate("M108");
             }
         }
-        if let (Some(prompt), Some((_, PromptChoice::Hidden))) =
-            (&self.core.state.prompt, &self.prompt)
-        {
+        if let (Some(prompt), Some((_, PromptChoice::Hidden)), false) = (
+            &self.core.state.prompt,
+            &self.prompt,
+            self.core.state.halted,
+        ) {
             let message = if prompt.message.trim().is_empty() {
                 "The printer is waiting for you.".to_owned()
             } else {
@@ -1985,6 +2024,9 @@ impl SprintApp {
         let Some(prompt) = self.core.state.prompt.clone() else {
             return;
         };
+        if self.core.state.halted {
+            return;
+        }
         if self.prompt.is_some() {
             return;
         }

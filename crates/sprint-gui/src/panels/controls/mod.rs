@@ -72,7 +72,8 @@ impl ControlsSidebar {
                         ui,
                         icons::WARNING,
                         "The printer is halted (emergency stop or a firmware error). It \
-                         ignores commands until its firmware restarts (M999).",
+                         ignores commands until its board is reset (the red banner \
+                         above offers it).",
                         Tone::Danger,
                     );
                 }
@@ -94,8 +95,8 @@ fn motion_lock(ctx: &AppCtx<'_>) -> Option<&'static str> {
         Some("Connect to a printer to use these controls.")
     } else if ctx.state.halted {
         Some(
-            "The printer is halted and ignores commands until its firmware restarts \
-             (M999).",
+            "The printer is halted and ignores commands until its board is reset (the \
+             red banner above offers it).",
         )
     } else if ctx.printer_busy() {
         Some(

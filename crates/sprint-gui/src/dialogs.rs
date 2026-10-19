@@ -637,31 +637,55 @@ pub fn quitting_dialog(egui_ctx: &egui::Context, message: Option<&str>) {
         });
 }
 
-/// The red banner shown while the firmware is halted.
-pub fn halted_banner(ui: &mut Ui, ctx: &mut AppCtx<'_>) {
+/// What the board reset does, for its buttons' hover text.
+pub const RESET_BOARD_TIP: &str = "Restart the printer's controller: the way out of an \
+     emergency stop or a thermal runaway, which M999 alone does not recover. Over USB the \
+     port is opened again with a DTR pulse; a board behind a network bridge needs its \
+     reset button or a power cycle.";
+
+/// The red banner shown while the firmware is halted: reset the board
+/// (first choice after an emergency stop, which M999 does not recover),
+/// restart the firmware when it can be restarted (M999), or reconnect.
+pub fn halted_banner(ui: &mut Ui, ctx: &mut AppCtx<'_>, resetting: bool) {
     let p = theme::ui_palette(ui);
+    let restartable = ctx.state.restartable;
     // Buttons first, from the right; the message takes what is left (and
     // is cut short there instead of running under them).
     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
         ui.spacing_mut().item_spacing.x = 10.0;
         if ui
             .add(ActionButton::new("Reconnect").icon(icons::CONNECT))
-            .on_hover_text("Close and reopen the connection (resets most boards)")
+            .on_hover_text("Close and reopen the connection (resets most USB boards)")
             .clicked()
         {
             ctx.actions.push(AppAction::Reconnect);
         }
-        if ui
-            .add(
-                ActionButton::new("Restart firmware (M999)")
-                    .icon(icons::RESTART)
-                    .danger(),
-            )
-            .on_hover_text("Ask the firmware to leave the halted state")
-            .clicked()
+        if restartable
+            && ui
+                .add(ActionButton::new("Restart firmware (M999)").icon(icons::RESTART))
+                .on_hover_text("Ask the firmware to leave the halted state")
+                .clicked()
         {
             ctx.printer.firmware_restart();
             ctx.toasts.info("Restarting the firmware (M999)");
+        }
+        let mut reset = ActionButton::new(if resetting {
+            "Resetting…"
+        } else {
+            "Reset board"
+        })
+        .icon(icons::POWER);
+        reset = if restartable {
+            reset.danger()
+        } else {
+            reset.primary()
+        };
+        if ui
+            .add_enabled(!resetting, reset)
+            .on_hover_text(RESET_BOARD_TIP)
+            .clicked()
+        {
+            ctx.actions.push(AppAction::ResetBoard);
         }
         ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
             ui.label(RichText::new(icons::ERROR).size(18.0).color(p.danger));
@@ -670,10 +694,17 @@ pub fn halted_banner(ui: &mut Ui, ctx: &mut AppCtx<'_>) {
                     .font(theme::font(ui, TextRole::Title))
                     .color(p.danger),
             );
-            let reason = ctx.state.last_error.as_deref().map_or(
-                "The firmware stopped (emergency stop, thermal protection or a kill).".to_owned(),
-                |e| format::sanitize(e, 400),
-            );
+            let fallback = if restartable {
+                "The firmware stopped; restart it or reset the board to go on."
+            } else {
+                "The firmware stopped (emergency stop, thermal protection or a kill) and ignores \
+                 everything until the board is reset."
+            };
+            let reason = ctx
+                .state
+                .last_error
+                .as_deref()
+                .map_or(fallback.to_owned(), |e| format::sanitize(e, 400));
             // Cut to the room left; the full text shows on hover.
             ui.add(egui::Label::new(RichText::new(reason).color(p.text)).truncate());
         });

@@ -32,6 +32,8 @@ pub enum MenuCommand {
     EmergencyStop,
     /// M999.
     RestartFirmware,
+    /// Reset the printer's board.
+    ResetBoard,
     /// Home all axes (G28).
     HomeAll,
     /// Disable the steppers (M84).
@@ -228,17 +230,22 @@ fn printer_menu(ui: &mut Ui, info: &MenuInfo<'_>, out: &mut Vec<MenuCommand>) {
         out.push(MenuCommand::RefreshFirmware);
     }
     ui.separator();
-    // Only for a halted firmware, like the halted banner: Marlin answers
-    // M999 with a resend request even when it runs, which reads as a bad
-    // link.
+    // Only for a halted firmware that M999 can bring back, like the halted
+    // banner: Marlin answers M999 with a resend request even when it runs,
+    // which reads as a bad link, and ignores it after an emergency stop.
     if item(
         ui,
-        open && state.halted,
+        open && state.halted && state.restartable,
         icons::RESTART,
         "Restart firmware (M999)",
         None,
     ) {
         out.push(MenuCommand::RestartFirmware);
+    }
+    // While halted, or while no job would be lost.
+    let resettable = open && !info.connecting && (state.halted || job.is_none());
+    if item(ui, resettable, icons::POWER, "Reset the board", None) {
+        out.push(MenuCommand::ResetBoard);
     }
     let estop = Button::new(
         RichText::new(icons::with_text(icons::ESTOP, "Emergency stop (M112)"))
