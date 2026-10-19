@@ -463,6 +463,30 @@ fn timeouts_release_everything() {
 }
 
 #[test]
+fn a_line_that_never_gets_through_is_given_up() {
+    let t = t0();
+    let mut f = synced(1, t);
+    send(&mut f, "M117 a message far too long for the firmware", t);
+    for _ in 0..MAX_RESENDS_OF_A_LINE {
+        feed(&mut f, "Error:checksum mismatch, Last Line: 0", t);
+        assert_eq!(
+            resend(feed(&mut f, "Resend: 1", t)),
+            ResendAction::Rewind { from: 1, stale: 0 }
+        );
+        feed(&mut f, "ok", t);
+        assert!(f.poll_retransmit(t).is_some());
+    }
+    feed(&mut f, "Error:checksum mismatch, Last Line: 0", t);
+    assert_eq!(
+        resend(feed(&mut f, "Resend: 1", t)),
+        ResendAction::GiveUp { line: 1 }
+    );
+    feed(&mut f, "ok", t);
+    assert!(f.is_idle());
+    assert!(f.poll_retransmit(t).is_none());
+}
+
+#[test]
 fn reset_forgets_everything() {
     let t = t0();
     let mut f = synced(4, t);
@@ -668,7 +692,9 @@ fn run(s: Scenario) -> Report {
                 }
                 Some(FeedResult::Resend(ResendAction::Duplicate)) => report.duplicates += 1,
                 Some(FeedResult::Resend(
-                    a @ (ResendAction::Desync { .. } | ResendAction::Unavailable { .. }),
+                    a @ (ResendAction::Desync { .. }
+                    | ResendAction::Unavailable { .. }
+                    | ResendAction::GiveUp { .. }),
                 )) => panic!("unexpected {a:?}"),
                 _ => {}
             }

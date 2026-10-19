@@ -207,6 +207,9 @@ impl Engine {
             ResendAction::Unavailable { line } => self.line_counter_lost(format!(
                 "The printer asked for line {line}, which cannot be resent safely"
             )),
+            ResendAction::GiveUp { line } => self.line_counter_lost(format!(
+                "Line {line} was rejected again and again (too long for the firmware, or a bad link); giving up on it"
+            )),
         }
     }
 

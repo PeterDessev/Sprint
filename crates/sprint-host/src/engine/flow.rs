@@ -65,6 +65,8 @@ const SETTLE_MAX: Duration = Duration::from_millis(200);
 /// Clean acknowledgements needed after a rewind before the full window is
 /// used again (at least this many, or four windows).
 const SLOW_START_MIN: usize = 16;
+/// Genuine resend requests for the same line before giving up on it.
+const MAX_RESENDS_OF_A_LINE: usize = 16;
 
 /// What an `Error:` line before a `Resend:` complained about.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -160,6 +162,9 @@ pub(crate) enum ResendAction {
     /// ring, or it was already acknowledged (the firmware lost its state,
     /// e.g. an unnoticed reset). Handled like [`ResendAction::Desync`].
     Unavailable { line: u32 },
+    /// The line was requested too many times in a row (it never gets
+    /// through); it was dropped like the lines in [`ResendAction::Desync`].
+    GiveUp { line: u32 },
 }
 
 struct RingEntry<M> {
@@ -215,6 +220,8 @@ pub(crate) struct Flow<M> {
     /// Highest line number acknowledged by a real `ok` (since the last
     /// M110).
     acked_upto: Option<u32>,
+    /// (line, count) of consecutive genuine resend requests for one line.
+    genuine_resends: (u32, usize),
 }
 
 impl<M: Clone> Flow<M> {
@@ -236,6 +243,7 @@ impl<M: Clone> Flow<M> {
             last_activity: now,
             rtt_avg: None,
             acked_upto: None,
+            genuine_resends: (0, 0),
         }
     }
 
@@ -583,6 +591,17 @@ impl<M: Clone> Flow<M> {
                 rw.since = now;
                 return ResendAction::Duplicate;
             }
+        }
+        // A line that keeps being rejected (too long for the firmware, a
+        // broken link) would be resent forever: give up on it.
+        self.genuine_resends = match self.genuine_resends {
+            (line, count) if line == n => (line, count + 1),
+            _ => (n, 1),
+        };
+        if self.genuine_resends.1 > MAX_RESENDS_OF_A_LINE {
+            self.genuine_resends = (0, 0);
+            self.abandon_numbered();
+            return ResendAction::GiveUp { line: n };
         }
         // A genuine request: everything from n on is dead.
         let mut stale = 0;
