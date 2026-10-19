@@ -53,6 +53,7 @@ pub struct TempChart<'a> {
     window: Duration,
     now: Option<f64>,
     show_targets: bool,
+    show_legend: bool,
     block: Option<Block<'a>>,
     theme: &'a Theme,
 }
@@ -74,6 +75,7 @@ impl<'a> TempChart<'a> {
             window: Duration::from_secs(600),
             now: None,
             show_targets: true,
+            show_legend: true,
             block: None,
             theme: default_theme(),
         }
@@ -97,6 +99,14 @@ impl<'a> TempChart<'a> {
     #[must_use]
     pub fn show_targets(mut self, show: bool) -> Self {
         self.show_targets = show;
+        self
+    }
+
+    /// Whether to draw the legend with the latest readings (default true;
+    /// leave it out when heater gauges sit next to the chart).
+    #[must_use]
+    pub fn show_legend(mut self, show: bool) -> Self {
+        self.show_legend = show;
         self
     }
 
@@ -321,8 +331,10 @@ impl Widget for TempChart<'_> {
                     .labels(y_labels)
                     .style(theme.fg(theme.border)),
             )
-            .legend_position(Some(LegendPosition::TopLeft))
+            .legend_position(self.show_legend.then_some(LegendPosition::TopLeft))
             .hidden_legend_constraints((Constraint::Ratio(2, 3), Constraint::Ratio(2, 3)))
+            // The plot clears its area; keep the screen background.
+            .style(theme.fg(theme.text).bg(theme.background))
             .render(inner, buf);
     }
 }
@@ -399,6 +411,15 @@ mod tests {
         assert_eq!(target.runs[1].len(), 4);
         // x is relative to now.
         assert_eq!(current.runs[0][0].0, -90.0);
+    }
+
+    #[test]
+    fn legend_can_be_hidden() {
+        let points = heating(60);
+        let buf = render(TempChart::new(&points).show_legend(false), 70, 20);
+        let text = lines(&buf).join("\n");
+        assert!(!text.contains("T0 206.8°C"), "{text}");
+        assert!(text.contains("now"), "{text}");
     }
 
     #[test]
