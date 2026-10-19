@@ -163,13 +163,18 @@ impl HeatProgress {
         }
     }
 
-    fn show(&mut self, text: &str) {
+    /// Whether a new progress line is due.
+    fn due(&self) -> bool {
         let every = if self.terminal {
             HEAT_REDRAW
         } else {
             HEAT_LINE
         };
-        if self.last.is_some_and(|t| t.elapsed() < every) {
+        self.last.is_none_or(|t| t.elapsed() >= every)
+    }
+
+    fn show(&mut self, text: &str) {
+        if !self.due() {
             return;
         }
         self.last = Some(Instant::now());
@@ -184,13 +189,14 @@ impl HeatProgress {
         }
     }
 
-    /// End the line drawn in place.
+    /// End the line drawn in place (before a reply is printed). The next
+    /// progress line still waits its turn: the busy messages between the
+    /// temperature reports must not bring one every time.
     fn finish(&mut self) {
         if self.drawn > 0 {
             let _ = writeln!(io::stderr());
             self.drawn = 0;
         }
-        self.last = None;
     }
 }
 
@@ -345,6 +351,17 @@ mod tests {
         assert!(!is_error_reply("echo:busy: processing"));
         assert!(is_busy("echo:busy: processing"));
         assert!(!is_busy("ok T:20"));
+    }
+
+    #[test]
+    fn heat_progress_lines_are_spaced_out() {
+        let mut progress = HeatProgress::new(false);
+        assert!(progress.due());
+        progress.show("Heating: B 22/60");
+        assert!(!progress.due());
+        // A busy message comes between two temperature reports.
+        progress.finish();
+        assert!(!progress.due(), "a progress line after every reply");
     }
 
     #[test]
