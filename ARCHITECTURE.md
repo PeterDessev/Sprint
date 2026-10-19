@@ -2089,10 +2089,12 @@ Behaviour contract:
   progress line is redrawn on a terminal and printed every 10 %
   otherwise; `Completed <name>: <percent> in <time>` goes to stdout. A
   failed or cancelled print reports `resume with: sprint print FILE
-  --start-line N` from `JobInfo::stopped_at`; a failure while the printer
-  answers turns the heaters off before disconnecting. `--start-line`
-  streams from that line with `resume_preamble` (`--board-reset` =
-  `restore_z_position`, `--z-clearance`, `--no-wait-temps`);
+  --start-line N` from `JobInfo::stopped_at` (0-based, so N =
+  `stopped_at + 1`: `--start-line` counts lines from 1); a failure while
+  the printer answers turns the heaters off before disconnecting.
+  `--start-line N` streams from 0-based line N - 1 with `resume_preamble`
+  (`--board-reset` = `restore_z_position`, `--z-clearance`,
+  `--no-wait-temps`);
   `--pause-at-layer` uses `Printer::pause_at_lines` with the layer's first
   line. Printer questions are printed and answered from stdin (`ask`) or
   at once (`continue`, never for a pause made at the printer).
