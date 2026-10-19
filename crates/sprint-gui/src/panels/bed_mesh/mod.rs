@@ -31,6 +31,12 @@ const NO_MESH_HELP: &str = concat!(
     "homes first if needed.",
 );
 
+/// Shown when the firmware reports no automatic bed leveling.
+const NO_AUTOLEVEL_HELP: &str = concat!(
+    "The firmware reports no automatic bed leveling (AUTOLEVEL), so G29 may not ",
+    "be available. Printers with manual mesh leveling still report their mesh.",
+);
+
 /// Tooltip of the fade height field.
 const FADE_HINT: &str = concat!(
     "The correction fades out linearly up to this height; 0 keeps it on for the ",
@@ -289,8 +295,16 @@ impl BedMeshTab {
                 .show(ui);
             return;
         }
+        // A firmware that reports AUTOLEVEL as missing cannot probe a mesh.
+        let no_autolevel = ctx
+            .state
+            .capabilities
+            .iter()
+            .any(|(name, on)| name.eq_ignore_ascii_case("AUTOLEVEL") && !on);
         let message = if self.probing.is_some() {
             "Probing… the mesh appears here when the printer reports it."
+        } else if no_autolevel {
+            NO_AUTOLEVEL_HELP
         } else {
             NO_MESH_HELP
         };

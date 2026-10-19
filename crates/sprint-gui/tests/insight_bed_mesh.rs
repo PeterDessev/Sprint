@@ -145,6 +145,19 @@ fn bed_mesh_empty_states() {
     h.run_ok();
     assert!(h.query_by_label("Probe the bed?").is_none());
     assert!(!h.state().tab.is_probing());
+    // A firmware without AUTOLEVEL gets a hint.
+    let mut manual = demo_state();
+    manual.mesh = None;
+    for (name, on) in &mut manual.capabilities {
+        if name == "AUTOLEVEL" {
+            *on = false;
+        }
+    }
+    let h = tab(Theme::Dark, (900.0, 600.0), manual);
+    assert!(
+        h.query_by_label_contains("reports no automatic bed leveling")
+            .is_some()
+    );
 }
 
 #[test]
