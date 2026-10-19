@@ -128,6 +128,8 @@ pub enum AppAction {
     Connect,
     /// Close the printer connection.
     Disconnect,
+    /// Close the connection and open it again.
+    Reconnect,
     /// Pause the running job.
     PauseJob,
     /// Resume the paused job.
