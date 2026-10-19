@@ -907,3 +907,44 @@ fn estop_above_modals_respects_the_parent_clip() {
     click_at(&mut h, rect.center());
     assert_eq!(*h.state(), 0);
 }
+
+#[test]
+fn heatmap_reports_the_cell_that_was_pressed() {
+    let grid = vec![vec![0.1, 0.2, 0.3], vec![-0.1, -0.2, -0.3]];
+    let mut h = harness_state(
+        Theme::Light,
+        (300.0, 300.0),
+        Vec::new(),
+        move |ui, clicks| {
+            let r = Heatmap::new(&grid).legend(false).max_cell(40.0).show(ui);
+            if let Some(c) = r.clicked {
+                clicks.push((c.row, c.col));
+            }
+        },
+    );
+    let area = h.get_by_label("heatmap").rect();
+    let cell = area.width() / 3.0;
+    // Press just left of the border between the first two columns of the
+    // bottom row and release just right of it (still a click).
+    let press = area.min + egui::vec2(cell - 2.0, 1.5 * cell);
+    let release = press + egui::vec2(4.0, 0.0);
+    h.hover_at(press);
+    h.step();
+    h.event(egui::Event::PointerButton {
+        pos: press,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.step();
+    h.hover_at(release);
+    h.step();
+    h.event(egui::Event::PointerButton {
+        pos: release,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.step();
+    assert_eq!(h.state().as_slice(), &[(0, 0)]);
+}

@@ -239,6 +239,50 @@ pub(crate) fn widget_id(ui: &Ui, salt: impl std::hash::Hash + std::fmt::Debug) -
     }
 }
 
+/// Where the pointer press on a widget started, for custom-painted widgets
+/// with several click targets (jog rings, heatmap cells).
+///
+/// egui reports a click on release, when the pointer may already have moved
+/// a few points (up to the click distance) onto a neighbouring target, so
+/// the press position is remembered while the button is held.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct PressOrigin {
+    /// Where the current press started, while the button is held and the
+    /// press can still become a click.
+    pub held: Option<egui::Pos2>,
+    /// On the frame `response.clicked()`: where that click's press started
+    /// (the click position when press and release fell into one frame;
+    /// `None` for a keyboard click).
+    pub clicked: Option<egui::Pos2>,
+}
+
+impl PressOrigin {
+    /// Track the presses on `response`; call it every frame the widget is
+    /// shown.
+    pub(crate) fn track(ui: &Ui, response: &Response) -> PressOrigin {
+        let key = response.id.with("sprint-gui::press-origin");
+        let down = response.is_pointer_button_down_on();
+        if down && let Some(origin) = ui.input(|i| i.pointer.press_origin()) {
+            ui.data_mut(|d| d.insert_temp(key, origin));
+        }
+        let held = if down && ui.input(|i| i.pointer.could_any_button_be_click()) {
+            ui.data(|d| d.get_temp::<egui::Pos2>(key))
+        } else {
+            None
+        };
+        let clicked = if response.clicked() {
+            ui.data_mut(|d| d.remove_temp::<egui::Pos2>(key))
+                .or_else(|| response.interact_pointer_pos())
+        } else {
+            if !down {
+                ui.data_mut(|d| d.remove::<egui::Pos2>(key));
+            }
+            None
+        };
+        PressOrigin { held, clicked }
+    }
+}
+
 /// The largest width or height (points) any widget accepts from a builder.
 pub(crate) const MAX_EXTENT: f32 = 8192.0;
 

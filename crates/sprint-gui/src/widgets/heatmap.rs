@@ -324,11 +324,11 @@ impl<'a> Heatmap<'a> {
             })
         };
         let hovered = response.hover_pos().and_then(cell_at);
-        let clicked = if response.clicked() {
-            response.interact_pointer_pos().and_then(cell_at)
-        } else {
-            None
-        };
+        // The cell under the press, not the release (a click may end a few
+        // points away, over a neighbour).
+        let clicked = super::PressOrigin::track(ui, &response)
+            .clicked
+            .and_then(cell_at);
         if ui.is_rect_visible(outer) {
             self.paint_cells(ui, &p, grid_rect, cell, scale, hovered);
             self.paint_axes(ui, &p, grid_rect, cell, has_x, has_y);

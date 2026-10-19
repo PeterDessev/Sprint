@@ -537,33 +537,15 @@ impl JogPad {
             .hover_pos()
             .filter(|_| ui.is_enabled())
             .and_then(|pos| geo.hit(pos));
-        // egui reports the click on release, when the pointer may already
-        // be over a neighbouring ring (within the click distance), so the
-        // region under the *press* is remembered and acted on, like a
-        // button that keeps its click when released just outside it.
-        let press_key = response.id.with("pressed-region");
-        let down = response.is_pointer_button_down_on();
-        if down && let Some(origin) = ui.input(|i| i.pointer.press_origin()) {
-            ui.data_mut(|d| d.insert_temp(press_key, geo.hit(origin)));
-        }
-        let pressed = if down && ui.input(|i| i.pointer.could_any_button_be_click()) {
-            ui.data(|d| d.get_temp::<Option<JogRegion>>(press_key))
-                .flatten()
-        } else {
-            None
-        };
-        let action = if response.clicked() {
-            // Press and release in one frame leave nothing stored: then the
-            // release position is the press position.
-            ui.data_mut(|d| d.remove_temp::<Option<JogRegion>>(press_key))
-                .unwrap_or_else(|| response.interact_pointer_pos().and_then(|pos| geo.hit(pos)))
-                .map(|region| self.action_for(region))
-        } else {
-            if !down {
-                ui.data_mut(|d| d.remove::<Option<JogRegion>>(press_key));
-            }
-            None
-        };
+        // Act on the region under the *press*: by the release the pointer
+        // may be over a neighbouring ring (like a button that keeps its
+        // click when released just outside it).
+        let press = super::PressOrigin::track(ui, &response);
+        let pressed = press.held.and_then(|pos| geo.hit(pos));
+        let action = press
+            .clicked
+            .and_then(|pos| geo.hit(pos))
+            .map(|region| self.action_for(region));
         if ui.is_rect_visible(rect) {
             self.paint(ui, &geo, hovered, pressed);
             paint_focus_ring(ui, &response, rect, CornerRadius::same(theme::RADIUS_LG));
