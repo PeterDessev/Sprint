@@ -755,6 +755,46 @@ fn console_motion_is_guarded_while_a_job_runs() {
 }
 
 #[test]
+fn an_upload_of_the_file_is_not_shown_as_a_print() {
+    let options = with_file(AppOptions::headless(), sample("calibration-cube.gcode"));
+    let mut h = app(options, WINDOW);
+    expect(&mut h, "the cube to be analyzed", analyzed);
+    let job_of = |kind| {
+        let mut state = printing_state(JobStatus::Printing);
+        if let Some(job) = &mut state.job {
+            job.kind = kind;
+            job.name = "calibration-cube.gcode".into();
+        }
+        state
+    };
+    let progress_line = |app: &SprintApp| {
+        app.viewer_tab()
+            .viewer()
+            .and_then(|v| v.options().progress_line)
+    };
+    // Printing the file: its progress shows in the 3D view and the G-code.
+    h.state_mut()
+        .set_state_override(Some(job_of(JobKind::HostPrint)));
+    settle(&mut h);
+    if h.state().viewer_tab().viewer().is_some() {
+        assert_eq!(progress_line(h.state()), Some(399));
+    }
+    h.state_mut().push_action(AppAction::ShowTab(Tab::Gcode));
+    settle(&mut h);
+    assert!(h.query_by_label("Follow print").is_some());
+    // Uploading it to the SD card prints nothing.
+    h.state_mut()
+        .set_state_override(Some(job_of(JobKind::SdUpload)));
+    settle(&mut h);
+    assert!(h.query_by_label("Follow print").is_none());
+    h.state_mut().push_action(AppAction::ShowTab(Tab::View3D));
+    settle(&mut h);
+    assert_eq!(progress_line(h.state()), None);
+    // The job bar still reports the upload.
+    assert!(h.query_by_label("UPLOADING").is_some());
+}
+
+#[test]
 fn switching_profiles_analyzes_the_file_again() {
     let mut options = with_file(sim_options(), sample("calibration-cube.gcode"));
     let other = sprint_host::PrinterProfile {

@@ -186,6 +186,12 @@ pub fn job_matches_file(job: &JobInfo, file_name: &str) -> bool {
     job.kind != JobKind::SdPrint && job.name == file_name
 }
 
+/// Whether `job` prints a file called `file_name` from the host (an upload
+/// to the SD card streams the file too, but nothing is printed).
+pub fn job_prints_file(job: &JobInfo, file_name: &str) -> bool {
+    job.kind == JobKind::HostPrint && job.name == file_name
+}
+
 /// The window title: `"Sprint"`, `"Sprint — cube.gcode"`, and while a job
 /// runs `"Sprint — cube.gcode — 42% · layer 12/100"` (`"Paused 42%"` while
 /// paused). Job percentages are floored so 100% only shows when done.
@@ -362,10 +368,19 @@ mod tests {
         let host = job(JobStatus::Printing, 0.0, None);
         assert!(job_matches_file(&host, "cube.gcode"));
         assert!(!job_matches_file(&host, "other.gcode"));
+        assert!(job_prints_file(&host, "cube.gcode"));
+        assert!(!job_prints_file(&host, "other.gcode"));
+        let upload = JobInfo {
+            kind: JobKind::SdUpload,
+            ..host.clone()
+        };
+        assert!(job_matches_file(&upload, "cube.gcode"));
+        assert!(!job_prints_file(&upload, "cube.gcode"));
         let sd = JobInfo {
             kind: JobKind::SdPrint,
             ..host
         };
         assert!(!job_matches_file(&sd, "cube.gcode"));
+        assert!(!job_prints_file(&sd, "cube.gcode"));
     }
 }

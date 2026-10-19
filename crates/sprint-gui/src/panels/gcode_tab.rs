@@ -649,7 +649,7 @@ impl GcodeTab {
             .state
             .job
             .as_ref()
-            .filter(|j| j.status.is_active() && format::job_matches_file(j, file.name()))
+            .filter(|j| j.status.is_active() && format::job_prints_file(j, file.name()))
             .map(|j| j.current_line);
         if let Some(done) = progress
             && self.follow_print
