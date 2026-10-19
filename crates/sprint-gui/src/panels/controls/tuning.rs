@@ -494,7 +494,9 @@ fn value_label(ui: &mut Ui, text: &str, modified: bool) {
     let galley = ui
         .painter()
         .layout_no_wrap(text.to_owned(), font.clone(), p.text);
-    let (rect, _) = ui.allocate_exact_size(vec2(galley.size().x.max(36.0), 20.0), Sense::hover());
+    let (rect, response) =
+        ui.allocate_exact_size(vec2(galley.size().x.max(36.0), 20.0), Sense::hover());
+    response.widget_info(|| WidgetInfo::labeled(egui::WidgetType::Label, true, text));
     let color = if modified {
         if p.dark {
             p.accent_hover
