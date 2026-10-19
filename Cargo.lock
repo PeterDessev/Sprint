@@ -4331,6 +4331,7 @@ dependencies = [
  "sprint-proto",
  "sprint-sim",
  "sprint-tui",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

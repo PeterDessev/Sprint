@@ -6,6 +6,7 @@
 
 mod analyze;
 mod cli;
+mod console;
 mod sim;
 
 use std::process::ExitCode;
@@ -22,11 +23,19 @@ const EXIT_USAGE: u8 = 2;
 
 fn main() -> ExitCode {
     let command = Cli::parse().into_command();
+    // Started from Explorer in GUI mode: do not leave a console window
+    // behind the GUI.
+    let detached = matches!(command, Command::Gui(_)) && console::release_own_console();
     init_logging(&command);
     match run(command) {
         Ok(code) => code,
         Err(err) => {
-            eprintln!("sprint: error: {err:#}");
+            let message = format!("{err:#}");
+            if detached {
+                console::show_error("Sprint", &message);
+            } else {
+                eprintln!("sprint: error: {message}");
+            }
             ExitCode::from(EXIT_FAILURE)
         }
     }
