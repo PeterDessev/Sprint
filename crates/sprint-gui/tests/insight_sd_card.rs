@@ -296,6 +296,39 @@ fn a_print_started_on_the_printer_keeps_the_card_busy() {
 }
 
 #[test]
+fn a_released_card_offers_only_initializing() {
+    let mut h = tab(Theme::Dark, (1000.0, 760.0), sd_state());
+    h.state_mut().file = Some(loaded("cube.gcode", &small_gcode()));
+    h.run_ok();
+    h.get_by_label("Release").click();
+    h.run_ok();
+    assert!(h.query_by_label("Card released").is_some());
+    // The firmware let go of the card: printing, deleting or writing to
+    // it can only fail until it is initialized again.
+    for label in [
+        "Print calibration_cube.gcode",
+        "Delete calibration_cube.gcode",
+        "Upload",
+        "Release",
+    ] {
+        assert!(
+            h.get_by_label(label).accesskit_node().is_disabled(),
+            "{label}"
+        );
+    }
+    assert!(!h.get_by_label("Initialize").accesskit_node().is_disabled());
+    // Reading the list again mounts the card first (M21, then M20).
+    h.get_by_label("Read the file list again (M20)").click();
+    h.run_ok();
+    assert!(h.query_by_label("Card released").is_none());
+    assert!(
+        !h.get_by_label("Print calibration_cube.gcode")
+            .accesskit_node()
+            .is_disabled()
+    );
+}
+
+#[test]
 fn odd_file_lists_never_panic() {
     let mut state = sd_state();
     state.sd.files = vec![

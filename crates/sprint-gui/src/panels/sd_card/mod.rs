@@ -307,16 +307,18 @@ impl SdCardTab {
         let file_name = ctx.file.map(|f| f.file.name().to_owned());
         let mut refresh = false;
         let mut upload = false;
+        let released = self.released;
         kit::page_header(ui, icons::SD_CARD, "SD card", Some(&subtitle), |ui| {
             let upload_tip = match (&file_name, connected, job) {
                 (None, _, _) => "Open a G-code file to upload it".to_owned(),
                 (_, false, _) => "Connect to a printer first".to_owned(),
                 (_, _, true) => "Not while a job runs".to_owned(),
+                _ if released => "Initialize the card first".to_owned(),
                 (Some(name), _, _) => format!("Write {name} to the card"),
             };
             if ui
                 .add_enabled(
-                    connected && !job && file_name.is_some(),
+                    connected && !job && !released && file_name.is_some(),
                     ActionButton::new("Upload")
                         .icon(icons::UPLOAD)
                         .primary()
@@ -346,8 +348,12 @@ impl SdCardTab {
             }
         });
         if refresh {
-            ctx.printer.request_sd_files();
-            self.released = false;
+            if self.released {
+                // The card was let go of: mount it again to read it.
+                self.init_card(ctx);
+            } else {
+                ctx.printer.request_sd_files();
+            }
         }
         if upload {
             self.open_upload(ctx);
@@ -512,6 +518,9 @@ impl SdCardTab {
         // No new print while any job runs, nor while the card prints a
         // file started on the printer (M23 would swap it).
         let job_active = ctx.job_active() || self.card_printing.is_some();
+        // After M22 the files can be neither printed nor deleted until the
+        // card is initialized again.
+        let released = self.released;
         // Edited in the header, read by the table.
         let filter = std::cell::RefCell::new(std::mem::take(&mut self.filter));
         Card::new("Files")
@@ -594,7 +603,10 @@ impl SdCardTab {
                                         file,
                                         is_selected,
                                         n % 2 == 1,
-                                        (connected && !job_active, connected && !sd_busy),
+                                        (
+                                            connected && !job_active && !released,
+                                            connected && !sd_busy && !released,
+                                        ),
                                     )
                                 })
                                 .inner;
@@ -629,7 +641,7 @@ impl SdCardTab {
                         }
                         if ui
                             .add_enabled(
-                                connected && !sd_busy,
+                                connected && !sd_busy && !released,
                                 ActionButton::new("Release")
                                     .icon(icons::phosphor::EJECT)
                                     .ghost()
@@ -751,7 +763,8 @@ impl SdCardTab {
         let can_upload = validated.is_ok()
             && ctx.connected()
             && !ctx.job_active()
-            && self.card_printing.is_none();
+            && self.card_printing.is_none()
+            && !self.released;
         let mut submit = false;
         let mut cancel = false;
         let modal = egui::Modal::new(egui::Id::new("sd-upload"))
