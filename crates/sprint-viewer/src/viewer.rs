@@ -317,19 +317,37 @@ impl GcodeViewer {
     /// streamed to the GPU over the next frames; the layer range is reset to
     /// all layers and the camera is fitted.
     pub fn set_toolpath(&mut self, toolpath: Arc<Toolpath>) {
+        let layers = instance::layer_count(&toolpath);
+        self.options.layer_range = (0, layers.saturating_sub(1));
+        self.auto_fit = true;
+        self.top_fitted = false;
+        self.anim = None;
+        self.load(toolpath);
+        self.fit_now(self.fit_aspect);
+    }
+
+    /// Show a new analysis of the toolpath on screen (the same file
+    /// analyzed again, e.g. with other kinematic limits): like
+    /// [`GcodeViewer::set_toolpath`], but the layer range (clamped to the
+    /// new layer count), both cameras (3D and layer view) and whether
+    /// fits are automatic stay as they are, so the user keeps looking at
+    /// what they were looking at.
+    pub fn replace_toolpath(&mut self, toolpath: Arc<Toolpath>) {
+        let last = instance::layer_count(&toolpath).saturating_sub(1);
+        let (lo, hi) = self.options.layer_range;
+        self.options.layer_range = (lo.min(last), hi.min(last));
+        self.load(toolpath);
+    }
+
+    /// Drop the scene and build the one of `toolpath` in the background.
+    fn load(&mut self, toolpath: Arc<Toolpath>) {
         self.cancel_loader();
         self.renderer.clear_scene();
         self.info = None;
         self.hover = None;
         self.hover_query = None;
         self.last_frame = None;
-        let layers = instance::layer_count(&toolpath);
-        self.options.layer_range = (0, layers.saturating_sub(1));
         self.toolpath = Some(Arc::clone(&toolpath));
-        self.auto_fit = true;
-        self.top_fitted = false;
-        self.anim = None;
-        self.fit_now(self.fit_aspect);
 
         let (tx, rx) = mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));

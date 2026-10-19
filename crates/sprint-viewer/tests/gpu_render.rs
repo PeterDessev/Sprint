@@ -565,6 +565,45 @@ fn replacing_the_toolpath_keeps_the_latest() {
 }
 
 #[test]
+fn a_new_analysis_keeps_the_layers_and_both_cameras() {
+    let Some((device, queue)) = device() else {
+        return;
+    };
+    let mut viewer = GcodeViewer::new_headless(&device, &queue);
+    viewer.render_offscreen(W, H);
+    viewer.set_toolpath(Arc::new(block()));
+    viewer.wait_until_loaded();
+    // The user looks at layers 3..=6 in the layer view after orbiting the
+    // 3D view (fits are no longer automatic).
+    viewer.options_mut().layer_range = (2, 5);
+    viewer.camera_mut().orbit(0.4, -0.2);
+    viewer.options_mut().view_mode = ViewMode::LayerTop;
+    let camera = *viewer.camera();
+    let top_before = render(&mut viewer);
+    // The same file analyzed again (other times, same geometry).
+    let mut again = block();
+    for s in &mut again.segments {
+        s.time *= 1.5;
+    }
+    viewer.replace_toolpath(Arc::new(again));
+    viewer.wait_until_loaded();
+    assert_eq!(viewer.options().layer_range, (2, 5));
+    assert_eq!(*viewer.camera(), camera, "the 3D camera moved");
+    assert_eq!(render(&mut viewer), top_before, "the layer view moved");
+    // Fewer layers: the range is clamped.
+    let mut short = block();
+    short.layers.truncate(4);
+    let end = short.layers.last().map_or(0, |l| l.segments.end);
+    short.segments.truncate(end);
+    viewer.replace_toolpath(Arc::new(short));
+    viewer.wait_until_loaded();
+    assert_eq!(viewer.options().layer_range, (2, 3));
+    // A new file (set_toolpath) shows every layer and fits again.
+    viewer.set_toolpath(Arc::new(block()));
+    assert_eq!(viewer.options().layer_range, (0, 9));
+}
+
+#[test]
 fn large_toolpaths_stream_in_over_several_polls() {
     let Some((device, queue)) = device() else {
         return;
