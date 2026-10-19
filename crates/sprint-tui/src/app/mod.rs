@@ -66,6 +66,10 @@ const REPORT_IDLE_AFTER: Duration = Duration::from_millis(250);
 /// Console entries fetched per call.
 const CONSOLE_FETCH: usize = 4096;
 
+/// A `source` file read off the UI thread: its name and command lines,
+/// or why it could not be read.
+type SourceRead = Result<(String, Vec<String>), String>;
+
 /// Which panel has the keyboard.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Focus {
@@ -178,6 +182,10 @@ pub(crate) struct App {
     pub canvas_area: Rect,
     base_dir: PathBuf,
     last_load_progress: u32,
+    /// The target of the last connect (for `reset`).
+    last_target: Option<ConnectTarget>,
+    /// A `source` file being read: its name and lines.
+    sourcing: Option<Receiver<SourceRead>>,
 }
 
 /// Completion for the command palette: command names, then G-codes.
@@ -263,6 +271,8 @@ impl App {
             canvas_area: Rect::default(),
             base_dir: std::env::current_dir().unwrap_or_default(),
             last_load_progress: 0,
+            last_target: None,
+            sourcing: None,
         };
         app.sync();
         app
@@ -467,6 +477,7 @@ impl App {
             }
         }
         self.poll_background();
+        self.poll_source();
         self.tick_resume(now);
         self.tick_report(now);
     }
@@ -544,6 +555,76 @@ impl App {
         match spawned {
             Ok(_) => self.background.push(rx),
             Err(e) => self.error(format!("Cannot start {name}: {e}")),
+        }
+    }
+
+    /// `source <file>`: read the file off the UI thread; its lines are run
+    /// once confirmed (see [`App::poll_source`]).
+    fn read_source(&mut self, path: PathBuf) {
+        if self.sourcing.is_some() {
+            self.warn("Already reading a source file");
+            return;
+        }
+        let path = crate::paths::resolve(&path.to_string_lossy(), &self.base_dir);
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let spawned = std::thread::Builder::new()
+            .name("sprint-source".into())
+            .spawn(move || {
+                let read = std::fs::read(&path)
+                    .map(|bytes| {
+                        let name = path.file_name().map_or_else(
+                            || path.display().to_string(),
+                            |n| n.to_string_lossy().into_owned(),
+                        );
+                        let lines = pasted_commands(&String::from_utf8_lossy(&bytes))
+                            .into_iter()
+                            .map(str::to_string)
+                            .collect();
+                        (name, lines)
+                    })
+                    .map_err(|e| format!("Cannot read {}: {e}", path.display()));
+                let _ = tx.send(read);
+            });
+        match spawned {
+            Ok(_) => self.sourcing = Some(rx),
+            Err(e) => self.error(format!("Cannot read the file: {e}")),
+        }
+    }
+
+    /// A `source` file was read: ask before running its lines.
+    fn poll_source(&mut self) {
+        let Some(rx) = &self.sourcing else {
+            return;
+        };
+        let read = match rx.try_recv() {
+            Ok(read) => read,
+            Err(crossbeam_channel::TryRecvError::Empty) => return,
+            Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                Err("Reading the source file stopped".to_string())
+            }
+        };
+        self.sourcing = None;
+        match read {
+            Ok((name, lines)) if lines.is_empty() => self.warn(format!("{name} has no commands")),
+            Ok((name, lines)) => {
+                let job_active = self.view.job_active();
+                let mut message = Vec::new();
+                if job_active {
+                    message.push(
+                        "A job is running: G-code goes between the print's lines.".to_string(),
+                    );
+                }
+                message.extend(macro_preview(&lines.join("\n")));
+                self.modal = Some(Modal::Confirm(Confirm::new(
+                    format!("Run {} lines of {name}?", lines.len()),
+                    message,
+                    "Run",
+                    "Not now",
+                    job_active,
+                    Action::RunLines(lines),
+                )));
+            }
+            Err(why) => self.error(why),
         }
     }
 
@@ -882,13 +963,21 @@ impl App {
 
     /// Connect on a background thread (opening a link can take seconds).
     pub(crate) fn connect(&mut self, target: ConnectTarget) {
+        self.connect_with(target, false);
+    }
+
+    /// [`App::connect`]; `reset` pulses DTR after opening a serial port,
+    /// which resets most boards.
+    fn connect_with(&mut self, target: ConnectTarget, reset: bool) {
         if self.connecting.is_some() {
             self.warn("Already connecting");
             return;
         }
+        self.last_target = Some(target.clone());
         let reconnect = self.view.status.is_open();
         let printer = self.printer.clone();
-        let options = self.profile.options.clone();
+        let mut options = self.profile.options.clone();
+        options.reset_on_connect |= reset;
         let label = target.label();
         let (tx, rx) = crossbeam_channel::bounded(1);
         let spawned = std::thread::Builder::new()
@@ -1150,6 +1239,31 @@ impl App {
                 self.info(format!("Deleted {name} from the SD card"));
             }
             Action::AnswerPrompt(button) => self.printer.answer_prompt(button),
+            Action::EverythingOff => {
+                if self.connected_or_warn() {
+                    let heaters = session::everything_off(&self.printer);
+                    let names: Vec<String> =
+                        heaters.into_iter().map(actions::heater_label).collect();
+                    self.info(format!(
+                        "{} off, fans off, motors off (M84)",
+                        names.join(", ")
+                    ));
+                }
+            }
+            Action::RunLines(lines) => {
+                let total = lines.len();
+                for (i, line) in lines.iter().enumerate() {
+                    self.run_line(line);
+                    // A question stops the run: its answer must come first.
+                    if self.modal.is_some() && i + 1 < total {
+                        self.warn(format!(
+                            "Stopped after line {} of {total}, which asks a question",
+                            i + 1
+                        ));
+                        break;
+                    }
+                }
+            }
         }
     }
 
@@ -1684,6 +1798,30 @@ impl App {
                 let lines = report::profile_lines(&self.config);
                 self.show_report("Printer profiles", lines);
             }
+            Command::Eta => {
+                let job = self.view.job.as_ref().map(|j| {
+                    (
+                        j.status.is_active(),
+                        format!(
+                            "{} {}  {}",
+                            report::job_status_text(&j.status),
+                            j.name,
+                            report::job_progress_text(j)
+                        ),
+                    )
+                });
+                match job {
+                    Some((true, text)) => self.info(text),
+                    Some((false, text)) => self.info(format!("No job is running (last: {text})")),
+                    None => self.warn("No job is running"),
+                }
+            }
+            Command::Source(path) => self.read_source(path),
+            Command::WaitOnline => self.info(if self.view.connected() {
+                "The printer is online"
+            } else {
+                "block_until_online is for shell scripts; the status bar shows the connection"
+            }),
             Command::Profile(Some(name)) => self.switch_profile(&name),
             Command::Disconnect => self.run_action(Action::Disconnect),
             Command::Ports => self.show_report("Serial ports", report::ports_lines(&list_ports())),
@@ -1753,12 +1891,54 @@ impl App {
     fn execute_on_printer(&mut self, cmd: Command) {
         let printer = self.printer.clone();
         match cmd {
-            Command::Temp { celsius, tool } => {
-                let tool = tool.unwrap_or(self.view.active_tool);
-                self.run_action(Action::SetTemps(vec![(Heater::Hotend(tool), celsius)]));
+            Command::Temp { target, tool } => {
+                match actions::resolve_temp(&target, &self.profile.temp_presets, false) {
+                    Ok(celsius) => {
+                        let tool = tool.unwrap_or(self.view.active_tool);
+                        self.run_action(Action::SetTemps(vec![(Heater::Hotend(tool), celsius)]));
+                    }
+                    Err(why) => self.error(why),
+                }
             }
-            Command::BedTemp(celsius) => {
-                self.run_action(Action::SetTemps(vec![(Heater::Bed, celsius)]))
+            Command::BedTemp(target) => {
+                match actions::resolve_temp(&target, &self.profile.temp_presets, true) {
+                    Ok(celsius) => self.run_action(Action::SetTemps(vec![(Heater::Bed, celsius)])),
+                    Err(why) => self.error(why),
+                }
+            }
+            Command::GetTemp => {
+                let lines = printer.with_state(report::temperature_lines);
+                self.show_report("Temperatures", lines);
+            }
+            Command::Off => match self.view.job.as_ref().filter(|j| j.status.is_active()) {
+                Some(job) => {
+                    let name = job.name.clone();
+                    self.modal = Some(Modal::Confirm(Confirm::new(
+                        "Turn everything off?",
+                        vec![
+                            format!("{name} is printing."),
+                            "Heaters, fans and motors off ruins it.".to_string(),
+                        ],
+                        "Turn off",
+                        "Keep printing",
+                        true,
+                        Action::EverythingOff,
+                    )));
+                }
+                None => self.run_action(Action::EverythingOff),
+            },
+            Command::Tool(t) => {
+                if self.motion_allowed() {
+                    printer.select_tool(t);
+                    self.info(format!("Tool T{t}"));
+                }
+            }
+            Command::Reset => {
+                if self.view.job_active() {
+                    self.warn("Not while a job runs: resetting the board stops it (F7 cancels)");
+                } else if let Some(target) = self.last_target.clone() {
+                    self.connect_with(target, true);
+                }
             }
             Command::Preheat(Some(name)) => {
                 match actions::find_preset(&self.profile.temp_presets, &name) {
@@ -1783,9 +1963,15 @@ impl App {
                     heaters.into_iter().map(|h| (h, 0.0)).collect(),
                 ));
             }
-            Command::Home(axes) => {
+            Command::Home { axes, zero_e } => {
                 if self.motion_allowed() {
-                    printer.home(axes);
+                    if axes != Axes::default() {
+                        printer.home(axes);
+                    }
+                    if zero_e {
+                        printer.send("G92 E0");
+                        self.info("Extruder position set to 0 (G92 E0)");
+                    }
                 }
             }
             Command::Move { axis, mm, feedrate } => {
@@ -1979,6 +2165,9 @@ impl App {
             Command::Help(_)
             | Command::Connect { .. }
             | Command::Profile(_)
+            | Command::Eta
+            | Command::Source(_)
+            | Command::WaitOnline
             | Command::Disconnect
             | Command::Ports
             | Command::Load(_)

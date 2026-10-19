@@ -978,7 +978,7 @@ fn command_palette_runs_shell_commands() {
     assert!(screen(&mut app, 120, 40).contains("x_min"));
     press(&mut app, KeyCode::Esc);
     // Errors show the usage.
-    run_palette(&mut app, "temp hot");
+    run_palette(&mut app, "temp 2hot");
     assert!(
         app.toast
             .as_ref()
@@ -1847,5 +1847,65 @@ fn the_palette_lists_and_switches_profiles() {
         app.toast
     );
     app.printer.disconnect();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_palette_runs_pronsole_commands() {
+    let mut app = connected_app();
+    received(&app);
+    app.run_line("settemp pla");
+    app.run_line("home e");
+    app.run_line("tool 0");
+    app.run_line("gettemp");
+    let Some(Modal::Report(report)) = &app.modal else {
+        panic!("no report: {:?}", app.toast);
+    };
+    assert_eq!(report.title, "Temperatures");
+    app.modal = None;
+    app.run_line("eta");
+    assert!(
+        app.toast
+            .as_ref()
+            .is_some_and(|t| t.text.contains("No job is running")),
+        "{:?}",
+        app.toast
+    );
+    app.run_line("ls");
+    assert!(matches!(&app.modal, Some(Modal::Report(r)) if r.title == "SD card"));
+    app.modal = None;
+    // source reads the file off the UI thread, then asks.
+    let dir = std::env::temp_dir().join(format!("sprint-tui-source-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let file = dir.join("lines.txt");
+    std::fs::write(&file, "; warm up\nbedtemp 55\nM105\n").expect("write");
+    app.run_line(&format!("source {}", file.display()));
+    wait_app(&mut app, "the question", |a| {
+        matches!(&a.modal, Some(Modal::Confirm(_)))
+    });
+    let Some(Modal::Confirm(confirm)) = &app.modal else {
+        panic!("no question");
+    };
+    assert_eq!(
+        confirm.action,
+        dialogs::Action::RunLines(vec!["bedtemp 55".into(), "M105".into()])
+    );
+    let action = confirm.action.clone();
+    app.modal = None;
+    app.run_action(action);
+    app.run_line("off");
+    wait_idle(&mut app);
+    let got = received(&app);
+    for want in [
+        "M104 T0 S205",
+        "G92 E0",
+        "T0",
+        "M140 S55",
+        "M105",
+        "M140 S0",
+        "M84",
+    ] {
+        assert!(got.iter().any(|c| c == want), "missing {want} in {got:?}");
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }

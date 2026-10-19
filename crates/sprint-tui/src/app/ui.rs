@@ -11,7 +11,7 @@ use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
 use sprint_host::{BedOrigin, ConnectionStatus, JobStatus};
 
 use super::{App, Center, Focus, InputMode, JOG_STEPS, Modal};
-use crate::commands::{COMMANDS, Group};
+use crate::commands::{COMMANDS, Group, PRONSOLE};
 use crate::format;
 use crate::report::{Tone, tone_style};
 use crate::widgets::{
@@ -1093,5 +1093,16 @@ pub(crate) fn help_sections() -> Vec<HelpSection<'static>> {
             entries,
         ));
     }
+    let pronsole: Vec<(String, String)> = PRONSOLE
+        .iter()
+        .map(|p| {
+            let what = match p.sprint {
+                Some(sprint) => format!(":{sprint}: {}", p.note),
+                None => p.note.to_string(),
+            };
+            (p.word.to_string(), what)
+        })
+        .collect();
+    sections.push(HelpSection::new("Coming from pronsole", pronsole));
     sections
 }

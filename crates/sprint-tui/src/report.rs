@@ -18,7 +18,7 @@ use sprint_host::{
     PrinterState, SdState, TempPreset,
 };
 
-use crate::commands::{COMMANDS, CommandSpec, Group};
+use crate::commands::{COMMANDS, CommandSpec, Group, PRONSOLE};
 use crate::format;
 use crate::loader::LoadedFile;
 use crate::theme::{ColorSupport, Theme};
@@ -370,33 +370,7 @@ pub fn status_lines(state: &PrinterState, file: Option<&LoadedFile>) -> Vec<Repo
     }
     lines.push(printer);
     if state.status.is_connected() {
-        for (tool, reading) in state.temps.hotends.iter().enumerate() {
-            if reading.current.is_nan() && reading.target.is_none() {
-                continue;
-            }
-            let label = if state.temps.hotends.len() > 1 {
-                format!("Hotend T{tool}")
-            } else {
-                "Hotend".to_string()
-            };
-            lines.push(heater_line(
-                &label,
-                reading.current,
-                reading.target,
-                reading.power,
-            ));
-        }
-        if let Some(bed) = &state.temps.bed {
-            lines.push(heater_line("Bed", bed.current, bed.target, bed.power));
-        }
-        if let Some(chamber) = &state.temps.chamber {
-            lines.push(heater_line(
-                "Chamber",
-                chamber.current,
-                chamber.target,
-                chamber.power,
-            ));
-        }
+        lines.extend(heater_lines(state));
         let position = match &state.position {
             Some(p) => format!(
                 "X {}  Y {}  Z {}  E {}",
@@ -497,6 +471,49 @@ pub fn overrides_text(state: &PrinterState) -> String {
         format::trimmed(f64::from(state.feedrate_pct), 1),
         format::trimmed(f64::from(flow), 1)
     )
+}
+
+/// The `gettemp` report: each heater's temperature, target, state and
+/// power, as the printer last reported them.
+pub fn temperature_lines(state: &PrinterState) -> Vec<ReportLine> {
+    let mut lines = heater_lines(state);
+    if lines.is_empty() {
+        lines.push(ReportLine::toned("No temperatures reported yet", Tone::Dim));
+    }
+    lines
+}
+
+/// A line per heater the printer reported.
+fn heater_lines(state: &PrinterState) -> Vec<ReportLine> {
+    let mut lines = Vec::new();
+    for (tool, reading) in state.temps.hotends.iter().enumerate() {
+        if reading.current.is_nan() && reading.target.is_none() {
+            continue;
+        }
+        let label = if state.temps.hotends.len() > 1 {
+            format!("Hotend T{tool}")
+        } else {
+            "Hotend".to_string()
+        };
+        lines.push(heater_line(
+            &label,
+            reading.current,
+            reading.target,
+            reading.power,
+        ));
+    }
+    if let Some(bed) = &state.temps.bed {
+        lines.push(heater_line("Bed", bed.current, bed.target, bed.power));
+    }
+    if let Some(chamber) = &state.temps.chamber {
+        lines.push(heater_line(
+            "Chamber",
+            chamber.current,
+            chamber.target,
+            chamber.power,
+        ));
+    }
+    lines
 }
 
 fn heater_line(label: &str, current: f32, target: Option<f32>, power: Option<f32>) -> ReportLine {
@@ -1051,6 +1068,54 @@ pub fn help_lines() -> Vec<ReportLine> {
         "prefix a line with ! to send it raw. help <command> or help <G-code> explains one.",
         Tone::Dim,
     ));
+    lines.push(ReportLine::new());
+    lines.extend(pronsole_lines());
+    lines
+}
+
+/// The "Coming from pronsole" part of `help`: pronsole's commands that
+/// Sprint names differently or does not have.
+pub fn pronsole_lines() -> Vec<ReportLine> {
+    /// pronsole word column width.
+    const WORD: usize = 20;
+    let mut lines = vec![
+        ReportLine::heading("Coming from pronsole"),
+        ReportLine::toned(
+            "  Most pronsole commands work as they did: connect, load, print, pause, settemp pla,",
+            Tone::Dim,
+        ),
+        ReportLine::toned(
+            "  gettemp, eta, home e, tool, off, reset, monitor, macro, ... These differ:",
+            Tone::Dim,
+        ),
+    ];
+    for p in PRONSOLE {
+        let sprint = p.sprint.unwrap_or("(none)");
+        lines.push(
+            ReportLine::new()
+                .with(format!("  {:<WORD$}", p.word), Tone::Plain)
+                .with(format!("{sprint:<14}  "), Tone::Accent)
+                .with(p.note, Tone::Dim),
+        );
+    }
+    lines.push(
+        ReportLine::new()
+            .with(format!("  {:<WORD$}", "set port, baudrate"), Tone::Plain)
+            .with(format!("{:<14}  ", "connect --save"), Tone::Accent)
+            .with(
+                "set changes firmware settings here; profile switches printers",
+                Tone::Dim,
+            ),
+    );
+    lines.push(
+        ReportLine::new()
+            .with(format!("  {:<WORD$}", "!python"), Tone::Plain)
+            .with(format!("{:<14}  ", "!G-code"), Tone::Accent)
+            .with(
+                "! sends the rest of the line to the printer as typed",
+                Tone::Dim,
+            ),
+    );
     lines
 }
 
@@ -1594,7 +1659,7 @@ mod tests {
         let spec = crate::commands::command_spec("temp").expect("temp");
         let text = joined(&command_help(spec));
         assert!(
-            text.starts_with("usage: temp <celsius|off> [tool]"),
+            text.starts_with("usage: temp <celsius|preset|off> [tool]"),
             "{text}"
         );
         assert!(text.contains("also: settemp"), "{text}");

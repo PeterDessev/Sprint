@@ -51,6 +51,8 @@ const CANCEL_TIMEOUT: Duration = Duration::from_secs(30);
 const RESUME_WAIT: Duration = Duration::from_secs(600);
 /// Default `monitor` interval.
 const MONITOR_INTERVAL: f32 = 2.0;
+/// How deep `source` files may run each other.
+const MAX_SOURCE_DEPTH: usize = 8;
 
 /// Run the line shell until `exit` or the end of the input.
 ///
@@ -133,6 +135,10 @@ pub(crate) struct Shell {
     echo: Echo,
     interrupt: Interrupt,
     base_dir: PathBuf,
+    /// The target of the last connect (for `reset`).
+    last_target: Option<ConnectTarget>,
+    /// How deep `source` files are nested.
+    sourcing: usize,
 }
 
 impl Shell {
@@ -156,6 +162,8 @@ impl Shell {
             echo,
             interrupt,
             base_dir: std::env::current_dir().unwrap_or_default(),
+            last_target: None,
+            sourcing: 0,
         }
     }
 
@@ -370,6 +378,12 @@ impl Shell {
 
     /// Connect to `target` (disconnecting first) and wait for the setup.
     pub(crate) fn connect(&mut self, target: ConnectTarget) {
+        self.connect_with(target, false);
+    }
+
+    /// [`Shell::connect`]; `reset` pulses DTR after opening a serial port,
+    /// which resets most boards.
+    fn connect_with(&mut self, target: ConnectTarget, reset: bool) {
         if self.job_active() {
             self.out
                 .warn("A job is running; cancel it (or disconnect) before connecting elsewhere");
@@ -379,15 +393,13 @@ impl Shell {
             self.printer.disconnect();
         }
         let label = target.label();
+        self.last_target = Some(target.clone());
         // Quiet: the setup replies (M115, M503, ...) are not echoed.
         let _quiet = self.echo.expect(Awaited::Connect, false);
         self.interrupt.reset();
-        let result = session::connect_blocking(
-            &self.printer,
-            target,
-            self.profile.options.clone(),
-            &self.interrupt,
-        );
+        let mut options = self.profile.options.clone();
+        options.reset_on_connect |= reset;
+        let result = session::connect_blocking(&self.printer, target, options, &self.interrupt);
         if result.is_ok() {
             let _ = session::wait_setup(&self.printer, SETUP_TIMEOUT, &self.interrupt);
         }
@@ -530,6 +542,9 @@ impl Shell {
                 }
             }
             Command::Profile(None) => self.out.lines(&report::profile_lines(&self.config)),
+            Command::Eta => self.eta(),
+            Command::Source(path) => return self.source(&path, input),
+            Command::WaitOnline => self.wait_online(),
             Command::Profile(Some(name)) => self.switch_profile(&name),
             Command::Disconnect => {
                 let (open, question) = self
@@ -622,6 +637,116 @@ impl Shell {
             }
         }
         Flow::Continue
+    }
+
+    /// `eta`: where the job is and how long it has left.
+    fn eta(&self) {
+        let job = self.printer.with_state(|s| {
+            s.job.as_ref().map(|j| {
+                (
+                    j.status.is_active(),
+                    j.name.clone(),
+                    report::job_status_text(&j.status),
+                    report::job_progress_text(j),
+                )
+            })
+        });
+        match job {
+            Some((true, name, status, progress)) => {
+                self.out.plain(format!("{status} {name}  {progress}"));
+            }
+            Some((false, name, status, progress)) => self.out.dim(format!(
+                "No job is running (last: {status} {name}  {progress})"
+            )),
+            None => self.out.warn("No job is running"),
+        }
+    }
+
+    /// `source <file>`: run its lines as if typed, until the end, `exit`
+    /// or Ctrl+C.
+    fn source(&mut self, path: &Path, input: &mut dyn LineSource) -> Flow {
+        if self.sourcing >= MAX_SOURCE_DEPTH {
+            self.out.error(format!(
+                "source files nest more than {MAX_SOURCE_DEPTH} deep; not running {}",
+                path.display()
+            ));
+            return Flow::Continue;
+        }
+        let path = crate::paths::resolve(&path.to_string_lossy(), &self.base_dir);
+        let text = match std::fs::read(&path) {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+            Err(e) => {
+                self.out
+                    .error(format!("Cannot read {}: {e}", path.display()));
+                return Flow::Continue;
+            }
+        };
+        self.sourcing += 1;
+        self.interrupt.reset();
+        let mut flow = Flow::Continue;
+        for (number, line) in text.lines().enumerate() {
+            if self.interrupt.take() {
+                self.out.warn(format!(
+                    "Stopped {} before line {}",
+                    path.display(),
+                    number + 1
+                ));
+                break;
+            }
+            if self.execute_line(line, input) == Flow::Exit {
+                flow = Flow::Exit;
+                break;
+            }
+        }
+        self.sourcing -= 1;
+        flow
+    }
+
+    /// `block_until_online`: wait until the printer is connected.
+    fn wait_online(&self) {
+        let (connected, opening) = self
+            .printer
+            .with_state(|s| (s.is_connected(), s.status.is_open()));
+        if connected {
+            return;
+        }
+        if !opening {
+            self.out
+                .warn("Not connected, and not connecting (connect first)");
+            return;
+        }
+        self.interrupt.reset();
+        match session::wait_for(
+            &self.printer,
+            Duration::MAX,
+            &self.interrupt,
+            true,
+            sprint_host::PrinterState::is_connected,
+        ) {
+            Ok(()) => self.out.good("The printer is online"),
+            Err(WaitError::Interrupted) => self.out.warn("Stopped waiting"),
+            Err(e) => self.out.error(format!("Not online: {e}")),
+        }
+    }
+
+    /// `reset`: reconnect, pulsing DTR on a serial port (most boards
+    /// reset).
+    fn reset(&mut self) {
+        if self.job_active() {
+            self.out
+                .warn("Not while a job runs: resetting the board stops it (cancel it first)");
+            return;
+        }
+        let Some(target) = self.last_target.clone() else {
+            self.out.warn("Not connected by this shell (connect first)");
+            return;
+        };
+        self.out.dim(if matches!(target, ConnectTarget::Serial { .. }) {
+            "Resetting the board (DTR) and reconnecting…"
+        } else {
+            "Reconnecting (only a serial port can reset the board; M999 restarts a halted firmware)…"
+        });
+        self.connect_with(target, true);
     }
 
     /// `profile <name>`: use another printer profile from now on, saved
@@ -829,10 +954,53 @@ impl Shell {
         let printer = self.printer.clone();
         let tool = printer.with_state(|s| s.active_tool);
         match cmd {
-            Command::Temp { celsius, tool: t } => {
-                self.set_temps(&[(Heater::Hotend(t.unwrap_or(tool)), celsius)], input);
+            Command::Temp { target, tool: t } => {
+                match actions::resolve_temp(&target, &self.profile.temp_presets, false) {
+                    Ok(celsius) => {
+                        self.set_temps(&[(Heater::Hotend(t.unwrap_or(tool)), celsius)], input);
+                    }
+                    Err(why) => self.out.error(why),
+                }
             }
-            Command::BedTemp(celsius) => self.set_temps(&[(Heater::Bed, celsius)], input),
+            Command::BedTemp(target) => {
+                match actions::resolve_temp(&target, &self.profile.temp_presets, true) {
+                    Ok(celsius) => self.set_temps(&[(Heater::Bed, celsius)], input),
+                    Err(why) => self.out.error(why),
+                }
+            }
+            Command::GetTemp => self
+                .out
+                .lines(&printer.with_state(report::temperature_lines)),
+            Command::Off => {
+                let job = printer.with_state(|s| {
+                    s.job
+                        .as_ref()
+                        .filter(|j| j.status.is_active())
+                        .map(|j| j.name.clone())
+                });
+                let question = job.map(|name| {
+                    format!("{name} is printing; off turns the heaters and motors off and ruins it. Turn everything off?")
+                });
+                // A script does not ruin a print by itself.
+                if question.is_none_or(|q| self.confirm(input, &q, false)) {
+                    let heaters = session::everything_off(&printer);
+                    let names: Vec<String> =
+                        heaters.into_iter().map(actions::heater_label).collect();
+                    self.out.dim(format!(
+                        "{} off, fans off, motors off (M84)",
+                        names.join(", ")
+                    ));
+                } else {
+                    self.out.dim("Left on");
+                }
+            }
+            Command::Tool(t) => {
+                if self.motion_allowed() {
+                    printer.select_tool(t);
+                    self.out.dim(format!("Tool T{t}"));
+                }
+            }
+            Command::Reset => self.reset(),
             Command::Preheat(Some(name)) => {
                 match actions::find_preset(&self.profile.temp_presets, &name) {
                     Ok(preset) => {
@@ -851,14 +1019,20 @@ impl Shell {
                 let targets: Vec<(Heater, f32)> = heaters.into_iter().map(|h| (h, 0.0)).collect();
                 self.set_temps(&targets, input);
             }
-            Command::Home(axes) => {
+            Command::Home { axes, zero_e } => {
                 let allowed = if axes.z {
                     self.bed_motion_allowed("homing Z (home x y works while paused)")
                 } else {
                     self.motion_allowed()
                 };
                 if allowed {
-                    printer.home(axes);
+                    if axes != sprint_host::Axes::default() {
+                        printer.home(axes);
+                    }
+                    if zero_e {
+                        printer.send("G92 E0");
+                        self.out.dim("Extruder position set to 0 (G92 E0)");
+                    }
                 }
             }
             Command::Move { axis, mm, feedrate } => {
@@ -1083,6 +1257,9 @@ impl Shell {
             Command::Help(_)
             | Command::Connect { .. }
             | Command::Profile(_)
+            | Command::Eta
+            | Command::Source(_)
+            | Command::WaitOnline
             | Command::Disconnect
             | Command::Ports
             | Command::Load(_)

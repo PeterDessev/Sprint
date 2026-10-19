@@ -9,6 +9,7 @@ use sprint_host::{
     ConnectTarget, Heater, Macro, PrintOptions, PrinterProfile, PrinterState, TempPreset,
 };
 
+use crate::commands::TempTarget;
 use crate::loader::LoadedFile;
 
 /// What to connect to at startup: the target asked for, else the
@@ -77,6 +78,17 @@ pub fn find_preset<'a>(presets: &'a [TempPreset], name: &str) -> Result<&'a Temp
             } else {
                 format!("no preset '{name}' (presets: {})", names.join(", "))
             })
+        }
+    }
+}
+
+/// The degrees a typed heater target stands for: its value, or the bed
+/// (`bed`) or hotend temperature of the profile's preset it names.
+pub fn resolve_temp(target: &TempTarget, presets: &[TempPreset], bed: bool) -> Result<f32, String> {
+    match target {
+        TempTarget::Celsius(celsius) => Ok(*celsius),
+        TempTarget::Preset(name) => {
+            find_preset(presets, name).map(|p| if bed { p.bed } else { p.hotend })
         }
     }
 }

@@ -223,6 +223,26 @@ pub fn heaters_off(printer: &Printer, timeout: Duration) -> bool {
     .is_ok()
 }
 
+/// pronsole's `off`: every heater and fan off and the motors disabled
+/// (`M84`), without waiting. Returns the heaters turned off.
+pub fn everything_off(printer: &Printer) -> Vec<Heater> {
+    let profile = printer.profile();
+    let (heaters, fans) = printer.with_state(|s| {
+        (
+            crate::actions::heaters(s, &profile),
+            s.fan_speeds.len().clamp(1, usize::from(u8::MAX)),
+        )
+    });
+    for &heater in &heaters {
+        printer.set_temperature(heater, 0.0);
+    }
+    for fan in (0..fans).filter_map(|f| u8::try_from(f).ok()) {
+        printer.set_fan(fan, 0);
+    }
+    printer.motors_off();
+    heaters
+}
+
 /// Whether `heater` reports a target above 0 °C.
 pub fn heater_on(s: &PrinterState, heater: Heater) -> bool {
     let reading = match heater {

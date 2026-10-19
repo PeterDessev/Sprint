@@ -446,7 +446,7 @@ fn offline_commands_explain_instead_of_failing() {
             "help M92",
             "help zzz",
             "hoem",
-            "temp hot",
+            "temp 2hot",
             "connect sim 115200",
             "ports",
             "macro",
@@ -462,12 +462,12 @@ fn offline_commands_explain_instead_of_failing() {
         "Not connected to a printer",
         "No job is running",
         "Temperatures and fans",
-        "usage: temp <celsius|off> [tool]",
+        "usage: temp <celsius|preset|off> [tool]",
         "G28  Home axes",
         "M92  Set steps per unit",
         "No help for 'zzz'",
         "did you mean 'home'",
-        "'hot' is not a temperature",
+        "'2hot' is not a temperature",
         "only applies to serial ports",
         "PLA",
         "no-such-file-5d1.gcode: no such file",
@@ -784,4 +784,94 @@ fn profiles_are_listed_switched_and_saved() {
     assert!(text.contains("no profile 'nothing'"), "{text}");
     assert_eq!(AppConfig::load_from(&path).expect("load").active_profile, 0);
     shell.printer.disconnect();
+}
+
+#[test]
+fn pronsole_commands_do_what_they_did_in_pronsole() {
+    let scratch = Scratch::new("pronsole");
+    let script_file = scratch.0.join("warmup.txt");
+    std::fs::write(&script_file, "; a comment\nsettemp 200\nM105\n").expect("write script");
+    let (mut shell, buffer) = connected();
+    let source = format!("source {}", script_file.display());
+    script(
+        &mut shell,
+        &[
+            "settemp pla",
+            "bedtemp petg",
+            "gettemp",
+            "eta",
+            "tool 0",
+            "home e",
+            "ls",
+            &source,
+            "run_script make.sh",
+            "block_until_online",
+            "off",
+        ],
+    );
+    let got = received(&shell);
+    for want in [
+        "M104 T0 S205",
+        "M140 S80",
+        "T0",
+        "G92 E0",
+        "M104 T0 S200",
+        "M104 T0 S0",
+        "M140 S0",
+        "M84",
+    ] {
+        assert!(got.iter().any(|c| c == want), "missing {want} in {got:?}");
+    }
+    assert!(got.iter().any(|c| c.starts_with("M20")), "{got:?}");
+    assert!(
+        got.iter().any(|c| c == "M107" || c.starts_with("M106 S0")),
+        "{got:?}"
+    );
+    let text = buffer.text();
+    for fact in [
+        "Hotend    ",
+        "No job is running",
+        "Extruder position set to 0 (G92 E0)",
+        "run_script is a pronsole command",
+        "source <file>",
+        "fans off, motors off (M84)",
+    ] {
+        assert!(text.contains(fact), "missing {fact:?} in\n{text}");
+    }
+    // An unknown preset says which ones there are.
+    buffer.clear();
+    script(&mut shell, &["settemp nylon"]);
+    assert!(
+        buffer
+            .text()
+            .contains("no preset 'nylon' (presets: PLA, PETG"),
+        "{}",
+        buffer.text()
+    );
+    // reset reconnects (the virtual printer boots again).
+    buffer.clear();
+    script(&mut shell, &["reset", "eta"]);
+    assert!(shell.printer.is_connected(), "{}", buffer.text());
+    assert!(buffer.text().contains("Ready"), "{}", buffer.text());
+}
+
+#[test]
+fn off_during_a_print_asks_and_a_script_leaves_it_on() {
+    let scratch = Scratch::new("off-print");
+    let (mut shell, buffer) = connected_timed();
+    shell.load(&scratch.slow_file());
+    let mut input = Script::new(["print"], false);
+    shell.run_lines_until_eof_without_leaving(&mut input);
+    wait_for(&shell, "the print", |s| {
+        s.job.as_ref().is_some_and(|j| j.current_line > 5)
+    });
+    received(&shell);
+    let mut input = Script::new(["off", "eta"], false);
+    shell.run_lines_until_eof_without_leaving(&mut input);
+    let text = buffer.text();
+    assert!(text.contains("Left on"), "{text}");
+    assert!(text.contains("Printing slow.gcode"), "{text}");
+    assert!(!received(&shell).iter().any(|c| c == "M84"));
+    shell.printer.cancel();
+    wait_for(&shell, "the cancel", |s| !s.job_active());
 }

@@ -50,6 +50,10 @@ pub(crate) enum Action {
     SdPrint(String),
     SdDelete(String),
     AnswerPrompt(usize),
+    /// Heaters, fans and motors off (`off`).
+    EverythingOff,
+    /// Run these command lines, as typed into the palette (`source`).
+    RunLines(Vec<String>),
 }
 
 /// The result of a key in a dialog.

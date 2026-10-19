@@ -102,6 +102,20 @@ pub static COMMANDS: &[CommandSpec] = &[
         group: Group::Connection,
     },
     CommandSpec {
+        name: "reset",
+        aliases: &[],
+        usage: "reset",
+        summary: "Reset the board: reconnect, pulsing DTR on a serial port",
+        group: Group::Connection,
+    },
+    CommandSpec {
+        name: "block_until_online",
+        aliases: &["wait_online"],
+        usage: "block_until_online",
+        summary: "Wait until the printer is connected (scripts; Ctrl+C stops)",
+        group: Group::Connection,
+    },
+    CommandSpec {
         name: "status",
         aliases: &[],
         usage: "status",
@@ -165,17 +179,38 @@ pub static COMMANDS: &[CommandSpec] = &[
         group: Group::Job,
     },
     CommandSpec {
+        name: "eta",
+        aliases: &[],
+        usage: "eta",
+        summary: "Progress, elapsed and remaining time of the job",
+        group: Group::Job,
+    },
+    CommandSpec {
+        name: "source",
+        aliases: &[],
+        usage: "source <file>",
+        summary: "Run the commands in a file, one per line, like a script",
+        group: Group::Job,
+    },
+    CommandSpec {
         name: "temp",
         aliases: &["settemp"],
-        usage: "temp <celsius|off> [tool]",
+        usage: "temp <celsius|preset|off> [tool]",
         summary: "Set a hotend target (the active tool unless given)",
         group: Group::Temperature,
     },
     CommandSpec {
         name: "bedtemp",
         aliases: &["bed"],
-        usage: "bedtemp <celsius|off>",
+        usage: "bedtemp <celsius|preset|off>",
         summary: "Set the bed target",
+        group: Group::Temperature,
+    },
+    CommandSpec {
+        name: "gettemp",
+        aliases: &["temps"],
+        usage: "gettemp",
+        summary: "Show the temperatures and targets",
         group: Group::Temperature,
     },
     CommandSpec {
@@ -200,6 +235,13 @@ pub static COMMANDS: &[CommandSpec] = &[
         group: Group::Temperature,
     },
     CommandSpec {
+        name: "off",
+        aliases: &[],
+        usage: "off",
+        summary: "Turn everything off: heaters, fans and motors (M84)",
+        group: Group::Temperature,
+    },
+    CommandSpec {
         name: "autotune",
         aliases: &["pid"],
         usage: "autotune <hotend|bed> <celsius> [cycles]",
@@ -209,8 +251,15 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "home",
         aliases: &[],
-        usage: "home [x] [y] [z]",
-        summary: "Home all axes or the ones given",
+        usage: "home [x] [y] [z] [e]",
+        summary: "Home all axes or the ones given; e sets the extruder position to 0 (G92 E0)",
+        group: Group::Motion,
+    },
+    CommandSpec {
+        name: "tool",
+        aliases: &[],
+        usage: "tool <n>",
+        summary: "Select the active extruder (T<n>)",
         group: Group::Motion,
     },
     CommandSpec {
@@ -351,32 +400,125 @@ pub fn command_candidates(prefix: &str) -> Vec<&'static CommandSpec> {
         .collect()
 }
 
-/// The closest command name to a mistyped word (at most two edits away).
+/// A pronsole command that Sprint names differently, or does not have.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PronsoleWord {
+    /// pronsole's command word.
+    pub word: &'static str,
+    /// The Sprint command it stands for (the rest of the line follows
+    /// it), or `None` when Sprint has no such command.
+    pub sprint: Option<&'static str>,
+    /// What it does in Sprint, or why there is no such command.
+    pub note: &'static str,
+}
+
+/// pronsole commands with another name in Sprint, or none. pronsole's
+/// other commands (connect, load, print, pause, resume, home, move,
+/// extrude, reverse, settemp, bedtemp, gettemp, eta, tool, off, reset,
+/// monitor, macro, block_until_online, help, exit) work as in pronsole.
+pub static PRONSOLE: &[PronsoleWord] = &[
+    PronsoleWord {
+        word: "ls",
+        sprint: Some("sd ls"),
+        note: "list the SD card",
+    },
+    PronsoleWord {
+        word: "sdprint",
+        sprint: Some("sd print"),
+        note: "print a file from the SD card",
+    },
+    PronsoleWord {
+        word: "upload",
+        sprint: Some("sd upload"),
+        note: "write a file to the SD card",
+    },
+    PronsoleWord {
+        word: "run_script",
+        sprint: None,
+        note: "Sprint does not run other programs; source <file> runs shell commands from a file",
+    },
+    PronsoleWord {
+        word: "run_gcode_script",
+        sprint: None,
+        note: "Sprint does not run other programs; source <file> runs G-code and commands from a file",
+    },
+    PronsoleWord {
+        word: "slice",
+        sprint: None,
+        note: "Sprint does not slice: slice in your slicer, then load the G-code",
+    },
+    PronsoleWord {
+        word: "skein",
+        sprint: None,
+        note: "Sprint does not slice: slice in your slicer, then load the G-code",
+    },
+    PronsoleWord {
+        word: "loadrc",
+        sprint: None,
+        note: "Sprint reads no .pronsolerc: profiles, macros and presets live in the configuration file",
+    },
+];
+
+/// The pronsole entry for `word`, unless it is a Sprint command.
+pub fn pronsole_word(word: &str) -> Option<&'static PronsoleWord> {
+    if command_spec(word).is_some() {
+        return None;
+    }
+    PRONSOLE.iter().find(|p| p.word.eq_ignore_ascii_case(word))
+}
+
+/// The closest command name to a mistyped word: one edit away (a
+/// swapped pair of letters counts as one), or two for words of five
+/// letters or more. Short words are not matched loosely: `eta` is not a
+/// typo of `set`.
 pub fn suggest(word: &str) -> Option<&'static str> {
     let word = word.to_ascii_lowercase();
+    let most = if word.chars().count() >= 5 { 2 } else { 1 };
     COMMANDS
         .iter()
         .flat_map(|c| std::iter::once(c.name).chain(c.aliases.iter().copied()))
         .map(|name| (edit_distance(&word, name), name))
-        .filter(|(d, _)| *d <= 2)
+        .filter(|(d, _)| *d <= most)
         .min_by_key(|(d, _)| *d)
         .and_then(|(_, name)| command_spec(name).map(|c| c.name))
 }
 
-/// Levenshtein distance (ASCII-case already folded by the caller).
+/// Edit distance with adjacent transpositions (optimal string
+/// alignment); ASCII case already folded by the caller.
 fn edit_distance(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
-    let mut prev: Vec<usize> = (0..=b.len()).collect();
-    for (i, ca) in a.iter().enumerate() {
-        let mut row = vec![i + 1; b.len() + 1];
-        for (j, cb) in b.iter().enumerate() {
-            let cost = usize::from(ca != cb);
-            row[j + 1] = (prev[j] + cost).min(prev[j + 1] + 1).min(row[j] + 1);
-        }
-        prev = row;
+    // d[i][j]: distance between a[..i] and b[..j].
+    let mut d = vec![vec![0usize; b.len() + 1]; a.len() + 1];
+    for (i, row) in d.iter_mut().enumerate() {
+        row[0] = i;
     }
-    prev[b.len()]
+    for (j, cell) in d[0].iter_mut().enumerate() {
+        *cell = j;
+    }
+    for i in 1..=a.len() {
+        for j in 1..=b.len() {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            let mut best = (d[i - 1][j] + 1)
+                .min(d[i][j - 1] + 1)
+                .min(d[i - 1][j - 1] + cost);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                best = best.min(d[i - 2][j - 2] + 1);
+            }
+            d[i][j] = best;
+        }
+    }
+    d[a.len()][b.len()]
+}
+
+/// A heater target as typed.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TempTarget {
+    /// Degrees Celsius in 0..=500 (0 = off).
+    Celsius(f32),
+    /// The hotend or bed temperature of the profile's preset with this
+    /// name (pronsole's `settemp pla`).
+    Preset(String),
 }
 
 /// What `eeprom` does.
@@ -446,21 +588,40 @@ pub enum Command {
     Cancel,
     /// `status`.
     Status,
-    /// `temp <celsius> [tool]`.
+    /// `temp <celsius|preset> [tool]`.
     Temp {
-        /// Target, 0 = off.
-        celsius: f32,
+        /// Target.
+        target: TempTarget,
         /// Tool; `None` = the active one.
         tool: Option<u8>,
     },
-    /// `bedtemp <celsius>`.
-    BedTemp(f32),
+    /// `bedtemp <celsius|preset>`.
+    BedTemp(TempTarget),
+    /// `gettemp`.
+    GetTemp,
     /// `preheat [preset]`.
     Preheat(Option<String>),
     /// `cooldown`.
     Cooldown,
-    /// `home [x] [y] [z]`.
-    Home(Axes),
+    /// `off`: heaters, fans and motors off.
+    Off,
+    /// `home [x] [y] [z] [e]`.
+    Home {
+        /// Axes to home (none when only `e` was given).
+        axes: Axes,
+        /// `e`: set the extruder position to 0 (G92 E0).
+        zero_e: bool,
+    },
+    /// `tool <n>`.
+    Tool(u8),
+    /// `eta`.
+    Eta,
+    /// `source <file>`.
+    Source(PathBuf),
+    /// `reset`.
+    Reset,
+    /// `block_until_online`.
+    WaitOnline,
     /// `move <axis> <mm> [feed]`.
     Move {
         /// Axis.
@@ -659,12 +820,16 @@ fn number(text: &str) -> Option<f32> {
 }
 
 /// A temperature: a number in 0..=500, or `off`.
-fn temperature(spec: &'static CommandSpec, text: &str) -> Result<f32, ParseError> {
+fn temperature(spec: &'static CommandSpec, text: &str) -> Result<TempTarget, ParseError> {
     if text.eq_ignore_ascii_case("off") {
-        return Ok(0.0);
+        return Ok(TempTarget::Celsius(0.0));
+    }
+    // A word is a preset's name (checked against the profile later).
+    if text.starts_with(|c: char| c.is_alphabetic()) {
+        return Ok(TempTarget::Preset(text.to_string()));
     }
     match number(text) {
-        Some(v) if (0.0..=500.0).contains(&v) => Ok(v),
+        Some(v) if (0.0..=500.0).contains(&v) => Ok(TempTarget::Celsius(v)),
         Some(_) => Err(ParseError::usage(
             spec,
             format!("{text} °C is out of range (0 to 500)"),
@@ -773,6 +938,16 @@ pub fn parse(line: &str) -> Result<Input, ParseError> {
     if looks_like_gcode(word) {
         return Ok(Input::Gcode(line.to_string()));
     }
+    if let Some(pronsole) = pronsole_word(word) {
+        // The Sprint command starts with a command word: no recursion.
+        return match pronsole.sprint {
+            Some(sprint) => parse(&format!("{sprint} {rest}")),
+            None => Err(ParseError::new(format!(
+                "{word} is a pronsole command: {}",
+                pronsole.note
+            ))),
+        };
+    }
     let mut message = format!("unknown command '{word}'");
     match suggest(word) {
         Some(name) => message.push_str(&format!("; did you mean '{name}'?")),
@@ -784,10 +959,16 @@ pub fn parse(line: &str) -> Result<Input, ParseError> {
 
 /// Parse the arguments of a recognised command.
 fn parse_command(spec: &'static CommandSpec, rest: &str) -> Result<Command, ParseError> {
-    // `load` takes the whole rest as a path (spaces allowed without quotes).
+    // `load` and `source` take the whole rest as a path (spaces allowed
+    // without quotes).
     if spec.name == "load" {
         return path_arg(rest)
             .map(Command::Load)
+            .ok_or_else(|| ParseError::usage(spec, "which file?"));
+    }
+    if spec.name == "source" {
+        return path_arg(rest)
+            .map(Command::Source)
             .ok_or_else(|| ParseError::usage(spec, "which file?"));
     }
     let args = split_args(rest).map_err(|e| ParseError::usage(spec, e.message))?;
@@ -838,9 +1019,18 @@ fn parse_command(spec: &'static CommandSpec, rest: &str) -> Result<Command, Pars
         "exit" => none(Command::Exit),
         "temp" => {
             at_most(spec, &args, 2)?;
-            let celsius = temperature(spec, required(0, "the temperature")?)?;
+            let target = temperature(spec, required(0, "the temperature")?)?;
             let tool = arg(1).map(|t| tool(spec, t)).transpose()?;
-            Ok(Command::Temp { celsius, tool })
+            Ok(Command::Temp { target, tool })
+        }
+        "gettemp" => none(Command::GetTemp),
+        "off" => none(Command::Off),
+        "eta" => none(Command::Eta),
+        "reset" => none(Command::Reset),
+        "block_until_online" => none(Command::WaitOnline),
+        "tool" => {
+            at_most(spec, &args, 1)?;
+            Ok(Command::Tool(tool(spec, required(0, "the tool")?)?))
         }
         "bedtemp" => {
             at_most(spec, &args, 1)?;
@@ -892,30 +1082,32 @@ fn parse_command(spec: &'static CommandSpec, rest: &str) -> Result<Command, Pars
         }
         "home" => {
             let mut axes = Axes::default();
+            let mut zero_e = false;
             for a in &args {
                 let lower = a.to_ascii_lowercase();
                 if lower == "all" {
                     axes = Axes::ALL;
                     continue;
                 }
-                if lower.is_empty() || !lower.chars().all(|c| matches!(c, 'x' | 'y' | 'z')) {
+                if lower.is_empty() || !lower.chars().all(|c| matches!(c, 'x' | 'y' | 'z' | 'e')) {
                     return Err(ParseError::usage(
                         spec,
-                        format!("'{a}' is not an axis (x, y, z)"),
+                        format!("'{a}' is not an axis (x, y, z, e)"),
                     ));
                 }
                 for c in lower.chars() {
                     match c {
                         'x' => axes.x = true,
                         'y' => axes.y = true,
-                        _ => axes.z = true,
+                        'z' => axes.z = true,
+                        _ => zero_e = true,
                     }
                 }
             }
-            if axes == Axes::default() {
+            if axes == Axes::default() && !zero_e {
                 axes = Axes::ALL;
             }
-            Ok(Command::Home(axes))
+            Ok(Command::Home { axes, zero_e })
         }
         "move" => {
             at_most(spec, &args, 3)?;
@@ -1058,10 +1250,47 @@ fn parse_command(spec: &'static CommandSpec, rest: &str) -> Result<Command, Pars
     }
 }
 
+/// pronsole's own options (its `set` command), not firmware settings.
+const PRONSOLE_OPTIONS: &[&str] = &[
+    "port",
+    "baudrate",
+    "dtr",
+    "tcp_streaming_mode",
+    "bedtemp_abs",
+    "bedtemp_pla",
+    "temperature_abs",
+    "temperature_pla",
+    "xy_feedrate",
+    "z_feedrate",
+    "e_feedrate",
+    "slicecommand",
+    "sliceoptscommand",
+    "final_command",
+    "start_command",
+    "error_command",
+    "log_path",
+    "recentfiles",
+];
+
 /// `set <code> <params>`: a setting command checked against the catalog.
 fn parse_set(spec: &'static CommandSpec, rest: &str) -> Result<Command, ParseError> {
     if rest.is_empty() {
         return Err(ParseError::usage(spec, "which setting?"));
+    }
+    // pronsole's `set` changed pronsole's own options.
+    let first = rest.split_whitespace().next().unwrap_or_default();
+    if PRONSOLE_OPTIONS
+        .iter()
+        .any(|o| o.eq_ignore_ascii_case(first))
+    {
+        return Err(ParseError::usage(
+            spec,
+            format!(
+                "set changes firmware settings; '{first}' is a pronsole option: \
+                 connect <port> [baud] --save stores the printer, and the other options \
+                 live in the profile (profile lists them)"
+            ),
+        ));
     }
     let Some(cmd) = SettingCommand::parse(rest) else {
         return Err(ParseError::usage(
@@ -1245,33 +1474,33 @@ mod tests {
             (
                 "temp 210",
                 Command::Temp {
-                    celsius: 210.0,
+                    target: TempTarget::Celsius(210.0),
                     tool: None,
                 },
             ),
             (
                 "temp 200 1",
                 Command::Temp {
-                    celsius: 200.0,
+                    target: TempTarget::Celsius(200.0),
                     tool: Some(1),
                 },
             ),
             (
                 "settemp off T2",
                 Command::Temp {
-                    celsius: 0.0,
+                    target: TempTarget::Celsius(0.0),
                     tool: Some(2),
                 },
             ),
             (
                 "temp 215°C",
                 Command::Temp {
-                    celsius: 215.0,
+                    target: TempTarget::Celsius(215.0),
                     tool: None,
                 },
             ),
-            ("bedtemp 60", Command::BedTemp(60.0)),
-            ("bed off", Command::BedTemp(0.0)),
+            ("bedtemp 60", Command::BedTemp(TempTarget::Celsius(60.0))),
+            ("bed off", Command::BedTemp(TempTarget::Celsius(0.0))),
             ("preheat", Command::Preheat(None)),
             ("preheat pla", Command::Preheat(Some("pla".into()))),
             ("cooldown", Command::Cooldown),
@@ -1279,12 +1508,98 @@ mod tests {
             ("fan 75%", Command::Fan(75.0)),
             ("fan off", Command::Fan(0.0)),
             ("fan on", Command::Fan(100.0)),
-            ("home", Command::Home(Axes::ALL)),
-            ("home x", Command::Home(Axes::X)),
-            ("home X y", Command::Home(Axes::XY)),
-            ("home xy", Command::Home(Axes::XY)),
-            ("home z", Command::Home(Axes::Z)),
-            ("home all", Command::Home(Axes::ALL)),
+            (
+                "home",
+                Command::Home {
+                    axes: Axes::ALL,
+                    zero_e: false,
+                },
+            ),
+            (
+                "home x",
+                Command::Home {
+                    axes: Axes::X,
+                    zero_e: false,
+                },
+            ),
+            (
+                "home X y",
+                Command::Home {
+                    axes: Axes::XY,
+                    zero_e: false,
+                },
+            ),
+            (
+                "home xy",
+                Command::Home {
+                    axes: Axes::XY,
+                    zero_e: false,
+                },
+            ),
+            (
+                "home z",
+                Command::Home {
+                    axes: Axes::Z,
+                    zero_e: false,
+                },
+            ),
+            (
+                "home all",
+                Command::Home {
+                    axes: Axes::ALL,
+                    zero_e: false,
+                },
+            ),
+            // pronsole: `home e` zeroes the extruder, with or without axes.
+            (
+                "home e",
+                Command::Home {
+                    axes: Axes::default(),
+                    zero_e: true,
+                },
+            ),
+            (
+                "home x E",
+                Command::Home {
+                    axes: Axes::X,
+                    zero_e: true,
+                },
+            ),
+            (
+                "settemp pla",
+                Command::Temp {
+                    target: TempTarget::Preset("pla".into()),
+                    tool: None,
+                },
+            ),
+            (
+                "bedtemp PETG",
+                Command::BedTemp(TempTarget::Preset("PETG".into())),
+            ),
+            ("gettemp", Command::GetTemp),
+            ("eta", Command::Eta),
+            ("off", Command::Off),
+            ("tool 1", Command::Tool(1)),
+            ("tool T0", Command::Tool(0)),
+            ("reset", Command::Reset),
+            ("block_until_online", Command::WaitOnline),
+            (
+                "source my script.txt",
+                Command::Source("my script.txt".into()),
+            ),
+            // pronsole's names for the SD card commands.
+            ("ls", Command::Sd(SdCommand::List)),
+            (
+                "sdprint CUBE.GCO",
+                Command::Sd(SdCommand::Print("CUBE.GCO".into())),
+            ),
+            (
+                "upload a.gcode A.GCO",
+                Command::Sd(SdCommand::Upload {
+                    file: Some("a.gcode".into()),
+                    name: Some("A.GCO".into()),
+                }),
+            ),
             (
                 "move x 10",
                 Command::Move {
@@ -1475,32 +1790,32 @@ mod tests {
             (
                 "temp",
                 "missing the temperature",
-                Some("temp <celsius|off> [tool]"),
+                Some("temp <celsius|preset|off> [tool]"),
             ),
             (
-                "temp hot",
-                "'hot' is not a temperature",
-                Some("temp <celsius|off> [tool]"),
+                "temp 2hot",
+                "'2hot' is not a temperature",
+                Some("temp <celsius|preset|off> [tool]"),
             ),
             (
                 "temp 900",
                 "900 °C is out of range (0 to 500)",
-                Some("temp <celsius|off> [tool]"),
+                Some("temp <celsius|preset|off> [tool]"),
             ),
             (
                 "temp 200 9",
                 "'9' is not a tool (0 to 7)",
-                Some("temp <celsius|off> [tool]"),
+                Some("temp <celsius|preset|off> [tool]"),
             ),
             (
                 "temp 200 1 2",
                 "unexpected argument '2'",
-                Some("temp <celsius|off> [tool]"),
+                Some("temp <celsius|preset|off> [tool]"),
             ),
             (
                 "bedtemp -5",
                 "-5 °C is out of range (0 to 500)",
-                Some("bedtemp <celsius|off>"),
+                Some("bedtemp <celsius|preset|off>"),
             ),
             (
                 "fan 150",
@@ -1509,8 +1824,8 @@ mod tests {
             ),
             (
                 "home q",
-                "'q' is not an axis (x, y, z)",
-                Some("home [x] [y] [z]"),
+                "'q' is not an axis (x, y, z, e)",
+                Some("home [x] [y] [z] [e]"),
             ),
             (
                 "move",
@@ -1629,7 +1944,7 @@ mod tests {
         }
         assert_eq!(
             err("temp").to_string(),
-            "missing the temperature (usage: temp <celsius|off> [tool])"
+            "missing the temperature (usage: temp <celsius|preset|off> [tool])"
         );
     }
 
@@ -1646,6 +1961,42 @@ mod tests {
         assert_eq!(suggest("setings"), Some("settings"));
         assert_eq!(suggest("quti"), Some("exit"));
         assert_eq!(suggest("completely-different"), None);
+        // Short words are not stretched into commands that do something
+        // else: eta is not a typo of set.
+        assert_eq!(suggest("eat"), Some("eta"));
+        assert_eq!(suggest("sdt"), Some("sd"));
+        assert_eq!(suggest("abc"), None);
+        assert_eq!(suggest("rst"), None);
+        assert_eq!(suggest("stat"), Some("stats"));
+    }
+
+    #[test]
+    fn pronsole_words_map_to_sprint_commands_or_explain() {
+        for line in [
+            "run_script make.sh",
+            "run_gcode_script x",
+            "slice a.stl",
+            "loadrc",
+        ] {
+            let e = err(line);
+            assert!(e.message.contains("is a pronsole command"), "{e}");
+            assert!(!e.message.contains("did you mean"), "{e}");
+        }
+        assert!(err("run_script x").message.contains("source <file>"));
+        // A pronsole `set` option is not a firmware setting.
+        let e = err("set port COM5");
+        assert!(e.message.contains("pronsole option"), "{e}");
+        assert!(e.message.contains("--save"), "{e}");
+        // Every Sprint name a pronsole word stands for parses.
+        for p in PRONSOLE {
+            if let Some(sprint) = p.sprint {
+                let word = sprint.split_whitespace().next().unwrap_or_default();
+                assert!(command_spec(word).is_some(), "{}", p.word);
+            }
+            assert!(command_spec(p.word).is_none(), "{} is a command", p.word);
+        }
+        assert!(pronsole_word("ls").is_some());
+        assert!(pronsole_word("print").is_none());
     }
 
     #[test]
@@ -1653,10 +2004,12 @@ mod tests {
         let names: Vec<&str> = command_candidates("s").iter().map(|c| c.name).collect();
         assert_eq!(
             names,
-            ["status", "sd", "temp", "speed", "settings", "set", "stats"]
+            [
+                "status", "sd", "source", "temp", "speed", "settings", "set", "stats"
+            ]
         );
         let names: Vec<&str> = command_candidates("RE").iter().map(|c| c.name).collect();
-        assert_eq!(names, ["resume", "reverse"]);
+        assert_eq!(names, ["reset", "resume", "reverse"]);
         assert!(command_candidates("zzz").is_empty());
         assert_eq!(command_candidates("").len(), COMMANDS.len());
     }

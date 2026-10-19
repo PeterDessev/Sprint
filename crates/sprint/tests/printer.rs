@@ -91,7 +91,7 @@ fn the_shell_runs_a_script_from_stdin() {
         "Ready  Marlin",
         "FIRMWARE_NAME:Marlin",
         "Printer   ● Connected",
-        "usage: temp <celsius|off> [tool]",
+        "usage: temp <celsius|preset|off> [tool]",
         "unknown command 'bogus'",
     ] {
         assert!(text.contains(fact), "missing {fact:?} in\n{text}");
