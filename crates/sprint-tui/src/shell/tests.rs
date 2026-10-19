@@ -857,11 +857,17 @@ fn pronsole_commands_do_what_they_did_in_pronsole() {
         "{}",
         buffer.text()
     );
-    // reset reconnects (the virtual printer boots again).
+    // reset resets the board (the virtual printer boots again).
     buffer.clear();
     script(&mut shell, &["reset", "eta"]);
     assert!(shell.printer.is_connected(), "{}", buffer.text());
-    assert!(buffer.text().contains("Ready"), "{}", buffer.text());
+    assert!(
+        buffer
+            .text()
+            .contains("The board was reset; the printer is ready"),
+        "{}",
+        buffer.text()
+    );
 }
 
 #[test]
@@ -1452,5 +1458,59 @@ fn an_emergency_stop_is_never_asked_about() {
     let mut input = Script::new(["M112"], true);
     shell.run_lines_until_eof_without_leaving(&mut input);
     wait_for(&shell, "the halt", |s| s.halted);
-    assert!(!buffer.text().contains("Send it?"), "{}", buffer.text());
+    let text = buffer.text();
+    assert!(!text.contains("Send it?"), "{text}");
+    // What to do next is said, and status says it too.
+    assert!(
+        text.contains("Emergency stop sent (M112): reset resets the board"),
+        "{text}"
+    );
+    assert_eq!(shell.prompt(), "sprint (halted)> ");
+    buffer.clear();
+    script(&mut shell, &["status", "print"]);
+    let text = buffer.text();
+    assert!(
+        text.contains("HALTED: reset resets the board (M999 alone does not recover"),
+        "{text}"
+    );
+    assert!(
+        text.contains("The printer is halted: reset resets the board"),
+        "{text}"
+    );
+    // `reset` resets the board and waits for the printer.
+    buffer.clear();
+    script(&mut shell, &["reset"]);
+    let text = buffer.text();
+    assert!(text.contains("Resetting the board"), "{text}");
+    assert!(
+        text.contains("The board was reset; the printer is ready"),
+        "{text}"
+    );
+    assert!(shell.printer.with_state(|s| s.is_connected() && !s.halted));
+    assert_eq!(shell.prompt(), "sprint> ");
+}
+
+#[test]
+fn reset_says_why_a_network_printer_cannot_be_reset() {
+    // A virtual printer served on loopback: a TCP link, like a network
+    // bridge, whose board Sprint cannot reset.
+    let server = sprint_host::sprint_sim::SimServer::bind(
+        "127.0.0.1:0",
+        sprint_host::sprint_sim::SimConfig {
+            boot_delay_ms: 20,
+            time_scale: 100.0,
+            instant_moves: true,
+            ..sprint_host::sprint_sim::SimConfig::default()
+        },
+    )
+    .expect("serve the simulator");
+    let target = ConnectTarget::parse(&format!("tcp://{}", server.local_addr())).expect("target");
+    let (mut shell, buffer) = shell();
+    shell.connect(target);
+    assert!(shell.printer.is_connected(), "{}", buffer.text());
+    script(&mut shell, &["reset"]);
+    let text = buffer.text();
+    assert!(text.contains("Cannot reset the board: "), "{text}");
+    assert!(text.contains("reset button"), "{text}");
+    shell.printer.disconnect();
 }

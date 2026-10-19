@@ -279,6 +279,79 @@ pub fn wait_idle(
     })
 }
 
+/// How long a board reset may take until the printer answers again (an
+/// 8-bit board boots in a few seconds, then the handshake and the setup
+/// queries follow).
+pub const RESET_WAIT: Duration = Duration::from_secs(30);
+
+/// Why [`reset_board_blocking`] did not bring the printer back.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ResetError {
+    /// The board cannot be reset from here (not connected, or a network
+    /// link: its reset button or a power cycle is needed); the reason.
+    Refused(String),
+    /// The reset was started, but the printer did not come back.
+    Wait(WaitError),
+}
+
+impl std::fmt::Display for ResetError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ResetError::Refused(why) => f.write_str(why),
+            ResetError::Wait(WaitError::TimedOut) => {
+                f.write_str("the printer did not answer after the reset")
+            }
+            ResetError::Wait(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for ResetError {}
+
+/// Reset the printer's board ([`Printer::reset_board`]: a DTR pulse on a
+/// serial port, a reboot of the virtual printer), the way to recover from
+/// an emergency stop or a kill() (M999 alone does not), and wait, at most
+/// `timeout`, until the printer is back: handshaken again, not halted,
+/// its setup queries answered.
+pub fn reset_board_blocking(
+    printer: &Printer,
+    timeout: Duration,
+    interrupt: &Interrupt,
+) -> Result<(), ResetError> {
+    let events = printer.subscribe();
+    printer
+        .reset_board()
+        .map_err(|e| ResetError::Refused(e.to_string()))?;
+    let deadline = Instant::now().checked_add(timeout);
+    // The board has restarted once the link left the connected state
+    // (the handshake runs again); before that the old state still shows.
+    let mut restarted = false;
+    loop {
+        restarted |= events.try_iter().any(|event| {
+            matches!(event, sprint_host::Event::Status(status) if status != ConnectionStatus::Connected)
+        });
+        let (back, closed) =
+            printer.with_state(|s| (s.is_connected() && !s.halted, closed_reason(s)));
+        if restarted && back {
+            break;
+        }
+        if let Some(why) = closed {
+            return Err(ResetError::Wait(WaitError::Disconnected(why)));
+        }
+        if interrupt.is_raised() {
+            return Err(ResetError::Wait(WaitError::Interrupted));
+        }
+        if deadline.is_some_and(|d| Instant::now() >= d) {
+            return Err(ResetError::Wait(WaitError::TimedOut));
+        }
+        std::thread::sleep(POLL);
+    }
+    let left = deadline.map_or(Duration::MAX, |d| {
+        d.saturating_duration_since(Instant::now())
+    });
+    wait_setup(printer, left, interrupt).map_err(ResetError::Wait)
+}
+
 /// After a connect: wait (at most `timeout`) for the setup queries (M115,
 /// M503, M114) to be answered, so their replies do not mix with what comes
 /// next. The engine sends them right after the handshake, so the link
@@ -491,5 +564,41 @@ G1 Z0.3 F600
         let _ = thread.join();
         assert!(matches!(err, ConnectError::Interrupted(_)), "{err:?}");
         assert!(!printer.with_state(|s| s.status.is_open()));
+    }
+
+    #[test]
+    fn a_board_reset_recovers_from_an_emergency_stop() {
+        let printer = Printer::new();
+        let interrupt = Interrupt::new();
+        // Not connected: nothing to reset.
+        let err = reset_board_blocking(&printer, RESET_WAIT, &interrupt).expect_err("offline");
+        assert!(matches!(err, ResetError::Refused(_)), "{err:?}");
+        connect_blocking(&printer, fast_sim(), ConnectOptions::default(), &interrupt)
+            .expect("connect");
+        wait_setup(&printer, Duration::from_secs(30), &interrupt).expect("setup");
+        printer.emergency_stop();
+        wait_for(&printer, Duration::from_secs(30), &interrupt, true, |s| {
+            s.halted
+        })
+        .expect("halted");
+        // M112 is a kill(): only a reset brings the board back.
+        assert!(!printer.with_state(|s| s.restartable));
+        reset_board_blocking(&printer, RESET_WAIT, &interrupt).expect("reset");
+        assert!(printer.with_state(|s| s.is_connected() && !s.halted));
+        // The printer answers again.
+        printer.send("G28");
+        wait_idle(&printer, Duration::from_secs(30), &interrupt).expect("idle");
+        // A reset of a printer that was fine waits for it to come back
+        // too, not just for the old state.
+        reset_board_blocking(&printer, RESET_WAIT, &interrupt).expect("reset again");
+        assert!(printer.with_state(PrinterState::is_connected));
+        printer.disconnect();
+        // A network link cannot reset the board; the reason says so.
+        let refused = ResetError::Refused("press its reset button".into());
+        assert_eq!(refused.to_string(), "press its reset button");
+        assert_eq!(
+            ResetError::Wait(WaitError::TimedOut).to_string(),
+            "the printer did not answer after the reset"
+        );
     }
 }

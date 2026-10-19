@@ -71,7 +71,7 @@ const REPORT_IDLE_AFTER: Duration = Duration::from_millis(250);
 /// Console entries fetched per call.
 const CONSOLE_FETCH: usize = 4096;
 /// What to do after an emergency stop.
-const RESET_HINT: &str = "Restart the firmware (M999) or reconnect.";
+const RESET_HINT: &str = ":reset resets the board (M999 alone does not recover from M112).";
 
 /// A `source` file read off the UI thread: its name and command lines,
 /// or why it could not be read.
@@ -196,8 +196,6 @@ pub(crate) struct App {
     pub canvas_area: Rect,
     base_dir: PathBuf,
     last_load_progress: u32,
-    /// The target of the last connect (for `reset`).
-    last_target: Option<ConnectTarget>,
     /// An SD file being deleted: its name and when M30 was sent, until
     /// the printer answers (or [`REPORT_TIMEOUT`] passes).
     pending_sd_delete: Option<(String, Instant)>,
@@ -290,7 +288,6 @@ impl App {
             canvas_area: Rect::default(),
             base_dir: std::env::current_dir().unwrap_or_default(),
             last_load_progress: 0,
-            last_target: None,
             pending_sd_delete: None,
             continued_at: None,
             sourcing: None,
@@ -430,6 +427,11 @@ impl App {
                 format::fixed(f64::from(kd), 2)
             )),
             Event::AutotuneFailed(why) => self.error(format!("PID autotune failed: {why}")),
+            // A halt says how to get the printer back.
+            Event::Error(why) if self.view.halted => {
+                let recovery = actions::halt_recovery(self.view.restartable, ":reset");
+                self.error(format!("{why}: {recovery}"));
+            }
             Event::Error(why) => self.error(why),
             _ => {}
         }
@@ -1003,6 +1005,28 @@ impl App {
         }
     }
 
+    /// `:reset`: reset the board ([`Printer::reset_board`]: a DTR pulse on a
+    /// serial port, a reboot of the virtual printer), the way to recover
+    /// from an emergency stop, on a helper thread (reopening a port takes
+    /// a moment); the outcome shows when the printer is back.
+    fn reset_board(&mut self) {
+        if self.view.job_active() {
+            self.warn("Not while a job runs: resetting the board stops it (F7 cancels)");
+            return;
+        }
+        let printer = self.printer.clone();
+        self.info("Resetting the board…");
+        self.spawn_background("sprint-reset", move || match session::reset_board_blocking(
+            &printer,
+            session::RESET_WAIT,
+            &crate::interrupt::Interrupt::new(),
+        ) {
+            Ok(()) => Ok("The board was reset; the printer is ready".to_string()),
+            Err(session::ResetError::Refused(why)) => Err(format!("Cannot reset the board: {why}")),
+            Err(e) => Err(format!("Reset: {e}")),
+        });
+    }
+
     /// F10 / Ctrl+Q: quit, asking first while a job runs.
     fn request_quit(&mut self) {
         if !self.job_stops_ask(
@@ -1018,21 +1042,13 @@ impl App {
 
     /// Connect on a background thread (opening a link can take seconds).
     pub(crate) fn connect(&mut self, target: ConnectTarget) {
-        self.connect_with(target, false);
-    }
-
-    /// [`App::connect`]; `reset` pulses DTR after opening a serial port,
-    /// which resets most boards.
-    fn connect_with(&mut self, target: ConnectTarget, reset: bool) {
         if self.connecting.is_some() {
             self.warn("Already connecting");
             return;
         }
-        self.last_target = Some(target.clone());
         let reconnect = self.view.status.is_open();
         let printer = self.printer.clone();
-        let mut options = self.profile.options.clone();
-        options.reset_on_connect |= reset;
+        let options = self.profile.options.clone();
         let label = target.label();
         let (tx, rx) = crossbeam_channel::bounded(1);
         let spawned = std::thread::Builder::new()
@@ -2089,13 +2105,7 @@ impl App {
                 self.guard(&safety, guard, Action::EverythingOff);
             }
             Command::Tool(t) => self.motion(Motion::Tool(t)),
-            Command::Reset => {
-                if self.view.job_active() {
-                    self.warn("Not while a job runs: resetting the board stops it (F7 cancels)");
-                } else if let Some(target) = self.last_target.clone() {
-                    self.connect_with(target, true);
-                }
-            }
+            Command::Reset => self.reset_board(),
             Command::Preheat(Some(name)) => {
                 match actions::find_preset(&self.profile.temp_presets, &name) {
                     Ok(preset) => {

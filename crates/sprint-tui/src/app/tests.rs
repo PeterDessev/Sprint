@@ -1170,7 +1170,31 @@ fn emergency_stop_needs_a_second_press() {
     press(&mut app, KeyCode::F(8));
     press(&mut app, KeyCode::F(8));
     wait(&mut app, "the halt", |s| s.halted);
-    assert!(screen(&mut app, 120, 40).contains("HALTED"));
+    // The banner, the hints and the message point to the reset.
+    let text = screen(&mut app, 120, 40);
+    assert!(text.contains("HALTED  :reset resets the board"), "{text}");
+    assert_eq!(app.hints()[0], (":reset", "Reset board"));
+    assert!(
+        app.toast
+            .as_ref()
+            .is_some_and(|t| t.text.contains(":reset resets the board")),
+        "{:?}",
+        app.toast
+    );
+    crate::snapshot::save(&render(&mut app, 120, 40), "tui-halted-120x40");
+    // :reset brings the printer back; M999 alone would not after M112.
+    app.run_line("reset");
+    wait_app(&mut app, "the reset", |a| a.background.is_empty());
+    assert!(
+        app.toast
+            .as_ref()
+            .is_some_and(|t| t.text == "The board was reset; the printer is ready"),
+        "{:?}",
+        app.toast
+    );
+    app.sync();
+    assert!(app.view.connected() && !app.view.halted);
+    assert!(!screen(&mut app, 120, 40).contains("HALTED"));
 }
 
 #[test]

@@ -33,7 +33,7 @@ use crate::format;
 use crate::interrupt::Interrupt;
 use crate::loader::{self, LoadedFile};
 use crate::report::{self, ReportLine, Tone};
-use crate::session::{self, ConnectError, WaitError};
+use crate::session::{self, ConnectError, ResetError, WaitError};
 
 use echo::{Awaited, Echo};
 use input::{LineSource, Read, Script, ShellHelper, Stdin, Terminal};
@@ -166,8 +166,6 @@ pub(crate) struct Shell {
     echo: Echo,
     interrupt: Interrupt,
     base_dir: PathBuf,
-    /// The target of the last connect (for `reset`).
-    last_target: Option<ConnectTarget>,
     /// How deep `source` files are nested.
     sourcing: usize,
     /// When `pause` asked to pause the job (nothing in the shell resumed
@@ -196,7 +194,6 @@ impl Shell {
             echo,
             interrupt,
             base_dir: std::env::current_dir().unwrap_or_default(),
-            last_target: None,
             sourcing: 0,
             pause_asked: None,
         }
@@ -432,12 +429,6 @@ impl Shell {
 
     /// Connect to `target` (disconnecting first) and wait for the setup.
     pub(crate) fn connect(&mut self, target: ConnectTarget) {
-        self.connect_with(target, false);
-    }
-
-    /// [`Shell::connect`]; `reset` pulses DTR after opening a serial port,
-    /// which resets most boards.
-    fn connect_with(&mut self, target: ConnectTarget, reset: bool) {
         if self.job_active() {
             self.out
                 .warn("A job is running; cancel it (or disconnect) before connecting elsewhere");
@@ -447,12 +438,10 @@ impl Shell {
             self.printer.disconnect();
         }
         let label = target.label();
-        self.last_target = Some(target.clone());
         // Quiet: the setup replies (M115, M503, ...) are not echoed.
         let _quiet = self.echo.expect(Awaited::Connect, false);
         self.interrupt.reset();
-        let mut options = self.profile.options.clone();
-        options.reset_on_connect |= reset;
+        let options = self.profile.options.clone();
         let result = session::connect_blocking(&self.printer, target, options, &self.interrupt);
         if result.is_ok() {
             let _ = session::wait_setup(&self.printer, SETUP_TIMEOUT, &self.interrupt);
@@ -563,6 +552,12 @@ impl Shell {
         };
         if self.safe_to_send(gcode, &check, input) {
             self.printer.send(gcode);
+            // After an emergency stop, say how to get the printer back.
+            if actions::check_gcode(gcode, JobContext::Idle).emergency_stop {
+                self.out.warn(
+                    "Emergency stop sent (M112): reset resets the board                      (M999 alone does not recover from M112)",
+                );
+            }
         }
     }
 
@@ -1009,24 +1004,32 @@ impl Shell {
         }
     }
 
-    /// `reset`: reconnect, pulsing DTR on a serial port (most boards
-    /// reset).
+    /// `reset`: reset the board (pronsole's reset; [`Printer::reset_board`]:
+    /// a DTR pulse on a serial port, a reboot of the virtual printer), the
+    /// way to recover from an emergency stop, and wait until the printer
+    /// is back. A network link cannot reset the board: the reason says
+    /// what to do instead.
     fn reset(&mut self) {
         if self.job_active() {
             self.out
                 .warn("Not while a job runs: resetting the board stops it (cancel it first)");
             return;
         }
-        let Some(target) = self.last_target.clone() else {
-            self.out.warn("Not connected by this shell (connect first)");
-            return;
-        };
-        self.out.dim(if matches!(target, ConnectTarget::Serial { .. }) {
-            "Resetting the board (DTR) and reconnecting…"
-        } else {
-            "Reconnecting (only a serial port can reset the board; M999 restarts a halted firmware)…"
-        });
-        self.connect_with(target, true);
+        self.out.dim("Resetting the board…");
+        // Quiet: the setup replies (M115, M503, ...) are not echoed.
+        let _quiet = self.echo.expect(Awaited::Connect, false);
+        self.interrupt.reset();
+        let result =
+            session::reset_board_blocking(&self.printer, session::RESET_WAIT, &self.interrupt);
+        self.echo.settle();
+        self.echo.cancel_expect();
+        match result {
+            Ok(()) => self.out.good("The board was reset; the printer is ready"),
+            Err(ResetError::Refused(why)) => {
+                self.out.error(format!("Cannot reset the board: {why}"));
+            }
+            Err(e) => self.out.error(format!("Reset: {e}")),
+        }
     }
 
     /// `profile <name>`: use another printer profile from now on, saved

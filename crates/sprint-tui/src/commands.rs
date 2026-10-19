@@ -105,7 +105,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         name: "reset",
         aliases: &[],
         usage: "reset",
-        summary: "Reset the board: reconnect, pulsing DTR on a serial port",
+        summary: "Reset the board (DTR on a serial port): recovers after an emergency stop, which M999 does not",
         group: Group::Connection,
     },
     CommandSpec {

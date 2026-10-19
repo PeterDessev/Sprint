@@ -123,7 +123,14 @@ impl App {
         }
         if view.halted {
             right.push(Span::styled(" HALTED ", theme.selected().bg(theme.error)));
-            right.push(Span::raw(" "));
+            // How to get the printer back.
+            if view.restartable {
+                right.push(Span::styled(" M999", theme.key()));
+                right.push(Span::styled(" restarts  ", theme.warning()));
+            } else {
+                right.push(Span::styled(" :reset", theme.key()));
+                right.push(Span::styled(" resets the board  ", theme.warning()));
+            }
         } else if view.waiting_for_user {
             right.push(Span::styled("Waits for the user ", theme.warning()));
             right.push(Span::styled("F6", theme.key()));
@@ -821,6 +828,9 @@ impl App {
                     _ => "Pause",
                 };
                 let mut hints = Vec::new();
+                if self.view.halted {
+                    hints.push((":reset", "Reset board"));
+                }
                 if self.hidden_prompt.is_some() {
                     hints.push(("p", "Printer asks"));
                 }
@@ -1066,6 +1076,10 @@ pub(crate) fn help_sections() -> Vec<HelpSection<'static>> {
                 ("F6", "Pause / resume"),
                 ("F7", "Cancel the job (print, SD print or upload)"),
                 ("F8 F8", "EMERGENCY STOP (M112), press twice"),
+                (
+                    ":reset",
+                    "Reset the board: recovers after an emergency stop",
+                ),
                 (
                     "j",
                     "Jog mode: arrows X/Y, PgUp/PgDn Z, +/- step, h home (also while paused)",

@@ -846,13 +846,28 @@ pub fn sd_delete_blocker(state: &PrinterState) -> Option<String> {
         .then(|| "The SD card is being listed; try again in a moment".to_string())
 }
 
+/// How to bring a halted printer back, naming the reset command as the
+/// front end spells it (`reset`, `:reset`): after a Marlin stop() (or a
+/// Klipper shutdown) M999 restarts the firmware; after M112, a thermal
+/// runaway or another kill() only a board reset does.
+pub fn halt_recovery(restartable: bool, reset: &str) -> String {
+    if restartable {
+        format!("M999 restarts the firmware ({reset} resets the board)")
+    } else {
+        format!("{reset} resets the board (M999 alone does not recover from M112 or a kill)")
+    }
+}
+
 /// Why a print cannot start, if it cannot.
 pub fn print_blocker(state: &PrinterState, loaded: Option<&LoadedFile>) -> Option<String> {
     if !state.is_connected() {
         return Some("Not connected to a printer".to_string());
     }
     if state.halted {
-        return Some("The printer is halted; restart it (M999) first".to_string());
+        return Some(format!(
+            "The printer is halted: {}",
+            halt_recovery(state.restartable, "reset")
+        ));
     }
     if state.job_active() {
         return Some("A job is already running".to_string());
@@ -1280,6 +1295,22 @@ mod tests {
         assert_eq!(
             print_blocker(&connected, None).as_deref(),
             Some("No file loaded")
+        );
+        // A halted printer: how to bring it back.
+        let mut halted = PrinterState {
+            halted: true,
+            ..connected
+        };
+        let why = print_blocker(&halted, None).expect("halted");
+        assert_eq!(
+            why,
+            "The printer is halted: reset resets the board \
+             (M999 alone does not recover from M112 or a kill)"
+        );
+        halted.restartable = true;
+        assert_eq!(
+            halt_recovery(halted.restartable, ":reset"),
+            "M999 restarts the firmware (:reset resets the board)"
         );
     }
 }

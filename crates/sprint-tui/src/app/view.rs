@@ -34,6 +34,9 @@ pub(crate) struct PrinterView {
     pub waiting_for_user: bool,
     pub prompt: Option<HostPrompt>,
     pub halted: bool,
+    /// While halted: M999 can restart the firmware (else only a board
+    /// reset recovers it).
+    pub restartable: bool,
     /// The printer prints from its SD card (started here or at the
     /// printer).
     pub sd_printing: bool,
@@ -72,6 +75,7 @@ impl PrinterView {
             waiting_for_user: crate::actions::waiting_for_user(s),
             prompt: s.prompt.clone(),
             halted: s.halted,
+            restartable: s.restartable,
             sd_printing: s.sd.printing.is_some(),
             active_tool: s.active_tool,
             link: s.link.clone(),

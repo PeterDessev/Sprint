@@ -370,7 +370,14 @@ pub fn status_lines(state: &PrinterState, file: Option<&LoadedFile>) -> Vec<Repo
         printer.push(format!("  {why}"), Tone::Bad);
     }
     if state.halted {
-        printer.push("  HALTED (M999 or reconnect)", Tone::Bad);
+        printer.push("  HALTED", Tone::Bad);
+        printer.push(
+            format!(
+                ": {}",
+                crate::actions::halt_recovery(state.restartable, "reset")
+            ),
+            Tone::Warn,
+        );
     }
     lines.push(printer);
     if state.status.is_connected() {
