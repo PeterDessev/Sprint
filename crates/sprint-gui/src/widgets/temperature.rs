@@ -435,8 +435,14 @@ impl<'a> TemperatureCard<'a> {
         let label = if caption {
             ui.label(caption_text)
         } else {
-            // Keep an accessible label without spending the space.
-            ui.allocate_response(vec2(0.0, 0.0), Sense::hover())
+            // Keep an accessible label without spending the space. The
+            // zero-size response needs its own widget info: without one it
+            // gets no AccessKit node, and `labelled_by` would then point at
+            // a node that does not exist (accesskit_consumer panics on it).
+            let hidden = ui.allocate_response(vec2(0.0, 0.0), Sense::hover());
+            hidden
+                .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, "Target"));
+            hidden
         };
         let _ = response.labelled_by(label.id);
         ui.data_mut(|d| d.insert_temp(edit_id, edit));
