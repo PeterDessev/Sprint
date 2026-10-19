@@ -56,7 +56,7 @@ const CODES: &[&str] = &[
     "G0", "G1", "G1", "G1", "G2", "G3", "G4", "G10", "G11", "G20", "G21", "G28", "G29", "G29.1",
     "G90", "G91", "G92", "G92.1", "M82", "M83", "M104", "M109", "M106", "M107", "M117", "M118",
     "M23", "M140", "M190", "M141", "M201", "M203", "M204", "M205", "M207", "M208", "M220", "M221",
-    "M400", "M486", "M600", "T0", "T1", "T3", "T999", "G01", "M73",
+    "M400", "M486", "M600", "T0", "T1", "T3", "T999", "G01", "M73", "M0", "M1",
 ];
 const LETTERS: &[char] = &[
     'X', 'Y', 'Z', 'E', 'F', 'I', 'J', 'R', 'P', 'S', 'T', 'N', 'x', 'e', 'f', 'A', 'K', 'W', 'H',
@@ -191,9 +191,22 @@ fn classic_line(rng: &mut Rng) -> String {
         code = code.to_lowercase();
     }
     s.push_str(&code);
-    if code.eq_ignore_ascii_case("M117") || code.eq_ignore_ascii_case("M23") {
+    if ["M117", "M23", "M0", "M1"]
+        .iter()
+        .any(|c| code.eq_ignore_ascii_case(c))
+    {
         s.push(' ');
-        s.push_str(rng.pick(&["Hello world", "file.gco", "a;b", "(x)", "50% done", ""]));
+        s.push_str(rng.pick(&[
+            "Hello world",
+            "file.gco",
+            "a;b",
+            "(x)",
+            "50% done",
+            "",
+            "S30 Swap filament",
+            "s5Done",
+            "P1 p2 ",
+        ]));
     }
     for _ in 0..rng.below(6) {
         if rng.chance(80) {

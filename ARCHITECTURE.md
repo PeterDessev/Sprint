@@ -268,7 +268,10 @@ pub fn resume_preamble(file: &GcodeFile, line: usize, options: &ResumeOptions) -
   `G1 X10`; text arguments, quoted strings, `{...}` expressions and extended
   commands stay verbatim) and is idempotent. Besides the listed text
   commands, M16 (expected-printer check) and M810-M819 (macro definitions)
-  carry their argument in `text` verbatim, as Marlin reads them.
+  carry their argument in `text` verbatim, as Marlin reads them. M0/M1
+  keep their leading numeric `S<sec>`/`P<ms>` words (upper-cased, in
+  `words`) and pass the LCD message after them through verbatim (in
+  `text`): `"m0 s30 Swap filament"` -> `"M0 S30 Swap filament"`.
 * `file`: `GcodeFile::{from_bytes, line_at_offset}`; `Clone + Default`,
   compact `Debug`; a leading BOM is dropped.
 * `content`: any file loads, so `GcodeFile::content_kind()` says what it

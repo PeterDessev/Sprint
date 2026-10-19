@@ -94,7 +94,8 @@ pub struct ParsedLine<'a> {
     /// Parameters after the code, in source order.
     pub words: Vec<Word>,
     /// Free-text argument of commands that take one (M23/M28/M30/M32/M33
-    /// file names, M117/M118 messages, M928, M16, M810-M819), trimmed. For
+    /// file names, M117/M118 messages, M928, M16, M810-M819, and the message
+    /// after the `S`/`P` words of M0/M1), trimmed. For
     /// extended commands
     /// (Klipper `SET_FAN_SPEED SPEED=1`, RepRapFirmware meta commands, ...)
     /// that have no `code`, this holds the whole command without comment.
@@ -168,6 +169,13 @@ fn is_text_command(code: Code) -> bool {
         )
 }
 
+/// M0/M1 (unconditional / optional stop): optional `S<seconds>` / `P<ms>`
+/// timeout words, then a message that Marlin and Prusa firmware show on the
+/// display as written ("M0 S30 Insert the magnets").
+fn is_stop_command(code: Code) -> bool {
+    code.letter == b'M' && code.sub.is_none() && matches!(code.number, 0 | 1)
+}
+
 /// Parse one line. Accepts `G1X10Y20`, lowercase, extra spaces and tabs,
 /// `N12 ... *34`, `;` and `(...)` comments, `%` program markers. Never
 /// panics. Unknown/extended commands (Klipper `SET_FAN_SPEED SPEED=1`) yield
@@ -201,6 +209,8 @@ pub fn parse_into<'a>(line: &'a str, out: &mut ParsedLine<'a>) {
             out.code = Some(code);
             if is_text_command(code) {
                 parse_text_argument(line, end, prefix.numbered, out);
+            } else if is_stop_command(code) {
+                parse_stop_command(line, end, prefix.numbered, out);
             } else {
                 parse_words(line, end, out);
             }
@@ -463,6 +473,69 @@ fn parse_text_argument<'a>(line: &'a str, start: usize, numbered: bool, out: &mu
     }
 }
 
+/// M0/M1 from `start` (just after the code): the leading numeric `S`/`P`
+/// words, then the message as text.
+fn parse_stop_command<'a>(line: &'a str, start: usize, numbered: bool, out: &mut ParsedLine<'a>) {
+    let b = line.as_bytes();
+    let n = b.len();
+    let mut end = n;
+    if let Some(semi) = find_opt(b, start, n, b';') {
+        out.comment = sub(line, semi + 1, n).map(str::trim);
+        end = semi;
+    }
+    if numbered && let Some((cs, star)) = trailing_checksum(b, start, end) {
+        out.checksum = cs;
+        end = star;
+    }
+    let mut i = start;
+    while let Some(word) = stop_word(b, i, end) {
+        out.words.push(Word {
+            letter: word.letter,
+            value: word.value,
+        });
+        i = word.end;
+    }
+    let text = sub(line, i, end).map(str::trim).unwrap_or("");
+    if !text.is_empty() {
+        out.text = Some(text);
+    }
+}
+
+/// A numeric timeout word of M0/M1, see [`stop_word`].
+struct StopWord {
+    letter: u8,
+    value: f64,
+    /// Index of the letter.
+    start: usize,
+    /// Index just after the number.
+    end: usize,
+}
+
+/// The `S<n>` or `P<n>` word (either case) that starts `b[i..end]` after
+/// optional whitespace, when a number follows the letter and whitespace or
+/// `end` follows the number. Anything else starts the message.
+fn stop_word(b: &[u8], i: usize, end: usize) -> Option<StopWord> {
+    let start = skip_ws(b, i);
+    if start >= end {
+        return None;
+    }
+    let letter = b.get(start)?.to_ascii_uppercase();
+    if !matches!(letter, b'S' | b'P') {
+        return None;
+    }
+    let (value, num_end) = parse_number(b.get(..end)?, start + 1);
+    let value = value?;
+    if num_end < end && !is_ws(b[num_end]) {
+        return None;
+    }
+    Some(StopWord {
+        letter,
+        value,
+        start,
+        end: num_end,
+    })
+}
+
 /// Extended command (Klipper/RRF): whole command as text, no words.
 fn parse_extended<'a>(line: &'a str, start: usize, numbered: bool, out: &mut ParsedLine<'a>) {
     let b = line.as_bytes();
@@ -693,8 +766,9 @@ pub fn has_command(line: &str) -> bool {
 /// The text to send to a printer: comments removed (`;` and `(...)`), any
 /// existing `N` word and `*checksum` removed, whitespace trimmed and runs of
 /// spaces collapsed. Returns `None` when nothing is left. Text arguments of
-/// M117/M118/M23/... are preserved verbatim (a `;` inside an M117 message
-/// still starts a comment, as in Marlin).
+/// M117/M118/M23/... and the message of M0/M1 (after its `S`/`P` timeout
+/// words) are preserved verbatim (a `;` inside an M117 message still starts
+/// a comment, as in Marlin).
 ///
 /// Classic commands are uppercased (`g1 x10` → `G1 X10`) for firmwares that
 /// are case-sensitive; quoted strings, RepRapFirmware `{...}` expressions,
@@ -752,7 +826,40 @@ pub fn clean_line(line: &str) -> Option<Cow<'_, str>> {
             s.push_str(text);
             Some(Cow::Owned(s))
         }
+        FirstToken::Code {
+            code,
+            end: code_end,
+        } if is_stop_command(code) => Some(clean_stop(line, i, code_end, prefix.numbered)),
         FirstToken::Code { .. } | FirstToken::Words => clean_classic(line, i),
+    }
+}
+
+/// M0/M1: the code and the `S`/`P` timeout words upper-cased, the message
+/// verbatim (Marlin and Prusa firmware show it on the display).
+fn clean_stop(line: &str, start: usize, code_end: usize, numbered: bool) -> Cow<'_, str> {
+    let b = line.as_bytes();
+    let mut end = find_byte(b, code_end, b.len(), b';');
+    if numbered && let Some((_, star)) = trailing_checksum(b, code_end, end) {
+        end = star;
+    }
+    let mut s = String::with_capacity(end.saturating_sub(start));
+    s.push_str(&line.get(start..code_end).unwrap_or("").to_ascii_uppercase());
+    let mut i = code_end;
+    while let Some(word) = stop_word(b, i, end) {
+        s.push(' ');
+        s.push(char::from(word.letter));
+        s.push_str(line.get(word.start + 1..word.end).unwrap_or(""));
+        i = word.end;
+    }
+    let text = line.get(i..end).unwrap_or("").trim();
+    if !text.is_empty() {
+        s.push(' ');
+        s.push_str(text);
+    }
+    // Borrow when the source already reads exactly like that.
+    match line.get(start..start + s.len()) {
+        Some(src) if src == s => Cow::Borrowed(src),
+        _ => Cow::Owned(s),
     }
 }
 
@@ -1235,6 +1342,48 @@ mod tests {
         );
         assert_eq!(parse_line("M819 G4 P1").text, Some("G4 P1"));
         assert_eq!(parse_line("M820 S1").text, None);
+    }
+
+    #[test]
+    fn stop_messages_stay_verbatim() {
+        // Audit A42: M0/M1 messages were upper-cased ("INSERT THE MAGNETS").
+        for (line, cleaned) in [
+            ("M0 Insert the magnets", "M0 Insert the magnets"),
+            ("M1 Remove support", "M1 Remove support"),
+            ("M0 S30 Swap filament", "M0 S30 Swap filament"),
+            ("m0 s30 swap filament ; c", "M0 S30 swap filament"),
+            ("N7 M0 P500  Change part*12", "M0 P500 Change part"),
+            ("M0S5 Done", "M0 S5 Done"),
+            ("M0 S5Done", "M0 S5Done"),
+            ("M0 Spool empty", "M0 Spool empty"),
+            ("M0 S1 P2 a  b", "M0 S1 P2 a  b"),
+            ("M0 (look) here", "M0 (look) here"),
+            ("M0", "M0"),
+            ("m1", "M1"),
+            ("M0 S30", "M0 S30"),
+            ("M0 S-", "M0 S-"),
+        ] {
+            assert_eq!(clean_line(line).as_deref(), Some(cleaned), "{line:?}");
+            assert_eq!(clean_line(cleaned).as_deref(), Some(cleaned), "{line:?}");
+        }
+        assert!(matches!(
+            clean_line("M0 S30 Swap filament ; c"),
+            Some(Cow::Borrowed(_))
+        ));
+        let p = parse_line("M0 S30 Swap filament ; why");
+        assert_eq!(p.code, Some(Code::m(0)));
+        assert_eq!(words(&p), vec![('S', 30.0)]);
+        assert_eq!(p.text, Some("Swap filament"));
+        assert_eq!(p.comment, Some("why"));
+        let p = parse_line("N3 M1 P250 Check*99");
+        assert_eq!(words(&p), vec![('P', 250.0)]);
+        assert_eq!(p.text, Some("Check"));
+        assert_eq!(p.checksum, Some(99));
+        let p = parse_line("M0 Spool");
+        assert!(p.words.is_empty());
+        assert_eq!(p.text, Some("Spool"));
+        // Sub-codes are not stops.
+        assert_eq!(clean_line("M0.1 abc").as_deref(), Some("M0.1 ABC"));
     }
 
     #[test]
