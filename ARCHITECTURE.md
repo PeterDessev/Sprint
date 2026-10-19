@@ -925,7 +925,9 @@ pub enum Event {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ConsoleEntry { pub seq: u64, pub time: f64 /* secs since Printer::new */, pub kind: ConsoleKind, pub text: String,
                           /// Automatic traffic (temperature polling/auto-reports and their oks). UIs hide these by default.
-                          pub auto: bool }
+                          pub auto: bool,
+                          /// Line number a sent command went out with (`N<n>`); None for unnumbered and received lines.
+                          pub line: Option<u32> }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)] pub enum ConsoleKind { Sent, Received, Info, Warning, Error }
 
 // ---- config ----
@@ -975,6 +977,10 @@ pub struct Macro { pub name: String, pub gcode: String, pub color: Option<[u8; 3
 /// Expand `{x} {y} {z} {e} {f} {tool} {hotend} {bed} {fan}` placeholders
 /// with values from a MachineState (position at pause time etc.).
 pub fn render_script(template: &str, state: &MachineState) -> Vec<String>;
+/// Plus the profile-derived {max_x} {max_y} {max_z} {park_x} {park_y}
+/// (`PrinterProfile::script_context(&state)` builds one).
+pub struct ScriptContext<'a> { pub state: &'a MachineState, pub max_x: f32, pub max_y: f32, pub max_z: f32, pub park_x: f32, pub park_y: f32 }
+pub fn render_script_with(template: &str, ctx: &ScriptContext<'_>) -> Vec<String>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum HostError { /* NotConnected, AlreadyConnected, Busy(String), Io(std::io::Error), InvalidTarget(String), Config(String), ... */ }
@@ -1005,6 +1011,126 @@ Engine design (inside sprint-host):
   placeholders) then continue. Cancel: drop the stream, run the cancel script.
   `//action:pause|resume|cancel` from the firmware drive the same paths.
 * The waker is invoked at most every 16 ms.
+
+### Implementation notes (additive API and clarified semantics)
+
+Every public item is also re-exported at the crate root.
+
+* `transport`: `DEFAULT_BAUD` (115200, used by `COM3` without `@baud`;
+  `@auto`/`@0` = auto-detect); `Display` for `ConnectTarget` is the
+  parseable form (`COM3@115200`, `tcp://[::1]:23`, `sim://?seed=7`);
+  `ConnectTarget::is_simulator` and `Default` (the simulator).
+  `sim://` query keys are the `SimConfig` field names (`build_volume=x,y,z`,
+  `mesh_size=5x5`, booleans without a value mean true); unknown keys and
+  bad values are `InvalidTarget`. `Link` (`new(reader, writer)`,
+  `simulator`, `tcp`, `serial(port, baud, reset, log)`, `open(target,
+  reset, log)`, `sim_control`, `split() -> (reader, writer, LinkHandle)`),
+  `LinkHandle::{close, sim_control}`, `READ_TIMEOUT` (100 ms),
+  `is_no_data(&io::Error)`, `PRINTER_USB_VENDORS`, `is_printer_vendor`.
+  Auto-baud probes each rate with `M110 N0` + `M105` for 2.5 s and stops at
+  the first open error.
+* `config`: `ConnectOptions` is `#[serde(default)]`; `sanitized()` clamps
+  every value (`max_in_flight` 1..=32, `MAX_IN_FLIGHT_LIMIT`).
+  `AppConfig::load_or_default(path)` (what `load()` uses: a corrupt file is
+  renamed to `<name>.bak`); `MAX_RECENT_FILES` (12), `DEFAULT_CONSOLE_LINES`.
+  `PrinterProfile::{build_volume, park_position, script_context}`: parking is
+  the back left corner 10 mm in (X10 Y210 by default, honouring `origin`).
+* `script`: `DEFAULT_PAUSE_SCRIPT`, `DEFAULT_RESUME_SCRIPT`,
+  `DEFAULT_CANCEL_SCRIPT`, `format_number`. `render_script` uses
+  `ScriptContext::new` (the default 220 x 220 x 250 profile). Unknown
+  placeholders stay verbatim; comments and blank lines are dropped; a line
+  using `{e}` is dropped while extrusion is relative (that is how the
+  resume script's `G92 E{e}` disappears for M83 files).
+* `console`: `Console` (the bounded ring; `seq` starts at 1 and survives
+  `clear`). Sent entries carry the clean command and its `line` number;
+  resent lines are logged again.
+* `state`: `PrinterState::{is_connected, has_capability, job_active,
+  push_message}`, `ConnectionStatus::{is_connected, is_open, label}`,
+  `Heater::{name, autotune_index, from_autotune_index}`, `Axis::letter`,
+  `Axes::home_command`, `TEMP_HISTORY_LEN`, `FIRMWARE_MESSAGES_LEN`.
+  Temperature reports are merged (readings missing from a report keep their
+  value); `Event::Temperatures` carries the merged report.
+* `event`: `EventBus` (public fan-out), `EVENT_QUEUE_LIMIT`: a subscriber
+  that stops reading keeps at most 65536 events; newer ones are dropped for
+  it (the state stays authoritative).
+* `job`: `JobStatus::{is_finished, is_paused, label}`, `JobInfo::new`,
+  `ProgressModel` / `Progress` (the progress math, usable on its own).
+  `current_line` counts processed file lines (1-based number of the last
+  acknowledged line, `total_lines` at completion, `start_line` at the
+  start). ETA: remaining estimate x (running time without heat waits /
+  estimated time of the printed part), ratio clamped to 0.5..=3 and
+  smoothed; raw estimate for the first 2%; without a toolpath a smoothed
+  linear extrapolation by bytes after 2%. `JobProgress` at most every 100 ms.
+* `Printer` additions: `with_console_capacity(lines)`,
+  `set_console_capacity`, `set_profile` / `profile` (scripts, parking and
+  geometry come from the profile unless `PrintOptions` overrides them),
+  `connect_profile(&profile)`, `connect_link(link, label, options)` (custom
+  transports), `sim_control()` (while connected to the simulator),
+  `run_macro(&Macro)` (templated with the current position/targets).
+  Commands without a connection are dropped with a console warning;
+  `start_*` wait up to 5 s for the engine's answer and fail with
+  `NotConnected`, `Halted`, `Busy` (a job is active) or `InvalidArgument`.
+  `send("M112")` is `emergency_stop()`, `send("M999")` is
+  `firmware_restart()`.
+* Handshake: the first `M110 N0` goes out on the first received line or
+  after 1 s of silence, again every 2 s and at once after a `start`; after a
+  handshake that needed retries stray `ok`s are ignored for 300 ms. The
+  status becomes `Connected` when M110 is acknowledged; then `M115`, and
+  when it is answered `M155 S<autoreport_interval_secs>` (AUTOREPORT_TEMP),
+  `M154 S1` (AUTOREPORT_POS), `M503` (unless the flavor has no M503) and
+  `M114`. Replies on an `ok` line (`ok T:..`, `ok FIRMWARE_NAME:..`) are
+  applied before the `ok`.
+* Flow control (module docs of `engine/flow.rs` have the reasoning):
+  duplicate `Resend:`s caused by lines that were in flight behind the
+  rejected one are ignored (always before the line was resent, afterwards
+  up to the number of such stale lines unless the error was a checksum
+  error); with stale lines, retransmission waits until the accepted lines
+  are acknowledged and either every stale line was answered or the link
+  was quiet for 3 round trips (5..200 ms); after a rewind the window is one
+  command until 16 (or 4 windows of) commands were acknowledged cleanly.
+  A request beyond the last line sent or for an acknowledged line (the
+  firmware's counter changed) and a line rejected 16 times in a row drop the
+  numbered lines in flight, fail the job and reset the counter (resending
+  could execute lines twice). `ok N<n>` acknowledges line n and every older
+  in-flight command. Timeouts (no `ok`/`busy`/heat-wait report; homing,
+  probing, heat waits, dwells and M600 get 6x `ok_timeout_secs`) and Marlin's
+  `wait` with commands in flight release every in-flight command and send a
+  numbered M105. M110 is a barrier (sent with nothing in flight, repeated on
+  any resend request). Emergency commands go out unnumbered and wait for
+  their `ok` outside the window (M112 and M999 expect none). `PrintOnly`
+  numbers while any job is active; SD uploads are always numbered.
+* Polling: M105 every `temp_poll_secs` without auto-reports, never while a
+  poll is outstanding, during M109/M190/M191/M303, during uploads, while
+  halted or before M115 was answered. Nothing but the upload reaches the
+  printer while it writes to the card.
+* Halt: a fatal error or `emergency_stop` sets `halted`, fails the job and
+  frees the window (E-stop also drops the queues); the link stays open.
+  `firmware_restart` sends M999; the next `ok`/resend clears `halted` and
+  the counter is reset. A `start` while connected re-runs the handshake and
+  setup (status `Handshaking`, then `Connected`) and fails a job with
+  "printer reset".
+* Jobs: preamble lines are cleaned and sent first; with `start_line` the
+  tracked `MachineState` starts from `state_at_line`. Pause: `Pausing` until
+  in-flight stream lines are acknowledged and the pause script is
+  acknowledged, then `Paused` (manual commands work meanwhile); resume:
+  `Resuming` while the resume script (followed by `G91` or `M83` when the
+  stream used relative modes) is acknowledged, streaming continues right
+  behind it. `//action:pause|paused` pause without scripts and
+  `//action:resume|resumed` continue; `resume()` after such a pause sends
+  M108 when the firmware waits for the user. `cancel` sends M108 first when
+  a heat or user wait is in flight. SD prints: M23/M24 (`Starting` until
+  M24 is acknowledged), `M27 S<n>` with AUTOREPORT_SD_STATUS (switched off
+  with M27 S0 afterwards) else M27 polling; "open failed" fails the job;
+  cancel = M108 + M524. Uploads stream only after "Writing to file"
+  (M28's `ok` without it fails the job), skip the file's own M28/M29, end
+  with M29; cancel = M29 + M30 <name>.
+* Threads: `disconnect()` and dropping the last handle join each thread for
+  at most 2 s, then detach it. A panic in the engine leaves status (and any
+  job) `Failed`. The waker is called without the rate limit when the engine
+  stops and after changes made by a handle.
+* Throughput against the simulator with instant moves (`cargo test -p
+  sprint-host --test print -- --ignored --nocapture`): about 28k lines/s
+  ping-pong, 45k with 2, 79k with 4 and 117k with 8 commands in flight.
 
 ---
 
