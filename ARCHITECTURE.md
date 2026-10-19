@@ -1818,7 +1818,7 @@ pub struct AppOptions {
     pub scan_ports: bool,                   // enumerate serial ports in the background (never opened)
     pub native_dialogs: bool,               // without them "Open" only counts the request (tests)
     pub restore_prefs: bool,                // restore UI preferences from eframe's storage
-    // + the connect target of GuiOptions::connect
+    pub connect: Option<ConnectTarget>,     // connect at startup; wins over `simulator` and auto_connect
 }
 impl AppOptions {
     pub fn desktop(gui: GuiOptions) -> AppOptions;  // AppConfig::path() (SPRINT_CONFIG), port scans, native dialogs
@@ -1882,8 +1882,9 @@ Layout (panels resizable and collapsible):
   firmware message, version).
 
 Behaviour contract:
-* No serial port is opened unless the user connects, `GuiOptions` names a
-  target (or `simulator`), or the active profile has `auto_connect`.
+* No serial port is opened unless the user connects or at startup:
+  `connect`, else `simulator`, else the active profile's printer when it
+  has `auto_connect`, else nothing.
   Blocking calls (`connect`, `reset_board`, `disconnect`) run off the UI
   thread.
 * Every typed or sent line, macro, pasted block and raw settings edit goes
