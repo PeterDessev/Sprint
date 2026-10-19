@@ -1156,7 +1156,8 @@ Every public item is also re-exported at the crate root.
   setup (status `Handshaking`, then `Connected`) and fails a job with
   "printer reset". Entering a halt and a board reset drop the user
   commands still queued (with a console warning): they were meant for a
-  printer that has since lost its position.
+  printer that has since lost its position. Both also close an open host
+  prompt (`Event::Prompt(None)`): a halted firmware ignores M876.
 * Jobs: preamble lines are cleaned and sent first; with `start_line` the
   tracked `MachineState` starts from `state_at_line`. Pause: `Pausing` until
   in-flight stream lines are acknowledged and the pause script is

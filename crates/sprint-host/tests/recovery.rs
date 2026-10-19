@@ -148,3 +148,27 @@ fn commands_queued_before_a_halt_are_dropped() {
             .any(|e| e.text.contains("Dropped 3 queued command(s)"))
     );
 }
+
+#[test]
+fn a_halt_closes_the_host_prompt() {
+    // The halted firmware ignores M876: an open prompt would only cover
+    // the recovery actions.
+    let printer = connect(sim(), options());
+    let events = printer.subscribe();
+    let control = printer.sim_control().unwrap();
+    for line in [
+        "//action:prompt_begin Insert filament",
+        "//action:prompt_button Continue",
+        "//action:prompt_show",
+    ] {
+        control.inject_line(line);
+    }
+    wait_for(&printer, "the prompt", |s| s.prompt.is_some());
+    printer.emergency_stop();
+    wait_for(&printer, "halted", |s| s.halted);
+    assert_eq!(printer.with_state(|s| s.prompt.clone()), None);
+    let closed = events
+        .try_iter()
+        .any(|e| matches!(e, sprint_host::Event::Prompt(None)));
+    assert!(closed, "an Event::Prompt(None) tells the UIs");
+}

@@ -1248,7 +1248,10 @@ impl Engine {
         }
         // Lines waiting for retransmission are dropped with the counter.
         self.flow.reset(now);
-        self.shared.update(|s| {
+        // A halted firmware answers no prompt (M876 is ignored): an open one
+        // would only cover the recovery actions.
+        self.prompt = None;
+        let had_prompt = self.shared.update(|s| {
             // A kill reported after a stop still needs a reset.
             s.restartable = if first {
                 restartable
@@ -1258,7 +1261,11 @@ impl Engine {
             s.halted = true;
             s.last_error = Some(message.to_string());
             s.busy = None;
+            s.prompt.take().is_some()
         });
+        if had_prompt {
+            self.shared.emit(Event::Prompt(None));
+        }
         if first {
             self.shared.log(ConsoleKind::Error, message, false, None);
             self.shared.emit(Event::Error(message.to_string()));
