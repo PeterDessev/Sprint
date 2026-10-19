@@ -271,6 +271,20 @@ pub fn resume_preamble(file: &GcodeFile, line: usize, options: &ResumeOptions) -
   carry their argument in `text` verbatim, as Marlin reads them.
 * `file`: `GcodeFile::{from_bytes, line_at_offset}`; `Clone + Default`,
   compact `Debug`; a leading BOM is dropped.
+* `content`: any file loads, so `GcodeFile::content_kind()` says what it
+  is, sniffed from the first 64 KiB of the source bytes at load:
+  `ContentKind::{Gcode, Empty, AsciiStl, BinaryStl, Zip3mf, Obj, Step,
+  BinaryGcode, Binary, OtherText}` with `is_gcode`, `is_model`,
+  `description` and `problem` (the sentence a front end shows when it
+  refuses to stream the file, e.g. "This is a 3D model, not G-code: slice
+  it first."). `sniff_content(head, total_len)` and `sniff_file(path)`
+  (reads only the head) classify without loading. Heuristics: ZIP and
+  `GCDE` magic, the binary STL size equation, NUL bytes or over a quarter
+  control/invalid bytes, `ISO-10303-21`, `solid` followed by
+  `facet`/`endsolid`, OBJ statements, and finally whether at least half of
+  the statements read as G-code (G/M/T codes, parameter words, upper-case
+  extended commands, `@` host commands, RepRapFirmware meta commands);
+  comment-only text is G-code. Front ends must only stream `Gcode`.
 * `state`: extra public fields `relative_e_mode` (sticky M83; G90 restores
   it, as Klipper/RRF/PrusaSlicer do) and `origin_offset` (G92 shift, machine =
   `position + origin_offset`, cleared by G28 for homed axes); helpers

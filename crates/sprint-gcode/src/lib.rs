@@ -6,6 +6,7 @@
 #![warn(missing_docs)]
 
 pub mod analyze;
+pub mod content;
 pub mod estimate;
 pub mod file;
 pub mod meta;
@@ -15,6 +16,7 @@ pub mod state;
 pub mod toolpath;
 
 pub use analyze::*;
+pub use content::*;
 pub use estimate::*;
 pub use file::*;
 pub use meta::*;

@@ -4,6 +4,7 @@ use std::borrow::Cow;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use crate::content::{ContentKind, sniff_content};
 use crate::parse::{clean_line, has_command};
 
 /// A loaded G-code file with cheap random access to its lines.
@@ -13,7 +14,11 @@ use crate::parse::{clean_line, has_command};
 /// lone `\r` line endings are all recognised, and a final line without a
 /// newline is kept. Invalid UTF-8 is replaced (lossy decoding) and a leading
 /// byte-order mark is dropped.
-#[derive(Clone, Default)]
+///
+/// Any file loads, whatever it contains; [`GcodeFile::content_kind`] says
+/// whether it actually is G-code (front ends refuse to stream 3D models,
+/// binary data and other text).
+#[derive(Clone)]
 pub struct GcodeFile {
     name: String,
     path: Option<PathBuf>,
@@ -21,6 +26,21 @@ pub struct GcodeFile {
     /// Start offset of every line plus a final sentinel (`text.len()`).
     starts: Vec<usize>,
     command_count: usize,
+    /// Sniffed from the source bytes at load time.
+    content: ContentKind,
+}
+
+impl Default for GcodeFile {
+    fn default() -> Self {
+        GcodeFile {
+            name: String::new(),
+            path: None,
+            text: String::new(),
+            starts: vec![0],
+            command_count: 0,
+            content: ContentKind::Empty,
+        }
+    }
 }
 
 impl fmt::Debug for GcodeFile {
@@ -31,6 +51,7 @@ impl fmt::Debug for GcodeFile {
             .field("lines", &self.len())
             .field("bytes", &self.text.len())
             .field("commands", &self.command_count)
+            .field("content", &self.content)
             .finish()
     }
 }
@@ -52,27 +73,42 @@ impl GcodeFile {
 
     /// Build from text already in memory.
     pub fn from_text(name: impl Into<String>, text: impl Into<String>) -> GcodeFile {
-        let mut text = text.into();
+        let text = text.into();
+        let content = sniff_content(text.as_bytes(), text.len() as u64);
+        GcodeFile::build(name.into(), text, content)
+    }
+
+    /// Build from raw bytes (lossy UTF-8).
+    pub fn from_bytes(name: impl Into<String>, bytes: Vec<u8>) -> GcodeFile {
+        let content = sniff_content(&bytes, bytes.len() as u64);
+        let text = match String::from_utf8(bytes) {
+            Ok(s) => s,
+            Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+        };
+        GcodeFile::build(name.into(), text, content)
+    }
+
+    fn build(name: String, mut text: String, content: ContentKind) -> GcodeFile {
         if text.starts_with('\u{FEFF}') {
             text.drain(..'\u{FEFF}'.len_utf8());
         }
         let (starts, command_count) = index_lines(&text);
         GcodeFile {
-            name: name.into(),
+            name,
             path: None,
             text,
             starts,
             command_count,
+            content,
         }
     }
 
-    /// Build from raw bytes (lossy UTF-8).
-    pub fn from_bytes(name: impl Into<String>, bytes: Vec<u8>) -> GcodeFile {
-        let text = match String::from_utf8(bytes) {
-            Ok(s) => s,
-            Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
-        };
-        GcodeFile::from_text(name, text)
+    /// What the file contains, sniffed from its first bytes when it was
+    /// loaded (see [`sniff_content`]): G-code, a 3D model (ASCII or binary
+    /// STL, 3MF, OBJ, STEP), binary data or other text. Only
+    /// [`ContentKind::Gcode`] should be streamed to a printer.
+    pub fn content_kind(&self) -> ContentKind {
+        self.content
     }
 
     /// File name for display.
@@ -270,6 +306,37 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_dir(&dir);
         assert!(GcodeFile::load(dir.join("missing.gcode")).is_err());
+    }
+
+    #[test]
+    fn content_is_sniffed_at_load() {
+        // Audit A15: an ASCII STL loads (any text does) but is not G-code,
+        // although every line yields a "command".
+        let stl = "solid cube\nfacet normal 0 0 -1\nouter loop\nvertex 0 0 0\nvertex 1 0 0\nvertex 1 1 0\nendloop\nendfacet\nendsolid cube\n";
+        let f = GcodeFile::from_text("part.stl", stl);
+        assert_eq!(f.command_count(), 9);
+        assert_eq!(f.content_kind(), ContentKind::AsciiStl);
+        assert!(!f.content_kind().is_gcode());
+        let f = GcodeFile::from_bytes("part.stl", stl.as_bytes().to_vec());
+        assert_eq!(f.content_kind(), ContentKind::AsciiStl);
+        // Sniffed from the raw bytes, before lossy decoding.
+        let mut stl = vec![0x80u8; 80];
+        stl.extend_from_slice(&1u32.to_le_bytes());
+        stl.extend_from_slice(&[0xC1; 50]);
+        assert_eq!(
+            GcodeFile::from_bytes("b.stl", stl).content_kind(),
+            ContentKind::BinaryStl
+        );
+        assert_eq!(
+            GcodeFile::from_text("t.gcode", "\u{FEFF}G28\nG1 X1\n").content_kind(),
+            ContentKind::Gcode
+        );
+        assert_eq!(
+            GcodeFile::from_text("e", "").content_kind(),
+            ContentKind::Empty
+        );
+        assert_eq!(GcodeFile::default().content_kind(), ContentKind::Empty);
+        assert!(format!("{:?}", GcodeFile::default()).contains("Empty"));
     }
 
     #[test]

@@ -11,8 +11,9 @@ use std::f32::consts::TAU;
 
 use common::{check_toolpath, close};
 use sprint_gcode::{
-    AnalyzeOptions, Feature, GcodeFile, MoveKind, ResumeOptions, ThumbnailFormat, Toolpath,
-    analyze, analyze_simple, clean_line, parse_line, read_metadata, resume_preamble, state_at_line,
+    AnalyzeOptions, ContentKind, Feature, GcodeFile, MoveKind, ResumeOptions, ThumbnailFormat,
+    Toolpath, analyze, analyze_simple, clean_line, parse_line, read_metadata, resume_preamble,
+    sniff_file, state_at_line,
 };
 
 fn load(name: &str) -> GcodeFile {
@@ -82,6 +83,20 @@ fn every_sample_line_round_trips_through_clean_line() {
             }
         }
         assert_eq!(commands, file.command_count(), "{name}");
+    }
+}
+
+#[test]
+fn every_sample_is_sniffed_as_gcode() {
+    for name in [
+        "calibration-cube.gcode",
+        "twisted-vase.gcode",
+        "arcs-test.gcode",
+    ] {
+        let file = load(name);
+        assert_eq!(file.content_kind(), ContentKind::Gcode, "{name}");
+        let path = gen_samples::samples_dir().join(name);
+        assert_eq!(sniff_file(&path).ok(), Some(ContentKind::Gcode), "{name}");
     }
 }
 
