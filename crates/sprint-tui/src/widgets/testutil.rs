@@ -3,13 +3,27 @@
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
-use ratatui::widgets::Widget;
+use ratatui::widgets::{StatefulWidget, Widget};
 
 /// Render a widget into a `width` x `height` test terminal.
 pub(crate) fn render<W: Widget>(widget: W, width: u16, height: u16) -> Buffer {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
     terminal
         .draw(|frame| frame.render_widget(widget, frame.area()))
+        .expect("draw");
+    terminal.backend().buffer().clone()
+}
+
+/// Render a stateful widget into a `width` x `height` test terminal.
+pub(crate) fn render_stateful<W: StatefulWidget>(
+    widget: W,
+    width: u16,
+    height: u16,
+    state: &mut W::State,
+) -> Buffer {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
+    terminal
+        .draw(|frame| frame.render_stateful_widget(widget, frame.area(), state))
         .expect("draw");
     terminal.backend().buffer().clone()
 }

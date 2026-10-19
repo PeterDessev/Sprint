@@ -13,7 +13,7 @@ pub mod temp_chart;
 pub(crate) mod testutil;
 pub(crate) mod util;
 
-pub use console::{ConsoleKind, ConsoleLine};
+pub use console::{ConsoleKind, ConsoleLine, ConsoleState, ConsoleView, find_matches};
 pub use heater::{HeaterGauge, HeaterKind, HeaterState};
 pub use job::{JobProgress, JobTone};
 pub use layer_canvas::{FeatureLegend, LayerCanvas, LayerFit, object_bounds};
