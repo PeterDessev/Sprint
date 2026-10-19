@@ -1344,3 +1344,46 @@ fn gettemp_asks_the_printer_for_its_temperatures() {
     assert!(report.contains("/ 205 °C"), "{text}");
     assert!(received(&shell).iter().any(|c| c == "M105"));
 }
+
+#[test]
+fn monitor_in_a_script_stops_at_a_pause_the_script_made() {
+    let scratch = Scratch::new("monitor-paused");
+    let (mut shell, buffer) = connected_timed();
+    // If monitor waited for ever, this stops it (and the timing below
+    // fails) instead of hanging the test.
+    let watchdog = shell.interrupt.clone();
+    let (done, finished) = crossbeam_channel::bounded::<()>(0);
+    let thread = std::thread::spawn(move || {
+        if finished.recv_timeout(Duration::from_secs(20))
+            == Err(crossbeam_channel::RecvTimeoutError::Timeout)
+        {
+            watchdog.raise();
+        }
+    });
+    let started = Instant::now();
+    let slow = scratch.slow_file();
+    script(
+        &mut shell,
+        &[
+            &format!("load {}", slow.display()),
+            "print",
+            "pause",
+            "monitor 0.2",
+        ],
+    );
+    let took = started.elapsed();
+    drop(done);
+    let _ = thread.join();
+    let text = buffer.text();
+    assert!(took < Duration::from_secs(15), "{took:?}\n{text}");
+    assert!(
+        text.contains("slow.gcode is paused and a script cannot resume it"),
+        "{text}"
+    );
+    assert_eq!(
+        shell
+            .printer
+            .with_state(|s| s.job.as_ref().map(|j| j.status.clone())),
+        Some(JobStatus::Cancelled)
+    );
+}

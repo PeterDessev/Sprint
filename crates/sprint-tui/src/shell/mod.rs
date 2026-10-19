@@ -1159,6 +1159,13 @@ impl Shell {
             if !open || (!interactive && !active) {
                 return;
             }
+            // A script waits for the job; nothing in it can resume a job
+            // it paused itself (the end of the script cancels that).
+            if !interactive && self.paused_by_script() {
+                self.out
+                    .warn("The script paused the job; monitor stops (a script cannot resume it)");
+                return;
+            }
             let until = Instant::now() + interval;
             while Instant::now() < until {
                 if self.interrupt.take() {
