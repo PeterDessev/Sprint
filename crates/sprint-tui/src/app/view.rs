@@ -29,6 +29,9 @@ pub(crate) struct PrinterView {
     pub feedrate_pct: f32,
     pub flow_pct: f32,
     pub busy: Option<String>,
+    /// The firmware waits for the user without a prompt (M108 releases
+    /// it; see [`crate::actions::waiting_for_user`]).
+    pub waiting_for_user: bool,
     pub prompt: Option<HostPrompt>,
     pub halted: bool,
     pub active_tool: u8,
@@ -63,6 +66,7 @@ impl PrinterView {
                 .copied()
                 .unwrap_or(100.0),
             busy: s.busy.clone(),
+            waiting_for_user: crate::actions::waiting_for_user(s),
             prompt: s.prompt.clone(),
             halted: s.halted,
             active_tool: s.active_tool,

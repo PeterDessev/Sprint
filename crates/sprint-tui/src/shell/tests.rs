@@ -875,3 +875,47 @@ fn off_during_a_print_asks_and_a_script_leaves_it_on() {
     shell.printer.cancel();
     wait_for(&shell, "the cancel", |s| !s.job_active());
 }
+
+#[test]
+fn a_wait_for_the_user_without_a_prompt_is_told_and_released() {
+    // Stock Marlin without host prompts: M0 only says busy: paused for
+    // user, and M108 lets it go on.
+    let fake = crate::fake_printer::FakePrinter::start();
+    let (mut shell, buffer) = shell();
+    shell.connect(fake.target());
+    assert!(shell.printer.is_connected(), "{}", buffer.text());
+    let mut input = Script::new(["M0"], false);
+    shell.run_lines_until_eof_without_leaving(&mut input);
+    wait_for(
+        &shell,
+        "the wait for the user",
+        crate::actions::waiting_for_user,
+    );
+    let deadline = Instant::now() + PATIENCE;
+    while !buffer.text().contains("The printer waits for the user") {
+        assert!(Instant::now() < deadline, "not told:\n{}", buffer.text());
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let mut input = Script::new(["resume"], false);
+    shell.run_lines_until_eof_without_leaving(&mut input);
+    wait_for(&shell, "the release", |s| s.busy.is_none());
+    assert!(
+        fake.received().iter().any(|c| c == "M108"),
+        "{:?}",
+        fake.received()
+    );
+    assert!(
+        buffer.text().contains("Continuing (M108)"),
+        "{}",
+        buffer.text()
+    );
+    // Told once per wait.
+    assert_eq!(
+        buffer
+            .text()
+            .matches("The printer waits for the user")
+            .count(),
+        1
+    );
+    shell.printer.disconnect();
+}

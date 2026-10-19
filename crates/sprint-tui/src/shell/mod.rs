@@ -585,7 +585,21 @@ impl Shell {
                 }
             }
             Command::Resume => {
-                if !self.job_active() {
+                let release = self.printer.with_state(|s| {
+                    actions::waiting_for_user(s)
+                        && !s.job.as_ref().is_some_and(|j| {
+                            matches!(
+                                j.status,
+                                sprint_host::JobStatus::Paused | sprint_host::JobStatus::Pausing
+                            )
+                        })
+                });
+                if release {
+                    // M0/M1 or a filament change without a host prompt; a
+                    // paused job is resumed below (with M108).
+                    self.printer.send("M108");
+                    self.out.dim("Continuing (M108)");
+                } else if !self.job_active() {
                     self.out.warn("No job is running");
                 } else if self.paused() {
                     self.resume();

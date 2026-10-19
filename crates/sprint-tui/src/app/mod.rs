@@ -885,6 +885,9 @@ impl App {
 
     /// F6: pause or resume.
     fn toggle_pause(&mut self) {
+        if self.continue_user_wait() {
+            return;
+        }
         match self.view.job.as_ref().map(|j| j.status.clone()) {
             Some(JobStatus::Paused | JobStatus::Pausing) => self.resume(),
             Some(status) if status.is_active() => {
@@ -893,6 +896,24 @@ impl App {
             }
             _ => self.warn("No job is running"),
         }
+    }
+
+    /// When the firmware waits for the user without a host prompt (M0/M1
+    /// or a filament change on firmware without prompt support) and the
+    /// job is not paused: release it with M108 and return true. A paused
+    /// job is resumed instead (the engine sends M108 then).
+    fn continue_user_wait(&mut self) -> bool {
+        let paused = self
+            .view
+            .job
+            .as_ref()
+            .is_some_and(|j| matches!(j.status, JobStatus::Paused | JobStatus::Pausing));
+        if !self.view.waiting_for_user || paused {
+            return false;
+        }
+        self.printer.send("M108");
+        self.info("Continuing (M108)");
+        true
     }
 
     /// F7: ask before cancelling, in words that fit the job (a print, an
@@ -1839,7 +1860,8 @@ impl App {
                 }
             }
             Command::Resume => {
-                if self.view.job_active() {
+                if self.continue_user_wait() {
+                } else if self.view.job_active() {
                     self.resume();
                 } else {
                     self.warn("No job is running");

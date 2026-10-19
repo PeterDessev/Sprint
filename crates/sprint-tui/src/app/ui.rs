@@ -123,6 +123,10 @@ impl App {
         if view.halted {
             right.push(Span::styled(" HALTED ", theme.selected().bg(theme.error)));
             right.push(Span::raw(" "));
+        } else if view.waiting_for_user {
+            right.push(Span::styled("Waits for the user ", theme.warning()));
+            right.push(Span::styled("F6", theme.key()));
+            right.push(Span::styled(" continues  ", theme.warning()));
         } else if let Some(busy) = &view.busy {
             right.push(Span::styled(format!("busy: {busy}  "), theme.warning()));
         }
@@ -809,11 +813,15 @@ impl App {
             _ => {
                 let pause = match self.view.job.as_ref().map(|j| &j.status) {
                     Some(JobStatus::Paused | JobStatus::Pausing) => "Resume",
+                    _ if self.view.waiting_for_user => "Continue (M108)",
                     _ => "Pause",
                 };
                 let mut hints = Vec::new();
                 if self.hidden_prompt.is_some() {
                     hints.push(("p", "Printer asks"));
+                }
+                if self.view.waiting_for_user && !self.view.job_active() {
+                    hints.push(("F6", "Continue (M108)"));
                 }
                 if self.view.job_active() {
                     // The job's controls first (a narrow terminal shows

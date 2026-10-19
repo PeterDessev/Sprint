@@ -131,6 +131,7 @@ impl Echo {
             printer: printer.clone(),
             out,
             shared: Arc::clone(&shared),
+            user_wait_told: std::cell::Cell::new(false),
         };
         let thread = std::thread::Builder::new()
             .name("sprint-shell-echo".into())
@@ -207,6 +208,8 @@ struct Worker {
     printer: Printer,
     out: Out,
     shared: Arc<Shared>,
+    /// The current wait for the user (without a prompt) was announced.
+    user_wait_told: std::cell::Cell<bool>,
 }
 
 impl Worker {
@@ -309,6 +312,9 @@ impl Worker {
                 if let Some(line) = self.console_line(entry, awaited.is_some()) {
                     self.out.line(line);
                 }
+                if entry.kind == ConsoleKind::Received {
+                    self.tell_user_wait();
+                }
             }
             Event::Job(JobStatus::Paused) => {
                 let name = self
@@ -324,6 +330,18 @@ impl Worker {
             }
             _ => {}
         }
+    }
+
+    /// Say once per wait that the firmware waits for the user without a
+    /// host prompt (stock Marlin without HOST_PROMPT_SUPPORT after M0 or
+    /// M600), and how to let it go on.
+    fn tell_user_wait(&self) {
+        let waiting = self.printer.with_state(crate::actions::waiting_for_user);
+        if waiting && !self.user_wait_told.get() {
+            self.out
+                .warn("The printer waits for the user: resume (or M108) continues");
+        }
+        self.user_wait_told.set(waiting);
     }
 
     /// How a console entry is echoed, if at all. `quiet` while a command

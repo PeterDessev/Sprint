@@ -36,6 +36,8 @@ pub mod actions;
 mod app;
 pub mod commands;
 pub mod config;
+#[cfg(test)]
+mod fake_printer;
 pub mod format;
 pub mod interrupt;
 pub mod loader;

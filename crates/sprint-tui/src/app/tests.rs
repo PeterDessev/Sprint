@@ -1946,3 +1946,34 @@ fn the_cancel_question_fits_the_job() {
     );
     assert_eq!(confirm.action, dialogs::Action::CancelJob);
 }
+
+#[test]
+fn f6_releases_a_wait_for_the_user_without_a_prompt() {
+    let fake = crate::fake_printer::FakePrinter::start();
+    let printer = Printer::new();
+    printer
+        .connect(fake.target(), ConnectOptions::default())
+        .expect("connect to the fake printer");
+    let mut app = App::new(printer, AppConfig::default(), None, Theme::dark());
+    wait(&mut app, "the connection", PrinterState::is_connected);
+    wait_idle(&mut app);
+    app.printer.send("M0");
+    wait(
+        &mut app,
+        "the wait for the user",
+        crate::actions::waiting_for_user,
+    );
+    app.sync();
+    assert!(app.view.waiting_for_user);
+    let text = screen(&mut app, 120, 40);
+    assert!(text.contains("Waits for the user F6 continues"), "{text}");
+    assert!(text.contains("F6 Continue (M108)"), "{text}");
+    press(&mut app, KeyCode::F(6));
+    wait(&mut app, "the release", |s| s.busy.is_none());
+    assert!(
+        fake.received().iter().any(|c| c == "M108"),
+        "{:?}",
+        fake.received()
+    );
+    app.printer.disconnect();
+}
