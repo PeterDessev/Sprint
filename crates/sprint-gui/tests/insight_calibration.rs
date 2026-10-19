@@ -429,6 +429,8 @@ fn every_wizard_fits_a_narrow_tab() {
         assert!(h.query_by_label(label).is_some(), "{label}");
     }
     assert_eq!(overlapping(&h, &controls), Vec::<String>::new());
+    pointer_away(&mut h);
+    snapshot(&mut h, "insight_calibration_zoffset_narrow_dark");
     // Narrower still, a drop-down picks the wizard.
     let mut h = tab(Theme::Dark, (300.0, 900.0), Some(demo_state()), None);
     assert!(h.query_by_label("PID").is_none());

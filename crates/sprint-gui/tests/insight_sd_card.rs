@@ -350,13 +350,14 @@ fn the_cancel_question_goes_away_with_its_job() {
 #[test]
 fn a_narrow_tab_keeps_the_card_buttons_apart() {
     let width = 380.0;
-    let h = tab(Theme::Light, (width, 900.0), sd_state());
+    let mut h = tab(Theme::Light, (width, 900.0), sd_state());
     let buttons = ["Initialize", "Release", "Open a file to upload…"];
     for label in buttons {
         assert!(h.query_by_label(label).is_some(), "{label}");
     }
     assert_eq!(overlapping(&h, &buttons), Vec::<String>::new());
     assert_eq!(overflowing(&h, width - 24.0), Vec::<String>::new());
+    snapshot(&mut h, "insight_sd_card_narrow_light");
 }
 
 #[test]
