@@ -1245,6 +1245,44 @@ impl Engine {
         }
     }
 
+    /// The cancel of a host print or an upload was not acknowledged in time
+    /// and the connection is about to close
+    /// ([`Printer::disconnect_safely`](crate::Printer::disconnect_safely)):
+    /// switch every heater and the part fan off (host print, whatever the
+    /// profile keeps on after failures: nobody watches the printer any
+    /// more) or close the file (upload). The commands go out with the
+    /// other safe-stop commands, written at once when the link closes.
+    pub(super) fn safe_stop_before_close(&mut self) {
+        let Some(job) = self.job.as_ref().filter(|j| j.is_active()) else {
+            return;
+        };
+        let lines = match job.kind() {
+            JobKind::HostPrint => {
+                let profile = self.shared.profile.read().clone();
+                let temps = self.shared.state.read().temps.clone();
+                let mut lines = profile
+                    .script_context(&job.machine)
+                    .covering(&temps)
+                    .heaters_off();
+                lines.push("M107".to_string());
+                self.warn(format!(
+                    "{} did not stop in time: switching the heaters and the part fan off before disconnecting",
+                    job.info.name
+                ));
+                lines
+            }
+            JobKind::SdUpload => {
+                self.warn("The upload did not stop in time: closing the file before disconnecting");
+                vec!["M29".to_string()]
+            }
+            JobKind::SdPrint => return,
+        };
+        for line in lines {
+            self.internal
+                .push_back(CmdMeta::new(line, Source::SafeStop));
+        }
+    }
+
     // ----- SD replies -----
 
     /// "open failed" while starting an SD print or upload.

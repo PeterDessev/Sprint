@@ -83,7 +83,7 @@ pub use console::{Console, ConsoleEntry, ConsoleKind};
 pub use error::HostError;
 pub use event::{EVENT_QUEUE_LIMIT, Event, EventBus};
 pub use fs::write_atomic;
-pub use host::Printer;
+pub use host::{DisconnectSummary, Printer};
 pub use job::{JobInfo, JobKind, JobStatus, PrintOptions, Progress, ProgressModel};
 pub use script::{
     DEFAULT_CANCEL_SCRIPT, DEFAULT_PAUSE_SCRIPT, DEFAULT_RESUME_SCRIPT, ScriptContext,

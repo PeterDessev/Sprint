@@ -933,6 +933,10 @@ impl Printer {
     /// (A disconnect() meanwhile cancels it: Err(HostError::Cancelled), status Disconnected, no failure
     /// event; auto-baud stops between and during its attempts.)
     pub fn disconnect(&self);
+    /// Cancel a host print or SD upload first (cancel script / partial file deleted), wait up to `timeout`
+    /// for the printer to acknowledge it (else heaters + part fan off / M29 written as the link closes),
+    /// then disconnect. SD prints are not cancelled: they go on on the printer (said in the summary).
+    pub fn disconnect_safely(&self, timeout: std::time::Duration) -> DisconnectSummary;
     pub fn is_connected(&self) -> bool;                 // handshake complete
     /// Queue G-code typed by the user or produced by UI controls. Multiple
     /// lines allowed; comments/blank lines dropped. Sent before pending
@@ -997,6 +1001,14 @@ impl Printer {
     /// TCP and custom links: Err(HostError::Unsupported) (reset button or power cycle needed).
     pub fn reset_board(&self) -> Result<(), HostError>;
 }
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DisconnectSummary {                         // impl Display: "Cancelled cube.gcode (the cancel script ran), then disconnected", ...
+    pub was_connected: bool,
+    pub cancelled: Option<(JobKind, String)>,          // the host print or upload cancelled first
+    pub cancel_status: Option<JobStatus>,              // Cancelled (acknowledged), Failed (meanwhile), None (timed out: safe stop sent)
+    pub sd_print_continues: Option<String>,            // an SD print left running on the printer
+}
+impl DisconnectSummary { pub fn acknowledged(&self) -> bool; }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Heater { Hotend(u8), Bed, Chamber }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -1499,6 +1511,16 @@ Every public item is also re-exported at the crate root.
   reset" / the disconnect reason, and `Event::AutotuneFailed` (once).
   `start_pid_autotune` while halted fails the same way at once without
   sending M303 (an M303 typed while halted is sent but fails at once).
+* `disconnect_safely(timeout)`: a host print or SD upload that is active
+  is cancelled as with `cancel()` and the call waits (polling the state)
+  until the job has ended, the link closed by itself, or `timeout`; at the
+  timeout the engine queues every heater off (all the printer reports or
+  the job heated, whatever `keep_heaters_on_failure` says) and `M107`
+  (host print) or `M29` (upload) as safe-stop commands, which the
+  disconnect writes at once. An active SD print is left alone; closing
+  the connection then fails its record with "disconnected; the printer
+  goes on printing <name> from its SD card" (as a plain `disconnect()`
+  does). Not connected: just `disconnect()`.
 * Threads: `disconnect()` and dropping the last handle join each thread for
   at most 2 s, then detach it. A panic in the engine leaves status (and any
   job) `Failed`. The waker is called without the rate limit when the engine

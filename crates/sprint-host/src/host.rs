@@ -1,8 +1,9 @@
 //! The [`Printer`] handle: the API UIs use to connect, send, print and read
 //! the printer state.
 
+use std::fmt;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossbeam_channel::Receiver;
 use parking_lot::Mutex;
@@ -15,13 +16,96 @@ use crate::console::{ConsoleEntry, ConsoleKind};
 use crate::engine::{self, Command, EngineHandle, Shared};
 use crate::error::HostError;
 use crate::event::Event;
-use crate::job::PrintOptions;
+use crate::job::{JobKind, JobStatus, PrintOptions};
 use crate::script::{format_number, render_script_with};
 use crate::state::{Axes, Axis, ConnectionStatus, Heater, PrinterState};
 use crate::transport::{ConnectTarget, Link};
 
 /// How long a request that needs the engine's answer may take.
 const REPLY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// What [`Printer::disconnect_safely`] did before it closed the
+/// connection. [`Display`](fmt::Display) words it for a status line.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DisconnectSummary {
+    /// A connection was open (or being opened) and is closed now.
+    pub was_connected: bool,
+    /// The host print or SD upload that was cancelled before closing:
+    /// its kind and name.
+    pub cancelled: Option<(JobKind, String)>,
+    /// How that job ended before the link closed: `Cancelled` when the
+    /// printer acknowledged the cancel (the cancel script ran, or the
+    /// partial upload was closed and deleted), `Failed` when it failed
+    /// meanwhile (a halt, a lost link). `None` when it was still stopping
+    /// at the timeout: then every heater and the part fan were switched
+    /// off (host print) or the file was closed (upload) as the link
+    /// closed.
+    pub cancel_status: Option<JobStatus>,
+    /// An SD print that goes on on the printer, unwatched: its file name.
+    /// It was not cancelled (cancel it first to stop it).
+    pub sd_print_continues: Option<String>,
+}
+
+impl DisconnectSummary {
+    /// The printer acknowledged the cancel before the link closed.
+    pub fn acknowledged(&self) -> bool {
+        self.cancel_status == Some(JobStatus::Cancelled)
+    }
+}
+
+impl fmt::Display for DisconnectSummary {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if !self.was_connected {
+            return f.write_str("Not connected");
+        }
+        if let Some((kind, name)) = &self.cancelled {
+            let job = match kind {
+                JobKind::SdUpload => format!("the upload of {name}"),
+                _ => name.clone(),
+            };
+            match &self.cancel_status {
+                Some(JobStatus::Cancelled) => {
+                    let what = match kind {
+                        JobKind::SdUpload => "the partial file was deleted",
+                        _ => "the cancel script ran",
+                    };
+                    write!(f, "Cancelled {job} ({what}), then disconnected")?;
+                }
+                Some(JobStatus::Failed(reason)) => {
+                    write!(f, "Cancelling {job} failed ({reason}); disconnected")?;
+                }
+                _ => {
+                    let what = match kind {
+                        JobKind::SdUpload => "the file was closed",
+                        _ => "the heaters and the part fan were switched off",
+                    };
+                    write!(
+                        f,
+                        "{} did not stop in time: {what} as the link closed",
+                        capitalized(&job)
+                    )?;
+                }
+            }
+        } else {
+            f.write_str("Disconnected")?;
+        }
+        if let Some(name) = &self.sd_print_continues {
+            write!(
+                f,
+                "; the printer goes on printing {name} from its SD card, unwatched"
+            )?;
+        }
+        Ok(())
+    }
+}
+
+/// `text` with its first letter upper case.
+fn capitalized(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map_or_else(String::new, |c| {
+        c.to_uppercase().chain(chars).collect::<String>()
+    })
+}
 
 /// A handle to one printer connection (or the lack of one).
 ///
@@ -293,6 +377,70 @@ impl Printer {
         let open = self.with_state(|s| s.status.is_open());
         if open {
             self.set_status(ConnectionStatus::Disconnected);
+        }
+    }
+
+    /// Close the connection without leaving the printer unsafe: a host
+    /// print or an SD upload is cancelled first (the cancel script, which
+    /// switches the heaters off; the partial upload closed and deleted),
+    /// and the link closes once the printer acknowledged that, or after
+    /// `timeout`. A cancel still running then gets every heater and the
+    /// part fan switched off (the upload: its file closed) as the link
+    /// closes. An SD print is not cancelled: it goes on on the printer,
+    /// unwatched. Blocks for up to `timeout` (call it off the UI thread);
+    /// the summary says what happened.
+    ///
+    /// ```no_run
+    /// # let printer = sprint_host::Printer::new();
+    /// let summary = printer.disconnect_safely(std::time::Duration::from_secs(10));
+    /// println!("{summary}");
+    /// ```
+    pub fn disconnect_safely(&self, timeout: Duration) -> DisconnectSummary {
+        let (open, job) = self.with_state(|s| {
+            (
+                s.status.is_open(),
+                s.job
+                    .clone()
+                    .filter(|j| j.status.is_active())
+                    .map(|j| (j.kind, j.name)),
+            )
+        });
+        let mut summary = DisconnectSummary {
+            was_connected: open,
+            ..DisconnectSummary::default()
+        };
+        match job {
+            Some((JobKind::SdPrint, name)) if open => summary.sd_print_continues = Some(name),
+            Some((kind, name)) if open => {
+                summary.cancelled = Some((kind, name));
+                summary.cancel_status = self.cancel_and_wait(timeout);
+            }
+            _ => {}
+        }
+        self.disconnect();
+        summary
+    }
+
+    /// Cancel the job and wait (at most `timeout`) until it ends or the
+    /// link closes by itself; its final status, or `None` (and a safe
+    /// stop) at the timeout.
+    fn cancel_and_wait(&self, timeout: Duration) -> Option<JobStatus> {
+        self.cancel();
+        let deadline = Instant::now() + timeout;
+        loop {
+            let (status, open) =
+                self.with_state(|s| (s.job.as_ref().map(|j| j.status.clone()), s.status.is_open()));
+            if let Some(status) = status.filter(JobStatus::is_finished) {
+                return Some(status);
+            }
+            if !open {
+                return None;
+            }
+            if Instant::now() >= deadline {
+                self.to_engine(Command::SafeStop);
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(5));
         }
     }
 

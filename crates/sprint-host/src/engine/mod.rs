@@ -253,6 +253,9 @@ pub(crate) enum Command {
     },
     ProbeBedMesh,
     FirmwareRestart,
+    /// The job's cancel was not acknowledged in time and the connection is
+    /// about to close: leave the printer safe.
+    SafeStop,
     Disconnect,
 }
 
@@ -606,8 +609,18 @@ impl Engine {
             ConnectionStatus::Failed(r) => r.clone(),
             _ => "connection closed".to_string(),
         };
-        if self.job.is_some() {
-            self.fail_job(&reason);
+        let sd_print = self
+            .job
+            .as_ref()
+            .filter(|j| j.kind() == JobKind::SdPrint && j.is_active())
+            .map(|j| j.info.name.clone());
+        match sd_print {
+            // The printer reads it from its card: it goes on, unwatched.
+            Some(name) if status == ConnectionStatus::Disconnected => self.fail_job(&format!(
+                "{reason}; the printer goes on printing {name} from its SD card"
+            )),
+            _ if self.job.is_some() => self.fail_job(&reason),
+            _ => {}
         }
         // Its result could never arrive.
         self.end_autotune(&reason);
@@ -1320,6 +1333,7 @@ impl Engine {
             }
             Command::ProbeBedMesh => self.probe_bed_mesh(),
             Command::FirmwareRestart => self.firmware_restart(),
+            Command::SafeStop => self.safe_stop_before_close(),
             Command::Disconnect => self.close(ConnectionStatus::Disconnected, "Disconnected"),
         }
     }
