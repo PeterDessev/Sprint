@@ -161,6 +161,10 @@ pub(crate) struct App {
     /// Jog mode with this step index.
     pub jog: Option<usize>,
     pub estop_armed: Option<Instant>,
+    /// The terminal reports key releases (the Windows console does).
+    releases_seen: bool,
+    /// F8 was released since it armed the emergency stop.
+    estop_released: bool,
     /// A resume waiting for the commands typed while paused.
     pub resume_pending: Option<PendingResume>,
     pub toast: Option<Toast>,
@@ -248,6 +252,8 @@ impl App {
             modal: None,
             jog: None,
             estop_armed: None,
+            releases_seen: false,
+            estop_released: false,
             resume_pending: None,
             toast: None,
             hidden_prompt: None,
@@ -833,19 +839,30 @@ impl App {
         )));
     }
 
-    /// F8: arm, then stop on the second press.
-    fn emergency_key(&mut self) {
+    /// F8: arm, then stop on the second press. A held key is not a second
+    /// press: repeats are ignored, and where the terminal reports releases
+    /// (the Windows console reports a held key as more presses) F8 must
+    /// have been released in between.
+    fn emergency_key(&mut self, kind: KeyEventKind) {
         if !self.view.status.is_open() {
             // Nothing would be sent: do not claim an emergency stop.
             self.estop_armed = None;
             self.warn("Not connected: there is no printer to stop");
             return;
         }
-        if self.estop_armed.take().is_some() {
+        if kind == KeyEventKind::Repeat {
+            return;
+        }
+        if self.estop_armed.is_some() {
+            if self.releases_seen && !self.estop_released {
+                return;
+            }
+            self.estop_armed = None;
             self.printer.emergency_stop();
             self.error("EMERGENCY STOP sent (M112). Restart the firmware (M999) or reconnect.");
         } else {
             self.estop_armed = Some(Instant::now());
+            self.estop_released = false;
             self.dirty = true;
         }
     }
@@ -1141,7 +1158,14 @@ impl App {
     /// Handle one terminal event.
     pub(crate) fn handle_event(&mut self, event: TermEvent) {
         match event {
-            TermEvent::Key(key) if key.kind != KeyEventKind::Release => self.on_key(key),
+            TermEvent::Key(key) if key.kind == KeyEventKind::Release => {
+                self.releases_seen = true;
+                if key.code == KeyCode::F(8) {
+                    self.estop_released = true;
+                }
+                return;
+            }
+            TermEvent::Key(key) => self.on_key(key),
             TermEvent::Mouse(mouse) => self.on_mouse(mouse),
             TermEvent::Paste(text) => self.on_paste(&text),
             TermEvent::Resize(..) | TermEvent::FocusGained => {}
@@ -1260,7 +1284,7 @@ impl App {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         // The emergency stop works everywhere; any other key disarms it.
         if key.code == KeyCode::F(8) {
-            self.emergency_key();
+            self.emergency_key(key.kind);
             return;
         }
         if self.estop_armed.take().is_some() {

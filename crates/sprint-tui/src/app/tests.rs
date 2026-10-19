@@ -1765,3 +1765,33 @@ fn disconnecting_during_a_print_cancels_it_first() {
     let got = control.received_commands();
     assert!(got.iter().any(|c| c == "M104 S0"), "{got:?}");
 }
+
+#[test]
+fn a_held_f8_is_not_a_second_press() {
+    use crossterm::event::KeyEventKind;
+    let key = |kind: KeyEventKind| {
+        let mut k = KeyEvent::new(KeyCode::F(8), KeyModifiers::NONE);
+        k.kind = kind;
+        TermEvent::Key(k)
+    };
+    let mut app = connected_app();
+    // Repeats reported as such (kitty keyboard protocol) never fire.
+    app.handle_event(key(KeyEventKind::Press));
+    app.handle_event(key(KeyEventKind::Repeat));
+    app.sync();
+    assert!(!app.view.halted && app.estop_armed.is_some());
+    // The Windows console reports a held key as more presses, and every
+    // release: once releases are seen, the second press needs one first.
+    app.handle_event(key(KeyEventKind::Release));
+    press(&mut app, KeyCode::Char('x'));
+    assert!(app.estop_armed.is_none());
+    app.handle_event(key(KeyEventKind::Press));
+    app.handle_event(key(KeyEventKind::Press));
+    app.handle_event(key(KeyEventKind::Press));
+    app.sync();
+    assert!(!app.view.halted, "holding F8 sent the emergency stop");
+    assert!(app.estop_armed.is_some());
+    app.handle_event(key(KeyEventKind::Release));
+    app.handle_event(key(KeyEventKind::Press));
+    wait(&mut app, "the halt", |s| s.halted);
+}
