@@ -21,7 +21,7 @@ use sprint_gcode::GcodeFile;
 
 use crate::context::{AppAction, AppCtx, Tab};
 use crate::theme::{self, Palette};
-use crate::widgets::{Badge, IconButton};
+use crate::widgets::{Badge, ConfirmDialog, DialogResult, IconButton};
 use crate::{format, icons};
 
 /// Files below this size are searched on the UI thread (instant results).
@@ -563,6 +563,8 @@ pub struct GcodeTab {
     follow_print: bool,
     last_followed: Option<usize>,
     hovered_line: Option<u32>,
+    /// A dangerous line waiting for "Send anyway".
+    confirm_send: Option<String>,
 }
 
 impl Default for GcodeTab {
@@ -575,6 +577,7 @@ impl Default for GcodeTab {
             follow_print: true,
             last_followed: None,
             hovered_line: None,
+            confirm_send: None,
         }
     }
 }
@@ -681,6 +684,7 @@ impl GcodeTab {
             self.status(ui, ctx, &file, progress, &p);
         });
         ui.allocate_rect(body, Sense::hover());
+        self.confirm_dangerous(ui.ctx(), ctx);
     }
 
     fn toolbar(
@@ -1041,6 +1045,13 @@ impl GcodeTab {
                         galley,
                         p.text,
                     );
+                    response.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::WidgetType::Label,
+                            true,
+                            format!("Line {}: {}", index + 1, shown),
+                        )
+                    });
                     if response.hovered() {
                         hovered = Some(i32_index);
                     }
@@ -1116,13 +1127,53 @@ impl GcodeTab {
             .clicked()
         {
             if let Some(command) = command {
-                ctx.printer.send(&command);
-                ctx.toasts
-                    .info("Sent")
-                    .message(format::sanitize(&command, 80));
+                // Like the console: dangerous commands ask first.
+                if sprint_proto::gcode_doc(&command).is_some_and(|d| d.dangerous) {
+                    self.confirm_send = Some(command);
+                } else {
+                    send_line(ctx, &command);
+                }
             }
             ui.close();
         }
+    }
+
+    /// The "send a dangerous line?" question, while one waits.
+    fn confirm_dangerous(&mut self, egui_ctx: &egui::Context, ctx: &mut AppCtx<'_>) {
+        let Some(command) = &self.confirm_send else {
+            return;
+        };
+        let message = match sprint_proto::gcode_doc(command) {
+            Some(doc) => format!("{} — {}: {}", doc.code, doc.name, doc.description),
+            None => String::new(),
+        };
+        let answer = ConfirmDialog::new("sprint-gcode-dangerous", "Send a dangerous command?")
+            .message(&message)
+            .details(command)
+            .confirm_label("Send anyway")
+            .danger(true)
+            .width(460.0)
+            .show(egui_ctx);
+        match answer {
+            Some(DialogResult::Confirmed) => {
+                if let Some(command) = self.confirm_send.take() {
+                    if ctx.connected() && !ctx.job_active() {
+                        send_line(ctx, &command);
+                    } else {
+                        ctx.toasts
+                            .warning("Not sent")
+                            .message("The printer is not ready for it any more.");
+                    }
+                }
+            }
+            Some(DialogResult::Cancelled) => self.confirm_send = None,
+            None => {}
+        }
+    }
+
+    /// True while a dangerous line waits for confirmation.
+    pub fn is_confirming(&self) -> bool {
+        self.confirm_send.is_some()
     }
 
     fn status(
@@ -1175,6 +1226,14 @@ impl GcodeTab {
             },
         );
     }
+}
+
+/// Send one line of the file to the printer, with a toast.
+fn send_line(ctx: &mut AppCtx<'_>, command: &str) {
+    ctx.printer.send(command);
+    ctx.toasts
+        .info("Sent")
+        .message(format::sanitize(command, 80));
 }
 
 /// `line` cut to at most `max` chars.

@@ -215,6 +215,39 @@ fn the_console_sends_and_remembers_commands() {
     });
 }
 
+#[test]
+fn sending_a_dangerous_line_from_the_gcode_asks_first() {
+    let dir = temp_dir("dangerous-line");
+    let path = dir.join("end.gcode");
+    std::fs::write(&path, "G28\nM502 ; factory reset\nM105\n").expect("write");
+    let mut h = app(with_file(sim_options(), path), WINDOW);
+    expect(&mut h, "the file to load", analyzed);
+    connect(&mut h);
+    h.state_mut().push_action(AppAction::ShowTab(Tab::Gcode));
+    settle(&mut h);
+    // A harmless line goes straight out.
+    h.get_by_label("Line 3: M105").click_secondary();
+    settle(&mut h);
+    h.get_by_label_contains("Send line to printer").click();
+    expect(&mut h, "M105 to reach the printer", |app| {
+        received(app).iter().any(|c| c == "M105")
+    });
+    // A dangerous one asks first.
+    h.get_by_label("Line 2: M502 ; factory reset")
+        .click_secondary();
+    settle(&mut h);
+    h.get_by_label_contains("Send line to printer").click();
+    settle(&mut h);
+    assert!(h.state().gcode_tab().is_confirming());
+    assert!(!received(h.state()).iter().any(|c| c == "M502"));
+    h.get_by_label("Send anyway").click();
+    expect(&mut h, "M502 after confirming", |app| {
+        received(app).iter().any(|c| c == "M502")
+    });
+    assert!(!h.state().gcode_tab().is_confirming());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// A dropped file for the drag-and-drop test.
 #[derive(Debug)]
 struct Dropped(PathBuf);
