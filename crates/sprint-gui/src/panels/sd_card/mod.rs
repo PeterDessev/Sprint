@@ -102,6 +102,18 @@ pub struct SdCardTab {
     connection: kit::ConnectionWatch,
 }
 
+/// Room the "Open a file to upload…" button needs next to Initialize and
+/// Release (points).
+const OPEN_FILE_WIDTH: f32 = 190.0;
+
+/// The button that asks the shell to open a G-code file.
+fn open_file_button() -> ActionButton<'static> {
+    ActionButton::new("Open a file to upload…")
+        .icon(icons::OPEN)
+        .ghost()
+        .small()
+}
+
 /// The SD job in the state, if the last job was one.
 fn sd_job(state: &PrinterState) -> Option<&JobInfo> {
     state
@@ -521,6 +533,9 @@ impl SdCardTab {
         // After M22 the files can be neither printed nor deleted until the
         // card is initialized again.
         let released = self.released;
+        let wants_file = ctx.file.is_none();
+        let mut open_room = true;
+        let mut open_file = false;
         // Edited in the header, read by the table.
         let filter = std::cell::RefCell::new(std::mem::take(&mut self.filter));
         Card::new("Files")
@@ -653,23 +668,24 @@ impl SdCardTab {
                             ctx.printer.send("M22");
                             self.released = true;
                         }
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ctx.file.is_none()
-                                && ui
-                                    .add(
-                                        ActionButton::new("Open a file to upload…")
-                                            .icon(icons::OPEN)
-                                            .ghost()
-                                            .small(),
-                                    )
-                                    .clicked()
-                            {
-                                ctx.actions.push(AppAction::OpenFileDialog);
-                            }
-                        });
+                        // Right-aligned when it fits, else on the next row
+                        // (instead of over Release).
+                        open_room = ui.available_width() >= OPEN_FILE_WIDTH;
+                        if wants_file && open_room {
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                open_file = ui.add(open_file_button()).clicked();
+                            });
+                        }
                     });
+                    if wants_file && !open_room {
+                        ui.add_space(2.0);
+                        open_file = ui.add(open_file_button()).clicked();
+                    }
                 },
             );
+        if open_file {
+            ctx.actions.push(AppAction::OpenFileDialog);
+        }
         self.filter = filter.into_inner();
     }
 
