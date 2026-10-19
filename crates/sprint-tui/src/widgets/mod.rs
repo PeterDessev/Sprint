@@ -6,6 +6,7 @@
 
 pub mod console;
 pub mod heater;
+pub mod help;
 pub mod input;
 pub mod job;
 pub mod layer_canvas;
@@ -16,6 +17,7 @@ pub(crate) mod util;
 
 pub use console::{ConsoleKind, ConsoleLine, ConsoleState, ConsoleView, find_matches};
 pub use heater::{HeaterGauge, HeaterKind, HeaterState};
+pub use help::{HelpOverlay, HelpSection, KeyHints};
 pub use input::{
     Candidate, CommandInput, CommandLine, Completer, CompletionPopup, InputEvent, gcode_candidates,
 };
