@@ -842,4 +842,64 @@ mod tests {
         // The newer-lines note does not fit and is left out.
         assert_eq!(lines(&buf)[0], "lin…");
     }
+
+    #[test]
+    fn random_traffic_keeps_a_scrolled_view_on_its_line() {
+        // Deterministic xorshift, so failures reproduce.
+        let mut seed = 0x2545_F491_4F6C_DD1D_u64;
+        let mut next = move |n: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            usize::try_from(seed % u64::try_from(n.max(1)).unwrap_or(1)).unwrap_or(0)
+        };
+        const HEIGHT: usize = 4;
+        let mut log: Vec<ConsoleLine> = Vec::new();
+        let mut state = ConsoleState::new();
+        let (mut serial, mut show_auto) = (0, false);
+        // The newest visible line while scrolled back.
+        let mut bottom: Option<String> = None;
+        for step in 0..4000 {
+            // Whether this step must leave `bottom` where it is.
+            let mut keeps = false;
+            match next(9) {
+                0..=2 => {
+                    for _ in 0..next(4) {
+                        serial += 1;
+                        let line = ConsoleLine::received(format!("l{serial}"));
+                        log.push(line.with_auto(next(2) == 0));
+                    }
+                    keeps = true;
+                }
+                3 => state.scroll_up(next(10)),
+                4 => state.scroll_down(next(10)),
+                5 => show_auto = !show_auto,
+                6 | 7 => {
+                    let n = next(log.len() / 2 + 2).min(log.len());
+                    keeps = bottom
+                        .as_ref()
+                        .is_some_and(|b| !log[..n].iter().any(|l| &l.text == b));
+                    log.drain(..n);
+                    state.lines_removed(n);
+                }
+                _ => state.follow(),
+            }
+            let view = ConsoleView::new(&log).show_auto(show_auto);
+            let _ = render_stateful(view, 12, 4, &mut state);
+            let shown: Vec<&ConsoleLine> = log.iter().filter(|l| show_auto || !l.auto).collect();
+            let max = shown.len().saturating_sub(HEIGHT);
+            assert!(state.offset() <= max, "step {step}");
+            assert_eq!(state.is_following(), state.offset() == 0, "step {step}");
+            let now = (!state.is_following())
+                .then(|| shown[shown.len() - 1 - state.offset()].text.clone());
+            // Unless pushed against the oldest line, the view stays put.
+            if keeps
+                && state.offset() < max
+                && let (Some(before), Some(after)) = (&bottom, &now)
+            {
+                assert_eq!(before, after, "step {step}");
+            }
+            bottom = now;
+        }
+    }
 }
