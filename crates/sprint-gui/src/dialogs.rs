@@ -74,6 +74,19 @@ pub enum StartOutcome {
     Closed,
 }
 
+/// Files with more lines than this get their resume preamble computed on
+/// a worker thread (walking millions of lines takes a moment).
+pub const ASYNC_PREAMBLE_LINES: usize = 200_000;
+
+/// The preamble for one start line and set of options.
+type PreambleKey = (usize, ResumeOptions);
+
+/// A preamble being computed on a worker thread.
+struct PendingPreamble {
+    key: PreambleKey,
+    rx: crossbeam_channel::Receiver<String>,
+}
+
 /// The start-print dialog.
 pub struct StartPrintDialog {
     mode: StartMode,
@@ -82,7 +95,8 @@ pub struct StartPrintDialog {
     line_text: String,
     resume: ResumeOptions,
     preamble: String,
-    preamble_for: Option<(usize, ResumeOptions)>,
+    preamble_for: Option<PreambleKey>,
+    pending: Option<PendingPreamble>,
     edited: bool,
     emit_m73: bool,
     error: Option<String>,
@@ -111,6 +125,7 @@ impl StartPrintDialog {
             resume: ResumeOptions::default(),
             preamble: String::new(),
             preamble_for: None,
+            pending: None,
             edited: false,
             emit_m73: false,
             error: None,
@@ -148,20 +163,72 @@ impl StartPrintDialog {
         &self.preamble
     }
 
+    /// True while the preamble is computed in the background.
+    pub fn is_preparing(&self) -> bool {
+        self.pending.is_some()
+    }
+
     /// Regenerate the preamble for the current start line unless the user
-    /// edited it.
+    /// edited it (here and now, see [`StartPrintDialog::refresh_preamble_in_background`]).
     pub fn refresh_preamble(&mut self, file: &LoadedFile) {
         let line = self.start_line(file.toolpath.as_deref());
         let key = (line, self.resume.clone());
         if self.edited || self.preamble_for.as_ref() == Some(&key) {
             return;
         }
+        self.pending = None;
         self.preamble = if line == 0 {
             String::new()
         } else {
             resume_preamble(&file.file, line, &self.resume).join("\n")
         };
         self.preamble_for = Some(key);
+    }
+
+    /// Like [`StartPrintDialog::refresh_preamble`], but for files over
+    /// [`ASYNC_PREAMBLE_LINES`] lines the work runs on a worker thread
+    /// (`repaint` is asked for a frame when it is done).
+    pub fn refresh_preamble_in_background(&mut self, file: &LoadedFile, repaint: &egui::Context) {
+        let line = self.start_line(file.toolpath.as_deref());
+        let key = (line, self.resume.clone());
+        if let Some(pending) = &self.pending {
+            match pending.rx.try_recv() {
+                Ok(text) => {
+                    if !self.edited {
+                        self.preamble = text;
+                        self.preamble_for = Some(pending.key.clone());
+                    }
+                    self.pending = None;
+                }
+                Err(crossbeam_channel::TryRecvError::Disconnected) => self.pending = None,
+                Err(crossbeam_channel::TryRecvError::Empty) => {}
+            }
+        }
+        let wanted = |k: &PreambleKey| *k == key;
+        if self.edited
+            || self.preamble_for.as_ref().is_some_and(wanted)
+            || self.pending.as_ref().is_some_and(|p| wanted(&p.key))
+        {
+            return;
+        }
+        if line == 0 || file.file.len() < ASYNC_PREAMBLE_LINES {
+            self.refresh_preamble(file);
+            return;
+        }
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let gcode = Arc::clone(&file.file);
+        let options = self.resume.clone();
+        let ctx = repaint.clone();
+        let spawned = std::thread::Builder::new()
+            .name("sprint-gui-preamble".to_owned())
+            .spawn(move || {
+                let _ = tx.send(resume_preamble(&gcode, line, &options).join("\n"));
+                ctx.request_repaint();
+            });
+        match spawned {
+            Ok(_) => self.pending = Some(PendingPreamble { key, rx }),
+            Err(_) => self.refresh_preamble(file),
+        }
     }
 
     /// Try to start the print.
@@ -218,7 +285,7 @@ impl StartPrintDialog {
         let mut outcome = None;
         let dragging = egui_ctx.input(|i| i.pointer.any_down());
         if !dragging {
-            self.refresh_preamble(file);
+            self.refresh_preamble_in_background(file, egui_ctx);
         }
         let toolpath = file.toolpath.clone();
         let modal = Modal::new(Id::new("sprint-start-print"))
@@ -258,7 +325,10 @@ impl StartPrintDialog {
                 if let Some(error) = &self.error {
                     ui.label(RichText::new(icons::with_text(icons::ERROR, error)).color(p.danger));
                 }
-                let blocker = print_blocker(ctx.state, true);
+                let blocker = print_blocker(ctx.state, true).or_else(|| {
+                    (self.is_preparing() && self.start_line(toolpath.as_deref()) > 0)
+                        .then_some("Preparing the resume preamble…")
+                });
                 ui.add_space(4.0);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let start = ui
@@ -369,6 +439,10 @@ impl StartPrintDialog {
             if self.edited {
                 ui.add(Badge::new("EDITED").tone(Tone::Warning));
             }
+            if self.is_preparing() {
+                ui.add(egui::Spinner::new().size(12.0));
+                ui.label(RichText::new("Preparing…").size(12.0).color(p.text_dim));
+            }
         });
         let before = self.resume.clone();
         ui.horizontal_wrapped(|ui| {
@@ -438,7 +512,7 @@ impl StartPrintDialog {
                 {
                     self.edited = false;
                     self.preamble_for = None;
-                    self.refresh_preamble(file);
+                    self.refresh_preamble_in_background(file, ui.ctx());
                 }
             });
         });
@@ -719,6 +793,41 @@ mod tests {
         let mut d = StartPrintDialog::new(0, &file);
         d.refresh_preamble(&file);
         assert!(d.preamble().is_empty());
+    }
+
+    #[test]
+    fn huge_files_prepare_the_preamble_in_the_background() {
+        let mut text = String::from("M104 S200\nG28\nG1 Z0.2 F600\n");
+        for i in 0..ASYNC_PREAMBLE_LINES {
+            text.push_str(&format!("G1 X{} Y{} E{}\n", i % 100, (i / 100) % 100, i));
+        }
+        let file = LoadedFile {
+            path: None,
+            file: Arc::new(GcodeFile::from_text("big.gcode", text)),
+            toolpath: None,
+            analysis_progress: None,
+        };
+        let ctx = egui::Context::default();
+        let mut d = StartPrintDialog::new(ASYNC_PREAMBLE_LINES, &file);
+        d.refresh_preamble_in_background(&file, &ctx);
+        assert!(d.is_preparing());
+        assert!(d.preamble().is_empty());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while d.is_preparing() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "preamble never arrived"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            d.refresh_preamble_in_background(&file, &ctx);
+        }
+        assert!(d.preamble().contains("G28"), "{}", d.preamble());
+        // Small files are prepared at once.
+        let small = loaded(TWO_LAYERS);
+        let mut d = StartPrintDialog::new(6, &small);
+        d.refresh_preamble_in_background(&small, &ctx);
+        assert!(!d.is_preparing());
+        assert!(d.preamble().contains("G28"));
     }
 
     #[test]
