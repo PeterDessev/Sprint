@@ -90,8 +90,13 @@ fn shared_gpu() -> Option<egui_wgpu::WgpuSetupExisting> {
 /// A wgpu renderer on the shared GPU (its own egui renderer, the device
 /// shared), or `None` when the machine has no usable adapter.
 pub fn renderer() -> Option<WgpuTestRenderer> {
+    // Not `quietly`: swapping the global panic hook for every harness
+    // would swallow the messages of tests failing meanwhile.
     let renderer = shared_gpu().and_then(|gpu| {
-        quietly(|| WgpuTestRenderer::from_setup(egui_wgpu::WgpuSetup::Existing(gpu)))
+        std::panic::catch_unwind(AssertUnwindSafe(|| {
+            WgpuTestRenderer::from_setup(egui_wgpu::WgpuSetup::Existing(gpu))
+        }))
+        .ok()
     });
     if renderer.is_none() {
         eprintln!("no wgpu adapter: rendering is unavailable and snapshots are skipped");

@@ -856,12 +856,17 @@ fn quitting_during_a_print_cancels_it_before_the_window_closes() {
 
 #[test]
 fn disconnecting_during_an_upload_closes_and_deletes_the_file_first() {
-    let options = with_file(slow_sim_options(5.0), sample("calibration-cube.gcode"));
-    let mut h = app(options, WINDOW);
-    expect(&mut h, "the cube to be analyzed", analyzed);
+    let mut h = app(slow_sim_options(5.0), WINDOW);
     connect(&mut h);
     let control = h.state().printer().sim_control().expect("simulator");
-    let file = Arc::clone(&h.state().file().expect("file").file);
+    // Long enough to be still uploading however slowly the test runs.
+    let text: String = (0..400_000)
+        .map(|i| format!("G1 X{} Y10 F3000\n", i % 100))
+        .collect();
+    let file = Arc::new(sprint_host::sprint_gcode::GcodeFile::from_text(
+        "cube.gcode",
+        &text,
+    ));
     h.state()
         .printer()
         .upload_to_sd(file, "CUBE.GCO")
