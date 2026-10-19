@@ -2,7 +2,8 @@
 //! by kind, with filters, search, timestamps, autoscroll, copy / clear /
 //! export, and a command line with history, G-code autocomplete,
 //! multi-line paste, quick commands and confirmation for dangerous
-//! commands (and for moves typed while a job prints).
+//! commands (and for what would ruin a running job: moves while it prints,
+//! homing Z, probing and motors off even while it is paused).
 //!
 //! The panel keeps its own bounded copy of the log, fetched incrementally
 //! with [`Printer::console_since`] (see [`ConsolePanel::sync`]), and an
@@ -121,6 +122,48 @@ pub fn dangerous_commands(lines: &[String]) -> Vec<&'static GcodeDoc> {
         .collect()
 }
 
+/// Codes that home Z or probe: the nozzle goes down onto the part.
+const PROBING: &[&str] = &[
+    "G29", "G30", "G32", "G33", "G34", "G35", "G38.2", "G38.3", "G38.4", "G38.5", "G76", "M48",
+];
+/// Codes that switch the motors off: the printer loses its position.
+const MOTORS_OFF: &[&str] = &["M18", "M84"];
+
+/// Why typed `line` would ruin the running job, if it would, with its
+/// reference entry: homing Z, probing and switching the motors off even
+/// while the job is `paused`; while it prints, also anything that
+/// [interferes](interferes_with_job) with its moves. The same rules as the
+/// TUI's and the shell's.
+pub fn job_conflict(line: &str, paused: bool) -> Option<(&'static GcodeDoc, &'static str)> {
+    let doc = sprint_proto::gcode_doc(line.trim())?;
+    let code = doc.code;
+    let why = if PROBING.contains(&code) || (code == "G28" && homes_z(line)) {
+        "homing Z and probing lower the nozzle onto the part"
+    } else if MOTORS_OFF.contains(&code) {
+        "with the motors off the printer loses the position the print goes on from"
+    } else if !paused && interferes_with_job(doc) {
+        "it runs between the print's own moves and can ruin the part"
+    } else {
+        return None;
+    };
+    Some((doc, why))
+}
+
+/// Whether a G28 line homes Z: when it names Z, or no axis at all.
+fn homes_z(line: &str) -> bool {
+    let command = line.split(';').next().unwrap_or_default().trim();
+    // The parameters follow the code ("G28 X Y", "G28X").
+    let params = command.get(1..).map_or("", |rest| {
+        rest.trim_start_matches(|c: char| c.is_ascii_digit())
+    });
+    let axes: Vec<char> = params
+        .chars()
+        .map(|c| c.to_ascii_uppercase())
+        .filter(|c| matches!(c, 'X' | 'Y' | 'Z'))
+        .collect();
+    axes.is_empty() || axes.contains(&'Z')
+}
+
 /// Whether a command moves the axes (moves, homing, probing, leveling),
 /// changes how positions or extrusion are read, or switches the motors
 /// off: sent while a job streams, it runs between the job's own moves.
@@ -136,23 +179,23 @@ pub fn interferes_with_job(doc: &GcodeDoc) -> bool {
     }
 }
 
-/// The commands among `lines` that would disturb a running job (see
-/// [`interferes_with_job`]).
-pub fn job_interfering_commands(lines: &[String]) -> Vec<&'static GcodeDoc> {
-    lines
-        .iter()
-        .filter_map(|l| sprint_proto::gcode_doc(l.trim()))
-        .filter(|d| interferes_with_job(d))
-        .collect()
-}
-
-/// True while a job streams commands to the printer (active and not
-/// paused): typed moves would interleave with it.
-fn job_streaming(state: &sprint_host::PrinterState) -> bool {
-    state
-        .job
-        .as_ref()
-        .is_some_and(|j| j.status.is_active() && !j.status.is_paused())
+/// What among `lines` would ruin the job `state` runs (see
+/// [`job_conflict`]), as "code: why" sentences; empty without a job.
+pub fn job_conflicts(lines: &[String], state: &sprint_host::PrinterState) -> Vec<String> {
+    let Some(job) = state.job.as_ref().filter(|j| j.status.is_active()) else {
+        return Vec::new();
+    };
+    let paused = job.status.is_paused();
+    let mut out: Vec<String> = Vec::new();
+    for line in lines {
+        if let Some((doc, why)) = job_conflict(line, paused) {
+            let text = format!("{}: {why}.", doc.code);
+            if !out.contains(&text) {
+                out.push(text);
+            }
+        }
+    }
+    out
 }
 
 /// The commands in a submitted text: trimmed non-empty lines.
@@ -167,8 +210,10 @@ pub fn command_lines(text: &str) -> Vec<String> {
 /// Commands waiting for the user's confirmation.
 struct PendingSend {
     lines: Vec<String>,
-    /// They were typed while a job streamed and some would disturb it.
-    during_job: bool,
+    /// What they would do to the running job (see [`job_conflicts`]).
+    conflicts: Vec<String>,
+    /// The job was paused when they were typed.
+    paused: bool,
 }
 
 #[derive(Default)]
@@ -364,8 +409,9 @@ impl ConsolePanel {
     }
 
     /// Send `text` (one or more lines) as typed by the user: dangerous
-    /// commands, and moves while a job streams, ask first. Returns true
-    /// when it was sent right away.
+    /// commands, and what would ruin a running job (homing Z and probing
+    /// even while it is paused, see [`job_conflict`]), ask first. Emergency
+    /// commands never wait. Returns true when it was sent right away.
     pub fn submit(&mut self, ctx: &mut AppCtx<'_>, text: &str) -> bool {
         let lines = command_lines(text);
         if lines.is_empty() {
@@ -378,9 +424,14 @@ impl ConsolePanel {
                 .message("Connect to a printer to send commands.");
             return false;
         }
-        let during_job = job_streaming(ctx.state) && !job_interfering_commands(&lines).is_empty();
-        if during_job || !dangerous_commands(&lines).is_empty() {
-            self.pending = Some(PendingSend { lines, during_job });
+        let conflicts = job_conflicts(&lines, ctx.state);
+        if !conflicts.is_empty() || !dangerous_commands(&lines).is_empty() {
+            let paused = ctx.state.job.as_ref().is_some_and(|j| j.status.is_paused());
+            self.pending = Some(PendingSend {
+                lines,
+                conflicts,
+                paused,
+            });
             return false;
         }
         ctx.printer.send(&lines.join("\n"));
@@ -883,20 +934,20 @@ impl ConsolePanel {
             .iter()
             .map(|d| format!("{} — {}: {}", d.code, d.name, d.description))
             .collect();
-        if pending.during_job {
-            let codes: Vec<&str> = job_interfering_commands(&pending.lines)
-                .iter()
-                .map(|d| d.code)
-                .collect();
-            message.push(format!(
-                "A job is printing: {} would run between its own moves and can ruin the part.",
-                codes.join(", ")
-            ));
+        if !pending.conflicts.is_empty() {
+            message.push(if pending.paused {
+                "A job is paused, to go on from where it stopped:".to_owned()
+            } else {
+                "A job is printing:".to_owned()
+            });
+            message.extend(pending.conflicts.iter().cloned());
         }
-        let title = if dangerous.is_empty() {
-            "Send this during the print?"
-        } else {
+        let title = if !dangerous.is_empty() {
             "Send a dangerous command?"
+        } else if pending.paused {
+            "Send this while the print is paused?"
+        } else {
+            "Send this during the print?"
         };
         let details = pending.lines.join("\n");
         let answer = ConfirmDialog::new("sprint-console-dangerous", title)
@@ -1301,11 +1352,35 @@ mod tests {
         ] {
             assert!(!disturbing(code), "{code}");
         }
+        let printing = |paused: bool| {
+            let mut job = sprint_host::JobInfo::new(sprint_host::JobKind::HostPrint, "x", 10, 10);
+            job.status = if paused {
+                sprint_host::JobStatus::Paused
+            } else {
+                sprint_host::JobStatus::Printing
+            };
+            sprint_host::PrinterState {
+                job: Some(job),
+                ..sprint_host::PrinterState::default()
+            }
+        };
         let lines = command_lines("M105\nG28 X\nM106");
-        let found: Vec<_> = job_interfering_commands(&lines)
-            .iter()
-            .map(|d| d.code)
-            .collect();
-        assert_eq!(found, ["G28"]);
+        assert_eq!(
+            job_conflicts(&lines, &printing(false)),
+            ["G28: it runs between the print's own moves and can ruin the part."]
+        );
+        // Paused: homing X and Y only is how a print is parked.
+        assert!(job_conflicts(&lines, &printing(true)).is_empty());
+        assert!(job_conflicts(&lines, &sprint_host::PrinterState::default()).is_empty());
+        // Homing Z, probing and the motors off never, paused or not.
+        for line in ["G28", "g28 z", "G28 X Z", "G29", "G30", "M48", "M84", "M18"] {
+            let lines = command_lines(line);
+            assert_eq!(job_conflicts(&lines, &printing(true)).len(), 1, "{line}");
+            assert_eq!(job_conflicts(&lines, &printing(false)).len(), 1, "{line}");
+        }
+        for line in ["G1 X10", "G91", "M83"] {
+            assert!(job_conflicts(&command_lines(line), &printing(true)).is_empty());
+            assert!(!job_conflicts(&command_lines(line), &printing(false)).is_empty());
+        }
     }
 }

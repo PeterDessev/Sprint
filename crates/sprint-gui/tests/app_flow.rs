@@ -1234,6 +1234,21 @@ fn console_motion_is_guarded_while_a_job_runs() {
     settle(&mut h);
     type_command(&mut h, "G1 X10 F3000");
     assert!(!h.state().console().is_confirming());
+    // But homing Z and probing lower the nozzle onto the part: they ask,
+    // paused or not.
+    for line in ["G28", "G29", "G28 Z", "M84"] {
+        type_command(&mut h, line);
+        assert!(h.state().console().is_confirming(), "{line}");
+        assert!(
+            h.query_by_label("Send this while the print is paused?")
+                .is_some()
+        );
+        h.get_by_label("Cancel").click();
+        settle(&mut h);
+    }
+    // Homing X and Y parks the head: fine while paused.
+    type_command(&mut h, "G28 X Y");
+    assert!(!h.state().console().is_confirming());
     // Without a job the chip is back.
     let mut idle = printing_state(JobStatus::Completed);
     idle.job = None;
