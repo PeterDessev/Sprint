@@ -1319,6 +1319,13 @@ fn offline_commands_explain_instead_of_failing() {
             .as_ref()
             .is_some_and(|t| t.text.contains("No help"))
     );
+    // Listing the presets needs no printer (as in the shell).
+    app.run_line("preheat");
+    assert!(
+        matches!(&app.modal, Some(Modal::Report(r)) if r.title == "Presets"),
+        "{:?}",
+        app.toast
+    );
 }
 
 #[test]

@@ -1687,6 +1687,10 @@ impl App {
                 let lines = report::macro_lines(&self.config.macros);
                 self.show_report("Macros", lines);
             }
+            Command::Preheat(None) => {
+                let lines = report::preset_lines(&self.profile.temp_presets);
+                self.show_report("Presets", lines);
+            }
             other => {
                 if self.connected_or_warn() {
                     self.execute_on_printer(other);
@@ -1705,10 +1709,6 @@ impl App {
             }
             Command::BedTemp(celsius) => {
                 self.run_action(Action::SetTemps(vec![(Heater::Bed, celsius)]))
-            }
-            Command::Preheat(None) => {
-                let lines = report::preset_lines(&self.profile.temp_presets);
-                self.show_report("Presets", lines);
             }
             Command::Preheat(Some(name)) => {
                 match actions::find_preset(&self.profile.temp_presets, &name) {
@@ -1939,6 +1939,7 @@ impl App {
             | Command::Status
             | Command::Monitor(_)
             | Command::Macro(None)
+            | Command::Preheat(None)
             | Command::Log(_)
             | Command::Exit => {}
         }
