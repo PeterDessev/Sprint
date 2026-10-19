@@ -226,10 +226,12 @@ pub(super) fn setting_card(
             },
         );
     if revert {
-        for &i in indices {
-            if let Some(e) = draft.entries_mut().get_mut(i) {
-                e.revert();
-            }
+        let keys: Vec<String> = indices
+            .iter()
+            .filter_map(|&i| draft.entries().get(i).map(|e| e.key.clone()))
+            .collect();
+        for key in keys {
+            draft.revert(&key);
         }
     }
 }
@@ -414,6 +416,7 @@ pub(super) fn raw_card(ui: &mut Ui, draft: &mut Draft, indices: &[usize]) {
                 ));
             },
             |ui| {
+                let mut reset = None;
                 for &i in indices {
                     let Some(entry) = draft.entries_mut().get_mut(i) else {
                         continue;
@@ -430,7 +433,6 @@ pub(super) fn raw_card(ui: &mut Ui, draft: &mut Draft, indices: &[usize]) {
                     let Some(text) = entry.raw.as_mut() else {
                         continue;
                     };
-                    let mut reset = false;
                     ui.push_id(("raw", key.clone()), |ui| {
                         ui.horizontal(|ui| {
                             let (dot, _) = ui.allocate_exact_size(vec2(8.0, 26.0), Sense::hover());
@@ -456,16 +458,24 @@ pub(super) fn raw_card(ui: &mut Ui, draft: &mut Draft, indices: &[usize]) {
                                         .desired_width(width)
                                         .hint_text(original.as_deref().unwrap_or("G-code")),
                                 )
-                                .on_hover_text(format!("Reported as {key}"));
+                                .on_hover_text(
+                                    if original.is_some() {
+                                        format!("Reported as {key}")
+                                    } else {
+                                        "Staged here; the printer did not report it".to_owned()
+                                    },
+                                );
                             });
+                            let tip = match &original {
+                                Some(o) => format!("Reset to {o}"),
+                                None => "Remove this staged line".to_owned(),
+                            };
                             if modified
                                 && ui
-                                    .add(IconButton::new(icons::RESET).ghost().small().tooltip(
-                                        format!("Reset to {}", original.as_deref().unwrap_or("")),
-                                    ))
+                                    .add(IconButton::new(icons::RESET).ghost().small().tooltip(tip))
                                     .clicked()
                             {
-                                reset = true;
+                                reset = Some(key.clone());
                             }
                         });
                         if invalid {
@@ -480,9 +490,9 @@ pub(super) fn raw_card(ui: &mut Ui, draft: &mut Draft, indices: &[usize]) {
                             ui.label(RichText::new(text).size(12.0).color(p.danger));
                         }
                     });
-                    if reset {
-                        entry.revert();
-                    }
+                }
+                if let Some(key) = reset {
+                    draft.revert(&key);
                 }
             },
         );

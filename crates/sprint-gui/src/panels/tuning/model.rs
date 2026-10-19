@@ -356,6 +356,19 @@ impl Draft {
         self.base = settings.clone();
     }
 
+    /// Discard the edit of one setting: back to the reported values, or
+    /// gone when it was only staged (imported, not reported).
+    pub fn revert(&mut self, key: &str) {
+        let Some(i) = self.entries.iter().position(|e| e.key == key) else {
+            return;
+        };
+        if self.entries[i].original.is_some() {
+            self.entries[i].revert();
+        } else {
+            self.entries.remove(i);
+        }
+    }
+
     /// Discard every edit.
     pub fn revert_all(&mut self) {
         self.entries.retain(|e| e.original.is_some());
@@ -831,6 +844,14 @@ mod tests {
         // A rebase keeps staged new settings.
         d.rebase(&report());
         assert!(d.entry("M851").is_some());
+        // Reverting one: a staged setting goes, an edited one is reset.
+        d.revert("M851");
+        assert!(d.entry("M851").is_none());
+        d.revert("M92");
+        assert!(d.entry("M92").is_some_and(|e| !e.is_modified()));
+        d.revert("M9999");
+        assert_eq!(d.modified_count(), 1, "only G20 is left");
+        d.stage(SettingCommand::parse("M851 Z-1.2").expect("parse"));
         d.revert_all();
         assert!(d.entry("M851").is_none());
         assert_eq!(d.modified_count(), 0);

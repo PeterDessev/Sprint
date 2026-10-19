@@ -191,6 +191,33 @@ fn raw_settings_cannot_become_other_commands() {
 }
 
 #[test]
+fn reverting_a_staged_setting_drops_it() {
+    let mut h = harness_state(
+        Theme::Dark,
+        (1180.0, 900.0),
+        Host::<TuningTab>::synthetic(demo_state()),
+        |ui, host| host.frame(ui),
+    );
+    h.run_ok();
+    // An imported setting the printer did not report, and an edit.
+    h.state_mut().tab.stage(cmd("M302 S170"));
+    h.state_mut().tab.stage(cmd("M92 X80 Y80 Z400 E95.4"));
+    h.run_ok();
+    assert_eq!(h.state().tab.pending_changes(), 2);
+    h.get_by_label("Modified").click();
+    h.run_ok();
+    h.get_by_label("Revert Cold extrusion").click();
+    h.run_ok();
+    assert_eq!(
+        h.state().tab.pending_changes(),
+        1,
+        "only the M92 edit is left"
+    );
+    assert!(h.state().tab.draft().entry("M302").is_none());
+    assert!(h.query_by_label_contains("Cold extrusion (M302)").is_none());
+}
+
+#[test]
 fn tuning_tab_warns_during_a_job() {
     let mut state = demo_state();
     let mut job =
