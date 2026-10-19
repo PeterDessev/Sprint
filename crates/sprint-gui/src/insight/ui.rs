@@ -291,6 +291,50 @@ pub(crate) fn field_label(ui: &mut Ui, text: &str, width: f32) -> Response {
     response
 }
 
+/// The frame of the tabs' own modal dialogs, matching
+/// [`crate::widgets::ConfirmDialog`].
+pub(crate) fn modal_frame(ctx: &egui::Context) -> egui::Frame {
+    let p = theme::palette(ctx);
+    egui::Frame::new()
+        .fill(p.surface)
+        .stroke(Stroke::new(
+            1.0,
+            if p.dark { p.border_strong } else { p.border },
+        ))
+        .corner_radius(CornerRadius::same(theme::RADIUS_XL))
+        .inner_margin(egui::Margin::same(20))
+        .shadow(ctx.global_style().visuals.window_shadow)
+}
+
+/// A dialog title: an icon in a tinted circle and the title text.
+pub(crate) fn dialog_title(ui: &mut Ui, icon: &str, title: &str, tone: Color32) {
+    let p = theme::ui_palette(ui);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 12.0;
+        let (rect, _) = ui.allocate_exact_size(vec2(36.0, 36.0), Sense::hover());
+        ui.painter().circle_filled(
+            rect.center(),
+            18.0,
+            with_alpha(tone, if p.dark { 0.18 } else { 0.12 }),
+        );
+        ui.painter().text(
+            rect.center(),
+            Align2::CENTER_CENTER,
+            icon,
+            icon_font(ui, 19.0),
+            tone,
+        );
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(title)
+                    .font(FontId::new(16.0, theme::font(ui, TextRole::Title).family))
+                    .color(p.text),
+            )
+            .wrap(),
+        );
+    });
+}
+
 /// A dim caption line.
 pub(crate) fn caption(ui: &mut Ui, text: &str) -> Response {
     let p = theme::ui_palette(ui);
