@@ -11,6 +11,7 @@ use egui::{
 };
 use sprint_host::{Macro, PrinterProfile};
 
+use super::motion::refresh_position;
 use super::{caption, section};
 use crate::context::AppCtx;
 use crate::icons;
@@ -145,6 +146,13 @@ pub(super) fn default_macros(profile: &PrinterProfile) -> Vec<Macro> {
         new_macro("Filament change", "M600", Some(SWATCHES[6]), true),
         new_macro("Report settings", "M503", None, false),
     ]
+}
+
+/// Send a macro, then ask for the position it may have changed (see
+/// [`refresh_position`]).
+fn run_macro(ctx: &AppCtx<'_>, m: &Macro) {
+    ctx.printer.run_macro(m);
+    refresh_position(ctx.printer, ctx.state);
 }
 
 /// A change to the macro list, applied after the grid is drawn.
@@ -356,7 +364,7 @@ impl Macros {
             if m.confirm || job_active {
                 self.pending_run = Some(m.clone());
             } else {
-                ctx.printer.run_macro(m);
+                run_macro(ctx, m);
             }
         }
         if add || add_header {
@@ -402,7 +410,7 @@ impl Macros {
             match answer {
                 Some(DialogResult::Confirmed) => {
                     if ctx.connected() {
-                        ctx.printer.run_macro(m);
+                        run_macro(ctx, m);
                     }
                     self.pending_run = None;
                 }
@@ -658,7 +666,7 @@ fn editor_dialog(ctx: &egui::Context, editor: &mut Editor, app: &mut AppCtx<'_>)
                     test.on_disabled_hover_text("Type some G-code first")
                 };
                 if test.clicked() {
-                    app.printer.run_macro(&editor.draft);
+                    run_macro(app, &editor.draft);
                     let shown = if name_ok {
                         editor.draft.name.trim().to_owned()
                     } else {

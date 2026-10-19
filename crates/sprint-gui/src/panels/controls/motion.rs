@@ -7,7 +7,7 @@ use egui::{
     Stroke, StrokeKind, Ui, WidgetInfo, WidgetType, vec2,
 };
 use sprint_host::sprint_proto::PositionReport;
-use sprint_host::{Axes, Axis as HostAxis, Printer, PrinterProfile};
+use sprint_host::{Axes, Axis as HostAxis, Printer, PrinterProfile, PrinterState};
 
 use super::{caption, notice, section, split_row};
 use crate::context::AppCtx;
@@ -149,6 +149,15 @@ pub(super) fn plan_move(current_z: Option<f32>, target: [f32; 3]) -> Vec<MoveSte
     }
 }
 
+/// Ask for the position after the machine was moved, unless the firmware
+/// reports it by itself (AUTOREPORT_POS): the readout and the planning of
+/// absolute moves need the real position, not the one before the move.
+pub(super) fn refresh_position(printer: &Printer, state: &PrinterState) {
+    if !state.has_capability("AUTOREPORT_POS") {
+        printer.request_position();
+    }
+}
+
 /// The jog for a key press: arrows move X/Y, Page Up/Down move Z, Shift
 /// multiplies the step by ten.
 pub(super) fn key_jog(key: Key, shift: bool, step: f32) -> Option<(HostAxis, f32)> {
@@ -216,10 +225,13 @@ impl Motion {
             self.target = clamp_to_volume(profile, [cx, cy, 10.0]);
             self.seeded = true;
         }
+        // Whether anything here moved the machine this frame.
+        let mut moved = false;
         if self.keyboard && self.open && lock.is_none() && keyboard_free(ui) {
             let jogs = ui.input_mut(|i| take_jog_keys(&mut i.events, self.key_step));
             for (axis, distance) in jogs {
                 printer.jog(axis, distance, feed_for(axis, feeds));
+                moved = true;
             }
         }
         let shown = section(
@@ -246,24 +258,36 @@ impl Motion {
                 }
                 position_readout(ui, state.position.as_ref().filter(|_| connected));
                 ui.add_enabled_ui(lock.is_none(), |ui| {
-                    self.jog_row(ui, printer, feeds, lock);
+                    moved |= self.jog_row(ui, printer, feeds, lock);
                     ui.add_space(2.0);
-                    self.move_to(ui, printer, profile, feeds, state.position.as_ref(), lock);
+                    moved |=
+                        self.move_to(ui, printer, profile, feeds, state.position.as_ref(), lock);
                 });
                 ui.add_space(2.0);
                 self.keyboard_row(ui);
             },
         );
         self.open = shown.is_some();
+        if moved {
+            refresh_position(printer, state);
+        }
     }
 
-    fn jog_row(&self, ui: &mut Ui, printer: &Printer, feeds: (f32, f32), lock: Option<&str>) {
+    /// The jog pad and Z strip; true when they moved the machine.
+    fn jog_row(
+        &self,
+        ui: &mut Ui,
+        printer: &Printer,
+        feeds: (f32, f32),
+        lock: Option<&str>,
+    ) -> bool {
         let avail = ui.available_width();
         let z_width = if avail >= 270.0 { 60.0 } else { 50.0 };
         let gap = 10.0;
         let pad = (avail - z_width - gap).clamp(160.0, 264.0);
         let total = pad + gap + z_width;
         ui.horizontal(|ui| {
+            let mut moved = false;
             ui.spacing_mut().item_spacing.x = gap;
             ui.add_space(((avail - total) / 2.0).max(0.0));
             let xy = JogPad::new()
@@ -281,10 +305,15 @@ impl Motion {
             }
             for action in [xy.action, z.action].into_iter().flatten() {
                 apply_jog(printer, action, feeds);
+                moved |= action != JogAction::MotorsOff;
             }
-        });
+            moved
+        })
+        .inner
     }
 
+    /// The move-to fields, "Move" and "Center"; true when they moved the
+    /// machine.
     fn move_to(
         &mut self,
         ui: &mut Ui,
@@ -293,7 +322,8 @@ impl Motion {
         feeds: (f32, f32),
         position: Option<&PositionReport>,
         lock: Option<&str>,
-    ) {
+    ) -> bool {
+        let mut moved = false;
         let (min, max) = profile.build_volume();
         section_header(ui, "Move to");
         ui.columns(3, |cols| {
@@ -342,6 +372,7 @@ impl Motion {
                     };
                     printer.move_to(x, y, z, feed);
                 }
+                moved = true;
             }
             let center = cols[1].add(
                 ActionButton::new("Center")
@@ -355,12 +386,14 @@ impl Motion {
             );
             if center.clicked() {
                 printer.move_to(Some(cx), Some(cy), None, feeds.0);
+                moved = true;
             }
             if let Some(reason) = lock {
                 let _ = go.on_disabled_hover_text(reason);
                 let _ = center.on_disabled_hover_text(reason);
             }
         });
+        moved
     }
 
     fn keyboard_row(&mut self, ui: &mut Ui) {

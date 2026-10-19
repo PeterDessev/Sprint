@@ -19,7 +19,8 @@ use sprint_gui::{
     theme::Theme,
     widgets::{JogCorner, JogDirection, JogGeometry, JogRegion},
 };
-use sprint_host::Printer;
+use sprint_host::sprint_sim::SimConfig;
+use sprint_host::{Macro, Printer, PrinterState};
 
 /// A sidebar on a connected simulator, tall enough that nothing scrolls.
 fn connected() -> Harness<'static, Rig> {
@@ -157,6 +158,64 @@ fn move_to_lifts_first_and_center_moves_to_the_bed_center() {
     h.get_by_label("Refresh the position (M114)").click();
     h.run_ok();
     wait_for_commands(&p, &["M114"]);
+}
+
+/// Most firmware does not report the position by itself: the sidebar asks
+/// for it after every move it makes (jogs, move-to, macros), so the readout
+/// and the planning of absolute moves use where the nozzle really is.
+#[test]
+fn moves_refresh_the_position_without_auto_reports() {
+    let config = SimConfig {
+        auto_report_position: false,
+        ..controls_common::fast_sim()
+    };
+    let mut rig = Rig::simulator_with(config);
+    rig.config.macros.push(Macro {
+        name: "Park".into(),
+        gcode: "G1 X5 Y200 F3000".into(),
+        color: None,
+        confirm: false,
+    });
+    let mut h = sidebar_fixed(Theme::Dark, (420.0, 2600.0), rig);
+    controls_common::settle(&mut h);
+    let p = printer(&h);
+    let at_z = |z: f32| move |s: &PrinterState| s.position.as_ref().is_some_and(|pos| pos.z == z);
+    click(&mut h, "Move Z +10 mm");
+    wait_for_commands(&p, &["G91", "G1 Z10 F600", "G90", "M114"]);
+    wait_for(&p, "the position after the jog", at_z(10.0));
+    run_for(&mut h, Duration::from_millis(50));
+    assert!(
+        h.query_by_label("Position X 0.00 Y 0.00 Z 10.00 E 0.00")
+            .is_some(),
+        "the readout shows the new height"
+    );
+    clear(&h);
+    click(&mut h, "Center");
+    wait_for_commands(&p, &["G90", "G1 X110 Y110 F3000", "M114"]);
+    clear(&h);
+    click(&mut h, "Park");
+    wait_for_commands(&p, &["G1 X5 Y200 F3000", "M114"]);
+    wait_for(&p, "the position after the macro", |s| {
+        s.position.as_ref().is_some_and(|pos| pos.y == 200.0)
+    });
+    // Firmware that reports the position by itself is not asked.
+    let mut h = connected();
+    let p = printer(&h);
+    click(&mut h, "Move Z +10 mm");
+    wait_for_commands(&p, &["G91", "G1 Z10 F600", "G90"]);
+    assert_nothing_more(&mut h, "M114");
+}
+
+/// Nothing starting with `prefix` reached the printer.
+fn assert_nothing_more(h: &mut Harness<'_, Rig>, prefix: &str) {
+    run_for(h, Duration::from_millis(300));
+    let p = printer(h);
+    wait_idle(&p);
+    let got = received(&p);
+    assert!(
+        !got.iter().any(|c| c.starts_with(prefix)),
+        "unexpected {prefix}: {got:?}"
+    );
 }
 
 #[test]
