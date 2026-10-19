@@ -1,0 +1,1057 @@
+//! App tests: key handling against the simulator, and rendering of the
+//! whole screen with a test backend.
+
+use std::time::{Duration, Instant};
+
+use crossterm::event::{Event as TermEvent, KeyCode, KeyEvent, KeyModifiers};
+use ratatui::Terminal;
+use ratatui::backend::TestBackend;
+use ratatui::buffer::Buffer;
+use sprint_host::sprint_sim::SimConfig;
+use sprint_host::{AppConfig, ConnectOptions, ConnectTarget, Printer, PrinterState};
+
+use super::*;
+
+/// Generous bound for anything a test waits for.
+const PATIENCE: Duration = Duration::from_secs(30);
+
+fn sample(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../samples")
+        .join(name)
+}
+
+/// A fast virtual printer.
+fn fast_sim() -> SimConfig {
+    SimConfig {
+        boot_delay_ms: 20,
+        time_scale: 100.0,
+        instant_moves: true,
+        ..SimConfig::default()
+    }
+}
+
+/// An app on a disconnected printer, with the default configuration and
+/// no config file.
+fn app() -> App {
+    App::new(Printer::new(), AppConfig::default(), None, Theme::dark())
+}
+
+/// An app connected to a fast simulator, after the setup queries.
+fn connected_app() -> App {
+    let printer = Printer::new();
+    let options = ConnectOptions {
+        ok_timeout_secs: 3.0,
+        ..ConnectOptions::default()
+    };
+    printer
+        .connect(ConnectTarget::Simulator(fast_sim()), options)
+        .expect("connect to the simulator");
+    let mut app = App::new(printer, AppConfig::default(), None, Theme::dark());
+    wait(&mut app, "the setup queries", |s| {
+        s.is_connected() && s.settings_loaded && s.position.is_some()
+    });
+    wait_idle(&mut app);
+    app
+}
+
+/// Sync the app until `cond` holds for the printer state.
+fn wait(app: &mut App, what: &str, cond: impl Fn(&PrinterState) -> bool) {
+    let deadline = Instant::now() + PATIENCE;
+    loop {
+        app.sync();
+        app.tick(Instant::now());
+        if app.printer.with_state(&cond) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {what}; console:\n{}",
+            console_text(app)
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// Sync the app until `cond` holds for the app itself.
+fn wait_app(app: &mut App, what: &str, cond: impl Fn(&App) -> bool) {
+    let deadline = Instant::now() + PATIENCE;
+    loop {
+        app.sync();
+        app.tick(Instant::now());
+        if cond(app) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn wait_idle(app: &mut App) {
+    let mut quiet = 0;
+    let deadline = Instant::now() + PATIENCE;
+    while quiet < 3 {
+        let idle = app
+            .printer
+            .with_state(|s| s.link.in_flight == 0 && s.link.queue_len == 0);
+        quiet = if idle { quiet + 1 } else { 0 };
+        assert!(Instant::now() < deadline, "the link never became idle");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    app.sync();
+}
+
+fn console_text(app: &App) -> String {
+    app.console
+        .iter()
+        .map(|l| format!("{:?} {}", l.kind, l.text))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Commands the simulator received since the last call.
+fn received(app: &App) -> Vec<String> {
+    let control = app.printer.sim_control().expect("simulator");
+    let got = control.received_commands();
+    control.clear_received();
+    got
+}
+
+fn press(app: &mut App, code: KeyCode) {
+    app.handle_event(TermEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+}
+
+fn ctrl(app: &mut App, c: char) {
+    app.handle_event(TermEvent::Key(KeyEvent::new(
+        KeyCode::Char(c),
+        KeyModifiers::CONTROL,
+    )));
+}
+
+fn type_text(app: &mut App, text: &str) {
+    for c in text.chars() {
+        press(app, KeyCode::Char(c));
+    }
+}
+
+fn render(app: &mut App, width: u16, height: u16) -> Buffer {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+    terminal.draw(|frame| app.draw(frame)).expect("draw");
+    terminal.backend().buffer().clone()
+}
+
+fn screen_text(buf: &Buffer) -> String {
+    let area = buf.area;
+    (area.top()..area.bottom())
+        .map(|y| {
+            let mut row = String::new();
+            let mut skip = 0;
+            for x in area.left()..area.right() {
+                if skip > 0 {
+                    skip -= 1;
+                    continue;
+                }
+                let symbol = buf[(x, y)].symbol();
+                skip = unicode_width::UnicodeWidthStr::width(symbol).saturating_sub(1);
+                row.push_str(symbol);
+            }
+            row
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn screen(app: &mut App, width: u16, height: u16) -> String {
+    screen_text(&render(app, width, height))
+}
+
+/// Load a sample and wait for the analysis.
+fn load(app: &mut App, name: &str) {
+    app.open_file(sample(name));
+    wait_app(app, "the analysis", |a| a.loader.is_none());
+    assert!(app.file.is_some(), "loaded {name}: {:?}", app.toast);
+}
+
+#[test]
+fn starts_disconnected_and_draws() {
+    let mut app = app();
+    let text = screen(&mut app, 120, 40);
+    assert!(text.contains("Sprint"), "{text}");
+    assert!(text.contains("Disconnected"), "{text}");
+    assert!(text.contains("F3"), "{text}");
+    assert!(text.contains("Temperatures"), "{text}");
+    assert!(text.contains("Console"), "{text}");
+}
+
+// ----- synthetic screens -----
+
+/// The cube loaded and a print at layer 42 of 100, without a printer:
+/// every value is fixed so screens are reproducible.
+fn printing_app() -> App {
+    use sprint_host::sprint_proto::{HeaterReading, PositionReport, TempReport};
+    use sprint_host::{ConnectionStatus, JobInfo, JobKind, JobStatus};
+
+    let mut app = app();
+    load(&mut app, "calibration-cube.gcode");
+    let file = app.file.clone().expect("loaded");
+    let layer = &file.toolpath.layers[41];
+    let current_line = (layer.lines.start + (layer.lines.end - layer.lines.start) / 2) as usize;
+    let mut job = JobInfo::new(
+        JobKind::HostPrint,
+        file.name(),
+        file.file.len(),
+        file.file.byte_len() as u64,
+    );
+    job.status = JobStatus::Printing;
+    job.current_line = current_line;
+    job.progress = 0.42;
+    job.layer = Some((41, file.toolpath.layers.len()));
+    job.elapsed = Duration::from_secs(23 * 60 + 15);
+    job.eta = Some(Duration::from_secs(31 * 60 + 40));
+    app.view = PrinterView {
+        status: ConnectionStatus::Connected,
+        target: Some("Virtual printer".into()),
+        firmware: Some("Marlin 2.1.2.1 (Sprint Virtual Printer)".into()),
+        extruders: 1,
+        temps: TempReport {
+            hotends: vec![HeaterReading {
+                current: 214.6,
+                target: Some(215.0),
+                power: Some(0.42),
+            }],
+            bed: Some(HeaterReading {
+                current: 60.1,
+                target: Some(60.0),
+                power: Some(0.18),
+            }),
+            ..TempReport::default()
+        },
+        position: Some(PositionReport {
+            x: 104.3,
+            y: 98.7,
+            z: 8.4,
+            e: 1234.56,
+            stepper_counts: None,
+        }),
+        job: Some(job),
+        fan: 255,
+        feedrate_pct: 100.0,
+        flow_pct: 100.0,
+        ..PrinterView::default()
+    };
+    // Ten minutes of heating and holding, one sample a second.
+    app.temps.points = (0..600)
+        .map(|i| {
+            let t = f64::from(i);
+            let rise = |target: f32, rate: f64| {
+                let x = (1.0 - (-t / rate).exp()) as f32;
+                22.0 + (target - 22.0) * x + (t / 9.0).sin() as f32 * 0.4
+            };
+            crate::widgets::TempPoint {
+                t,
+                hotends: vec![(rise(215.0, 60.0), 215.0)],
+                bed: Some((rise(60.0, 90.0), 60.0)),
+                chamber: None,
+            }
+        })
+        .collect();
+    app.console = vec![
+        ConsoleLine::info("Connecting to Virtual printer"),
+        ConsoleLine::received("start"),
+        ConsoleLine::received(
+            "FIRMWARE_NAME:Marlin 2.1.2.1 (Github) SOURCE_CODE_URL:github.com/MarlinFirmware/Marlin PROTOCOL_VERSION:1.0 MACHINE_TYPE:Sprint Virtual Printer EXTRUDER_COUNT:1",
+        ),
+        ConsoleLine::sent("G28"),
+        ConsoleLine::received("ok"),
+        ConsoleLine::sent("M105").with_auto(true),
+        ConsoleLine::received("ok T:214.6 /215.0 B:60.1 /60.0 @:54 B@:23").with_auto(true),
+        ConsoleLine::info("Printing calibration-cube.gcode"),
+        ConsoleLine::warning("Resend: 1832 (checksum mismatch)"),
+        ConsoleLine::sent("M117 Layer 42/100"),
+        ConsoleLine::received("ok"),
+    ];
+    app.toast = None;
+    app
+}
+
+#[test]
+fn printing_screen_at_120x40() {
+    let mut app = printing_app();
+    let buf = render(&mut app, 120, 40);
+    crate::snapshot::save(&buf, "tui-printing-120x40");
+    let text = screen_text(&buf);
+    for fact in [
+        "◆ Sprint",
+        "● Connected",
+        "Virtual printer",
+        "Marlin 2.1.2.1",
+        "▶ Printing 42.0%",
+        "layer 42/100",
+        "Temperatures",
+        "T0",
+        "Bed",
+        "Position",
+        "104.30",
+        "Job",
+        "calibration-cube.gcode",
+        "Layer 42/100",
+        "following the print",
+        "Console",
+        "M117 Layer 42/100",
+        "G-code",
+        "F1 Help",
+    ] {
+        assert!(text.contains(fact), "missing {fact:?} in\n{text}");
+    }
+    // Automatic traffic is hidden by default.
+    assert!(!text.contains("@:54"), "{text}");
+}
+
+#[test]
+fn printing_screen_at_80x24() {
+    let mut app = printing_app();
+    let buf = render(&mut app, 80, 24);
+    crate::snapshot::save(&buf, "tui-printing-80x24");
+    let text = screen_text(&buf);
+    for fact in [
+        "Sprint",
+        "Connected",
+        "T0",
+        "Bed",
+        "Layer 42/100",
+        "Console",
+        "F1",
+    ] {
+        assert!(text.contains(fact), "missing {fact:?} in\n{text}");
+    }
+}
+
+#[test]
+fn printing_screen_wide() {
+    let mut app = printing_app();
+    let buf = render(&mut app, 170, 48);
+    crate::snapshot::save(&buf, "tui-printing-170x48");
+    let text = screen_text(&buf);
+    assert!(
+        text.contains("Console") && text.contains("Layer 42/100"),
+        "{text}"
+    );
+}
+
+#[test]
+fn welcome_screens() {
+    let mut app = app();
+    let buf = render(&mut app, 120, 40);
+    crate::snapshot::save(&buf, "tui-welcome-120x40");
+    let text = screen_text(&buf);
+    assert!(text.contains("S P R I N T"), "{text}");
+    assert!(text.contains("open a G-code file"), "{text}");
+    let buf = render(&mut app, 80, 24);
+    crate::snapshot::save(&buf, "tui-welcome-80x24");
+}
+
+#[test]
+fn any_size_draws_without_panicking() {
+    let mut app = printing_app();
+    for (w, h) in [
+        (1, 1),
+        (10, 3),
+        (23, 7),
+        (24, 8),
+        (40, 12),
+        (63, 20),
+        (64, 15),
+        (200, 60),
+        (300, 100),
+    ] {
+        let _ = render(&mut app, w, h);
+    }
+    app.modal = Some(Modal::Help { scroll: 0 });
+    for (w, h) in [(1, 1), (30, 10), (120, 40)] {
+        let _ = render(&mut app, w, h);
+    }
+}
+
+// ----- key handling against the simulator -----
+
+/// A slow job: many real-time moves, so it is still running while keys
+/// are pressed.
+fn slow_file(dir: &std::path::Path) -> PathBuf {
+    let mut gcode = String::from("G28\nG90\nM83\nG1 Z0.3 F600\n");
+    for i in 0..400 {
+        let x = 20 + (i % 2) * 150;
+        gcode.push_str(&format!("G1 X{x} Y{} E1 F1200\n", 20 + i % 150));
+    }
+    let path = dir.join("slow.gcode");
+    std::fs::write(&path, gcode).expect("write slow file");
+    path
+}
+
+/// A scratch directory removed on drop.
+struct Scratch(PathBuf);
+
+impl Scratch {
+    fn new(tag: &str) -> Scratch {
+        let dir = std::env::temp_dir().join(format!("sprint-tui-app-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        Scratch(dir)
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// An app connected to a simulator that moves in (fast) real time.
+fn timed_app() -> App {
+    let printer = Printer::new();
+    let sim = SimConfig {
+        boot_delay_ms: 20,
+        time_scale: 5.0,
+        instant_moves: false,
+        ..SimConfig::default()
+    };
+    printer
+        .connect(ConnectTarget::Simulator(sim), ConnectOptions::default())
+        .expect("connect to the simulator");
+    let mut app = App::new(printer, AppConfig::default(), None, Theme::dark());
+    wait(&mut app, "the setup queries", |s| {
+        s.is_connected() && s.settings_loaded && s.position.is_some()
+    });
+    wait_idle(&mut app);
+    app
+}
+
+fn job_status(app: &App) -> Option<JobStatus> {
+    app.printer
+        .with_state(|s| s.job.as_ref().map(|j| j.status.clone()))
+}
+
+#[test]
+fn f5_prints_the_loaded_file_to_completion() {
+    let mut app = connected_app();
+    // Without a file, F5 only explains.
+    press(&mut app, KeyCode::F(5));
+    assert!(app.modal.is_none());
+    assert!(
+        app.toast
+            .as_ref()
+            .is_some_and(|t| t.text.contains("No file loaded"))
+    );
+    load(&mut app, "calibration-cube.gcode");
+    received(&app);
+    press(&mut app, KeyCode::F(5));
+    assert!(
+        matches!(app.modal, Some(Modal::Confirm(_))),
+        "F5 asks first"
+    );
+    let text = screen(&mut app, 120, 40);
+    assert!(
+        text.contains("Start print?") && text.contains("calibration-cube.gcode"),
+        "{text}"
+    );
+    crate::snapshot::save(&render(&mut app, 120, 40), "tui-confirm-print-120x40");
+    press(&mut app, KeyCode::Enter);
+    assert!(app.modal.is_none());
+    wait(&mut app, "the print to start", |s| s.job.is_some());
+    // The layer view follows the job.
+    wait_app(&mut app, "the printing layer", |a| {
+        a.printing_layer().is_some()
+    });
+    wait(&mut app, "the print to finish", |s| {
+        s.job.as_ref().is_some_and(|j| j.status.is_finished())
+    });
+    assert_eq!(
+        job_status(&app),
+        Some(JobStatus::Completed),
+        "{}",
+        console_text(&app)
+    );
+    let got = received(&app);
+    assert!(got.iter().any(|c| c == "G28"), "{got:?}");
+    assert!(got.iter().any(|c| c.starts_with("G1 ")), "{got:?}");
+    app.sync();
+    assert!(
+        app.toast
+            .as_ref()
+            .is_some_and(|t| t.text.starts_with("Finished calibration-cube.gcode")),
+        "{:?}",
+        app.toast
+    );
+    // Once finished, the whole layer is drawn as printed.
+    assert_eq!(app.progress_line(), None);
+}
+
+#[test]
+fn f6_pauses_and_resumes_and_f7_cancels_after_asking() {
+    let scratch = Scratch::new("pause");
+    let mut app = timed_app();
+    app.open_file(slow_file(&scratch.0));
+    wait_app(&mut app, "the analysis", |a| a.loader.is_none());
+    press(&mut app, KeyCode::F(5));
+    press(&mut app, KeyCode::Char('y'));
+    wait(&mut app, "printing", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Printing && j.current_line > 10)
+    });
+    // The layer view follows the job.
+    let text = screen(&mut app, 120, 40);
+    assert!(text.contains("following the print"), "{text}");
+    press(&mut app, KeyCode::F(6));
+    wait(&mut app, "the pause", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Paused)
+    });
+    let text = screen(&mut app, 120, 40);
+    assert!(text.contains("‖ Paused"), "{text}");
+    assert!(text.contains("F6 Resume"), "{text}");
+    press(&mut app, KeyCode::F(6));
+    wait(&mut app, "the resume", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Printing)
+    });
+    // F7 asks, defaulting to "keep printing".
+    press(&mut app, KeyCode::F(7));
+    assert!(matches!(app.modal, Some(Modal::Confirm(_))));
+    crate::snapshot::save(&render(&mut app, 120, 40), "tui-confirm-cancel-120x40");
+    press(&mut app, KeyCode::Enter);
+    assert!(app.modal.is_none());
+    app.sync();
+    assert_eq!(job_status(&app), Some(JobStatus::Printing));
+    press(&mut app, KeyCode::F(7));
+    press(&mut app, KeyCode::Left);
+    press(&mut app, KeyCode::Enter);
+    wait(&mut app, "the cancel", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Cancelled)
+    });
+    // Jogging is refused during a job.
+    press(&mut app, KeyCode::F(5));
+    press(&mut app, KeyCode::Char('y'));
+    wait(&mut app, "printing again", |s| s.job_active());
+    app.sync();
+    press(&mut app, KeyCode::Char('j'));
+    assert!(app.jog.is_none());
+    assert!(
+        app.toast
+            .as_ref()
+            .is_some_and(|t| t.text.contains("disabled"))
+    );
+    // Quitting during the job asks; Enter keeps the app open.
+    press(&mut app, KeyCode::F(10));
+    assert!(matches!(app.modal, Some(Modal::Confirm(_))));
+    press(&mut app, KeyCode::Enter);
+    assert!(!app.quit);
+    ctrl(&mut app, 'q');
+    press(&mut app, KeyCode::Char('y'));
+    assert!(app.quit);
+    app.printer.cancel();
+}
+
+#[test]
+fn jog_mode_moves_and_homes() {
+    let mut app = connected_app();
+    received(&app);
+    press(&mut app, KeyCode::Char('j'));
+    assert_eq!(app.jog, Some(DEFAULT_JOG_STEP));
+    let text = screen(&mut app, 120, 40);
+    assert!(
+        text.contains("Jog") && text.contains("step 10 mm"),
+        "{text}"
+    );
+    crate::snapshot::save(&render(&mut app, 120, 40), "tui-jog-120x40");
+    press(&mut app, KeyCode::Right);
+    press(&mut app, KeyCode::Char('+'));
+    press(&mut app, KeyCode::Up);
+    press(&mut app, KeyCode::PageUp);
+    for _ in 0..4 {
+        press(&mut app, KeyCode::Char('-'));
+    }
+    press(&mut app, KeyCode::PageDown);
+    press(&mut app, KeyCode::Char('h'));
+    press(&mut app, KeyCode::Esc);
+    assert!(app.jog.is_none());
+    wait_idle(&mut app);
+    let got = received(&app);
+    for want in [
+        "G1 X10 F3000",
+        "G1 Y50 F3000",
+        "G1 Z10 F600",
+        "G1 Z-0.1 F600",
+        "G28",
+    ] {
+        assert!(got.iter().any(|c| c == want), "missing {want} in {got:?}");
+    }
+    assert!(got.iter().filter(|c| *c == "G91").count() >= 4, "{got:?}");
+    // Without a connection, jog mode does not start.
+    let mut offline = super::tests::app();
+    press(&mut offline, KeyCode::Char('j'));
+    assert!(offline.jog.is_none());
+}
+
+#[test]
+fn temperature_dialog_sets_targets() {
+    let mut app = connected_app();
+    received(&app);
+    press(&mut app, KeyCode::Char('t'));
+    assert!(matches!(app.modal, Some(Modal::Temps(_))));
+    crate::snapshot::save(&render(&mut app, 120, 40), "tui-temps-120x40");
+    type_text(&mut app, "200");
+    press(&mut app, KeyCode::Down);
+    type_text(&mut app, "55");
+    press(&mut app, KeyCode::Enter);
+    assert!(app.modal.is_none());
+    wait(&mut app, "the targets", |s| {
+        s.temps.hotends.first().and_then(|h| h.target) == Some(200.0)
+            && s.temps.bed.as_ref().and_then(|b| b.target) == Some(55.0)
+    });
+    // The PLA preset (third row).
+    press(&mut app, KeyCode::Char('t'));
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Enter);
+    wait(&mut app, "the preset", |s| {
+        s.temps.hotends.first().and_then(|h| h.target) == Some(205.0)
+            && s.temps.bed.as_ref().and_then(|b| b.target) == Some(60.0)
+    });
+    let got = received(&app);
+    assert!(got.iter().any(|c| c == "M104 T0 S200"), "{got:?}");
+    assert!(got.iter().any(|c| c == "M140 S55"), "{got:?}");
+    assert!(got.iter().any(|c| c == "M104 T0 S205"), "{got:?}");
+}
+
+#[test]
+fn typed_gcode_is_sent_and_completed() {
+    let mut app = connected_app();
+    received(&app);
+    // An upper-case letter starts the G-code line.
+    press(&mut app, KeyCode::Char('M'));
+    assert_eq!(app.focus, Focus::Input);
+    type_text(&mut app, "115");
+    press(&mut app, KeyCode::Enter);
+    wait_idle(&mut app);
+    assert!(received(&app).iter().any(|c| c == "M115"));
+    assert!(app.console.iter().any(|l| l.text.contains("FIRMWARE_NAME")));
+    // Tab opens the completion popup.
+    type_text(&mut app, "m10");
+    press(&mut app, KeyCode::Tab);
+    assert!(app.gcode_input.is_completing());
+    let text = screen(&mut app, 120, 40);
+    assert!(
+        text.contains("M104") && text.contains("Set hotend temperature"),
+        "{text}"
+    );
+    crate::snapshot::save(&render(&mut app, 120, 40), "tui-completion-120x40");
+    press(&mut app, KeyCode::Esc);
+    ctrl(&mut app, 'c');
+    assert!(app.gcode_input.is_empty());
+    // Dangerous codes ask first.
+    type_text(&mut app, "M502");
+    press(&mut app, KeyCode::Enter);
+    assert!(matches!(app.modal, Some(Modal::Confirm(_))));
+    let text = screen(&mut app, 120, 40);
+    assert!(text.contains("Send M502?"), "{text}");
+    press(&mut app, KeyCode::Char('n'));
+    wait_idle(&mut app);
+    assert!(!received(&app).iter().any(|c| c == "M502"));
+    // Esc leaves the line; Tab on an empty line moves the focus.
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.focus, Focus::Layers);
+    press(&mut app, KeyCode::Char('i'));
+    press(&mut app, KeyCode::Tab);
+    assert_eq!(app.focus, Focus::Layers);
+    press(&mut app, KeyCode::Tab);
+    assert_eq!(app.focus, Focus::Console);
+}
+
+/// Open the palette, type a line and run it.
+fn run_palette(app: &mut App, line: &str) {
+    press(app, KeyCode::Char(':'));
+    assert_eq!(app.input_mode, InputMode::Command);
+    type_text(app, line);
+    press(app, KeyCode::Enter);
+}
+
+/// Wait until the open report has its data.
+fn wait_report(app: &mut App, what: &str) {
+    wait_app(
+        app,
+        what,
+        |a| matches!(&a.modal, Some(Modal::Report(r)) if r.pending.is_none()),
+    );
+}
+
+#[test]
+fn command_palette_runs_shell_commands() {
+    let mut app = connected_app();
+    received(&app);
+    for line in [
+        "temp 205",
+        "bedtemp 50",
+        "fan 50",
+        "home x",
+        "speed 120",
+        "set M92 E415",
+    ] {
+        run_palette(&mut app, line);
+    }
+    wait_idle(&mut app);
+    let got = received(&app);
+    for want in [
+        "M104 T0 S205",
+        "M140 S50",
+        "M106 S128",
+        "G28 X",
+        "M220 S120",
+    ] {
+        assert!(got.iter().any(|c| c == want), "missing {want} in {got:?}");
+    }
+    assert!(
+        got.iter()
+            .any(|c| c.starts_with("M92 ") && c.ends_with("E415")),
+        "{got:?}"
+    );
+    // Reports open in a dialog and fill in when the printer answers.
+    run_palette(&mut app, "settings");
+    wait_report(&mut app, "the settings");
+    let text = screen(&mut app, 120, 40);
+    assert!(text.contains("Steps per unit"), "{text}");
+    assert!(text.contains("E415"), "{text}");
+    crate::snapshot::save(&render(&mut app, 120, 40), "tui-settings-120x40");
+    press(&mut app, KeyCode::Esc);
+    // Before probing there is no mesh; the report says so once the printer
+    // has answered, without waiting for the timeout.
+    let asked = Instant::now();
+    run_palette(&mut app, "mesh");
+    wait_report(&mut app, "the empty mesh");
+    assert!(asked.elapsed() < REPORT_TIMEOUT);
+    let text = screen(&mut app, 120, 40);
+    assert!(text.contains("No bed mesh reported"), "{text}");
+    assert!(!text.contains("did not answer"), "{text}");
+    press(&mut app, KeyCode::Esc);
+    run_palette(&mut app, "mesh probe");
+    wait_report(&mut app, "the probed mesh");
+    let text = screen(&mut app, 120, 40);
+    assert!(
+        text.contains("Bed mesh") && text.contains("range"),
+        "{text}"
+    );
+    crate::snapshot::save(&render(&mut app, 120, 40), "tui-mesh-120x40");
+    press(&mut app, KeyCode::Esc);
+    run_palette(&mut app, "status");
+    let text = screen(&mut app, 120, 40);
+    assert!(text.contains("● Connected"), "{text}");
+    press(&mut app, KeyCode::Esc);
+    run_palette(&mut app, "endstops");
+    wait_report(&mut app, "the endstops");
+    assert!(screen(&mut app, 120, 40).contains("x_min"));
+    press(&mut app, KeyCode::Esc);
+    // Errors show the usage.
+    run_palette(&mut app, "temp hot");
+    assert!(
+        app.toast
+            .as_ref()
+            .is_some_and(|t| t.tone == Tone::Bad && t.text.contains("usage: temp"))
+    );
+    run_palette(&mut app, "hoem");
+    assert!(
+        app.toast
+            .as_ref()
+            .is_some_and(|t| t.text.contains("did you mean 'home'"))
+    );
+    // Raw G-code goes through the palette too.
+    run_palette(&mut app, "M114");
+    wait_idle(&mut app);
+    assert!(received(&app).iter().any(|c| c == "M114"));
+    // Palette completion offers commands.
+    press(&mut app, KeyCode::Char(':'));
+    type_text(&mut app, "se");
+    press(&mut app, KeyCode::Tab);
+    let text = screen(&mut app, 120, 40);
+    assert!(
+        text.contains("settings") && text.contains("Firmware settings"),
+        "{text}"
+    );
+}
+
+#[test]
+fn emergency_stop_needs_a_second_press() {
+    let mut app = connected_app();
+    press(&mut app, KeyCode::F(8));
+    assert!(app.estop_armed.is_some());
+    let text = screen(&mut app, 120, 40);
+    assert!(text.contains("EMERGENCY STOP"), "{text}");
+    crate::snapshot::save(&render(&mut app, 120, 40), "tui-estop-120x40");
+    // Any other key disarms.
+    press(&mut app, KeyCode::Char('x'));
+    assert!(app.estop_armed.is_none());
+    app.sync();
+    assert!(!app.view.halted);
+    // The arm expires.
+    press(&mut app, KeyCode::F(8));
+    app.tick(Instant::now() + ESTOP_WINDOW + Duration::from_millis(1));
+    assert!(app.estop_armed.is_none());
+    // Two presses stop the printer.
+    press(&mut app, KeyCode::F(8));
+    press(&mut app, KeyCode::F(8));
+    wait(&mut app, "the halt", |s| s.halted);
+    assert!(screen(&mut app, 120, 40).contains("HALTED"));
+}
+
+#[test]
+fn host_prompts_are_answered() {
+    let mut app = connected_app();
+    received(&app);
+    app.printer
+        .sim_control()
+        .expect("simulator")
+        .trigger_filament_runout();
+    wait_app(&mut app, "the prompt dialog", |a| {
+        matches!(a.modal, Some(Modal::Prompt(_)))
+    });
+    let text = screen(&mut app, 120, 40);
+    assert!(text.contains("The printer asks"), "{text}");
+    crate::snapshot::save(&render(&mut app, 120, 40), "tui-prompt-120x40");
+    press(&mut app, KeyCode::Enter);
+    wait_idle(&mut app);
+    let got = received(&app);
+    assert!(got.iter().any(|c| c.starts_with("M876 S")), "{got:?}");
+}
+
+#[test]
+fn connect_dialog_reaches_the_simulator() {
+    let mut app = app();
+    press(&mut app, KeyCode::F(2));
+    let Some(Modal::Connect(dialog)) = &mut app.modal else {
+        panic!("no connect dialog");
+    };
+    // Real serial ports may be listed (enumeration only): pick the
+    // virtual printer explicitly, never a port.
+    let sim = dialog
+        .items
+        .iter()
+        .position(|i| *i == dialogs::ConnectItem::Simulator)
+        .expect("simulator entry");
+    dialog.selected = sim;
+    let text = screen(&mut app, 120, 40);
+    assert!(
+        text.contains("Connect") && text.contains("Virtual"),
+        "{text}"
+    );
+    crate::snapshot::save(&render(&mut app, 120, 40), "tui-connect-120x40");
+    let Some(Modal::Connect(dialog)) = &app.modal else {
+        panic!("no connect dialog");
+    };
+    assert_eq!(
+        dialog.items[dialog.selected],
+        dialogs::ConnectItem::Simulator
+    );
+    press(&mut app, KeyCode::Enter);
+    wait(&mut app, "the connection", |s| s.is_connected());
+    wait_app(&mut app, "the connect thread", |a| a.connecting.is_none());
+    assert!(app.printer.sim_control().is_some());
+    let text = screen(&mut app, 120, 40);
+    assert!(text.contains("● Connected"), "{text}");
+    // F2 again offers Disconnect first.
+    press(&mut app, KeyCode::F(2));
+    let Some(Modal::Connect(dialog)) = &mut app.modal else {
+        panic!("no connect dialog");
+    };
+    assert_eq!(dialog.items[0], dialogs::ConnectItem::Disconnect);
+    dialog.selected = 0;
+    press(&mut app, KeyCode::Enter);
+    wait(&mut app, "the disconnect", |s| !s.status.is_open());
+}
+
+#[test]
+fn open_dialog_completes_and_loads() {
+    let mut app = app();
+    press(&mut app, KeyCode::F(3));
+    assert!(matches!(app.modal, Some(Modal::Open(_))));
+    let dir = sample("");
+    let mut prefix = dir.display().to_string();
+    if !prefix.ends_with(['/', '\\']) {
+        prefix.push(std::path::MAIN_SEPARATOR);
+    }
+    app.on_paste(&format!("{prefix}calib"));
+    press(&mut app, KeyCode::Tab);
+    let Some(Modal::Open(dialog)) = &app.modal else {
+        panic!("no open dialog");
+    };
+    assert!(
+        dialog.input.text().ends_with("calibration-cube.gcode"),
+        "{}",
+        dialog.input.text()
+    );
+    crate::snapshot::save(&render(&mut app, 120, 40), "tui-open-120x40");
+    press(&mut app, KeyCode::Enter);
+    assert!(app.modal.is_none());
+    wait_app(&mut app, "the load", |a| a.loader.is_none());
+    assert_eq!(
+        app.file.as_ref().map(|f| f.name()),
+        Some("calibration-cube.gcode")
+    );
+    // A missing file is reported, not loaded.
+    press(&mut app, KeyCode::F(3));
+    app.on_paste("no-such-file-77.gcode");
+    press(&mut app, KeyCode::Enter);
+    wait_app(&mut app, "the failed load", |a| a.loader.is_none());
+    assert!(
+        app.toast.as_ref().is_some_and(|t| t.tone == Tone::Bad),
+        "{:?}",
+        app.toast
+    );
+    assert_eq!(
+        app.file.as_ref().map(|f| f.name()),
+        Some("calibration-cube.gcode")
+    );
+}
+
+#[test]
+fn layer_keys_browse_and_follow() {
+    let mut app = printing_app();
+    assert_eq!(app.shown_layer(), 41);
+    press(&mut app, KeyCode::Left);
+    assert_eq!(app.layer_view, Some(40));
+    press(&mut app, KeyCode::PageUp);
+    assert_eq!(app.layer_view, Some(50));
+    press(&mut app, KeyCode::End);
+    assert_eq!(app.shown_layer(), 99);
+    press(&mut app, KeyCode::Right);
+    assert_eq!(app.shown_layer(), 99, "clamped");
+    let text = screen(&mut app, 120, 40);
+    assert!(
+        text.contains("Layer 100/100") && text.contains("f follows the print"),
+        "{text}"
+    );
+    press(&mut app, KeyCode::Char('f'));
+    assert_eq!(app.layer_view, None);
+    assert_eq!(app.shown_layer(), 41);
+    press(&mut app, KeyCode::Char('b'));
+    assert_eq!(app.fit, LayerFit::Bed);
+    crate::snapshot::save(&render(&mut app, 120, 40), "tui-bed-fit-120x40");
+    press(&mut app, KeyCode::Char('s'));
+    assert_eq!(app.center, Center::Stats);
+    let text = screen(&mut app, 120, 40);
+    assert!(
+        text.contains("Statistics") && text.contains("Print time"),
+        "{text}"
+    );
+    crate::snapshot::save(&render(&mut app, 120, 40), "tui-stats-120x40");
+    press(&mut app, KeyCode::Char('s'));
+    assert_eq!(app.center, Center::Layers);
+}
+
+#[test]
+fn console_keys_scroll_filter_and_search() {
+    let mut app = printing_app();
+    for i in 0..200 {
+        app.console.push(ConsoleLine::received(format!("line {i}")));
+    }
+    let _ = render(&mut app, 120, 40);
+    press(&mut app, KeyCode::Tab);
+    assert_eq!(app.focus, Focus::Console);
+    press(&mut app, KeyCode::PageUp);
+    let _ = render(&mut app, 120, 40);
+    assert!(!app.console_state.is_following());
+    press(&mut app, KeyCode::End);
+    assert!(app.console_state.is_following());
+    press(&mut app, KeyCode::Char('a'));
+    assert!(app.show_auto);
+    assert!(screen(&mut app, 120, 40).contains("all traffic"));
+    press(&mut app, KeyCode::Char('/'));
+    type_text(&mut app, "line 19");
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.search.as_deref(), Some("line 19"));
+    let text = screen(&mut app, 120, 40);
+    assert!(text.contains("matches"), "{text}");
+    press(&mut app, KeyCode::Char('n'));
+    assert!(app.search.is_none());
+    // The mouse wheel scrolls the console where it is drawn.
+    let _ = render(&mut app, 120, 40);
+    let area = app.console_area;
+    app.handle_event(TermEvent::Mouse(crossterm::event::MouseEvent {
+        kind: MouseEventKind::ScrollUp,
+        column: area.x + 2,
+        row: area.y + 2,
+        modifiers: KeyModifiers::NONE,
+    }));
+    let _ = render(&mut app, 120, 40);
+    assert!(!app.console_state.is_following());
+    press(&mut app, KeyCode::Char('c'));
+    assert!(app.console.is_empty());
+}
+
+#[test]
+fn help_and_quit() {
+    let mut app = app();
+    press(&mut app, KeyCode::F(1));
+    assert!(matches!(app.modal, Some(Modal::Help { .. })));
+    let text = screen(&mut app, 120, 40);
+    assert!(
+        text.contains("Sprint keys and commands") && text.contains("EMERGENCY STOP"),
+        "{text}"
+    );
+    crate::snapshot::save(&render(&mut app, 120, 40), "tui-help-120x40");
+    for _ in 0..200 {
+        press(&mut app, KeyCode::Down);
+    }
+    let _ = screen(&mut app, 120, 40);
+    press(&mut app, KeyCode::Esc);
+    assert!(app.modal.is_none());
+    press(&mut app, KeyCode::Char('?'));
+    assert!(matches!(app.modal, Some(Modal::Help { .. })));
+    press(&mut app, KeyCode::Char('?'));
+    // Without a job, quitting needs no confirmation.
+    press(&mut app, KeyCode::F(10));
+    assert!(app.quit);
+    let mut app = super::tests::app();
+    ctrl(&mut app, 'c');
+    assert!(app.quit);
+}
+
+#[test]
+fn offline_commands_explain_instead_of_failing() {
+    let mut app = app();
+    for key in [
+        KeyCode::F(5),
+        KeyCode::F(6),
+        KeyCode::F(7),
+        KeyCode::Char('t'),
+    ] {
+        press(&mut app, key);
+        assert!(app.modal.is_none(), "{key:?}");
+        assert!(app.toast.is_some(), "{key:?}");
+    }
+    app.run_line("temp 200");
+    assert!(
+        app.toast
+            .as_ref()
+            .is_some_and(|t| t.text.contains("Not connected"))
+    );
+    // (Never a serial port here: the line must fail before connecting.)
+    app.run_line("connect sim 9600 extra");
+    assert!(app.toast.as_ref().is_some_and(|t| t.tone == Tone::Bad));
+    app.run_line("connect sim 115200");
+    assert!(
+        app.toast
+            .as_ref()
+            .is_some_and(|t| t.text.contains("only applies to serial ports"))
+    );
+    app.run_line("help G28");
+    assert!(matches!(&app.modal, Some(Modal::Report(r)) if r.title == "G-code G28"));
+    app.modal = None;
+    app.run_line("help nothing-here");
+    assert!(
+        app.toast
+            .as_ref()
+            .is_some_and(|t| t.text.contains("No help"))
+    );
+}

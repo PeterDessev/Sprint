@@ -543,7 +543,7 @@ impl Theme {
     }
 
     /// A dark color for text drawn on accent backgrounds.
-    fn background_or_black(&self) -> Color {
+    pub(crate) fn background_or_black(&self) -> Color {
         match self.background {
             Color::Reset => Color::Black,
             c => c,
