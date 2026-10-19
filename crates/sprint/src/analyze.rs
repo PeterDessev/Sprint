@@ -181,7 +181,7 @@ pub fn write_report(
     }
     let mut facts = format!(
         "  {}, {} lines ({} commands)",
-        format::bytes(u64::try_from(file.byte_len()).unwrap_or(u64::MAX)),
+        format::bytes(file.source_len()),
         format::count(file.len()),
         format::count(file.command_count()),
     );
@@ -267,7 +267,8 @@ fn format_elapsed(elapsed: Duration) -> String {
 struct JsonFile<'a> {
     name: &'a str,
     path: Option<String>,
-    bytes: usize,
+    /// Size as stored on disk.
+    bytes: u64,
     lines: usize,
     commands: usize,
     /// What the file is (`"Gcode"`, `"AsciiStl"`, `"Binary"`, ...).
@@ -309,7 +310,7 @@ pub fn write_json(out: &mut impl Write, file: &GcodeFile, toolpath: &Toolpath) -
         file: JsonFile {
             name: file.name(),
             path: file.path().map(|p| p.display().to_string()),
-            bytes: file.byte_len(),
+            bytes: file.source_len(),
             lines: file.len(),
             commands: file.command_count(),
             content: file.content_kind(),
@@ -448,11 +449,35 @@ G1 Z0.4 F600\nG1 X30 Y10 E1 F1200\nG2 X30 Y30 I0 J10 E1\n\
             Some(toolpath.part_bounds.min[0])
         );
         assert!(toolpath.part_bounds.min[0] < 10.0 && toolpath.part_bounds.max[0] < 31.0);
+        assert_eq!(json["file"]["bytes"], file.source_len());
         assert_eq!(
             json["layers"].as_array().map(Vec::len),
             Some(toolpath.layers.len())
         );
         assert!(out.ends_with(b"}\n"));
+    }
+
+    #[test]
+    fn the_file_size_is_the_size_on_disk() {
+        // Invalid UTF-8 decodes to longer text (U+FFFD), a BOM to shorter:
+        // the size reported is the file's.
+        let mut bytes = b"\xEF\xBB\xBFG28\nM117 caf\xE9\nG1 X10 Y10\n".to_vec();
+        bytes.extend(std::iter::repeat_n(b'\n', 1000));
+        let file = GcodeFile::from_bytes("odd.gcode", bytes);
+        assert_eq!(file.source_len(), 1028);
+        assert_ne!(file.byte_len() as u64, file.source_len());
+        let toolpath = analyze_simple(&file, &AnalyzeOptions::default());
+        let mut out = Vec::new();
+        write_report(&mut out, &file, &toolpath, None).expect("write");
+        let text = String::from_utf8(out).expect("utf-8");
+        assert!(
+            text.contains(&format!("  {}, ", format::bytes(1028))),
+            "{text}"
+        );
+        let mut out = Vec::new();
+        write_json(&mut out, &file, &toolpath).expect("write");
+        let json: serde_json::Value = serde_json::from_slice(&out).expect("valid JSON");
+        assert_eq!(json["file"]["bytes"], 1028);
     }
 
     #[test]

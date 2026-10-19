@@ -1009,7 +1009,7 @@ pub fn file_lines(loaded: &LoadedFile) -> Vec<ReportLine> {
         ReportLine::toned(
             format!(
                 "  {}, {} lines ({} commands), analyzed in {}",
-                format::bytes(u64::try_from(file.byte_len()).unwrap_or(u64::MAX)),
+                format::bytes(file.source_len()),
                 format::count(file.len()),
                 format::count(file.command_count()),
                 format_elapsed(loaded.load_time)
@@ -1718,6 +1718,28 @@ mod tests {
         assert!(text.contains("Total time    1d 6h 00m"), "{text}");
         assert!(text.contains("Round trip"), "{text}");
         assert!(joined(&stats_lines(None, &LinkStats::default())).contains("not reported"));
+    }
+
+    #[test]
+    fn file_info_reports_the_size_on_disk() {
+        use sprint_host::sprint_gcode::{AnalyzeOptions, GcodeFile, analyze_simple};
+        // A BOM is dropped from the text and invalid UTF-8 grows into
+        // U+FFFD: the size shown is the file's.
+        let mut bytes = b"\xEF\xBB\xBFG28\nM117 caf\xE9\n".to_vec();
+        bytes.extend(std::iter::repeat_n(b';', 2000));
+        let file = GcodeFile::from_bytes("odd.gcode", bytes);
+        assert_eq!(file.source_len(), 2017);
+        assert_ne!(file.byte_len() as u64, file.source_len());
+        let toolpath = analyze_simple(&file, &AnalyzeOptions::default());
+        let loaded = LoadedFile::new(
+            "odd.gcode".into(),
+            file,
+            toolpath,
+            std::time::Duration::from_millis(5),
+        );
+        let text = joined(&file_lines(&loaded));
+        let size = format::bytes(2017);
+        assert!(text.contains(&format!("  {size}, 3 lines")), "{text}");
     }
 
     #[test]
