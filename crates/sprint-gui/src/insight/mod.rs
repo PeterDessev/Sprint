@@ -15,10 +15,12 @@
 //!   helper (how far to turn each leveling screw).
 //! * [`calibrate`]: E-steps, PID, flow and Z-offset arithmetic used by the
 //!   calibration wizards, and the setting commands that apply the results.
+//! * [`sdname`]: 8.3 file names for SD card uploads.
 
 #![warn(missing_docs)]
 
 pub mod calibrate;
 pub mod format;
 pub mod mesh;
+pub mod sdname;
 pub mod thermal;
