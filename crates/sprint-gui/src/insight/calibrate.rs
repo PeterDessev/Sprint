@@ -258,6 +258,47 @@ pub fn autotune_cycles(points: &[HeaterPoint], target: f32, since: f64) -> usize
         .count()
 }
 
+/// How far below the target (°C) the heater must have been for the
+/// autotune's initial heat-up to count as its start.
+pub const AUTOTUNE_START_BAND: f32 = 15.0;
+
+/// A reading this much above the next still counts as climbing (°C).
+const CLIMB_NOISE: f32 = 0.05;
+/// Readings within this of each other count as idle (°C).
+const IDLE_NOISE: f32 = 0.3;
+
+/// Estimate when a running autotune started, for runs this app did not
+/// start: the beginning of the last climb from well below `target`
+/// (more than [`AUTOTUNE_START_BAND`] under it) towards it. When the series
+/// never was that far below, the run began before the history, and the
+/// first sample's time is returned. `None` for an empty series or a
+/// non-finite target.
+pub fn autotune_start(points: &[HeaterPoint], target: f32) -> Option<f64> {
+    if !target.is_finite() || points.is_empty() {
+        return None;
+    }
+    let cold = |p: &HeaterPoint| p.current.is_finite() && p.current < target - AUTOTUNE_START_BAND;
+    let Some(last_cold) = points.iter().rposition(cold) else {
+        return points.iter().map(|p| p.t).find(|t| t.is_finite());
+    };
+    // Walk back over the climb while the previous reading was not higher
+    // (sensor noise aside)...
+    let mut start = last_cold;
+    while start > 0 {
+        let (prev, here) = (points[start - 1].current, points[start].current);
+        if !(prev.is_finite() && prev <= here + CLIMB_NOISE) {
+            break;
+        }
+        start -= 1;
+    }
+    // ...then forward over the flat stretch before it: the climb starts at
+    // the last reading at the idle temperature.
+    while start < last_cold && points[start + 1].current <= points[start].current + IDLE_NOISE {
+        start += 1;
+    }
+    Some(points[start].t).filter(|t| t.is_finite())
+}
+
 /// Why a flow calculation cannot be done.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FlowError {
@@ -578,6 +619,31 @@ mod tests {
         assert!(autotune_cycles(&pts, 200.0, 100.0) < n);
         assert_eq!(autotune_cycles(&pts, f32::NAN, 0.0), 0);
         assert_eq!(autotune_cycles(&[], 200.0, 0.0), 0);
+    }
+
+    #[test]
+    fn autotune_start_finds_the_initial_climb() {
+        let point = |t: f64, current: f32| HeaterPoint {
+            t,
+            current,
+            target: 0.0,
+            power: None,
+        };
+        // Idle at 25 °C, a climb from t=10 to 50, then swings around 200.
+        let mut pts: Vec<HeaterPoint> = (0..10).map(|i| point(f64::from(i), 25.0)).collect();
+        pts.extend((10..=50).map(|i| point(f64::from(i), 25.0 + (i - 10) as f32 * 4.4)));
+        pts.extend((51..200).map(|i| point(f64::from(i), 200.0 + 4.0 * (i as f32 / 7.0).sin())));
+        assert_eq!(autotune_start(&pts, 200.0), Some(10.0));
+        // A history that starts mid-run: its first sample.
+        assert_eq!(autotune_start(&pts[60..], 200.0), Some(60.0));
+        // Garbage in, nothing out (or the first usable time).
+        assert_eq!(autotune_start(&[], 200.0), None);
+        assert_eq!(autotune_start(&pts, f32::NAN), None);
+        let mut nan = pts.clone();
+        for p in &mut nan[..30] {
+            p.current = f32::NAN;
+        }
+        assert_eq!(autotune_start(&nan, 200.0), Some(30.0));
     }
 
     #[test]
