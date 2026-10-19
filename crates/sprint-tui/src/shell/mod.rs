@@ -786,6 +786,44 @@ impl Shell {
         self.config = config;
     }
 
+    /// Delete `name` from the SD card (M30) and say how it went once the
+    /// printer answered: deleted, or (echoed from the printer's console)
+    /// why not.
+    fn delete_sd_file(&self, name: &str) {
+        let events = self.printer.subscribe();
+        self.printer.delete_sd_file(name);
+        self.out.dim(format!("Deleting {name} (M30)…"));
+        self.interrupt.reset();
+        let deadline = Instant::now() + REPORT_TIMEOUT;
+        let deleted = loop {
+            match events.recv_timeout(session::POLL * 5) {
+                // The host takes the file off the listing.
+                Ok(sprint_host::Event::SdFiles(_)) => break Some(true),
+                Ok(sprint_host::Event::Console(entry))
+                    if entry.kind == sprint_host::ConsoleKind::Warning
+                        && entry.text.contains("Could not delete") =>
+                {
+                    break Some(false);
+                }
+                Ok(_) | Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break None,
+            }
+            let open = self.printer.with_state(|s| s.status.is_open());
+            if !open || self.interrupt.take() || Instant::now() >= deadline {
+                break None;
+            }
+        };
+        // The printer's own lines (and its warning) come first.
+        self.echo.settle();
+        match deleted {
+            Some(true) => self.out.good(format!("Deleted {name}")),
+            Some(false) => {}
+            None => self.out.warn(format!(
+                "No answer about deleting {name} (sd ls shows the card)"
+            )),
+        }
+    }
+
     /// `eta`: where the job is and how long it has left.
     fn eta(&self) {
         let job = self.printer.with_state(|s| {
@@ -1358,8 +1396,7 @@ impl Shell {
                 if let Some(why) = printer.with_state(actions::sd_delete_blocker) {
                     self.out.warn(why);
                 } else if self.confirm(input, &format!("Delete {name} from the SD card?"), true) {
-                    printer.delete_sd_file(&name);
-                    self.out.dim(format!("Deleted {name} (M30)"));
+                    self.delete_sd_file(&name);
                 }
             }
             Command::Sd(SdCommand::Upload { file, name }) => self.upload(file.as_deref(), name),

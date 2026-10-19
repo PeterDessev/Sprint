@@ -1018,3 +1018,19 @@ fn sd_files_are_not_deleted_while_the_card_prints() {
     shell.printer.cancel();
     wait_for(&shell, "the cancel", |s| !s.job_active());
 }
+
+#[test]
+fn sd_deletes_are_reported_when_the_printer_answers() {
+    let (mut shell, buffer) = connected_to(sd_sim());
+    let mut input = Script::new(["sd rm nothere.gco", "sd rm small.gcode"], false);
+    shell.run_lines_until_eof_without_leaving(&mut input);
+    let text = buffer.text();
+    assert!(text.contains("Deleting nothere.gco (M30)"), "{text}");
+    assert!(text.contains("Could not delete nothere.gco"), "{text}");
+    assert!(!text.contains("Deleted nothere.gco"), "{text}");
+    assert!(text.contains("Deleted small.gcode"), "{text}");
+    // Success is said after the printer answered, not before.
+    let failed = text.find("Could not delete nothere.gco").unwrap_or(0);
+    let next = text.find("Deleting small.gcode").unwrap_or(0);
+    assert!(failed < next, "{text}");
+}

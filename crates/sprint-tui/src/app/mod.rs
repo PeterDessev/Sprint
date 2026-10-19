@@ -184,6 +184,8 @@ pub(crate) struct App {
     last_load_progress: u32,
     /// The target of the last connect (for `reset`).
     last_target: Option<ConnectTarget>,
+    /// An SD file being deleted: its name, until the printer answers.
+    pending_sd_delete: Option<String>,
     /// A `source` file being read: its name and lines.
     sourcing: Option<Receiver<SourceRead>>,
 }
@@ -272,6 +274,7 @@ impl App {
             base_dir: std::env::current_dir().unwrap_or_default(),
             last_load_progress: 0,
             last_target: None,
+            pending_sd_delete: None,
             sourcing: None,
         };
         app.sync();
@@ -368,7 +371,20 @@ impl App {
             Event::Endstops(_) => self.report_arrived(|w| *w == ReportSource::Endstops),
             Event::Mesh(_) => self.report_arrived(|w| *w == ReportSource::Mesh),
             Event::Stats(_) => self.report_arrived(|w| *w == ReportSource::Stats),
-            Event::SdFiles(_) => self.report_arrived(|w| *w == ReportSource::SdFiles),
+            Event::SdFiles(_) => {
+                // The host takes a deleted file off the listing.
+                if let Some(name) = self.pending_sd_delete.take() {
+                    self.good(format!("Deleted {name} from the SD card"));
+                }
+                self.report_arrived(|w| *w == ReportSource::SdFiles);
+            }
+            Event::Console(entry)
+                if entry.kind == HostKind::Warning && entry.text.contains("Could not delete") =>
+            {
+                if self.pending_sd_delete.take().is_some() {
+                    self.error(entry.text);
+                }
+            }
             Event::AutotuneFinished { heater, kp, ki, kd } => self.good(format!(
                 "PID autotune of {}: Kp {} Ki {} Kd {} (eeprom save keeps them)",
                 heater.name(),
@@ -1277,7 +1293,8 @@ impl App {
                     return;
                 }
                 self.printer.delete_sd_file(&name);
-                self.info(format!("Deleted {name} from the SD card"));
+                self.info(format!("Deleting {name} from the SD card (M30)…"));
+                self.pending_sd_delete = Some(name);
             }
             Action::AnswerPrompt(button) => self.printer.answer_prompt(button),
             Action::EverythingOff => {

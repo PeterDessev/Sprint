@@ -2059,3 +2059,27 @@ fn sd_files_are_not_deleted_while_the_card_prints() {
     app.printer.cancel();
     wait(&mut app, "the cancel", |s| !s.job_active());
 }
+
+#[test]
+fn sd_deletes_are_reported_when_the_printer_answers() {
+    let mut app = connected_app();
+    app.run_action(dialogs::Action::SdDelete("nothere.gco".into()));
+    assert!(
+        app.toast
+            .as_ref()
+            .is_some_and(|t| t.text.starts_with("Deleting nothere.gco")),
+        "{:?}",
+        app.toast
+    );
+    wait_app(&mut app, "the refusal", |a| {
+        a.toast
+            .as_ref()
+            .is_some_and(|t| t.tone == Tone::Bad && t.text.contains("Could not delete"))
+    });
+    app.run_action(dialogs::Action::SdDelete("first layer test.gcode".into()));
+    wait_app(&mut app, "the deletion", |a| {
+        a.toast
+            .as_ref()
+            .is_some_and(|t| t.text == "Deleted first layer test.gcode from the SD card")
+    });
+}
