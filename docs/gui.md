@@ -127,8 +127,8 @@ off. Turning a heater off or changing presets during a print asks first.
 all axes, motors off, an absolute **Move to** X/Y/Z, and **Center** (the
 middle of the bed). **Keyboard jog**, once turned on and after a click into
 the sidebar, moves X/Y with the arrow keys and Z with PgUp/PgDn; Shift
-makes the step ten times larger (never downwards). Sprint warns before a
-move when the axes are not known to be homed.
+makes the step ten times larger, except for Z down (PgDn). Sprint warns
+before a move when the axes are not known to be homed.
 
 **Extruder.** The tool (with several extruders), a length (5, 10, 50,
 100 mm or typed) and speed, **Extrude** and **Retract**. A cold hotend
@@ -509,7 +509,7 @@ the original was backed up. See [Configuration](configuration.md).
 | Home / End | First / last layer |
 | Shift + layer keys | Move the lower layer handle |
 | Arrows, PgUp / PgDn | Keyboard jog X/Y and Z, once turned on (after a click in the controls) |
-| Shift + jog keys | Jog ten times as far (never down) |
+| Shift + jog keys | Jog ten times as far (not Z down) |
 | Enter / Shift+Enter | Console: send / new line; Find: next / previous |
 | ↑ / ↓ in the console | Command history (or suggestions) |
 | Tab | Accept a G-code suggestion |
