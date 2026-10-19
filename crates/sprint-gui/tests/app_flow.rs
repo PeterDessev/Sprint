@@ -566,3 +566,33 @@ fn ui_preferences_survive_a_restart() {
     assert_eq!(prefs.history, ["M105"]);
     assert_eq!(restored.state().console().history(), ["M105"]);
 }
+
+#[test]
+fn layer_keys_move_the_top_layer_under_the_pointer() {
+    let options = with_file(AppOptions::headless(), sample("calibration-cube.gcode"));
+    let mut h = app(options, WINDOW);
+    expect(&mut h, "the cube to be analyzed", analyzed);
+    if h.state().viewer_tab().viewer().is_none() {
+        eprintln!("no GPU viewer on this machine: layer keys not tested");
+        return;
+    }
+    h.state_mut().set_side_panels(false, false);
+    settle(&mut h);
+    h.state_mut().viewer_tab_mut().set_layer_range(10, 50);
+    settle(&mut h);
+    // Over the view (left of the cards and the slider).
+    h.hover_at(egui::pos2(200.0, 600.0));
+    settle(&mut h);
+    h.key_press(Key::ArrowDown);
+    settle(&mut h);
+    assert_eq!(h.state().viewer_tab().layer_range(), Some((10, 49)));
+    h.key_press(Key::PageUp);
+    settle(&mut h);
+    assert_eq!(h.state().viewer_tab().layer_range(), Some((10, 59)));
+    h.key_press_modifiers(Modifiers::SHIFT, Key::Home);
+    settle(&mut h);
+    assert_eq!(h.state().viewer_tab().layer_range(), Some((0, 59)));
+    h.key_press(Key::End);
+    settle(&mut h);
+    assert_eq!(h.state().viewer_tab().layer_range(), Some((0, 99)));
+}
