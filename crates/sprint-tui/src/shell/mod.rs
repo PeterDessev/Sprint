@@ -34,7 +34,7 @@ use crate::report::{self, ReportLine, Tone};
 use crate::session::{self, ConnectError, WaitError};
 
 use echo::{Awaited, Echo};
-use input::{LineSource, Read, ShellHelper, Stdin, Terminal};
+use input::{LineSource, Read, Script, ShellHelper, Stdin, Terminal};
 use output::{Out, Sink, WriterSink};
 
 /// How long a report waits for the printer.
@@ -58,15 +58,23 @@ const MAX_SOURCE_DEPTH: usize = 8;
 ///
 /// `options.file` is loaded first; the shell connects to `options.connect`,
 /// or to the active profile's printer only when the profile enables
-/// `auto_connect`.
-pub fn run_shell(options: TuiOptions) -> anyhow::Result<()> {
+/// `auto_connect`. With `options.execute` those commands run as a script
+/// instead of the input.
+pub fn run_shell(mut options: TuiOptions) -> anyhow::Result<()> {
     let (mut config, config_path) = crate::config::load_config();
     crate::config::select_profile(&mut config, options.profile.as_deref())
         .map_err(anyhow::Error::msg)?;
-    let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    let commands = std::mem::take(&mut options.execute);
+    let interactive =
+        commands.is_empty() && std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
     let support = report::stdout_colors();
     let base_dir = std::env::current_dir().unwrap_or_default();
-    let (mut source, sink): (Box<dyn LineSource>, Box<dyn Sink>) = if interactive {
+    let (mut source, sink): (Box<dyn LineSource>, Box<dyn Sink>) = if !commands.is_empty() {
+        (
+            Box::new(Script::new(commands, false)),
+            Box::new(WriterSink(std::io::stdout())),
+        )
+    } else if interactive {
         let helper = ShellHelper {
             presets: config
                 .active()

@@ -72,12 +72,14 @@ fn run(command: Command) -> Result<ExitCode> {
             file: args.file,
             connect: args.connect,
             profile: args.profile,
+            execute: Vec::new(),
         })
         .map(|()| ExitCode::SUCCESS),
         Command::Shell(args) => sprint_tui::run_shell(sprint_tui::TuiOptions {
-            file: None,
+            file: args.file,
             connect: args.connect,
             profile: args.profile,
+            execute: args.execute,
         })
         .map(|()| ExitCode::SUCCESS),
         Command::Print(args) => print::run(&args),

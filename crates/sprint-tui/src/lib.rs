@@ -69,4 +69,8 @@ pub struct TuiOptions {
     /// prefix of one, or its number in the `profile` list); the
     /// configuration file is not changed.
     pub profile: Option<String>,
+    /// The shell only: commands to run instead of reading standard input
+    /// (pronsole's `-e`); the shell then leaves as at the end of a script,
+    /// after the queued commands and a running print.
+    pub execute: Vec<String>,
 }

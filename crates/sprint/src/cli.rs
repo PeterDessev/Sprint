@@ -55,6 +55,13 @@ pub enum Command {
     /// Full-screen terminal UI.
     Tui(TuiArgs),
     /// Interactive line shell, like pronsole.
+    ///
+    /// Type help for the commands (and the differences from pronsole);
+    /// G-code is sent as typed. Commands can also come from a pipe (sprint
+    /// shell -c T < script.txt) or from -e: they run in order, without a
+    /// prompt or questions (eeprom reset then needs yes), and at the end
+    /// the shell waits for the queued commands and for a running print to
+    /// finish (Ctrl+C cancels the print) before it disconnects.
     Shell(ShellArgs),
     /// Print a file without a UI, showing progress.
     Print(PrintArgs),
@@ -97,6 +104,13 @@ pub struct TuiArgs {
 /// Options of the line shell.
 #[derive(Clone, Debug, Args)]
 pub struct ShellArgs {
+    /// G-code file to load at startup.
+    #[arg(value_name = "FILE")]
+    pub file: Option<PathBuf>,
+    /// Run this command (repeatable, in order) instead of reading
+    /// commands, then leave as at the end of a script.
+    #[arg(long, short = 'e', value_name = "CMD")]
+    pub execute: Vec<String>,
     /// Printer to connect to at startup.
     #[arg(long, short = 'c', value_name = "T", value_parser = parse_target)]
     pub connect: Option<ConnectTarget>,
@@ -410,6 +424,21 @@ mod tests {
             panic!("shell");
         };
         assert_eq!(s.profile.as_deref(), Some("MK3"));
+        assert_eq!(s.file, None);
+        assert!(s.execute.is_empty());
+        // pronsole's FILE argument and -e.
+        let Ok(Command::Shell(s)) = parse(&[
+            "shell",
+            "cube.gcode",
+            "-e",
+            "temp 200",
+            "--execute",
+            "status",
+        ]) else {
+            panic!("shell");
+        };
+        assert_eq!(s.file, Some(PathBuf::from("cube.gcode")));
+        assert_eq!(s.execute, ["temp 200", "status"]);
         assert!(matches!(parse(&["ports"]), Ok(Command::Ports)));
         let Ok(Command::Analyze(a)) = parse(&["analyze", "a.gcode", "--json"]) else {
             panic!("analyze");

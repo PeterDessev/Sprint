@@ -389,3 +389,33 @@ fn send_and_print_use_the_profile_named() {
         stderr(&output)
     );
 }
+
+#[test]
+fn the_shell_runs_execute_commands_instead_of_its_input() {
+    let scratch = Scratch::new("shell-execute");
+    let cube = sample("calibration-cube.gcode");
+    let output = scratch.run_with_input(
+        &[
+            "shell",
+            &cube,
+            "-c",
+            FAST_SIM,
+            "-e",
+            "M115",
+            "--execute",
+            "info",
+        ],
+        "bogus\n",
+    );
+    let text = stdout(&output);
+    assert!(output.status.success(), "{text}\n{}", stderr(&output));
+    for fact in [
+        "Loaded calibration-cube.gcode",
+        "FIRMWARE_NAME:Marlin",
+        "Layers",
+    ] {
+        assert!(text.contains(fact), "missing {fact:?} in\n{text}");
+    }
+    // Standard input is not read.
+    assert!(!text.contains("bogus"), "{text}");
+}

@@ -107,6 +107,25 @@ fn help_says_what_the_configuration_and_targets_do() {
 }
 
 #[test]
+fn shell_help_explains_scripts() {
+    let output = sprint(&["shell", "--help"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let text = stdout(&output)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    for fact in [
+        "[FILE]",
+        "-e, --execute <CMD>",
+        "sprint shell -c T < script.txt",
+        "waits for the queued commands and for a running print to finish",
+        "-p, --profile <NAME>",
+    ] {
+        assert!(text.contains(fact), "missing {fact:?} in\n{text}");
+    }
+}
+
+#[test]
 fn version_is_printed() {
     let output = sprint(&["--version"]);
     assert!(output.status.success());

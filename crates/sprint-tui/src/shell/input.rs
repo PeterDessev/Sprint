@@ -52,14 +52,12 @@ pub(crate) trait LineSource {
     fn save_history(&mut self) {}
 }
 
-/// Lines given up front (tests).
-#[cfg(test)]
+/// Lines given up front (`sprint shell -e`, tests).
 pub(crate) struct Script {
     lines: std::collections::VecDeque<String>,
     interactive: bool,
 }
 
-#[cfg(test)]
 impl Script {
     /// `lines` in order; `interactive` makes the shell ask confirmations
     /// (answered by the following lines).
@@ -75,7 +73,6 @@ impl Script {
     }
 }
 
-#[cfg(test)]
 impl LineSource for Script {
     fn read(&mut self, _prompt: &str) -> Read {
         self.lines.pop_front().map_or(Read::Eof, Read::Line)
