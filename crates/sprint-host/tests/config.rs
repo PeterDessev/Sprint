@@ -65,18 +65,119 @@ fn corrupt_file_is_backed_up_and_defaults_are_used() {
         Err(HostError::Config(_))
     ));
 
-    let config = AppConfig::load_or_default(&path);
+    let (config, report) = AppConfig::load_checked(&path);
     assert_eq!(config, AppConfig::default());
+    assert!(!report.is_clean());
     let backup = dir.path().join("config.toml.bak");
+    assert_eq!(report.backup.as_deref(), Some(backup.as_path()));
     assert_eq!(fs::read_to_string(&backup).unwrap(), garbage);
-    assert!(!path.exists(), "the corrupt file was moved aside");
+    assert!(path.exists(), "the file stays until it is saved over");
+    // Loading it again reuses the identical backup.
+    assert_eq!(
+        AppConfig::load_checked(&path).1.backup,
+        Some(backup.clone())
+    );
 
-    // A second corrupt file replaces the older backup.
+    // A second broken file never replaces the older backup.
     fs::write(&path, "console_max_lines = \"many\"").unwrap();
-    assert_eq!(AppConfig::load_or_default(&path), AppConfig::default());
+    let (config, report) = AppConfig::load_checked(&path);
+    assert_eq!(config, AppConfig::default());
+    assert_eq!(fs::read_to_string(&backup).unwrap(), garbage);
+    let second = dir.path().join("config.toml.1.bak");
+    assert_eq!(report.backup.as_deref(), Some(second.as_path()));
+    assert_eq!(
+        fs::read_to_string(&second).unwrap(),
+        "console_max_lines = \"many\""
+    );
+}
+
+#[test]
+fn one_bad_value_keeps_every_profile_and_macro() {
+    // A lowercase enum, a decimal comma or a value from a newer version
+    // used to discard the whole file; then the defaults were saved and a
+    // second mistake overwrote the only backup.
+    let dir = TempDir::new("config-lenient");
+    let path = dir.path().join("config.toml");
+    let mut config = AppConfig {
+        profiles: vec![
+            PrinterProfile {
+                name: "My real printer".into(),
+                connection: ConnectTarget::parse("COM7@250000").unwrap(),
+                max_z: 300.0,
+                ..PrinterProfile::default()
+            },
+            PrinterProfile {
+                name: "Second printer".into(),
+                ..PrinterProfile::default()
+            },
+        ],
+        ..AppConfig::default()
+    };
+    config.macros.push(sprint_host::Macro {
+        name: "Purge".into(),
+        gcode: "G1 E20 F300".into(),
+        color: Some([10, 20, 30]),
+        confirm: true,
+    });
+    config.save_to(&path).unwrap();
+    let original = fs::read_to_string(&path).unwrap();
+    let edited = original.replacen("checksum = \"Always\"", "checksum = \"always\"", 1);
+    assert_ne!(edited, original);
+    fs::write(&path, &edited).unwrap();
+
+    let (loaded, report) = AppConfig::load_checked(&path);
+    let names: Vec<&str> = loaded.profiles.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, ["My real printer", "Second printer"]);
+    assert_eq!(loaded.profiles[0].max_z, 300.0);
+    assert_eq!(loaded.profiles[0].connection, config.profiles[0].connection);
+    assert_eq!(loaded.profiles[0].options.checksum, ChecksumMode::Always);
+    assert_eq!(loaded.macros, config.macros);
+    assert_eq!(report.warnings.len(), 1, "{:?}", report.warnings);
+    assert!(
+        report.warnings[0].starts_with("profiles[0].options.checksum: ignored \"always\""),
+        "{:?}",
+        report.warnings
+    );
+    let backup = report.backup.clone().expect("a backup");
+    assert_eq!(fs::read_to_string(&backup).unwrap(), edited);
+
+    // The repaired configuration is saved; a second typo later (a decimal
+    // comma) loses only that line and keeps the first backup.
+    loaded.save_to(&path).unwrap();
+    let saved = fs::read_to_string(&path).unwrap();
+    fs::write(&path, saved.replacen("max_z = 300.0", "max_z = 300,0", 1)).unwrap();
+    let (again, report) = AppConfig::load_checked(&path);
+    assert_eq!(again.profiles.len(), 2);
+    assert_eq!(again.profiles[0].max_z, 250.0, "the broken line fell back");
+    assert_eq!(again.profiles[0].name, "My real printer");
+    assert!(
+        report.warnings[0].starts_with("line "),
+        "{:?}",
+        report.warnings
+    );
     assert_eq!(
         fs::read_to_string(&backup).unwrap(),
-        "console_max_lines = \"many\""
+        edited,
+        "older backups stay"
+    );
+    assert_ne!(report.backup, Some(backup));
+
+    // A connection kind from a newer version falls back to the simulator
+    // rather than losing the profile.
+    let future = saved.replacen(
+        "[profiles.connection.Serial]",
+        "[profiles.connection.Bluetooth]",
+        1,
+    );
+    assert_ne!(future, saved);
+    fs::write(&path, future).unwrap();
+    let (future, report) = AppConfig::load_checked(&path);
+    assert_eq!(future.profiles[0].name, "My real printer");
+    assert!(future.profiles[0].connection.is_simulator());
+    assert!(
+        report.warnings[0].contains("profiles[0].connection"),
+        "{:?}",
+        report.warnings
     );
 }
 
@@ -91,14 +192,21 @@ fn a_file_that_is_not_utf8_is_backed_up_too() {
         AppConfig::load_from(&path),
         Err(HostError::Config(_))
     ));
-    assert_eq!(AppConfig::load_or_default(&path), AppConfig::default());
-    // The user's bytes survive in the backup, so saving the defaults later
-    // does not destroy them.
+    // What can be read is kept; the binary junk is dropped.
+    let (config, report) = AppConfig::load_checked(&path);
+    assert_eq!(config.console_max_lines, 900);
+    assert!(
+        report.warnings[0].contains("not UTF-8"),
+        "{:?}",
+        report.warnings
+    );
+    // The user's bytes survive in the backup, so saving later does not
+    // destroy them.
     assert_eq!(
         fs::read(dir.path().join("config.toml.bak")).unwrap(),
         garbage
     );
-    assert!(!path.exists());
+    assert_eq!(AppConfig::load_or_default(&path).console_max_lines, 900);
 }
 
 #[test]

@@ -9,8 +9,10 @@
 //!
 //! [`AppConfig::save_to`] writes atomically (temporary file + rename), so a
 //! crash never leaves a half-written file behind. [`AppConfig::load`] never
-//! fails: a missing file gives the defaults, and a corrupt one is moved
-//! aside to `config.toml.bak` before the defaults are used.
+//! fails: a missing file gives the defaults, and a file that does not fully
+//! parse keeps every valid profile, macro and value; only the broken lines
+//! and values fall back to defaults ([`AppConfig::load_checked`] reports
+//! them), after the original was copied to a new numbered backup.
 
 use std::ffi::OsString;
 use std::fs;
@@ -27,6 +29,8 @@ use crate::script::{
     ScriptContext,
 };
 use crate::transport::ConnectTarget;
+
+mod repair;
 
 /// Most entries kept in [`AppConfig::recent_files`].
 pub const MAX_RECENT_FILES: usize = 12;
@@ -507,32 +511,77 @@ impl AppConfig {
         Ok(config.normalized())
     }
 
-    /// Load from `path`, falling back to the defaults when the file is
-    /// missing or unreadable. A file that exists but does not parse is
-    /// renamed to `<name>.bak` (replacing an older backup) so the user's
-    /// data is not lost when the defaults are saved later.
+    /// [`AppConfig::load_checked`] without the report (its warnings go to
+    /// the log).
     pub fn load_or_default(path: &Path) -> AppConfig {
-        match AppConfig::load_from(path) {
-            Ok(config) => config,
-            Err(HostError::Io(e)) if e.kind() == io::ErrorKind::NotFound => AppConfig::default(),
-            Err(HostError::Config(msg)) => {
-                let backup = backup_path(path);
-                match fs::rename(path, &backup) {
-                    Ok(()) => log::warn!(
-                        "configuration is invalid ({msg}); moved it to {} and using defaults",
-                        backup.display()
-                    ),
-                    Err(e) => log::warn!(
-                        "configuration is invalid ({msg}); could not back it up ({e}); using defaults"
-                    ),
-                }
-                AppConfig::default()
+        let (config, report) = AppConfig::load_checked(path);
+        for w in &report.warnings {
+            log::warn!("{}: {w}", path.display());
+        }
+        if let Some(backup) = &report.backup {
+            log::warn!("the original configuration is kept in {}", backup.display());
+        }
+        config
+    }
+
+    /// Load from `path`, keeping everything that can be kept. A missing
+    /// file gives the defaults (and a clean report). A file that does not
+    /// fully parse is read leniently: lines that are not valid TOML (a
+    /// decimal comma), values of the wrong type or unknown to this version
+    /// (`checksum = "always"`, a new connection kind) and broken profiles
+    /// or macros are dropped one by one and fall back to their defaults;
+    /// every valid profile, macro and value is kept. The report lists what
+    /// was dropped (UIs should show it), and the file as it was is copied
+    /// to a new numbered backup (`config.toml.bak`, `config.toml.1.bak`,
+    /// ...; an existing backup is never overwritten, an identical one is
+    /// reused) before anything saves over it.
+    pub fn load_checked(path: &Path) -> (AppConfig, ConfigReport) {
+        let mut report = ConfigReport::default();
+        let bytes = match fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                return (AppConfig::default(), report);
             }
             Err(e) => {
-                log::warn!("could not read {}: {e}; using defaults", path.display());
-                AppConfig::default()
+                report
+                    .warnings
+                    .push(format!("could not read the file ({e}); using the defaults"));
+                return (AppConfig::default(), report);
             }
-        }
+        };
+        let text = match String::from_utf8(bytes.clone()) {
+            Ok(text) => text,
+            Err(_) => {
+                report
+                    .warnings
+                    .push("the file is not UTF-8 text; unreadable bytes were replaced".to_string());
+                String::from_utf8_lossy(&bytes).into_owned()
+            }
+        };
+        let config = match toml::from_str::<AppConfig>(&text) {
+            Ok(config) if report.warnings.is_empty() => return (config.normalized(), report),
+            Ok(config) => config,
+            Err(_) => AppConfig::lenient(&text, &mut report.warnings),
+        };
+        report.backup = keep_backup(path, &bytes, &mut report.warnings);
+        (config.normalized(), report)
+    }
+
+    /// Whatever of `text` deserializes (see [`AppConfig::load_checked`]).
+    fn lenient(text: &str, warnings: &mut Vec<String>) -> AppConfig {
+        let Some(table) = repair::parse_lenient(text, warnings) else {
+            warnings.push("the file is not readable TOML; using the defaults".to_string());
+            return AppConfig::default();
+        };
+        let accept = |v: &toml::Value| {
+            v.clone()
+                .try_into::<AppConfig>()
+                .map(|_| ())
+                .map_err(|e| e.message().trim().to_string())
+        };
+        repair::repair(toml::Value::Table(table), &accept, "", warnings)
+            .and_then(|v| v.try_into::<AppConfig>().ok())
+            .unwrap_or_default()
     }
 
     /// Save to [`AppConfig::path`].
@@ -643,9 +692,70 @@ fn path_from_env(value: Option<OsString>) -> PathBuf {
         .map_or_else(AppConfig::default_path, PathBuf::from)
 }
 
-/// `config.toml` -> `config.toml.bak`.
-fn backup_path(path: &Path) -> PathBuf {
-    sibling_with_suffix(path, ".bak")
+/// What [`AppConfig::load_checked`] had to leave out.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ConfigReport {
+    /// One line per problem: the line or value that was ignored and why
+    /// (`profiles[0].options.checksum: ignored "always" (unknown variant
+    /// ...)`). Empty when the file loaded as written.
+    pub warnings: Vec<String>,
+    /// Where the file as it was is kept (a new numbered backup, or an
+    /// identical older one).
+    pub backup: Option<PathBuf>,
+}
+
+impl ConfigReport {
+    /// The file loaded as written.
+    pub fn is_clean(&self) -> bool {
+        self.warnings.is_empty()
+    }
+}
+
+/// Most numbered backups tried.
+const MAX_BACKUPS: usize = 100;
+
+/// `config.toml` -> `config.toml.bak`, then `config.toml.1.bak`, ...
+fn backup_path(path: &Path, n: usize) -> PathBuf {
+    if n == 0 {
+        sibling_with_suffix(path, ".bak")
+    } else {
+        sibling_with_suffix(path, &format!(".{n}.bak"))
+    }
+}
+
+/// Copy `bytes` (the file at `path` as read) to the first free numbered
+/// backup, unless a backup already holds exactly them. Never overwrites a
+/// backup.
+fn keep_backup(path: &Path, bytes: &[u8], warnings: &mut Vec<String>) -> Option<PathBuf> {
+    for n in 0..MAX_BACKUPS {
+        let backup = backup_path(path, n);
+        match fs::read(&backup) {
+            Ok(old) if old == bytes => return Some(backup),
+            Ok(_) => continue,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(_) => continue,
+        }
+        let written = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&backup)
+            .and_then(|mut f| f.write_all(bytes).and_then(|()| f.sync_all()));
+        match written {
+            Ok(()) => return Some(backup),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                warnings.push(format!(
+                    "could not keep a backup of the file ({}: {e})",
+                    backup.display()
+                ));
+                return None;
+            }
+        }
+    }
+    warnings.push(format!(
+        "could not keep a backup of the file: {MAX_BACKUPS} backups exist already"
+    ));
+    None
 }
 
 fn sibling_with_suffix(path: &Path, suffix: &str) -> PathBuf {
@@ -905,8 +1015,12 @@ mod tests {
     #[test]
     fn backup_names() {
         assert_eq!(
-            backup_path(Path::new("dir/config.toml")),
+            backup_path(Path::new("dir/config.toml"), 0),
             PathBuf::from("dir/config.toml.bak")
+        );
+        assert_eq!(
+            backup_path(Path::new("dir/config.toml"), 2),
+            PathBuf::from("dir/config.toml.2.bak")
         );
         assert_eq!(
             sibling_with_suffix(Path::new("config.toml"), ".tmp"),

@@ -955,7 +955,10 @@ pub struct ConsoleEntry { pub seq: u64, pub time: f64 /* secs since Printer::new
 pub struct AppConfig { pub profiles: Vec<PrinterProfile>, pub active_profile: usize,
                        pub recent_files: Vec<std::path::PathBuf>, pub macros: Vec<Macro>, pub console_max_lines: usize }
 impl AppConfig {
-    pub fn load() -> AppConfig;                        // defaults if missing/corrupt (corrupt file backed up)
+    pub fn load() -> AppConfig;                        // load_or_default(&path())
+    /// Lenient load: keeps every valid profile, macro and value; drops (and reports) only broken lines and
+    /// values; the file as it was goes to a new numbered backup (never overwriting one). UIs show report.warnings.
+    pub fn load_checked(path: &std::path::Path) -> (AppConfig, ConfigReport);
     pub fn load_from(path: &std::path::Path) -> Result<AppConfig, HostError>;
     pub fn save(&self) -> Result<(), HostError>;
     pub fn save_to(&self, path: &std::path::Path) -> Result<(), HostError>;
@@ -1073,9 +1076,21 @@ Every public item is also re-exported at the crate root.
   saving; `default_path()` is the platform location.
   `ConnectOptions` is `#[serde(default)]`; `sanitized()` clamps
   every value (`max_in_flight` 1..=32, `MAX_IN_FLIGHT_LIMIT`).
-  `AppConfig::load_or_default(path)` (what `load()` uses: a corrupt file is
-  renamed to `<name>.bak`, also when it is not UTF-8); `MAX_RECENT_FILES`
-  (12), `DEFAULT_CONSOLE_LINES`.
+  `AppConfig::load_or_default(path)` (what `load()` uses:
+  `load_checked` with the warnings logged). `load_checked` reads a file
+  that does not fully parse leniently: lines that are not valid TOML (a
+  decimal comma, binary junk; invalid UTF-8 is replaced first) are dropped,
+  then every value is checked where it sits: table entries are kept when
+  valid on their own (or the one entry breaking a table with required
+  fields, like a macro, is dropped), array elements one by one, so a bad
+  value (`checksum = "always"`, a connection kind from a newer version)
+  falls back to its default without costing the profile or the other
+  profiles and macros. `ConfigReport { warnings, backup }` lists each
+  dropped line or value (`profiles[0].options.checksum: ignored "always"
+  (...)`); the original bytes are copied to `<name>.bak`, `<name>.1.bak`,
+  ... (an identical existing backup is reused, none is ever overwritten)
+  and the file itself stays until the next save. `load_from` stays strict.
+  `MAX_RECENT_FILES` (12), `DEFAULT_CONSOLE_LINES`.
   `PrinterProfile::{build_volume, park_position, script_context}`: parking is
   the back left corner 10 mm in (X10 Y210 by default, honouring `origin`).
   In the file, `kinematics.junction_deviation = false` stands for `None`
