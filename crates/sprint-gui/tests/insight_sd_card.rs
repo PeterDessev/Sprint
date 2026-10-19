@@ -267,6 +267,35 @@ fn a_cancelled_sd_print_does_not_keep_the_card_busy() {
 }
 
 #[test]
+fn a_print_started_on_the_printer_keeps_the_card_busy() {
+    // Printing from the card without a host job: started on the display.
+    let mut state = sd_state();
+    state.sd.printing = Some((10_000, 734_120));
+    state.sd.selected = Some("VASE.GCO".into());
+    let mut h = tab(Theme::Dark, (1000.0, 760.0), state);
+    h.state_mut().file = Some(loaded("cube.gcode", &small_gcode()));
+    h.run_ok();
+    assert!(
+        h.query_by_label_contains("Started on the printer")
+            .is_some()
+    );
+    // M23/M24 would swap the file under the running print; M28 would
+    // write to the card it reads from.
+    for label in [
+        "Print calibration_cube.gcode",
+        "Upload",
+        "Delete calibration_cube.gcode",
+        "Initialize",
+        "Release",
+    ] {
+        assert!(
+            h.get_by_label(label).accesskit_node().is_disabled(),
+            "{label}"
+        );
+    }
+}
+
+#[test]
 fn odd_file_lists_never_panic() {
     let mut state = sd_state();
     state.sd.files = vec![

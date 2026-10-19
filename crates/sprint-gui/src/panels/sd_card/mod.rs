@@ -302,7 +302,8 @@ impl SdCardTab {
             )
         };
         let connected = ctx.connected();
-        let job = ctx.job_active();
+        // A print started on the printer's display reads the card too.
+        let job = ctx.job_active() || self.card_printing.is_some();
         let file_name = ctx.file.map(|f| f.file.name().to_owned());
         let mut refresh = false;
         let mut upload = false;
@@ -506,9 +507,11 @@ impl SdCardTab {
         let state = ctx.state;
         let sd = &state.sd;
         let connected = ctx.connected();
-        let job_active = ctx.job_active();
         let sd_busy =
             sd_job(state).is_some_and(|j| j.status.is_active()) || self.card_printing.is_some();
+        // No new print while any job runs, nor while the card prints a
+        // file started on the printer (M23 would swap it).
+        let job_active = ctx.job_active() || self.card_printing.is_some();
         // Edited in the header, read by the table.
         let filter = std::cell::RefCell::new(std::mem::take(&mut self.filter));
         Card::new("Files")
@@ -745,7 +748,10 @@ impl SdCardTab {
                 .iter()
                 .any(|f| f.name.trim().eq_ignore_ascii_case(n))
         });
-        let can_upload = validated.is_ok() && ctx.connected() && !ctx.job_active();
+        let can_upload = validated.is_ok()
+            && ctx.connected()
+            && !ctx.job_active()
+            && self.card_printing.is_none();
         let mut submit = false;
         let mut cancel = false;
         let modal = egui::Modal::new(egui::Id::new("sd-upload"))
