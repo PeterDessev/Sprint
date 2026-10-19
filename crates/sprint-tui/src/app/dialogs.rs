@@ -969,6 +969,11 @@ impl Confirm {
         frame.render_widget(Paragraph::new(lines), text);
         let button = |label: &str, active: bool, danger: bool| {
             let style = match (active, danger) {
+                // Without colors, black on the error color would be black
+                // on the terminal's background: reversed instead.
+                (true, true) if !theme.has_color() => Style::default().add_modifier(
+                    ratatui::style::Modifier::REVERSED | ratatui::style::Modifier::BOLD,
+                ),
                 (true, true) => Style::default()
                     .fg(theme.background_or_black())
                     .bg(theme.error)
@@ -1545,6 +1550,40 @@ mod tests {
         assert_eq!(wrap_text("abcdefghij", 4), ["abcd", "efgh", "ij"]);
         assert_eq!(wrap_text("", 10), [""]);
         assert_eq!(wrap_text("x y", 0), ["x y"]);
+    }
+
+    #[test]
+    fn the_chosen_dangerous_answer_shows_without_colors() {
+        // NO_COLOR: the highlighted "Cancel print" must not be black text
+        // on the terminal's (black) background.
+        let theme = Theme::monochrome();
+        let mut confirm = Confirm::new(
+            "Cancel the print?",
+            vec!["cube.gcode stops.".into()],
+            "Cancel print",
+            "Keep printing",
+            true,
+            Action::CancelJob,
+        );
+        confirm.handle_key(key(KeyCode::Left));
+        assert!(confirm.on_yes);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 20)).expect("terminal");
+        terminal.draw(|f| confirm.draw(f, &theme)).expect("draw");
+        let buffer = terminal.backend().buffer();
+        let (x, y) = (0..20u16)
+            .flat_map(|y| (0..80u16).map(move |x| (x, y)))
+            .find(|&(x, y)| {
+                buffer[(x, y)].symbol() == "C"
+                    && buffer[(x + 1, y)].symbol() == "a"
+                    && buffer[(x + 7, y)].symbol() == "p"
+            })
+            .expect("the Cancel print button");
+        let cell = &buffer[(x, y)];
+        assert!(
+            cell.modifier.contains(ratatui::style::Modifier::REVERSED),
+            "{cell:?}"
+        );
     }
 
     #[test]
