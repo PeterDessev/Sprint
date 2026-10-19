@@ -211,7 +211,7 @@ impl Gallery {
                 ],
             ));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.add(EStopButton::new()).changed() {
+                if EStopButton::new().show_above_modals(ui).changed() {
                     self.toasts
                         .error("Emergency stop")
                         .message("M112 would be sent to the printer.");

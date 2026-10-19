@@ -64,8 +64,9 @@
 //! * [`ActionButton`] — label with optional icon; `.large()` for big machine actions:
 //!   `ui.add(ActionButton::new("Start print").icon(icons::PLAY).primary().large()).clicked()`
 //! * [`EStopButton`] — the unmistakable red emergency stop, badge or octagon;
-//!   it fires on press, reported as `changed()`:
-//!   `if ui.add(EStopButton::new()).changed() { /* M112 */ }`
+//!   it fires on press, reported as `changed()`. Show the main one with
+//!   `show_above_modals` so it stays clickable while a dialog is open:
+//!   `if EStopButton::new().show_above_modals(ui).changed() { /* M112 */ }`
 //!
 //! **Status**
 //! * [`StatusPill`] — colored dot (or icon) + label capsule:

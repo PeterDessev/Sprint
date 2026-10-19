@@ -26,6 +26,10 @@ pub enum DialogResult {
 /// confirm them (only an explicit click does), so a stray keypress cannot
 /// trigger e.g. a factory reset.
 ///
+/// Like every egui modal, an open dialog blocks all widgets behind it. Draw
+/// the E-STOP with [`EStopButton::show_above_modals`](super::EStopButton::show_above_modals)
+/// so it stays reachable.
+///
 /// ```no_run
 /// # use sprint_gui::widgets::{ConfirmDialog, DialogResult};
 /// # fn demo(ctx: &egui::Context, asking: &mut bool) {

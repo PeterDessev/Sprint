@@ -820,3 +820,45 @@ fn estop_fires_once_on_press_even_when_the_pointer_slides() {
     click_at(&mut h, off.center());
     assert_eq!(*h.state(), 4);
 }
+
+#[test]
+fn estop_above_modals_stays_clickable_under_a_dialog() {
+    let mut h = harness_state(
+        Theme::Light,
+        (520.0, 320.0),
+        (0_usize, 0_usize, false),
+        |ui, (plain, above, disabled_fired)| {
+            ui.horizontal(|ui| {
+                if ui.add(EStopButton::new().label("PLAIN")).changed() {
+                    *plain += 1;
+                }
+                if EStopButton::new().show_above_modals(ui).changed() {
+                    *above += 1;
+                }
+                ui.add_enabled_ui(false, |ui| {
+                    if EStopButton::new()
+                        .label("LOCKED")
+                        .show_above_modals(ui)
+                        .changed()
+                    {
+                        *disabled_fired = true;
+                    }
+                });
+            });
+            let _ = ConfirmDialog::new("q", "Cancel the print?")
+                .danger(true)
+                .show(ui.ctx());
+        },
+    );
+    // The modal swallows the click on the plain button...
+    let plain = h.get_by_label("PLAIN").rect();
+    click_at(&mut h, plain.center());
+    // ...but not on the one drawn above it.
+    let above = h.get_by_label("E-STOP").rect();
+    // Same layout as `ui.add`: right after the plain button.
+    assert!(above.min.x > plain.max.x && above.min.y == plain.min.y);
+    click_at(&mut h, above.center());
+    let locked = h.get_by_label("LOCKED").rect();
+    click_at(&mut h, locked.center());
+    assert_eq!(*h.state(), (0, 1, false));
+}

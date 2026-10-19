@@ -524,6 +524,73 @@ impl<'a> EStopButton<'a> {
         self.style = style;
         self
     }
+
+    /// Show the button so that it stays clickable while a modal dialog
+    /// (such as a [`ConfirmDialog`](super::ConfirmDialog)) blocks the rest
+    /// of the UI: a modal swallows every click behind it, a plain
+    /// `ui.add(EStopButton::new())` included. The button takes the same
+    /// place in `ui` as with `ui.add`, but is drawn in a layer above modals.
+    /// Use it for the app's main E-STOP.
+    ///
+    /// ```no_run
+    /// # use sprint_gui::widgets::EStopButton;
+    /// # fn demo(ui: &mut egui::Ui) {
+    /// if EStopButton::new().show_above_modals(ui).changed() { /* M112 */ }
+    /// # }
+    /// ```
+    pub fn show_above_modals(self, ui: &mut Ui) -> Response {
+        let (rect, _) = ui.allocate_exact_size(self.size(ui), Sense::hover());
+        let style = ui.style().clone();
+        let enabled = ui.is_enabled();
+        egui::Area::new(super::widget_id(ui, ("sprint-estop-layer", self.label)))
+            .order(egui::Order::Tooltip)
+            .fixed_pos(rect.min)
+            .constrain(false)
+            .show(ui.ctx(), |area| {
+                // Keep the parent's theme (e.g. inside `theme::scope`) and
+                // its disabled state.
+                area.set_style(style);
+                if !enabled {
+                    area.disable();
+                }
+                area.add(self)
+            })
+            .inner
+    }
+
+    /// The size the button takes in `ui`.
+    fn size(&self, ui: &Ui) -> Vec2 {
+        match self.style {
+            EStopStyle::Badge => {
+                let galley = self.badge_galley(ui);
+                vec2(
+                    12.0 + ESTOP_MARK + 8.0 + galley.size().x + 14.0,
+                    ESTOP_BADGE_HEIGHT,
+                )
+            }
+            EStopStyle::Octagon(diameter) => Vec2::splat(octagon_diameter(diameter)),
+        }
+    }
+
+    fn badge_galley(&self, ui: &Ui) -> std::sync::Arc<egui::Galley> {
+        let font = FontId::new(14.0, theme::font(ui, TextRole::Title).family);
+        ui.painter()
+            .layout_no_wrap(self.label.to_owned(), font, Color32::WHITE)
+    }
+}
+
+/// Height of the badge-style E-STOP.
+const ESTOP_BADGE_HEIGHT: f32 = 34.0;
+/// Size of the octagon mark in the badge-style E-STOP.
+const ESTOP_MARK: f32 = 20.0;
+
+/// An octagon diameter clamped to 32..=400 (72 for non-finite input).
+fn octagon_diameter(diameter: f32) -> f32 {
+    if diameter.is_finite() {
+        diameter.clamp(32.0, 400.0)
+    } else {
+        72.0
+    }
 }
 
 /// Points of a regular octagon with flat top/bottom edges.
@@ -581,15 +648,9 @@ impl Widget for EStopButton<'_> {
         let strong = theme::font(ui, TextRole::Title).family;
         match self.style {
             EStopStyle::Badge => {
-                let font = FontId::new(14.0, strong);
-                let galley =
-                    ui.painter()
-                        .layout_no_wrap(self.label.to_owned(), font, Color32::WHITE);
-                let height = 34.0;
-                let mark = 20.0;
-                let width = 12.0 + mark + 8.0 + galley.size().x + 14.0;
-                let (rect, mut response) =
-                    ui.allocate_exact_size(vec2(width, height), Sense::click());
+                let galley = self.badge_galley(ui);
+                let mark = ESTOP_MARK;
+                let (rect, mut response) = ui.allocate_exact_size(self.size(ui), Sense::click());
                 mark_estop_trigger(ui, &mut response);
                 response.widget_info(|| {
                     WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), self.label)
@@ -655,11 +716,7 @@ impl Widget for EStopButton<'_> {
                     .on_hover_text(self.tooltip)
             }
             EStopStyle::Octagon(diameter) => {
-                let diameter = if diameter.is_finite() {
-                    diameter.clamp(32.0, 400.0)
-                } else {
-                    72.0
-                };
+                let diameter = octagon_diameter(diameter);
                 let (rect, mut response) =
                     ui.allocate_exact_size(Vec2::splat(diameter), Sense::click());
                 mark_estop_trigger(ui, &mut response);
