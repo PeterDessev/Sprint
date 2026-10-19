@@ -63,22 +63,6 @@ pub enum Command {
     Sim(SimArgs),
 }
 
-impl Command {
-    /// The subcommand name, for messages.
-    pub fn name(&self) -> &'static str {
-        match self {
-            Command::Gui(_) => "gui",
-            Command::Tui(_) => "tui",
-            Command::Shell(_) => "shell",
-            Command::Print(_) => "print",
-            Command::Analyze(_) => "analyze",
-            Command::Send(_) => "send",
-            Command::Ports => "ports",
-            Command::Sim(_) => "sim",
-        }
-    }
-}
-
 /// Options of the GUI.
 #[derive(Clone, Debug, Default, Args)]
 pub struct GuiArgs {

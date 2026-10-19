@@ -207,3 +207,99 @@ fn send_reports_an_unreachable_printer() {
     let err = stderr(&output);
     assert!(err.starts_with("sprint: error: cannot connect to"), "{err}");
 }
+
+/// The print test's virtual printer.
+const PRINT_SIM: &str = "sim://?instant_moves=true&time_scale=100";
+
+#[test]
+fn print_streams_the_cube_to_the_simulator() {
+    let scratch = Scratch::new("print");
+    let cube = sample("calibration-cube.gcode");
+    let output = scratch.run(&["print", &cube, "--connect", PRINT_SIM]);
+    let (out, err) = (stdout(&output), stderr(&output));
+    assert!(output.status.success(), "{out}\n{err}");
+    assert!(
+        out.starts_with("Completed calibration-cube.gcode: 100.0% in "),
+        "{out}"
+    );
+    // Progress lines (stderr is not a terminal: one per 10%).
+    assert!(err.contains("Connecting to Virtual printer"), "{err}");
+    assert!(
+        err.contains("Printing calibration-cube.gcode on Virtual printer: 100 layers"),
+        "{err}"
+    );
+    assert!(
+        err.lines().any(|l| l.starts_with("Completed 100.0%")),
+        "{err}"
+    );
+    assert!(err.contains("layer "), "{err}");
+    assert!(err.contains("T0 "), "{err}");
+}
+
+#[test]
+fn print_without_progress_only_reports_the_result() {
+    let scratch = Scratch::new("print-quiet");
+    let cube = sample("calibration-cube.gcode");
+    let output = scratch.run(&["print", &cube, "-c", PRINT_SIM, "--no-progress"]);
+    let (out, err) = (stdout(&output), stderr(&output));
+    assert!(output.status.success(), "{out}\n{err}");
+    assert!(out.contains("100.0%"), "{out}");
+    assert!(err.is_empty(), "{err}");
+}
+
+#[test]
+fn print_resumes_from_a_line() {
+    let scratch = Scratch::new("print-resume");
+    let cube = sample("calibration-cube.gcode");
+    let output = scratch.run(&[
+        "print",
+        &cube,
+        "-c",
+        PRINT_SIM,
+        "--start-line",
+        "6000",
+        "--no-progress",
+    ]);
+    let (out, err) = (stdout(&output), stderr(&output));
+    assert!(output.status.success(), "{out}\n{err}");
+    assert!(
+        out.contains("Completed calibration-cube.gcode: 100.0%"),
+        "{out}"
+    );
+}
+
+#[test]
+fn print_checks_the_file_before_connecting() {
+    let scratch = Scratch::new("print-bad");
+    let cube = sample("calibration-cube.gcode");
+    // Past the end: refused before any connection.
+    let output = scratch.run(&["print", &cube, "-c", PRINT_SIM, "--start-line", "99999999"]);
+    assert_eq!(output.status.code(), Some(1));
+    let err = stderr(&output);
+    assert!(
+        err.contains("is past the end of calibration-cube.gcode"),
+        "{err}"
+    );
+    assert!(!err.contains("Connecting"), "{err}");
+    let output = scratch.run(&["print", "no-such-file-3a.gcode", "-c", PRINT_SIM]);
+    assert_eq!(output.status.code(), Some(1));
+    let err = stderr(&output);
+    assert_eq!(
+        err.trim(),
+        "sprint: error: no-such-file-3a.gcode: no such file"
+    );
+}
+
+#[test]
+fn print_fails_when_the_printer_is_unreachable() {
+    let scratch = Scratch::new("print-refused");
+    let cube = sample("calibration-cube.gcode");
+    let output = scratch.run(&["print", &cube, "-c", "tcp://127.0.0.1:1", "--no-progress"]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr(&output).contains("sprint: error: cannot connect to"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(output.stdout.is_empty());
+}

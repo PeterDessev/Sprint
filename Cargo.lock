@@ -4351,6 +4351,7 @@ dependencies = [
  "anyhow",
  "clap",
  "crossbeam-channel",
+ "crossterm",
  "env_logger",
  "log",
  "serde",

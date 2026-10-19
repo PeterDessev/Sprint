@@ -97,7 +97,7 @@ fn fit_name(name: &str, max: usize) -> String {
 }
 
 /// "Analyzing name… 42%" on one terminal line, redrawn in place.
-struct Progress<W: Write> {
+pub(crate) struct Progress<W: Write> {
     out: Option<W>,
     label: String,
     started: Instant,
@@ -107,7 +107,7 @@ struct Progress<W: Write> {
 
 impl<W: Write> Progress<W> {
     /// Progress written to `out` (`None` disables it).
-    fn new(out: Option<W>, name: &str) -> Progress<W> {
+    pub(crate) fn new(out: Option<W>, name: &str) -> Progress<W> {
         Progress {
             out,
             label: format!("Analyzing {}", fit_name(name, PROGRESS_NAME_COLS)),
@@ -117,7 +117,7 @@ impl<W: Write> Progress<W> {
         }
     }
 
-    fn update(&mut self, fraction: f32) {
+    pub(crate) fn update(&mut self, fraction: f32) {
         if self.started.elapsed() < PROGRESS_DELAY {
             return;
         }
@@ -148,7 +148,7 @@ impl<W: Write> Progress<W> {
     }
 
     /// Erase the progress line.
-    fn finish(&mut self) {
+    pub(crate) fn finish(&mut self) {
         if let Some(out) = self.out.as_mut()
             && self.drawn > 0
         {

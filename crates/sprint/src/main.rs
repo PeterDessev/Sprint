@@ -1,8 +1,8 @@
 //! The `sprint` binary: the GUI (default), the terminal UI and shell, and
 //! headless commands. See `ARCHITECTURE.md` ("sprint (binary)").
 //!
-//! Exit codes: 0 success, 1 the command failed, 2 usage errors and
-//! commands that are not available yet, 130 a print cancelled with Ctrl+C.
+//! Exit codes: 0 success, 1 the command failed, 2 usage errors (clap's),
+//! 130 Ctrl+C (`print` cancels the job first).
 //!
 //! Nothing connects to a printer unless a command is given a `--connect`
 //! target (or, in the TUI and the shell, the active profile turns
@@ -12,6 +12,7 @@ mod analyze;
 mod cli;
 mod console;
 mod ports;
+mod print;
 mod send;
 mod sim;
 
@@ -24,8 +25,6 @@ use crate::cli::{Cli, Command, GuiArgs};
 
 /// Exit code of a command that failed.
 const EXIT_FAILURE: u8 = 1;
-/// Exit code of usage errors (as clap uses) and unavailable commands.
-const EXIT_USAGE: u8 = 2;
 
 fn main() -> ExitCode {
     let command = Cli::parse().into_command();
@@ -72,21 +71,12 @@ fn run(command: Command) -> Result<ExitCode> {
             connect: args.connect,
         })
         .map(|()| ExitCode::SUCCESS),
+        Command::Print(args) => print::run(&args),
         Command::Analyze(args) => analyze::run(&args).map(|()| ExitCode::SUCCESS),
-        Command::Ports => ports::run().map(|()| ExitCode::SUCCESS),
         Command::Send(args) => send::run(&args),
+        Command::Ports => ports::run().map(|()| ExitCode::SUCCESS),
         Command::Sim(args) => sim::run(&args).map(|()| ExitCode::SUCCESS),
-        other => Ok(not_implemented(other.name())),
     }
-}
-
-/// Report a command that is part of the interface but not built yet.
-fn not_implemented(name: &str) -> ExitCode {
-    eprintln!(
-        "sprint {name}: not implemented yet; it arrives in a later version \
-         (see `sprint --help` for what works today)"
-    );
-    ExitCode::from(EXIT_USAGE)
 }
 
 fn run_gui(args: GuiArgs) -> Result<ExitCode> {

@@ -262,16 +262,6 @@ fn empty_and_binary_files_still_get_a_report() {
 }
 
 #[test]
-fn unimplemented_commands_exit_with_2() {
-    let cube = sample_arg("calibration-cube.gcode");
-    let output = sprint(&["print", cube.as_str(), "--connect", "sim"]);
-    assert_eq!(output.status.code(), Some(2));
-    let text = stderr(&output);
-    assert!(text.contains("sprint print: not implemented yet"), "{text}");
-    assert!(output.stdout.is_empty());
-}
-
-#[test]
 fn ports_are_listed_without_opening_them() {
     let output = sprint(&["ports"]);
     assert!(output.status.success(), "{}", stderr(&output));
