@@ -297,6 +297,60 @@ fn calibration_tab_narrow_and_disconnected() {
 }
 
 #[test]
+fn applying_the_home_offset_takes_the_babystep_back() {
+    let printer = sim_printer(fast_sim());
+    // A printer homing on a Z endstop: no probe offset, a home offset.
+    let mut state = printer.snapshot();
+    state.settings.remove("M851");
+    assert!(state.settings.value("M206", 'Z').is_some());
+    let mut h = tab(
+        Theme::Dark,
+        (1100.0, 900.0),
+        Some(state),
+        Some(printer.clone()),
+    );
+    h.get_by_label("Z offset").click();
+    h.run_ok();
+    clear_received(&printer);
+    for _ in 0..2 {
+        h.get_by_label("Lower the nozzle 0.025 mm").click();
+        h.run_ok();
+    }
+    assert!(
+        h.query_by_label_contains("Home offset Z: 0.000 → 0.050 mm")
+            .is_some()
+    );
+    h.get_by_label("Apply to home offset").click();
+    h.run_ok();
+    assert_eq!(wait_for_command(&printer, "M206"), "M206 X0 Y0 Z0.05");
+    // M206 moves the next moves 0.05 mm down at once; with the babystep
+    // still active the nozzle would sit 0.1 mm closer until the next homing.
+    let sim = printer.sim_control().expect("simulator");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let babysteps: Vec<String> = sim
+            .received_commands()
+            .into_iter()
+            .filter(|c| c.starts_with("M290"))
+            .collect();
+        if babysteps.len() >= 3 {
+            assert_eq!(babysteps, ["M290 Z-0.025", "M290 Z-0.025", "M290 Z0.05"]);
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the babystep was not taken back: {babysteps:?}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(
+        h.query_by_label_contains("applies to the next moves")
+            .is_some()
+    );
+    printer.disconnect();
+}
+
+#[test]
 fn every_wizard_fits_a_narrow_tab() {
     let width = 420.0;
     let mut h = tab(Theme::Dark, (width, 1100.0), Some(demo_state()), None);

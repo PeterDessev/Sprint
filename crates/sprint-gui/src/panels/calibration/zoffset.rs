@@ -33,13 +33,23 @@ const NO_OFFSET_HELP: &str = concat!(
     "Babystepping still works; load the settings to store the result.",
 );
 
-/// Toast after applying the offset.
+/// Toast after applying the probe offset.
 const APPLIED_MESSAGE: &str = "It takes effect at the next homing. Save to EEPROM to keep it.";
 
-/// When a stored offset applies.
+/// Toast after applying the home offset.
+const APPLIED_HOME_MESSAGE: &str =
+    "The babystep was taken back: the home offset moves the nozzle now. Save to EEPROM to keep it.";
+
+/// When a stored probe offset applies.
 const TAKES_EFFECT: &str = concat!(
     "The stored offset takes effect at the next homing; the babystepping stays ",
     "active until then.",
+);
+
+/// When a stored home offset applies.
+const TAKES_EFFECT_HOME: &str = concat!(
+    "The home offset applies to the next moves at once, so applying it takes the ",
+    "babystepping back.",
 );
 
 /// Tooltip of the counter reset.
@@ -178,12 +188,22 @@ impl ZOffsetWizard {
                     {
                         ctx.printer
                             .apply_setting(&z_offset_command(&state.settings, src, new_z));
+                        let message = match src {
+                            // The probe offset counts from the next homing,
+                            // which also ends the babystep.
+                            ZOffsetSource::Probe => APPLIED_MESSAGE,
+                            // M206 shifts the next moves right away: with
+                            // the babystep still in place the adjustment
+                            // would count twice until the next homing.
+                            ZOffsetSource::HomeOffset => {
+                                ctx.printer.babystep_z(-self.total);
+                                APPLIED_HOME_MESSAGE
+                            }
+                        };
                         // Further babysteps count from the new offset.
                         self.baseline = Some((src, new_z));
                         self.total = 0.0;
-                        ctx.toasts
-                            .success("Z offset applied")
-                            .message(APPLIED_MESSAGE);
+                        ctx.toasts.success("Z offset applied").message(message);
                     }
                     if ui
                         .add_enabled(
@@ -199,7 +219,13 @@ impl ZOffsetWizard {
                     }
                 });
                 ui.add_space(4.0);
-                kit::caption(ui, TAKES_EFFECT);
+                kit::caption(
+                    ui,
+                    match src {
+                        ZOffsetSource::Probe => TAKES_EFFECT,
+                        ZOffsetSource::HomeOffset => TAKES_EFFECT_HOME,
+                    },
+                );
             });
     }
 
