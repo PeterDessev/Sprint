@@ -558,6 +558,24 @@ fn a_pause_before_homing_does_not_park_or_lift() {
             .is_some_and(|j| j.status == JobStatus::Completed)
     });
     assert_eq!(printer.with_state(|s| s.homed), Some(Axes::ALL));
+    // Nor does the resume move them back "to the file's position" (X0 Y0
+    // Z0 before the file moved at all): from an unknown position that
+    // could hit the frame just the same.
+    let got = control.received_commands();
+    let homing = got.iter().position(|c| c == "G28").unwrap();
+    assert!(
+        !got[..homing]
+            .iter()
+            .any(|c| c.starts_with("G1 Z") || c.starts_with("G1 X") || c.starts_with("G0")),
+        "{got:?}"
+    );
+    assert!(
+        console(&printer)
+            .iter()
+            .any(|e| e.text.starts_with("X Y Z not homed: the resume script")),
+        "{:?}",
+        tail(&printer, 20)
+    );
 }
 
 #[test]

@@ -240,7 +240,7 @@ pub(super) fn without_extruder_moves(lines: Vec<String>) -> Vec<String> {
 }
 
 /// [`guard_unhomed`], saying in the console what the `script` (pause,
-/// cancel) leaves out.
+/// resume, cancel) leaves out.
 pub(super) fn guarded(
     shared: &Shared,
     lines: Vec<String>,

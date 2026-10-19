@@ -62,8 +62,8 @@ pub struct PrinterState {
     /// from any source, the job stream included) since homing was last
     /// lost; the others count as not homed. `M84`/`M18` (all or the listed
     /// axes), halts and board resets clear it to `Some` of no axes, a
-    /// disconnect to `None`. The pause and cancel scripts never move an
-    /// axis that is not known to be homed.
+    /// disconnect to `None`. The pause, resume and cancel scripts never
+    /// move an axis that is not known to be homed.
     pub homed: Option<Axes>,
     /// Z babystepping (`M290 Z`/`S`, from any source, the job stream
     /// included) acknowledged since Z was last homed (Marlin forgets

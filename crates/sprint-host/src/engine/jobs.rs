@@ -608,6 +608,10 @@ impl Engine {
                     // Nothing was retracted at the pause: no prime either.
                     lines = without_extruder_moves(lines);
                 }
+                // The return to the file's position is a move like the
+                // park: from an unknown position (a pause before the
+                // file's G28 returns to X0 Y0 Z0) it could hit the frame.
+                let lines = guarded(&self.shared, lines, self.homed, "resume");
                 let printer = modes_after(&self.printer_modes, &self.manual);
                 let extras = {
                     let s = self.shared.state.read();

@@ -1223,12 +1223,15 @@ Every public item is also re-exported at the crate root.
   acknowledged `G28` (any source, the job stream included) adds all or
   the listed axes; `M84`/`M18` without `S` clear all or the listed axes
   (`E` alone none); halts and board resets clear it to `Some(NONE)`, a
-  disconnect to `None`. The pause and cancel scripts never move an axis
-  that is not known to be homed (Marlin has no soft endstops for it): its
+  disconnect to `None`. The pause, resume and cancel scripts never move
+  an axis that is not known to be homed (Marlin has no soft endstops for
+  it, and the resume's return to the file's position is X0 Y0 Z0 before
+  the file moved at all): its
   words are left out of G0/G1 moves (a move left without axes is dropped,
   arcs entirely; a `G28` in the script counts for the lines after it),
   with a console warning. So a pause during a heat-up before the file's
-  G28 retracts but neither lifts nor parks. `probe_bed_mesh` homes first
+  G28 retracts but neither lifts nor parks, and its resume does not move
+  back either. `probe_bed_mesh` homes first
   unless all axes are homed.
 * Jobs: preamble lines are cleaned and sent first; with `start_line` the
   tracked `MachineState` starts from `state_at_line`. Pause: `Pausing` until
