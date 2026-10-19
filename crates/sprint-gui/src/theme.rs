@@ -443,9 +443,21 @@ impl TextRole {
 
 /// The font of a typography role in `ui`'s style, falling back to a
 /// proportional font of the role's size when the style has no such entry
-/// (i.e. [`apply`] was not called). Never panics.
+/// (i.e. [`apply`] was not called) or names a font family the active fonts
+/// lack. Never panics.
 pub fn font(ui: &Ui, role: TextRole) -> FontId {
-    font_in(ui.style(), role)
+    usable_font(ui.ctx(), font_in(ui.style(), role))
+}
+
+/// `font`, or a proportional font of its size when its family is not
+/// defined by the fonts egui uses right now (egui would panic on it).
+fn usable_font(ctx: &Context, font: FontId) -> FontId {
+    match &font.family {
+        FontFamily::Name(_) if !fonts::family_is_active(ctx, &font.family) => {
+            FontId::proportional(font.size)
+        }
+        _ => font,
+    }
 }
 
 /// [`font`] for a [`Style`].
@@ -466,20 +478,99 @@ pub fn builtin_font(ui: &Ui, style: TextStyle) -> FontId {
         TextStyle::Monospace => FontId::monospace(13.0),
         _ => FontId::proportional(14.0),
     };
-    ui.style()
+    let font = ui
+        .style()
         .text_styles
         .get(&style)
         .cloned()
-        .unwrap_or(fallback)
+        .unwrap_or(fallback);
+    usable_font(ui.ctx(), font)
 }
 
 /// The font family for semibold text: Sprint's strong family when
-/// [`fonts::install`] has registered it, otherwise the proportional family.
+/// [`fonts::install`] registered it and egui already uses those fonts,
+/// otherwise the proportional family.
+///
+/// Before the context's first pass the active fonts cannot be checked, so
+/// this answers the proportional family; [`apply`] then switches the
+/// semibold roles over at the start of the first pass that has the fonts.
 pub fn strong_family(ctx: &Context) -> FontFamily {
-    if fonts::is_installed(ctx) {
+    if fonts::is_installed(ctx)
+        && ctx.cumulative_pass_nr() > 0
+        && fonts::family_is_active(ctx, &fonts::strong())
+    {
         fonts::strong()
     } else {
         FontFamily::Proportional
+    }
+}
+
+/// The text styles that use the semibold family.
+fn strong_text_styles() -> impl Iterator<Item = TextStyle> {
+    std::iter::once(TextStyle::Heading).chain(
+        TextRole::ALL
+            .into_iter()
+            .filter(|role| role.is_strong())
+            .map(TextRole::text_style),
+    )
+}
+
+/// Point the semibold text styles of `style` at `family`, leaving entries
+/// an app switched to another family alone.
+fn set_strong_family(style: &mut Style, family: &FontFamily) {
+    for key in strong_text_styles() {
+        if let Some(font) = style.text_styles.get_mut(&key)
+            && (font.family == FontFamily::Proportional || font.family == fonts::strong())
+        {
+            font.family = family.clone();
+        }
+    }
+}
+
+fn strong_applied_id() -> Id {
+    Id::new("sprint-gui::theme::strong-applied")
+}
+
+/// At the start of each pass (fonts are active then): keep the semibold
+/// text styles on Sprint's strong family exactly while egui's fonts define
+/// it. Fonts installed after [`apply`] (or before the first pass) switch
+/// them on; fonts replaced by an app without Sprint's families switch them
+/// off instead of making egui panic. `root` is the pass's root `Ui`, made
+/// before this runs, so it gets the change too.
+fn sync_strong_family(root: &mut Ui) {
+    let ctx = root.ctx().clone();
+    let wanted = fonts::is_installed(&ctx) && fonts::family_is_active(&ctx, &fonts::strong());
+    let applied = ctx
+        .data(|d| d.get_temp::<bool>(strong_applied_id()))
+        .unwrap_or(false);
+    if wanted == applied {
+        return;
+    }
+    let family = if wanted {
+        fonts::strong()
+    } else {
+        FontFamily::Proportional
+    };
+    for theme in [egui::Theme::Dark, egui::Theme::Light] {
+        ctx.style_mut_of(theme, |style| set_strong_family(style, &family));
+    }
+    set_strong_family(root.style_mut(), &family);
+    ctx.data_mut(|d| d.insert_temp(strong_applied_id(), wanted));
+}
+
+/// Register [`sync_strong_family`] once per context.
+fn register_font_sync(ctx: &Context) {
+    let registered = ctx.data_mut(|d| {
+        std::mem::replace(
+            d.get_temp_mut_or_default::<bool>(Id::new("sprint-gui::theme::font-sync")),
+            true,
+        )
+    });
+    if !registered {
+        ctx.on_begin_pass(
+            "sprint-gui font sync",
+            Arc::new(|ui: &mut Ui| sync_strong_family(ui)),
+        );
     }
 }
 
@@ -646,8 +737,9 @@ fn palettes_id() -> Id {
 /// Install the Sprint style for both themes and activate `theme`.
 ///
 /// Safe to call at any time, including from inside a frame (for a theme
-/// toggle). For the semibold text roles to use Sprint's strong font,
-/// [`fonts::install`] must have run before (see [`setup`]).
+/// toggle). The semibold text roles use Sprint's strong font once
+/// [`fonts::install`] ran and its fonts are active (from the start of the
+/// next pass; see [`setup`]); until then they use the proportional font.
 pub fn apply(ctx: &Context, theme: Theme) {
     apply_palettes(ctx, theme, Palette::dark(), Palette::light());
 }
@@ -657,15 +749,20 @@ pub fn apply_palettes(ctx: &Context, theme: Theme, dark: Palette, light: Palette
     let strong = strong_family(ctx);
     ctx.set_style_of(egui::Theme::Dark, Arc::new(style(&dark, &strong)));
     ctx.set_style_of(egui::Theme::Light, Arc::new(style(&light, &strong)));
-    ctx.data_mut(|d| d.insert_temp(palettes_id(), Palettes { dark, light }));
+    ctx.data_mut(|d| {
+        d.insert_temp(palettes_id(), Palettes { dark, light });
+        d.insert_temp(strong_applied_id(), strong == fonts::strong());
+    });
     ctx.set_theme(egui::Theme::from(theme));
+    register_font_sync(ctx);
 }
 
 /// Install fonts ([`fonts::install`]) and then the style ([`apply`]).
 ///
-/// Call once before the first frame (from eframe's `CreationContext`) or
-/// between frames: new fonts only become active at the start of the next
-/// frame.
+/// Call it once, ideally before the first frame (from eframe's
+/// `CreationContext`). Calling it inside a frame is safe too: new fonts
+/// become active at the start of the next pass, and the semibold roles
+/// switch over then.
 pub fn setup(ctx: &Context, theme: Theme) -> fonts::FontReport {
     let report = fonts::install(ctx);
     apply(ctx, theme);

@@ -351,6 +351,17 @@ pub fn install(ctx: &Context) -> FontReport {
     report
 }
 
+/// Whether the fonts egui uses *right now* define `family`.
+///
+/// New definitions only become active at the start of the next pass, and
+/// an app may replace them, so code that names one of Sprint's families
+/// checks this first (egui panics on a family it does not know). Only call
+/// it during a pass, or after the context ran at least one: before that
+/// egui has no fonts at all.
+pub(crate) fn family_is_active(ctx: &Context, family: &FontFamily) -> bool {
+    ctx.fonts(|f| f.definitions().families.contains_key(family))
+}
+
 /// Whether [`install`] (or [`install_definitions`]) ran on this context.
 pub fn is_installed(ctx: &Context) -> bool {
     ctx.data(|d| d.get_temp::<FontReport>(installed_id()).is_some())

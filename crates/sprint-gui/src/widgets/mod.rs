@@ -249,10 +249,10 @@ pub(crate) fn finite_clamped(value: f32, min: f32, max: f32) -> Option<f32> {
 }
 
 /// Font for an icon glyph: the Phosphor-only family when Sprint's fonts are
-/// installed (best vertical centering), else the proportional family (so a
+/// active (best vertical centering), else the proportional family (so a
 /// missing family can never panic).
 pub(crate) fn icon_font(ui: &Ui, size: f32) -> FontId {
-    if fonts::is_installed(ui.ctx()) {
+    if fonts::family_is_active(ui.ctx(), &fonts::icon_family()) {
         FontId::new(size, fonts::icon_family())
     } else {
         FontId::proportional(size)

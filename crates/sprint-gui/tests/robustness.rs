@@ -178,3 +178,83 @@ fn toasts_and_dialogs_with_odd_text() {
     click_at(&mut h, egui::pos2(200.0, 150.0));
     h.run_ok();
 }
+
+/// One pass on a bare context (no renderer: drop the texture uploads).
+fn pass(ctx: &egui::Context, ui: impl FnMut(&mut egui::Ui)) {
+    let mut output = ctx.run_ui(egui::RawInput::default(), ui);
+    output.textures_delta.clear();
+}
+
+/// Widgets plus egui's own use of the text styles Sprint defines.
+fn styled_text(ui: &mut egui::Ui) {
+    use sprint_gui::theme::{self, TextRole};
+    ui.heading("Heading");
+    ui.label(egui::RichText::new("Title").font(theme::font(ui, TextRole::Title)));
+    // The named styles exist once `apply` ran before this `Ui` was made.
+    if ui
+        .style()
+        .text_styles
+        .contains_key(&TextRole::Display.text_style())
+    {
+        ui.label(egui::RichText::new("215.0").text_style(TextRole::Display.text_style()));
+    }
+    card(
+        ui,
+        icons::FAN,
+        "Fan",
+        |_| {},
+        |ui| {
+            ui.add(EStopButton::new());
+        },
+    );
+}
+
+fn strong_role_family(ctx: &egui::Context) -> egui::FontFamily {
+    sprint_gui::theme::font_in(
+        &ctx.style_of(egui::Theme::Dark),
+        sprint_gui::theme::TextRole::Title,
+    )
+    .family
+}
+
+#[test]
+fn theme_setup_inside_a_frame_does_not_panic() {
+    // New fonts only become active at the next pass; until then nothing may
+    // refer to Sprint's font families.
+    let ctx = egui::Context::default();
+    pass(&ctx, |ui| {
+        ui.label("before");
+    });
+    let mut first = true;
+    for _ in 0..3 {
+        pass(&ctx, |ui| {
+            if first {
+                sprint_gui::theme::setup(ui.ctx(), Theme::Dark);
+                first = false;
+            }
+            styled_text(ui);
+        });
+    }
+    // Once the fonts are active, the semibold roles use them.
+    assert_eq!(strong_role_family(&ctx), sprint_gui::fonts::strong());
+}
+
+#[test]
+fn replacing_the_fonts_after_setup_does_not_panic() {
+    let ctx = egui::Context::default();
+    sprint_gui::theme::setup(&ctx, Theme::Light);
+    pass(&ctx, styled_text);
+    assert_eq!(strong_role_family(&ctx), sprint_gui::fonts::strong());
+    // An app that installs its own font definitions drops Sprint's families.
+    ctx.set_fonts(egui::FontDefinitions::default());
+    for _ in 0..2 {
+        pass(&ctx, styled_text);
+    }
+    assert_eq!(strong_role_family(&ctx), egui::FontFamily::Proportional);
+    // Installing them again brings the semibold roles back.
+    sprint_gui::fonts::install(&ctx);
+    for _ in 0..2 {
+        pass(&ctx, styled_text);
+    }
+    assert_eq!(strong_role_family(&ctx), sprint_gui::fonts::strong());
+}
