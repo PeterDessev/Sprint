@@ -965,7 +965,51 @@ fn a_click_below_a_single_layer_lowers_the_bottom_handle() {
     assert!(lo < 50, "the bottom moved down: {lo}");
 }
 
-// A real pointer click (press and release) at `pos`.
+#[test]
+fn connecting_keeps_the_3d_view_of_the_reanalyzed_file() {
+    let options = with_file(sim_options(), sample("calibration-cube.gcode"));
+    let mut h = app(options, WINDOW);
+    expect(&mut h, "the cube to be analyzed", analyzed);
+    if h.state().viewer_tab().viewer().is_none() {
+        eprintln!("no GPU viewer on this machine: not tested");
+        return;
+    }
+    h.state_mut().set_side_panels(false, false);
+    settle(&mut h);
+    h.state_mut().viewer_tab_mut().set_layer_range(10, 40);
+    // Orbit the camera with a drag (between the legend and the file card).
+    let (from, to) = (egui::pos2(640.0, 560.0), egui::pos2(700.0, 520.0));
+    h.hover_at(from);
+    h.step();
+    h.drag_at(from);
+    h.step();
+    h.hover_at(to);
+    h.step();
+    h.drop_at(to);
+    settle(&mut h);
+    let camera = *h.state().viewer_tab().viewer().expect("viewer").camera();
+    let toolpath = |app: &SprintApp| {
+        app.file()
+            .and_then(|f| f.toolpath.as_ref())
+            .map(|t| Arc::as_ptr(t) as usize)
+    };
+    let analyzed_offline = toolpath(h.state());
+    // Connecting re-analyzes the file with the firmware's motion limits.
+    connect(&mut h);
+    expect(
+        &mut h,
+        "the re-analysis with the firmware's limits",
+        |app| analyzed(app) && toolpath(app) != analyzed_offline,
+    );
+    settle(&mut h);
+    assert_eq!(h.state().viewer_tab().layer_range(), Some((10, 40)));
+    assert_eq!(
+        *h.state().viewer_tab().viewer().expect("viewer").camera(),
+        camera
+    );
+}
+
+/// A real pointer click (press and release) at `pos`.
 fn click_at(h: &mut Harness<'_, SprintApp>, pos: egui::Pos2) {
     h.hover_at(pos);
     h.step();

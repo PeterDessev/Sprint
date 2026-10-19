@@ -6,14 +6,14 @@
 //! drawn solid, the rest ghosted, and the top layer can follow the print.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use eframe::egui_wgpu;
 use egui::{
     Align, Color32, CornerRadius, Id, Key, Layout, Margin, Modifiers, Pos2, Rect, RichText, Sense,
     Stroke, StrokeKind, Ui, UiBuilder, Vec2, vec2,
 };
-use sprint_gcode::{Layer, Toolpath};
+use sprint_gcode::{GcodeFile, Layer, Toolpath};
 use sprint_host::BedOrigin;
 use sprint_viewer::{BedSpec, ColorMode, GcodeViewer, ViewPreset};
 
@@ -111,6 +111,11 @@ pub struct ViewerTab {
 #[derive(Default)]
 struct Overlay {
     shown: Option<usize>,
+    /// The file whose toolpath is shown: a new toolpath of the same file
+    /// (a re-analysis) keeps the view.
+    shown_file: Option<Weak<GcodeFile>>,
+    /// The user moved the camera (orbit, pan, zoom) since the last fit.
+    camera_moved: bool,
     bed: Option<BedSpec>,
     focused: bool,
     drag: Option<Handle>,
@@ -194,6 +199,7 @@ impl ViewerTab {
         if let Some(v) = &mut self.viewer {
             v.fit_to_view();
         }
+        self.ov.camera_moved = false;
     }
 
     /// Draw the tab.
@@ -206,6 +212,7 @@ impl ViewerTab {
                 v.clear();
             }
             self.ov.shown = None;
+            self.ov.shown_file = None;
             self.empty(ui, ctx, extras.load, &p);
             return;
         };
@@ -243,11 +250,36 @@ impl ViewerTab {
         // Keep the GPU scene, bed and options in sync with the shell.
         let key = Arc::as_ptr(&toolpath) as usize;
         if self.ov.shown != Some(key) {
+            // A re-analysis of the file on screen (with the firmware's
+            // motion limits once connected, or for another profile) keeps
+            // what the user was looking at: the layers, the scrub and a
+            // camera they moved. Another file starts afresh.
+            let same_file = self.ov.shown.is_some()
+                && self
+                    .ov
+                    .shown_file
+                    .as_ref()
+                    .and_then(Weak::upgrade)
+                    .is_some_and(|shown| Arc::ptr_eq(&shown, &file.file));
+            let kept = same_file.then(|| (viewer.options().layer_range, *viewer.camera()));
             viewer.set_toolpath(Arc::clone(&toolpath));
             self.ov.shown = Some(key);
-            self.ov.scrub = None;
-            self.ov.scrub_layer = None;
-            self.ov.followed = None;
+            self.ov.shown_file = Some(Arc::downgrade(&file.file));
+            match kept {
+                Some((range, camera)) => {
+                    let last = viewer.layer_count().saturating_sub(1);
+                    viewer.options_mut().layer_range = (range.0.min(last), range.1.min(last));
+                    if self.ov.camera_moved {
+                        *viewer.camera_mut() = camera;
+                    }
+                }
+                None => {
+                    self.ov.scrub = None;
+                    self.ov.scrub_layer = None;
+                    self.ov.followed = None;
+                    self.ov.camera_moved = false;
+                }
+            }
         }
         if self.ov.bed != Some(bed) {
             viewer.set_bed(bed);
@@ -354,8 +386,13 @@ impl ViewerTab {
         }
 
         // The view itself.
+        let zooming = over_view
+            && ui.input(|i| i.smooth_scroll_delta.y != 0.0 || (i.zoom_delta() - 1.0).abs() > 1e-4);
         let mut view_ui = ui.new_child(UiBuilder::new().max_rect(view));
         let response = viewer.ui(&mut view_ui);
+        if response.response.dragged() || response.response.double_clicked() || zooming {
+            self.ov.camera_moved = true;
+        }
         if let Some(line) = response.clicked_line {
             ctx.actions.push(AppAction::SelectLine(line));
         }
