@@ -546,12 +546,15 @@ impl SprintApp {
             Some(state) => state.clone(),
             None => self.core.printer.snapshot(),
         };
-        // Events first: a cancelled connect's failure event comes before its
-        // outcome, and is only recognised as cancelled until then.
-        self.poll_events(secs);
+        // A cancelled connect may still fail; its failure event comes before
+        // its outcome, so it arrives while the cancel is pending or in the
+        // frame the outcome is collected (whatever the thread timing).
+        let mut cancelled = self.connector.is_cancelling();
         for outcome in self.connector.poll() {
+            cancelled |= matches!(outcome, ConnectOutcome::Cancelled { .. });
             self.connect_outcome(outcome);
         }
+        self.poll_events(secs, cancelled);
         if self.reconnect_pending && self.connector.is_idle() {
             self.reconnect_pending = false;
             self.connect_again();
@@ -740,12 +743,12 @@ impl SprintApp {
         }
     }
 
-    fn poll_events(&mut self, secs: f64) {
+    /// Toast what the printer reported. `cancelled`: a connect the user
+    /// cancelled is ending, its failure is not news.
+    fn poll_events(&mut self, secs: f64, cancelled: bool) {
         let job_name = self.core.state.job.as_ref().map(|j| j.name.clone());
-        let cancelling = self.connector.is_cancelling();
         for event in self.events.try_iter().take(EVENTS_PER_FRAME) {
-            // A connect the user cancelled may still fail: not news.
-            if cancelling
+            if cancelled
                 && matches!(
                     event,
                     Event::Status(sprint_host::ConnectionStatus::Failed(_))
