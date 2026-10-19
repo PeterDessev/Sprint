@@ -133,3 +133,28 @@ fn default_path_is_under_a_sprint_directory() {
         path.display()
     );
 }
+
+#[test]
+fn documented_items_are_reexported_at_the_crate_root() {
+    // ARCHITECTURE.md: every public item is also available at the root.
+    assert_eq!(sprint_host::MAX_RECENT_FILES, 12);
+    assert_eq!(sprint_host::DEFAULT_CONSOLE_LINES, 5000);
+    assert_eq!(sprint_host::MAX_IN_FLIGHT_LIMIT, 32);
+    assert_eq!(sprint_host::EVENT_QUEUE_LIMIT, 65_536);
+    assert_eq!(sprint_host::TEMP_HISTORY_LEN, 1800);
+    assert_eq!(sprint_host::TEMP_HISTORY_SECS, 1800.0);
+    assert_eq!(sprint_host::FIRMWARE_MESSAGES_LEN, 50);
+    assert!(sprint_host::DEFAULT_PAUSE_SCRIPT.contains("M400"));
+    assert!(sprint_host::DEFAULT_RESUME_SCRIPT.contains("G92 E{e}"));
+    assert!(sprint_host::DEFAULT_CANCEL_SCRIPT.contains("M84"));
+    assert_eq!(sprint_host::format_number(1.50, 3), "1.5");
+    assert_eq!(sprint_host::Console::new(3).capacity(), 3);
+    assert!(sprint_host::is_printer_vendor(0x1A86));
+    assert!(!sprint_host::PRINTER_USB_VENDORS.is_empty());
+    assert!(sprint_host::READ_TIMEOUT.as_millis() <= 100);
+    let timed_out = std::io::Error::new(std::io::ErrorKind::TimedOut, "x");
+    assert!(sprint_host::is_no_data(&timed_out));
+    let (_, _, handle): (_, _, sprint_host::LinkHandle) =
+        sprint_host::Link::new(std::io::empty(), std::io::sink()).split();
+    handle.close();
+}

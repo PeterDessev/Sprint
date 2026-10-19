@@ -72,16 +72,23 @@ pub mod state;
 pub mod transport;
 
 pub use config::{
-    AppConfig, BedOrigin, ChecksumMode, ConnectOptions, Macro, PrinterProfile, TempPreset,
+    AppConfig, BedOrigin, ChecksumMode, ConnectOptions, DEFAULT_CONSOLE_LINES, MAX_IN_FLIGHT_LIMIT,
+    MAX_RECENT_FILES, Macro, PrinterProfile, TempPreset,
 };
-pub use console::{ConsoleEntry, ConsoleKind};
+pub use console::{Console, ConsoleEntry, ConsoleKind};
 pub use error::HostError;
-pub use event::{Event, EventBus};
+pub use event::{EVENT_QUEUE_LIMIT, Event, EventBus};
 pub use host::Printer;
 pub use job::{JobInfo, JobKind, JobStatus, PrintOptions, Progress, ProgressModel};
-pub use script::{ScriptContext, render_script, render_script_with};
-pub use state::{
-    AutotuneState, Axes, Axis, ConnectionStatus, Heater, HostPrompt, LinkStats, PrinterState,
-    SdState, TempSample,
+pub use script::{
+    DEFAULT_CANCEL_SCRIPT, DEFAULT_PAUSE_SCRIPT, DEFAULT_RESUME_SCRIPT, ScriptContext,
+    format_number, render_script, render_script_with,
 };
-pub use transport::{BAUD_RATES, ConnectTarget, DEFAULT_BAUD, Link, PortInfo, list_ports};
+pub use state::{
+    AutotuneState, Axes, Axis, ConnectionStatus, FIRMWARE_MESSAGES_LEN, Heater, HostPrompt,
+    LinkStats, PrinterState, SdState, TEMP_HISTORY_LEN, TEMP_HISTORY_SECS, TempSample,
+};
+pub use transport::{
+    BAUD_RATES, ConnectTarget, DEFAULT_BAUD, Link, LinkHandle, PRINTER_USB_VENDORS, PortInfo,
+    READ_TIMEOUT, is_no_data, is_printer_vendor, list_ports,
+};
