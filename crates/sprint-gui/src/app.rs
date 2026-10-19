@@ -40,6 +40,7 @@ use crate::config_store::ConfigSaver;
 use crate::connection::{ConnectOutcome, Connector, PortScanner};
 use crate::context::{AppAction, AppCtx, LoadedFile, Tab};
 use crate::dialogs::{self, StartPrintDialog};
+use crate::job_text::{self, Closing, JobQuestion};
 use crate::loader::{self, FileLoader, FileWatch, LoadEvent};
 use crate::menu::{self, MenuCommand, MenuInfo};
 use crate::notify::Notifier;
@@ -132,10 +133,12 @@ pub enum DialogKind {
     Shortcuts,
     /// "Cancel the print?"
     ConfirmCancel,
-    /// "Disconnect and stop the job?"
+    /// "Disconnect (or reconnect) and cancel the print?"
     ConfirmDisconnect,
-    /// "Quit and stop the print?"
+    /// "Quit and cancel the print?"
     ConfirmQuit,
+    /// The job is being cancelled before Sprint quits.
+    Quitting,
 }
 
 enum Modal {
@@ -146,6 +149,7 @@ enum Modal {
     ConfirmCancel,
     ConfirmDisconnect { reconnect: bool },
     ConfirmQuit,
+    Quitting,
 }
 
 impl Modal {
@@ -158,6 +162,7 @@ impl Modal {
             Modal::ConfirmCancel => DialogKind::ConfirmCancel,
             Modal::ConfirmDisconnect { .. } => DialogKind::ConfirmDisconnect,
             Modal::ConfirmQuit => DialogKind::ConfirmQuit,
+            Modal::Quitting => DialogKind::Quitting,
         }
     }
 }
@@ -270,6 +275,9 @@ pub struct SprintApp {
     /// The target and options of the last connect, for Reconnect.
     last_connect: Option<(ConnectTarget, sprint_host::ConnectOptions)>,
     quit_confirmed: bool,
+    /// Quitting was confirmed: the link closes (cancelling the job first),
+    /// then the window.
+    quitting: bool,
     file_dialog: Option<Receiver<Option<PathBuf>>>,
     file_dialog_requests: usize,
     native_dialogs: bool,
@@ -354,6 +362,7 @@ impl SprintApp {
             reconnect_pending: false,
             last_connect: None,
             quit_confirmed: false,
+            quitting: false,
             file_dialog: None,
             file_dialog_requests: 0,
             native_dialogs: options.native_dialogs,
@@ -488,6 +497,12 @@ impl SprintApp {
         !self.connector.is_idle() || self.reconnect_pending
     }
 
+    /// Quitting was confirmed and the window was asked to close (once the
+    /// running job was cancelled and the link closed).
+    pub fn quit_requested(&self) -> bool {
+        self.quit_confirmed
+    }
+
     /// The window title of the last frame.
     pub fn window_title(&self) -> &str {
         &self.title
@@ -560,6 +575,15 @@ impl SprintApp {
         if self.reconnect_pending && self.connector.is_idle() {
             self.reconnect_pending = false;
             self.connect_again();
+        }
+        if self.quitting && self.connector.is_idle() {
+            // The job was cancelled and the link is closed: now the window.
+            self.quitting = false;
+            self.quit_confirmed = true;
+            if matches!(self.modal, Some(Modal::Quitting)) {
+                self.modal = None;
+            }
+            ctx.send_viewport_cmd(ViewportCommand::Close);
         }
         self.poll_file_dialog();
         self.poll_loader(ctx);
@@ -1151,13 +1175,31 @@ impl SprintApp {
     // ----- input -----
 
     fn handle_close_request(&mut self, ctx: &egui::Context) {
+        // Closed again while the job is being cancelled: let it close, the
+        // job is cancelled on the way out all the same (see Drop).
         if ctx.input(|i| i.viewport().close_requested())
             && !self.quit_confirmed
+            && !self.quitting
             && self.core.host_job_running()
         {
             ctx.send_viewport_cmd(ViewportCommand::CancelClose);
             self.modal = Some(Modal::ConfirmQuit);
         }
+    }
+
+    /// Quit once the running job is cancelled and the link closed (see
+    /// [`crate::connection::close_link`]).
+    fn start_quit(&mut self) {
+        self.quitting = true;
+        self.reconnect_pending = false;
+        self.connector.disconnect(&self.core.printer);
+    }
+
+    /// The question before `closing` the link while the host runs a job
+    /// (`None` when it runs none).
+    fn close_question(&self, closing: Closing) -> Option<JobQuestion> {
+        let (name, kind) = crate::connection::job_to_cancel(&self.core.state)?;
+        Some(job_text::close_question(kind, name, closing))
     }
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
@@ -1297,9 +1339,12 @@ impl SprintApp {
             )
             .show(ui, |ui| {
                 let connecting = self.connector.is_connecting();
+                let closing = self.connector.is_closing() || self.quitting;
                 let mut c = self.core.ctx();
                 let open = self.last_connect.as_ref().map(|(target, _)| target);
-                self.panels.connection.ui(ui, &mut c, connecting, open);
+                self.panels
+                    .connection
+                    .ui(ui, &mut c, connecting, closing, open);
             });
         if self.core.state.halted && self.core.state.status.is_open() {
             egui::Panel::top("sprint-halted-banner")
@@ -1625,17 +1670,16 @@ impl SprintApp {
                     }
                     return None;
                 }
-                let title = if reconnect {
-                    "Reconnect and stop the job?"
+                let closing = if reconnect {
+                    Closing::Reconnect
                 } else {
-                    "Disconnect and stop the job?"
+                    Closing::Disconnect
                 };
-                let answer = ConfirmDialog::new("sprint-disconnect", title)
-                    .message(
-                        "The host is streaming a job; closing the connection stops it where it is.",
-                    )
-                    .confirm_label(if reconnect { "Reconnect" } else { "Disconnect" })
-                    .cancel_label("Keep printing")
+                let question = self.close_question(closing)?;
+                let answer = ConfirmDialog::new("sprint-disconnect", &question.title)
+                    .message(&question.message)
+                    .confirm_label(question.confirm)
+                    .cancel_label(question.keep)
                     .danger(true)
                     .show(ctx);
                 match answer {
@@ -1653,21 +1697,37 @@ impl SprintApp {
                 }
             }
             Modal::ConfirmQuit => {
-                let answer = ConfirmDialog::new("sprint-quit", "Quit and stop the print?")
-                    .message("Sprint is streaming a print to the printer. Quitting stops it where it is.")
-                    .confirm_label("Quit")
-                    .cancel_label("Keep printing")
+                // The job ended while the question was open: nothing to
+                // ask any more, and nothing to keep the window open for.
+                let Some(question) = self.close_question(Closing::Quit) else {
+                    self.start_quit();
+                    return Some(Modal::Quitting);
+                };
+                let answer = ConfirmDialog::new("sprint-quit", &question.title)
+                    .message(&question.message)
+                    .confirm_label(question.confirm)
+                    .cancel_label(question.keep)
                     .danger(true)
                     .show(ctx);
                 match answer {
                     Some(DialogResult::Confirmed) => {
-                        self.quit_confirmed = true;
-                        ctx.send_viewport_cmd(ViewportCommand::Close);
-                        None
+                        self.start_quit();
+                        Some(Modal::Quitting)
                     }
                     Some(DialogResult::Cancelled) => None,
                     None => Some(Modal::ConfirmQuit),
                 }
+            }
+            Modal::Quitting => {
+                let name = self
+                    .core
+                    .state
+                    .job
+                    .as_ref()
+                    .filter(|j| j.status.is_active())
+                    .map(|j| j.name.clone());
+                dialogs::quitting_dialog(ctx, name.as_deref());
+                self.quitting.then_some(Modal::Quitting)
             }
         }
     }
@@ -1716,7 +1776,10 @@ impl Drop for SprintApp {
             log::warn!("could not save the configuration: {e}");
         }
         self.loader.cancel();
-        self.core.printer.disconnect();
+        // Also after a panic of the UI thread: a job the host runs is
+        // cancelled (heaters off) before the link closes. Blocks, for at
+        // most CANCEL_WAIT, only while such a job runs.
+        crate::connection::close_link(&self.core.printer, crate::connection::CANCEL_WAIT);
     }
 }
 

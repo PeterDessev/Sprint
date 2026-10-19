@@ -5,12 +5,60 @@
 //! the engine's statistics.
 
 use std::collections::VecDeque;
+use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
-use sprint_host::{ConnectOptions, ConnectTarget, LinkStats, PortInfo, Printer};
+use sprint_host::{ConnectOptions, ConnectTarget, JobKind, LinkStats, PortInfo, Printer};
 
 /// Seconds between automatic port scans while disconnected.
 pub const PORT_REFRESH_SECS: f64 = 3.0;
+
+/// How long closing the link waits, at most, for a cancelled job to stop
+/// (the cancel script parks the head and turns the heaters off).
+pub const CANCEL_WAIT: Duration = Duration::from_secs(30);
+
+/// The job [`close_link`] cancels before closing the link: a print Sprint
+/// streams or an SD upload (a print from the printer's own card goes on by
+/// itself and is left alone).
+pub fn job_to_cancel(state: &sprint_host::PrinterState) -> Option<(&str, JobKind)> {
+    state
+        .job
+        .as_ref()
+        .filter(|j| j.status.is_active() && j.kind != JobKind::SdPrint)
+        .map(|j| (j.name.as_str(), j.kind))
+}
+
+/// Close the link safely: a job the host runs (see [`job_to_cancel`]) is
+/// cancelled first and the link stays open, at most `timeout`, until it has
+/// stopped. Only closing the link would leave the firmware heating with
+/// nobody watching (a host print), or writing everything that comes next
+/// into a half-written SD file (an upload). Blocks: call it from a worker
+/// thread (or on exit). Returns the name of the job cancelled.
+pub fn close_link(printer: &Printer, timeout: Duration) -> Option<String> {
+    let cancelled = cancel_and_wait(printer, timeout);
+    printer.disconnect();
+    cancelled
+}
+
+/// The first half of [`close_link`]: cancel the host's job and wait (at
+/// most `timeout`) until it stopped or the link closed by itself.
+fn cancel_and_wait(printer: &Printer, timeout: Duration) -> Option<String> {
+    let name = printer.with_state(|s| job_to_cancel(s).map(|(name, _)| name.to_owned()))?;
+    printer.cancel();
+    let deadline = Instant::now() + timeout;
+    loop {
+        let (active, open) = printer.with_state(|s| (s.job_active(), s.status.is_open()));
+        if !active || !open {
+            break;
+        }
+        if Instant::now() >= deadline {
+            log::warn!("{name} did not stop within {timeout:?}; closing the link anyway");
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    Some(name)
+}
 
 /// What a connect or disconnect worker reported.
 #[derive(Clone, Debug, PartialEq)]
@@ -114,9 +162,12 @@ impl Connector {
         }
     }
 
-    /// Close the connection on a worker thread. A connect in progress is
-    /// cancelled: the engine gives up once the link opens, and the connect
-    /// reports [`ConnectOutcome::Cancelled`] instead of a failure.
+    /// Close the connection on a worker thread, safely (see
+    /// [`close_link`]): a print the host streams, or an SD upload, is
+    /// cancelled first and the link closes once it has stopped. A connect
+    /// in progress is cancelled: the engine gives up once the link opens,
+    /// and the connect reports [`ConnectOutcome::Cancelled`] instead of a
+    /// failure.
     pub fn disconnect(&mut self, printer: &Printer) {
         if self.connecting.is_some() {
             self.cancelled = true;
@@ -128,7 +179,7 @@ impl Connector {
         let spawned = std::thread::Builder::new()
             .name("sprint-gui-disconnect".to_owned())
             .spawn(move || {
-                worker.disconnect();
+                close_link(&worker, CANCEL_WAIT);
                 drop(worker);
                 let _ = tx.send(ConnectOutcome::Closed);
                 if let Some(ctx) = repaint {
@@ -136,10 +187,17 @@ impl Connector {
                 }
             });
         if spawned.is_err() {
-            // No thread: disconnect here (bounded to a couple of seconds).
-            printer.disconnect();
+            // No thread: close here. Waiting blocks the window, but a job
+            // left running would keep the heaters on unattended.
+            close_link(printer, CANCEL_WAIT);
             let _ = self.tx.send(ConnectOutcome::Closed);
         }
+    }
+
+    /// True while a disconnect worker runs (it may be waiting for a
+    /// cancelled job to stop).
+    pub fn is_closing(&self) -> bool {
+        self.disconnecting > 0
     }
 
     /// True while a connect worker runs.

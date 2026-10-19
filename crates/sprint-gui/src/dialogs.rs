@@ -615,6 +615,34 @@ pub fn prompt_dialog(egui_ctx: &egui::Context, prompt: &HostPrompt) -> Option<us
     answer
 }
 
+/// "Cancelling the print…" while Sprint waits for the job `name` to stop
+/// before it quits (no buttons: the window closes by itself once the
+/// printer has stopped, at the latest after
+/// [`crate::connection::CANCEL_WAIT`]).
+pub fn quitting_dialog(egui_ctx: &egui::Context, name: Option<&str>) {
+    let p = theme::palette(egui_ctx);
+    Modal::new(Id::new("sprint-quitting"))
+        .frame(modal_frame(egui_ctx))
+        .backdrop_color(backdrop(egui_ctx))
+        .show(egui_ctx, |ui| {
+            ui.set_width(400.0);
+            dialog_title(ui, icons::STOP, "Stopping before Sprint quits", p.warning);
+            ui.add_space(4.0);
+            let text = match name {
+                Some(name) => format!(
+                    "Cancelling {}: the cancel script turns the heaters off. Sprint quits once \
+                     the printer has stopped.",
+                    format::sanitize(name, 60)
+                ),
+                None => "Closing the connection…".to_owned(),
+            };
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.add(egui::Label::new(RichText::new(text).color(p.text)).wrap());
+            });
+        });
+}
+
 /// The red banner shown while the firmware is halted.
 pub fn halted_banner(ui: &mut Ui, ctx: &mut AppCtx<'_>) {
     let p = theme::ui_palette(ui);

@@ -109,7 +109,8 @@ impl ConnectionBar {
             .update(&ctx.state.link, ctx.state.status.is_connected());
     }
 
-    /// Draw the bar. `connecting` is true while a connect worker runs;
+    /// Draw the bar. `connecting` is true while a connect worker runs,
+    /// `closing` while a disconnect waits for a cancelled job to stop;
     /// `open` is the target of the open (or opening) connection, shown
     /// instead of the profile's while the bar is locked (a session started
     /// on the virtual printer keeps saying so whatever the profile names).
@@ -118,6 +119,7 @@ impl ConnectionBar {
         ui: &mut Ui,
         ctx: &mut AppCtx<'_>,
         connecting: bool,
+        closing: bool,
         open: Option<&ConnectTarget>,
     ) {
         let p = theme::ui_palette(ui);
@@ -147,7 +149,7 @@ impl ConnectionBar {
                 }
                 ui.add_space(8.0);
                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                    self.connection_controls(ui, ctx, connecting, now, &shown, &p);
+                    self.connection_controls(ui, ctx, (connecting, closing), now, &shown, &p);
                 });
             });
         });
@@ -158,7 +160,7 @@ impl ConnectionBar {
         &mut self,
         ui: &mut Ui,
         ctx: &mut AppCtx<'_>,
-        connecting: bool,
+        (connecting, closing): (bool, bool),
         now: f64,
         shown: &ConnectTarget,
         p: &Palette,
@@ -170,7 +172,7 @@ impl ConnectionBar {
         self.target_combo(ui, ctx, locked, now, shown);
         self.target_details(ui, ctx, locked, shown);
         ui.add_space(4.0);
-        self.connect_button(ui, ctx, &status, connecting);
+        self.connect_button(ui, ctx, &status, connecting, closing);
         ui.add_space(4.0);
         let (label, tone, pulse) = status_pill(&status, ctx.state.halted);
         let pill = ui.add(StatusPill::new(label, tone).pulse(pulse));
@@ -471,13 +473,27 @@ impl ConnectionBar {
         ctx: &mut AppCtx<'_>,
         status: &ConnectionStatus,
         connecting: bool,
+        closing: bool,
     ) {
         let opening = connecting
             || matches!(
                 status,
                 ConnectionStatus::Connecting | ConnectionStatus::Handshaking
             );
-        if opening {
+        if closing && status.is_open() && !opening {
+            // The job is being cancelled before the link closes.
+            let tip = if ctx.job_active() {
+                "Cancelling the job first: the connection closes once the printer has stopped"
+            } else {
+                "Closing the connection"
+            };
+            ui.add_enabled(
+                false,
+                ActionButton::new("Disconnecting…").icon(icons::DISCONNECT),
+            )
+            .on_disabled_hover_text(tip);
+            ui.spinner();
+        } else if opening {
             let r = ui.add(ActionButton::new("Cancel").icon(icons::CLOSE));
             ui.spinner();
             if r.on_hover_text("Stop connecting").clicked() {

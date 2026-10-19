@@ -20,7 +20,10 @@ use sprint_host::sprint_sim::SimConfig;
 use sprint_host::{ConnectTarget, ConnectionStatus, JobInfo, JobKind, JobStatus, PrinterState};
 
 /// Options with the fast simulator, slowed down to `time_scale` with real
-/// move times (so a print lasts long enough to pause it).
+/// move times (so a print lasts long enough to pause it), and one command
+/// in flight as with real printers: a cancel script then follows the
+/// command the printer works on (with more in flight, a heat-up and a
+/// probing already sent would be carried out first, taking minutes).
 fn slow_sim_options(time_scale: f32) -> AppOptions {
     let mut options = sim_options();
     options.config.profiles[0].connection = ConnectTarget::Simulator(SimConfig {
@@ -28,6 +31,7 @@ fn slow_sim_options(time_scale: f32) -> AppOptions {
         time_scale,
         ..fast_sim()
     });
+    options.config.profiles[0].options.max_in_flight = 1;
     options
 }
 
@@ -709,7 +713,8 @@ fn disconnecting_or_reconnecting_during_a_print_asks_first() {
     h.state_mut().push_action(AppAction::Reconnect);
     settle(&mut h);
     assert_eq!(h.state().dialog(), Some(DialogKind::ConfirmDisconnect));
-    h.get_by_role_and_label(Role::Button, "Reconnect").click();
+    h.get_by_role_and_label(Role::Button, "Cancel and reconnect")
+        .click();
     expect(&mut h, "the reconnect", |app| {
         app.state().is_connected() && !app.connection_busy() && !printing(app)
     });
@@ -720,6 +725,133 @@ fn disconnecting_or_reconnecting_during_a_print_asks_first() {
         !app.state().status.is_open()
     });
     assert_eq!(h.state().dialog(), None);
+}
+
+/// A slow print of the cube, running, with its heaters switched on; the
+/// virtual printer's control handle (it outlives the link, as a real
+/// printer does).
+fn heating_print() -> (
+    Harness<'static, SprintApp>,
+    sprint_host::sprint_sim::SimControl,
+) {
+    let options = with_file(slow_sim_options(5.0), sample("calibration-cube.gcode"));
+    let mut h = app(options, WINDOW);
+    expect(&mut h, "the cube to be analyzed", analyzed);
+    connect(&mut h);
+    let control = h.state().printer().sim_control().expect("simulator");
+    h.state_mut()
+        .push_action(AppAction::StartPrintDialog { start_line: 0 });
+    settle(&mut h);
+    h.get_by_role_and_label(Role::Button, "Start print").click();
+    let heating = control.clone();
+    expect(&mut h, "the print to switch the heaters on", move |app| {
+        let sim = heating.snapshot();
+        app.state().job_active()
+            && sim.bed_target > 0.0
+            && sim.hotend_targets.iter().any(|t| *t > 0.0)
+    });
+    (h, control)
+}
+
+/// The cancel script ran: the heaters are off.
+#[track_caller]
+fn assert_heaters_off(control: &sprint_host::sprint_sim::SimControl) {
+    let sim = control.snapshot();
+    let got = control.received_commands();
+    assert!(
+        sim.hotend_targets.iter().all(|t| *t == 0.0) && sim.bed_target == 0.0,
+        "hotends {:?}, bed {}, received {:?}",
+        sim.hotend_targets,
+        sim.bed_target,
+        &got[got.len().saturating_sub(12)..]
+    );
+    assert!(got.iter().any(|c| c == "M104 S0"), "{got:?}");
+}
+
+#[test]
+fn disconnecting_during_a_print_cancels_it_first() {
+    let (mut h, control) = heating_print();
+    h.get_by_label("Disconnect").click();
+    settle(&mut h);
+    assert_eq!(h.state().dialog(), Some(DialogKind::ConfirmDisconnect));
+    assert!(
+        h.query_by_label_contains("the cancel script turns the heaters off")
+            .is_some()
+    );
+    h.get_by_label("Cancel and disconnect").click();
+    expect(&mut h, "the connection to close", |app| {
+        !app.state().status.is_open() && !app.connection_busy()
+    });
+    assert_heaters_off(&control);
+    assert!(!h.state().printer().with_state(|s| s.job_active()));
+}
+
+#[test]
+fn quitting_during_a_print_cancels_it_before_the_window_closes() {
+    let (mut h, control) = heating_print();
+    h.input_mut()
+        .viewports
+        .entry(egui::ViewportId::ROOT)
+        .or_default()
+        .events
+        .push(egui::ViewportEvent::Close);
+    settle(&mut h);
+    assert_eq!(h.state().dialog(), Some(DialogKind::ConfirmQuit));
+    h.get_by_label("Cancel and quit").click();
+    h.step();
+    // The window waits for the printer to stop.
+    assert!(!h.state().quit_requested());
+    expect(&mut h, "the window to be asked to close", |app| {
+        app.quit_requested()
+    });
+    assert!(!h.state().state().status.is_open());
+    assert_eq!(h.state().dialog(), None);
+    assert_heaters_off(&control);
+}
+
+#[test]
+fn disconnecting_during_an_upload_closes_and_deletes_the_file_first() {
+    let options = with_file(slow_sim_options(5.0), sample("calibration-cube.gcode"));
+    let mut h = app(options, WINDOW);
+    expect(&mut h, "the cube to be analyzed", analyzed);
+    connect(&mut h);
+    let control = h.state().printer().sim_control().expect("simulator");
+    let file = Arc::clone(&h.state().file().expect("file").file);
+    h.state()
+        .printer()
+        .upload_to_sd(file, "CUBE.GCO")
+        .expect("upload");
+    expect(&mut h, "the upload to run", |app| {
+        app.state()
+            .job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Printing && j.current_line > 50)
+    });
+    h.state_mut().push_action(AppAction::Disconnect);
+    settle(&mut h);
+    assert_eq!(h.state().dialog(), Some(DialogKind::ConfirmDisconnect));
+    assert!(
+        h.query_by_label("Disconnect and cancel the upload?")
+            .is_some()
+    );
+    h.get_by_label("Cancel and disconnect").click();
+    expect(&mut h, "the connection to close", |app| {
+        !app.state().status.is_open() && !app.connection_busy()
+    });
+    // The file was closed (M29) and the partial file deleted: nothing the
+    // next connection sends ends up in it.
+    let got = control.received_commands();
+    let tail = &got[got.len().saturating_sub(3)..];
+    assert!(tail.iter().any(|c| c == "M29"), "{tail:?}");
+    assert!(tail.iter().any(|c| c == "M30 CUBE.GCO"), "{tail:?}");
+}
+
+#[test]
+fn dropping_the_app_during_a_print_cancels_it() {
+    // What also happens when the UI thread panics.
+    let (h, control) = heating_print();
+    drop(h);
+    assert_heaters_off(&control);
 }
 
 /// An in-memory eframe store.
