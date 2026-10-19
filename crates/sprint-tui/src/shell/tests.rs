@@ -1585,7 +1585,9 @@ fn layered_file(dir: &std::path::Path, layers: usize) -> PathBuf {
 fn print_pauses_before_the_layers_asked_for() {
     let scratch = Scratch::new("pause-layer");
     let file = layered_file(&scratch.0, 4);
-    let (mut shell, buffer) = connected();
+    // Moves in (fast) real time: the pause points are set while the first
+    // layers still stream.
+    let (mut shell, buffer) = connected_timed();
     // A layer the file does not have: nothing starts.
     script(
         &mut shell,
