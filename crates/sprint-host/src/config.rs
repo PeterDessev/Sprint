@@ -343,9 +343,13 @@ impl AppConfig {
     }
 
     /// Load from `path`. A missing or unreadable file is an
-    /// [`HostError::Io`], invalid TOML an [`HostError::Config`].
+    /// [`HostError::Io`], invalid TOML (or text that is not UTF-8) an
+    /// [`HostError::Config`].
     pub fn load_from(path: &Path) -> Result<AppConfig, HostError> {
-        let text = fs::read_to_string(path)?;
+        let bytes = fs::read(path)?;
+        // Not UTF-8 is a corrupt file (to be backed up), not an I/O error.
+        let text = String::from_utf8(bytes)
+            .map_err(|e| HostError::Config(format!("{}: not UTF-8 text: {e}", path.display())))?;
         let config: AppConfig = toml::from_str(&text)
             .map_err(|e| HostError::Config(format!("{}: {e}", path.display())))?;
         Ok(config.normalized())

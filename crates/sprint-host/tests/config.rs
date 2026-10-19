@@ -81,6 +81,27 @@ fn corrupt_file_is_backed_up_and_defaults_are_used() {
 }
 
 #[test]
+fn a_file_that_is_not_utf8_is_backed_up_too() {
+    // A truncated write or disk corruption, not text at all.
+    let dir = TempDir::new("config-binary");
+    let path = dir.path().join("config.toml");
+    let garbage: &[u8] = b"console_max_lines = 900\n\xff\xfe\x00\x81 binary junk";
+    fs::write(&path, garbage).unwrap();
+    assert!(matches!(
+        AppConfig::load_from(&path),
+        Err(HostError::Config(_))
+    ));
+    assert_eq!(AppConfig::load_or_default(&path), AppConfig::default());
+    // The user's bytes survive in the backup, so saving the defaults later
+    // does not destroy them.
+    assert_eq!(
+        fs::read(dir.path().join("config.toml.bak")).unwrap(),
+        garbage
+    );
+    assert!(!path.exists());
+}
+
+#[test]
 fn wrong_types_and_out_of_range_values_are_repaired_or_rejected() {
     let dir = TempDir::new("config-repair");
     let path = dir.path().join("config.toml");
