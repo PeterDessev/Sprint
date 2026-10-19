@@ -1361,8 +1361,11 @@ fn file_info_body(
                 "Layers",
                 &format!("{}{height}", format::count(toolpath.layers.len() as u64)),
             );
-            if !toolpath.bounds.is_empty() {
-                let [x, y, z] = toolpath.bounds.size();
+            // The printed part, not the extent of every extrusion (a purge
+            // line along the bed's edge would make a 20 mm cube 137 mm
+            // wide).
+            if !toolpath.part_bounds.is_empty() {
+                let [x, y, z] = toolpath.part_bounds.size();
                 kv.row(
                     "Size",
                     &format!(
@@ -1371,7 +1374,8 @@ fn file_info_body(
                         format::mm(y, 1),
                         format::mm(z, 1)
                     ),
-                );
+                )
+                .on_hover_text("The printed part, without purge lines, skirt or wipe tower");
             }
             if let Some(kind) = &meta.filament_type {
                 kv.row("Material", &format::sanitize(kind, 24));

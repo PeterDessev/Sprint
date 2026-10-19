@@ -915,7 +915,7 @@ impl SdCardTab {
                     &format!(
                         "{} · {} · {} lines",
                         file.name(),
-                        format::bytes(file.byte_len() as u64),
+                        format::bytes(file.source_len()),
                         format::count(file.len() as u64)
                     ),
                 );

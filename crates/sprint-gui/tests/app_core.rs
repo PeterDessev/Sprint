@@ -551,3 +551,46 @@ fn a_finished_print_asks_for_the_users_attention() {
     drop(h);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn sizes_are_the_parts_and_the_files_on_disk() {
+    // The cube's part, not its purge line: about 20 mm on every side.
+    let mut options = AppOptions::headless();
+    options.file = Some(app_support::sample("calibration-cube.gcode"));
+    let mut h = app(options, WINDOW);
+    // Room for the file card beside the legend.
+    h.state_mut().set_side_panels(false, false);
+    expect(&mut h, "the cube to be analyzed", analyzed);
+    settle(&mut h);
+    let toolpath = h
+        .state()
+        .file()
+        .and_then(|f| f.toolpath.clone())
+        .expect("toolpath");
+    let [x, y, z] = toolpath.part_bounds.size();
+    assert!(
+        (19.0..22.0).contains(&x) && (19.0..22.0).contains(&y),
+        "{x} {y}"
+    );
+    let fmt = |v: f32| sprint_gui::format::mm(v, 1);
+    let size = format!("{} × {} × {} mm", fmt(x), fmt(y), fmt(z));
+    if h.state().viewer_tab().viewer().is_some() {
+        assert!(h.query_by_label(&size).is_some(), "no {size}");
+    }
+    // A file with a byte order mark: its size on disk, not the text's.
+    let dir = temp_dir("sizes");
+    let path = dir.join("bom.gcode");
+    std::fs::write(&path, "\u{FEFF}G28\nG1 X10 Y10 F3000\n").expect("write");
+    h.state_mut().push_action(AppAction::LoadFile(path));
+    expect(&mut h, "the file", |app| {
+        app.file().is_some_and(|f| f.file.name() == "bom.gcode") && !app.is_loading()
+    });
+    h.state_mut()
+        .push_action(AppAction::ShowTab(sprint_gui::context::Tab::Gcode));
+    settle(&mut h);
+    let on_disk = h.state().file().expect("file").file.source_len();
+    assert_eq!(on_disk, 24);
+    assert!(h.query_by_label("24 B").is_some());
+    drop(h);
+    let _ = std::fs::remove_dir_all(dir);
+}

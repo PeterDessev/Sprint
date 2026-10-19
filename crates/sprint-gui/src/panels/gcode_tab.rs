@@ -1225,7 +1225,7 @@ impl GcodeTab {
                     let lines = format::count(file.len() as u64);
                     let commands =
                         format!("{} commands", format::count(file.command_count() as u64));
-                    let size = format::bytes(file.byte_len() as u64);
+                    let size = format::bytes(file.source_len());
                     let first = match ctx.selected_line {
                         Some(line) => {
                             format!("Line {} of {lines}", format::count(u64::from(line) + 1))
