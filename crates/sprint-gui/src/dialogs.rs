@@ -671,7 +671,7 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
         "1 – 7",
         "View presets: iso, top, bottom, front, back, left, right",
     ),
-    ("Z", "Fit the 3D view (pointer over the view)"),
+    ("Z", "Fit the 3D view to the toolpath"),
     ("↑ / ↓", "Top layer up / down (3D view)"),
     ("PgUp / PgDn", "Top layer ±10"),
     ("Home / End", "First / last layer"),
