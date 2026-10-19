@@ -17,6 +17,7 @@
 
 #![warn(missing_docs)]
 
+pub mod commands;
 pub mod format;
 pub mod theme;
 pub mod widgets;
