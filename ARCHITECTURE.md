@@ -364,7 +364,7 @@ across the workspace: sprint-viewer's benchmark is `viewer_bench`).
 
 ## sprint-proto
 
-Modules: `framing`, `reply`, `firmware`, `settings`, `mesh`, `reference`.
+Modules: `framing`, `reply`, `firmware`, `settings`, `mesh`, `reference`, `safety`.
 Re-exported at the crate root.
 
 ### framing
@@ -665,6 +665,66 @@ descriptions. Empty queries return nothing. `gcode_doc` reads only the
 leading code, so parameters or a comment glued to it (`"G1X10"`,
 `"M502;reset"`) are ignored. Dangerous entries: M30, M42, M81, M112, M502,
 M994, M997, M999.
+
+### safety
+
+One command-safety classifier for every front end (GUI console and macro
+buttons, TUI, shell), so a typed line gets the same answer everywhere:
+
+```rust
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum JobContext { #[default] Idle, Printing /* job running, not paused */, Paused }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Decision { Allow, Confirm(SafetyReason), Block(SafetyReason) }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)] #[non_exhaustive]
+pub enum SafetyReason { Dangerous, Restarts, ForcesPosition, InterleavesWithPrint,
+    ChangesModes, ShiftsCoordinates, HomesOrProbes, ToolChange, MotorsOff, HeaterOff,
+    WaitsForTemperature, Calibration, ChangesLeveling, QuickStop, StartsAnotherPrint,
+    EndsPrint, WritesToSd }
+impl SafetyReason { pub fn message(self) -> &'static str; } // + Display
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Verdict {
+    pub decision: Decision,
+    pub emergency: bool,              // M112/M108/M410/M876: send at once, outside the queue
+    pub command: Option<String>,      // "G28", "G29.1", "T1", "BED_MESH_CALIBRATE"; None = nothing to send
+    pub doc: Option<&'static GcodeDoc>,
+}
+impl Verdict { pub fn is_allowed(&self) -> bool; pub fn needs_confirmation(&self) -> bool;
+               pub fn is_blocked(&self) -> bool; pub fn reason(&self) -> Option<SafetyReason>; }
+pub fn classify(line: &str, ctx: JobContext) -> Verdict;
+pub const MIN_EXTRUSION_TEMP: f64 = 170.0; pub const HEATER_OFF_BELOW: f64 = 30.0;
+```
+The line is read as the firmware reads it after the host cleaned it: `N<n>`
+line numbers, `*checksums`, `;` and leading `(...)` comments are ignored,
+codes are case-insensitive, parameters may be glued (`G1X10`), blanks
+between letter and number are skipped (`M 112`), and Klipper extended
+commands are known by name. Rules:
+* Dangerous reference entries (`GcodeDoc::dangerous`) and Klipper
+  `FIRMWARE_RESTART`/`RESTART`/`SAVE_CONFIG` (`Restarts`) and
+  `SET_KINEMATIC_POSITION`/`FORCE_MOVE` (`ForcesPosition`) always Confirm,
+  except M112: Allow with `emergency` (never asked).
+* Printing: moves (G0-G3, G5, G6, G10/G11 retraction, G12, G27, G42, G61,
+  M125, parameter-only lines, `STEPPER_BUZZ`), homing and probing (G28,
+  G26, G29-G30, G32-G35, G38.x, G76, G80, M48, `BED_MESH_CALIBRATE`,
+  `PROBE*`, `Z_TILT_ADJUST`, `QUAD_GANTRY_LEVEL`, ...), mode changes
+  (G90/G91/G20/G21/M82/M83), coordinate shifts (G92, G53-G59, M206, M428,
+  G10 L, `SET_GCODE_OFFSET X/Y`), tool changes (T<n>, `ACTIVATE_EXTRUDER`),
+  motors off (M18/M84 except `S<timeout>` alone, `SET_STEPPER_ENABLE
+  ENABLE=0`), heaters off (hotend target below `MIN_EXTRUSION_TEMP`, bed or
+  chamber below `HEATER_OFF_BELOW`, `TURN_OFF_HEATERS`,
+  `SET_HEATER_TEMPERATURE` without `TARGET`), temperature waits
+  (M109/M190/M191/M116, `TEMPERATURE_WAIT`), calibration (M303, M306 T,
+  `PID_CALIBRATE`, `SHAPER_CALIBRATE`, ...), leveling changes (M420 S/Z),
+  M410, start/end/cancel macros (`PRINT_START`, `START_PRINT`, `PRINT_END`,
+  `END_PRINT`, `CANCEL_PRINT`) Confirm; M28 and starting an SD print (M24,
+  M32, `SDCARD_PRINT_FILE`) Block. Tuning (temperatures, fans, M220/M221,
+  babysteps, M600, object exclusion) is allowed.
+* Paused: moves, extrusion, mode changes, `G92 E`, heaters and waits, M410
+  Allow (the host restores position and modes on resume); homing Z (G28
+  naming Z or no axis), probing, other coordinate shifts, tool changes,
+  motors off, calibration, leveling changes, SD prints and start/end macros
+  Confirm; M28 Block.
+* Idle: everything else is allowed. Unknown commands and macros are allowed.
 
 ---
 

@@ -1,5 +1,6 @@
 //! Printer firmware protocol: line framing (line numbers and checksums),
-//! reply parsing, firmware and settings models, and a G-code reference.
+//! reply parsing, firmware and settings models, a G-code reference and the
+//! command-safety rules the front ends apply before sending.
 //!
 //! Pure logic, no I/O. See `ARCHITECTURE.md` for the public contract.
 //!
@@ -37,6 +38,7 @@ pub mod mesh;
 mod nan;
 pub mod reference;
 pub mod reply;
+pub mod safety;
 pub mod settings;
 
 pub use firmware::*;
@@ -44,4 +46,5 @@ pub use framing::*;
 pub use mesh::*;
 pub use reference::*;
 pub use reply::*;
+pub use safety::*;
 pub use settings::*;
