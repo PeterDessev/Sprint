@@ -3,8 +3,12 @@
 //! lines in tests.
 
 use std::borrow::Cow;
-use std::io::BufRead;
+use std::io::{BufRead, Write};
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use crossbeam_channel::Sender;
 
 use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
@@ -114,6 +118,8 @@ impl LineSource for Stdin {
 pub(crate) struct Terminal {
     editor: Editor<ShellHelper, FileHistory>,
     history: Option<PathBuf>,
+    /// The editor is reading a line (output then goes above the prompt).
+    reading: Arc<AtomicBool>,
 }
 
 impl Terminal {
@@ -138,19 +144,30 @@ impl Terminal {
         {
             log::warn!("cannot read the shell history {}: {e}", path.display());
         }
-        Ok(Terminal { editor, history })
+        Ok(Terminal {
+            editor,
+            history,
+            reading: Arc::new(AtomicBool::new(false)),
+        })
     }
 
     /// A sink printing above the prompt while a line is edited.
     pub(crate) fn sink(&mut self) -> rustyline::Result<Box<dyn Sink>> {
         let printer = self.editor.create_external_printer()?;
-        Ok(Box::new(EditorSink(printer)))
+        Ok(Box::new(EditorSink::new(
+            printer,
+            Arc::clone(&self.reading),
+            Box::new(std::io::stdout()),
+        )))
     }
 }
 
 impl LineSource for Terminal {
     fn read(&mut self, prompt: &str) -> Read {
-        match self.editor.readline(prompt) {
+        self.reading.store(true, Ordering::SeqCst);
+        let result = self.editor.readline(prompt);
+        self.reading.store(false, Ordering::SeqCst);
+        match result {
             Ok(line) => Read::Line(line),
             Err(ReadlineError::Interrupted) => Read::Interrupted,
             Err(ReadlineError::Eof) => Read::Eof,
@@ -187,12 +204,60 @@ impl LineSource for Terminal {
     }
 }
 
-/// The editor's external printer as a [`Sink`].
-struct EditorSink<P: ExternalPrinter + Send>(P);
+/// Output for an interactive shell: above the prompt while the editor
+/// reads a line, straight to the terminal otherwise.
+///
+/// The editor's external printer may block until the editor takes a line
+/// (it holds one at a time, and one left over when a line was entered
+/// waits for the next prompt). Writers hold the shell's output lock, so
+/// the printer is driven from a thread of its own: writing never waits,
+/// and a stuck line cannot stop the shell or its echo thread.
+struct EditorSink {
+    /// Lines for the editor's printer, in order.
+    queue: Sender<String>,
+    reading: Arc<AtomicBool>,
+    direct: Box<dyn Write + Send>,
+}
 
-impl<P: ExternalPrinter + Send> Sink for EditorSink<P> {
+impl EditorSink {
+    fn new<P: ExternalPrinter + Send + 'static>(
+        mut printer: P,
+        reading: Arc<AtomicBool>,
+        direct: Box<dyn Write + Send>,
+    ) -> EditorSink {
+        let (queue, lines) = crossbeam_channel::unbounded::<String>();
+        let spawned = std::thread::Builder::new()
+            .name("sprint-shell-printer".into())
+            .spawn(move || {
+                while let Ok(first) = lines.recv() {
+                    // Everything queued meanwhile goes in one piece.
+                    let mut text = first;
+                    text.extend(lines.try_iter());
+                    if printer.print(text).is_err() {
+                        break;
+                    }
+                }
+            });
+        if let Err(e) = spawned {
+            // The receiver is gone with the closure: queued lines are
+            // dropped and everything is written directly instead.
+            log::warn!("cannot start the shell's output thread: {e}");
+        }
+        EditorSink {
+            queue,
+            reading,
+            direct,
+        }
+    }
+}
+
+impl Sink for EditorSink {
     fn write(&mut self, text: &str) {
-        let _ = self.0.print(text.to_string());
+        if self.reading.load(Ordering::SeqCst) && self.queue.send(text.to_string()).is_ok() {
+            return;
+        }
+        let _ = self.direct.write_all(text.as_bytes());
+        let _ = self.direct.flush();
     }
 }
 
@@ -426,6 +491,99 @@ mod tests {
         let _ = complete_line("préheat", 3, &helper());
         let _ = complete_line("load x", 99, &helper());
         let _ = complete_line("", 0, &helper());
+    }
+
+    /// An editor printer that takes a line only when the test lets it,
+    /// like the editor's while it handles keys or after a line was entered.
+    struct GatedPrinter {
+        gate: crossbeam_channel::Receiver<()>,
+        got: Arc<std::sync::Mutex<String>>,
+    }
+
+    impl ExternalPrinter for GatedPrinter {
+        fn print(&mut self, msg: String) -> rustyline::Result<()> {
+            let _ = self.gate.recv();
+            self.got
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push_str(&msg);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_busy_editor_never_blocks_the_output() {
+        use super::super::output::{Buffer, Out};
+        use std::time::{Duration, Instant};
+
+        let (open, gate) = crossbeam_channel::unbounded();
+        let got = Arc::new(std::sync::Mutex::new(String::new()));
+        let reading = Arc::new(AtomicBool::new(true));
+        let direct = Buffer::default();
+        let sink = EditorSink::new(
+            GatedPrinter {
+                gate,
+                got: Arc::clone(&got),
+            },
+            Arc::clone(&reading),
+            Box::new(direct.clone()),
+        );
+        let out = Out::new(Box::new(sink), ColorSupport::None, false);
+        // Writes on another thread, failing (not hanging) when they block.
+        let finishes = |write: Box<dyn FnOnce(&Out) + Send>| {
+            let out = out.clone();
+            let (done, finished) = crossbeam_channel::bounded(1);
+            std::thread::spawn(move || {
+                write(&out);
+                let _ = done.send(());
+            });
+            finished.recv_timeout(Duration::from_secs(5)).is_ok()
+        };
+        // While a line is edited the printer is stuck, yet neither the
+        // echo thread nor the shell waits for it.
+        assert!(
+            finishes(Box::new(|out| {
+                for i in 0..50 {
+                    out.plain(format!("echo {i}"));
+                }
+            })),
+            "the echo thread waited for the editor"
+        );
+        // The line was entered: output goes straight to the terminal.
+        reading.store(false, Ordering::SeqCst);
+        assert!(
+            finishes(Box::new(|out| out.plain("report"))),
+            "the shell waited for the editor"
+        );
+        assert_eq!(
+            direct.text(),
+            "report
+"
+        );
+        // The next prompt takes the queued lines, in order.
+        for _ in 0..50 {
+            let _ = open.send(());
+        }
+        let want: String = (0..50)
+            .map(|i| {
+                format!(
+                    "echo {i}
+"
+                )
+            })
+            .collect();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let text = got
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            if text == want {
+                break;
+            }
+            assert!(Instant::now() < deadline, "{text:?}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 
     #[test]
