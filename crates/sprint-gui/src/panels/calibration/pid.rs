@@ -83,6 +83,16 @@ impl Default for PidWizard {
 }
 
 impl PidWizard {
+    /// Tune `heater` next.
+    pub fn select(&mut self, heater: Heater) {
+        self.heater = heater;
+    }
+
+    /// The heater the wizard tunes.
+    pub fn heater(&self) -> Heater {
+        self.heater
+    }
+
     fn target_mut(&mut self) -> &mut f32 {
         match self.heater {
             Heater::Hotend(_) => &mut self.hotend_target,

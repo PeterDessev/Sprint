@@ -435,6 +435,28 @@ pub(crate) fn dot_label(ui: &mut Ui, color: Color32, text: &str, strong: bool) -
     response
 }
 
+/// Where a request to calibrate a heater's PID waits for the Calibration
+/// tab (panels cannot add app actions; this hand-over goes through egui's
+/// memory next to the `ShowTab` action).
+fn pid_request_id() -> egui::Id {
+    egui::Id::new("insight-pid-calibration-request")
+}
+
+/// Ask the Calibration tab to open its PID wizard for `heater` the next
+/// time it is shown.
+pub(crate) fn request_pid_calibration(ctx: &egui::Context, heater: sprint_host::Heater) {
+    ctx.data_mut(|d| d.insert_temp(pid_request_id(), heater));
+}
+
+/// The pending PID calibration request, if any (taken: asked once).
+pub(crate) fn take_pid_calibration(ctx: &egui::Context) -> Option<sprint_host::Heater> {
+    ctx.data_mut(|d| {
+        let heater = d.get_temp::<sprint_host::Heater>(pid_request_id());
+        d.remove::<sprint_host::Heater>(pid_request_id());
+        heater
+    })
+}
+
 /// Why the EEPROM buttons are disabled on firmware without one.
 pub(crate) const NO_EEPROM: &str = concat!(
     "The firmware reports no EEPROM (Cap:EEPROM:0): settings cannot be saved and ",

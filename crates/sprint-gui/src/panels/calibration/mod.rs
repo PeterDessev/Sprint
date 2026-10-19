@@ -105,6 +105,11 @@ const LIST_WIDTH: f32 = 236.0;
 impl CalibrationTab {
     /// Draw the panel.
     pub fn ui(&mut self, ui: &mut Ui, ctx: &mut AppCtx<'_>) {
+        // "Calibrate PID" on the Printer tab's thermal card.
+        if let Some(heater) = kit::take_pid_calibration(ui.ctx()) {
+            self.wizard = Wizard::Pid;
+            self.pid.select(heater);
+        }
         kit::page_header(
             ui,
             icons::CALIBRATION,
@@ -214,6 +219,11 @@ impl CalibrationTab {
     /// Show a wizard.
     pub fn set_wizard(&mut self, wizard: Wizard) {
         self.wizard = wizard;
+    }
+
+    /// The heater the PID wizard tunes.
+    pub fn pid_heater(&self) -> Heater {
+        self.pid.heater()
     }
 
     fn status(&self, wizard: Wizard, state: &PrinterState) -> Option<(String, Tone)> {

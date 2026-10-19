@@ -54,7 +54,7 @@ pub(super) fn thermal_health(ui: &mut Ui, ctx: &mut AppCtx<'_>) {
         .map(|&h| thermal::analyze(history, h))
         .collect();
     let issues = healths.iter().map(|h| h.findings.len()).sum::<usize>();
-    let mut calibrate = false;
+    let mut calibrate = None;
     Card::new("Thermal health")
         .icon(icons::THERMOMETER)
         .subtitle("last 60 s at target")
@@ -85,12 +85,14 @@ pub(super) fn thermal_health(ui: &mut Ui, ctx: &mut AppCtx<'_>) {
                         ui.add_space(2.0);
                     }
                     if heater_section(ui, health, hotends) {
-                        calibrate = true;
+                        calibrate = Some(health.heater);
                     }
                 }
             },
         );
-    if calibrate {
+    if let Some(heater) = calibrate {
+        // The Calibration tab opens its PID wizard for this heater.
+        kit::request_pid_calibration(ui.ctx(), heater);
         ctx.actions.push(AppAction::ShowTab(Tab::Calibration));
     }
 }

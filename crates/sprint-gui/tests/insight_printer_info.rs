@@ -8,9 +8,10 @@ use common::{harness_state, snapshot};
 use egui_kittest::kittest::Queryable as _;
 use insight_common::*;
 use sprint_gui::context::{AppAction, Tab};
-use sprint_gui::panels::PrinterInfoTab;
+use sprint_gui::panels::calibration::Wizard;
+use sprint_gui::panels::{CalibrationTab, PrinterInfoTab};
 use sprint_gui::theme::Theme;
-use sprint_host::PrinterState;
+use sprint_host::{Heater, PrinterState};
 
 /// Frames that feed the tab's round-trip history with varying samples.
 fn feed_link_history(h: &mut egui_kittest::Harness<'_, Host<PrinterInfoTab>>) {
@@ -61,6 +62,54 @@ fn printer_tab_two_columns_with_findings() {
             .actions
             .contains(&AppAction::ShowTab(Tab::Calibration))
     );
+}
+
+/// The Printer and Calibration tabs sharing the centre area, like the
+/// shell shows them.
+#[derive(Default)]
+struct CentreArea {
+    printer: PrinterInfoTab,
+    calibration: CalibrationTab,
+    tab: Option<Tab>,
+}
+
+impl Panel for CentreArea {
+    fn show(&mut self, ui: &mut egui::Ui, ctx: &mut sprint_gui::context::AppCtx<'_>) {
+        if self.tab == Some(Tab::Calibration) {
+            self.calibration.ui(ui, ctx);
+        } else {
+            self.printer.ui(ui, ctx);
+        }
+    }
+}
+
+#[test]
+fn calibrate_pid_opens_the_wizard_for_that_heater() {
+    let mut state = demo_state();
+    // The bed swings ±1.6 °C; the hotend is fine.
+    state.temp_history = demo_history(1.6);
+    let mut h = harness_state(
+        Theme::Dark,
+        (760.0, 1500.0),
+        Host::<CentreArea>::synthetic(state),
+        |ui, host| host.frame(ui),
+    );
+    h.run_ok();
+    h.get_by_label("Calibrate PID").click();
+    h.run_ok();
+    // The shell follows the action...
+    let shown = h.state().actions.iter().find_map(|a| match a {
+        AppAction::ShowTab(tab) => Some(*tab),
+        _ => None,
+    });
+    assert_eq!(shown, Some(Tab::Calibration));
+    h.state_mut().tab.tab = shown;
+    h.run_ok();
+    // ...and the PID wizard is ready to tune the bed, not the hotend.
+    let calibration = &h.state().tab.calibration;
+    assert_eq!(calibration.wizard(), Wizard::Pid);
+    assert_eq!(calibration.pid_heater(), Heater::Bed);
+    assert!(h.query_by_label("Start autotune at 60 °C").is_some());
 }
 
 #[test]
