@@ -823,6 +823,11 @@ impl SimControl {
     pub fn inject_line(&self, line: &str);
     /// Simulate filament runout (M600-style: host prompt + busy: paused for user).
     pub fn trigger_filament_runout(&self);
+    /// Run G-code as if chosen on the printer's own menu (Marlin's queue.inject; e.g. "M23 x.gco\nM24"
+    /// starts an SD print the host did not start): messages reach the host, no ok, not in received_commands.
+    pub fn run_command(&self, gcode: &str);
+    /// Press the printer's button (LCD knob): ends a wait for the user (M0/M1, M600) like M108/M876.
+    pub fn press_button(&self);
     /// Simulate the board resetting (prints "start" again, resets line numbers).
     pub fn reset(&self);
     pub fn shutdown(&self);

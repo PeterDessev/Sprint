@@ -185,3 +185,30 @@ fn print_seeded_file_with_heating() {
     assert!(out.iter().any(|l| l.starts_with("echo:Print time: ")));
     assert!(!h.control().snapshot().sd_printing);
 }
+
+#[test]
+fn a_print_started_on_the_printer_answers_without_oks() {
+    let mut h = Host::booted(sd_config());
+    h.control().clear_received();
+    // Chosen on the printer's menu: messages, but no ok for the host.
+    h.control()
+        .run_command("M23 benchy~1.gco ; from the menu\n\nM24");
+    let out = h.until(PATIENCE, |l| l == "//action:resume");
+    assert!(
+        out.contains(&"File opened: benchy~1.gco Size: 10000".to_string()),
+        "{out:?}"
+    );
+    assert!(!out.iter().any(|l| l.starts_with("ok")), "{out:?}");
+    // (Answered once the file's heat-up lets the queue move.)
+    let status = h.command("M27");
+    assert!(
+        status
+            .iter()
+            .any(|l| l.starts_with("SD printing byte ") && l.ends_with("/10000")),
+        "{status:?}"
+    );
+    h.until(PATIENCE, |l| l == "Done printing file");
+    assert_eq!(h.command("M27"), ["Not SD printing", "ok"]);
+    // Only the host's own commands are recorded.
+    assert_eq!(h.control().received_commands(), ["M27", "M27"]);
+}

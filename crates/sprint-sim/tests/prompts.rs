@@ -67,3 +67,23 @@ fn serial_print_flags() {
     assert_eq!(h.command("M118 E1 A1 x"), vec!["echo://x", "ok"]);
     assert_eq!(h.command("M117 Hello LCD"), vec!["ok"]);
 }
+
+#[test]
+fn the_button_ends_a_wait_for_the_user() {
+    let mut h = Host::booted(fast(50.0));
+    h.write("M0 Check the bed");
+    let waiting = h.until(PATIENCE, |l| l == "echo:busy: paused for user");
+    assert!(waiting.contains(&"echo:Check the bed".to_string()));
+    assert!(!waiting.iter().any(|l| l == "ok"));
+    // Clicking the knob continues without anything from the host.
+    h.control().press_button();
+    h.until(PATIENCE, |l| l == "ok");
+    assert_eq!(h.control().received_commands(), ["M0 Check the bed"]);
+    // M600 waits for the same button.
+    h.command("G28");
+    h.write("M600");
+    h.until(PATIENCE, |l| l == "echo:busy: paused for user");
+    h.control().press_button();
+    h.until(PATIENCE, |l| l == "//action:resumed");
+    h.until(PATIENCE, |l| l == "ok");
+}

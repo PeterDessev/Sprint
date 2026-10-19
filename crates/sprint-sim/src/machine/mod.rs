@@ -13,7 +13,7 @@ mod temps;
 mod tests;
 
 use crate::config::SimConfig;
-use crate::line::{self, Emergency};
+use crate::line::{self, Emergency, strip_comment};
 use crate::link::SimSnapshot;
 use crate::mesh::{BedShape, Mesh};
 use crate::parse::Command;
@@ -371,6 +371,30 @@ impl Machine {
             return;
         }
         self.runout_event();
+    }
+
+    /// Commands chosen on the printer's own menu (Marlin's
+    /// `queue.inject`): they run after the command in progress, answer the
+    /// host with their messages but without an `ok`, and are not recorded
+    /// as received from the host. Ignored while the board is not running.
+    pub(crate) fn run_command(&mut self, text: &str) {
+        if self.run != RunState::Running {
+            return;
+        }
+        for l in text.split(['\n', '\r']) {
+            let cmd = strip_comment(l).trim();
+            if !cmd.is_empty() {
+                self.injected.push_back(cmd.to_string());
+            }
+        }
+    }
+
+    /// The printer's button (a click of the LCD knob): ends a wait for the
+    /// user (M0/M1, M600's "Nozzle Parked") like M108 or M876 would.
+    pub(crate) fn press_button(&mut self) {
+        if self.run == RunState::Running {
+            self.wait_for_user = false;
+        }
     }
 
     /// Simulate a board reset.

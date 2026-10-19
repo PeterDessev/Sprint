@@ -56,6 +56,8 @@ pub struct SimSnapshot {
 pub(crate) enum Input {
     Data(Vec<u8>),
     Inject(String),
+    Command(String),
+    Button,
     Runout,
     Reset,
     Shutdown,
@@ -224,6 +226,22 @@ impl SimControl {
         let _ = self.tx.send(Input::Inject(line.to_string()));
     }
 
+    /// Run G-code as if it was chosen on the printer's own menu (Marlin's
+    /// `queue.inject`), for example `"M23 cube.gco\nM24"` to start an SD
+    /// print the host did not start. The commands run after the one in
+    /// progress; their messages reach the host, but no `ok`, and they are
+    /// not in [`SimControl::received_commands`].
+    pub fn run_command(&self, gcode: &str) {
+        let _ = self.tx.send(Input::Command(gcode.to_string()));
+    }
+
+    /// Press the printer's button (click the LCD knob): ends a wait for the
+    /// user (M0/M1, M600 waiting with "Nozzle Parked") the way M108 or
+    /// M876 would, without anything from the host.
+    pub fn press_button(&self) {
+        let _ = self.tx.send(Input::Button);
+    }
+
     /// Simulate filament runout (M600-style: host prompt + busy: paused
     /// for user until M876 S0 or M108).
     pub fn trigger_filament_runout(&self) {
@@ -305,6 +323,8 @@ fn handle(machine: &mut Machine, msg: Input) -> bool {
     match msg {
         Input::Data(bytes) => machine.on_bytes(&bytes),
         Input::Inject(line) => machine.inject_line(&line),
+        Input::Command(gcode) => machine.run_command(&gcode),
+        Input::Button => machine.press_button(),
         Input::Runout => machine.filament_runout(),
         Input::Reset => machine.reset(),
         Input::Shutdown => return false,
