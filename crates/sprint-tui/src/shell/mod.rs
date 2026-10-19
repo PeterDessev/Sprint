@@ -456,11 +456,17 @@ impl Shell {
                         Tone::Dim,
                     ),
                 );
-                self.config.push_recent(loaded.path.clone());
-                if let Some(config_path) = &self.config_path
-                    && let Err(e) = self.config.save_to(config_path)
-                {
-                    log::warn!("could not save the configuration: {e}");
+                // Saved on top of the file as it is now (see save_recent).
+                let saved = self.config_path.as_ref().map(|config_path| {
+                    crate::config::save_recent(config_path, loaded.path.clone(), &self.config)
+                });
+                match saved {
+                    Some(Ok(saved)) => self.config = saved,
+                    Some(Err(e)) => {
+                        log::warn!("could not save the configuration: {e}");
+                        self.config.push_recent(loaded.path.clone());
+                    }
+                    None => self.config.push_recent(loaded.path.clone()),
                 }
                 self.file = Some(loaded);
             }

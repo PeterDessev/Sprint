@@ -1603,3 +1603,40 @@ fn typed_moves_during_a_print_ask_first() {
     app.send_gcode("G28");
     assert!(matches!(&app.modal, Some(Modal::Confirm(c)) if c.danger));
 }
+
+#[test]
+fn loading_a_file_keeps_changes_made_to_the_configuration_meanwhile() {
+    let scratch = Scratch::new("config");
+    let path = scratch.0.join("config.toml");
+    let mut app = App::new(
+        Printer::new(),
+        AppConfig::default(),
+        Some(path.clone()),
+        Theme::dark(),
+    );
+    // While the TUI runs, the file gains a macro (the GUI, a hand edit).
+    let mut edited = AppConfig::default();
+    edited.macros.push(sprint_host::Macro {
+        name: "Added elsewhere".into(),
+        gcode: "M117 hi".into(),
+        color: None,
+        confirm: false,
+    });
+    edited.save_to(&path).expect("save");
+    load(&mut app, "arcs-test.gcode");
+    let on_disk = AppConfig::load_from(&path).expect("load");
+    assert!(
+        on_disk.macros.iter().any(|m| m.name == "Added elsewhere"),
+        "the recent file replaced the edited configuration"
+    );
+    assert_eq!(
+        on_disk.recent_files.first(),
+        Some(&sample("arcs-test.gcode"))
+    );
+    assert!(
+        app.config
+            .macros
+            .iter()
+            .any(|m| m.name == "Added elsewhere")
+    );
+}

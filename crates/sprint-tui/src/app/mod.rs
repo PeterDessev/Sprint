@@ -616,8 +616,7 @@ impl App {
                     format::duration(f64::from(stats.estimated_time)),
                     format::length_mm(f64::from(stats.filament_length))
                 );
-                self.config.push_recent(loaded.path.clone());
-                self.save_config();
+                self.remember_recent(loaded.path.clone());
                 self.file = Some(loaded);
                 self.layer_view = None;
                 self.stats_scroll = 0;
@@ -630,11 +629,18 @@ impl App {
         }
     }
 
-    fn save_config(&mut self) {
-        if let Some(path) = &self.config_path
-            && let Err(e) = self.config.save_to(path)
-        {
-            log::warn!("could not save the configuration: {e}");
+    /// Add a recent file to the configuration (and its file).
+    fn remember_recent(&mut self, file: PathBuf) {
+        let Some(path) = &self.config_path else {
+            self.config.push_recent(file);
+            return;
+        };
+        match crate::config::save_recent(path, file.clone(), &self.config) {
+            Ok(saved) => self.config = saved,
+            Err(e) => {
+                log::warn!("could not save the configuration: {e}");
+                self.config.push_recent(file);
+            }
         }
     }
 
