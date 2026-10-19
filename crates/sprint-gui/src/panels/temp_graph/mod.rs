@@ -6,9 +6,11 @@
 //! plot that shares the time axis. It follows the newest readings over a
 //! chosen window until the user drags or zooms (then "Follow" returns).
 //! Below, a table summarises the visible window per heater and flags
-//! heaters that have held their target.
+//! heaters that have held their target. The history can be exported as
+//! CSV; the save dialog and the write run off the UI thread.
 
 mod data;
+mod export;
 
 use egui::{
     Align, Color32, Grid, Id, LayerId, Layout, PopupAnchor, Response, RichText, ScrollArea, Sense,
@@ -29,9 +31,12 @@ use crate::widgets::{
     ActionButton, Badge, Card, EmptyState, SegmentedControl, Toggle, card_frame, format_temperature,
 };
 use data::{Channel, Point};
+use export::{Export, Outcome};
 
 /// Plots sharing the time axis and the hover cursor.
 const LINK: &str = "sprint-temp-graph-link";
+/// Suggested file name of the CSV export.
+const CSV_NAME: &str = "sprint-temperatures.csv";
 /// Height of the power plot.
 const POWER_HEIGHT: f32 = 120.0;
 /// The temperature plot never gets shorter than this.
@@ -77,6 +82,7 @@ pub struct TemperatureGraphTab {
     /// The view follows the newest readings (else the user's zoom/pan).
     follow: bool,
     show_power: bool,
+    export: Option<Export>,
 }
 
 impl Default for TemperatureGraphTab {
@@ -85,6 +91,7 @@ impl Default for TemperatureGraphTab {
             window: Window::Min10,
             follow: true,
             show_power: true,
+            export: None,
         }
     }
 }
@@ -121,6 +128,7 @@ fn degrees(value: f64) -> String {
 impl TemperatureGraphTab {
     /// Draw the panel.
     pub fn ui(&mut self, ui: &mut Ui, ctx: &mut AppCtx<'_>) {
+        self.poll_export(ctx);
         let history = &ctx.state.temp_history;
         if history.is_empty() {
             empty(ui, ctx.connected());
@@ -153,7 +161,7 @@ impl TemperatureGraphTab {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = theme::GAP;
-                self.toolbar(ui, connected, has_power, last - first);
+                self.toolbar(ui, history, connected, has_power, last - first);
                 let show_power = self.show_power && has_power;
                 let stats_height = 92.0 + 31.0 * series.len() as f32;
                 let power_height = if show_power { POWER_HEIGHT + 26.0 } else { 0.0 };
@@ -201,11 +209,36 @@ impl TemperatureGraphTab {
     }
 
     /// Title, status and the view controls.
-    fn toolbar(&mut self, ui: &mut Ui, connected: bool, has_power: bool, span: f64) {
+    fn toolbar(
+        &mut self,
+        ui: &mut Ui,
+        history: &VecDeque<TempSample>,
+        connected: bool,
+        has_power: bool,
+        span: f64,
+    ) {
         let p = theme::ui_palette(ui);
         ui.horizontal(|ui| {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
+                let exporting = self.export.is_some();
+                let export = ui.add_enabled(
+                    !exporting,
+                    ActionButton::new(if exporting {
+                        "Exporting…"
+                    } else {
+                        "Export CSV"
+                    })
+                    .icon(icons::DOWNLOAD)
+                    .tooltip("Save the whole history (up to 30 minutes) as a CSV file"),
+                );
+                if export.clicked() {
+                    self.export = Some(Export::start(
+                        ui.ctx(),
+                        data::history_csv(history),
+                        CSV_NAME.to_owned(),
+                    ));
+                }
                 if has_power {
                     ui.add(Toggle::new(&mut self.show_power).label("Power"))
                         .on_hover_text("Show the heater power below the chart");
@@ -253,6 +286,25 @@ impl TemperatureGraphTab {
                 });
             });
         });
+    }
+
+    /// Report a finished export.
+    fn poll_export(&mut self, ctx: &mut AppCtx<'_>) {
+        let Some(outcome) = self.export.as_ref().and_then(Export::poll) else {
+            return;
+        };
+        self.export = None;
+        match outcome {
+            Outcome::Saved(path) => {
+                ctx.toasts
+                    .success("Temperature history exported")
+                    .message(path.display().to_string());
+            }
+            Outcome::Cancelled => {}
+            Outcome::Failed(message) => {
+                ctx.toasts.error("Export failed").message(message);
+            }
+        }
     }
 }
 

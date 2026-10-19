@@ -1,8 +1,9 @@
 //! Pure data behind the temperature graph: heater channels and their
 //! samples from the history, line runs, window statistics, stability,
-//! view ranges and time labels.
+//! view ranges, time labels and CSV export.
 
 use std::collections::VecDeque;
+use std::fmt::Write as _;
 
 use sprint_host::TempSample;
 
@@ -38,6 +39,15 @@ impl Channel {
             Channel::Hotend(i) => format!("Hotend T{i}"),
             Channel::Bed => "Bed".to_owned(),
             Channel::Chamber => "Chamber".to_owned(),
+        }
+    }
+
+    /// Column prefix in the CSV ("T0", "bed", "chamber").
+    fn key(self) -> String {
+        match self {
+            Channel::Hotend(i) => format!("T{i}"),
+            Channel::Bed => "bed".to_owned(),
+            Channel::Chamber => "chamber".to_owned(),
         }
     }
 
@@ -365,6 +375,42 @@ pub(crate) fn nearest(history: &VecDeque<TempSample>, t: f64) -> Option<usize> {
     })
 }
 
+/// The whole history as CSV: a header and one row per sample with the
+/// time, each heater's temperature and target and (where reported) its
+/// power in percent. Missing values are empty cells.
+pub(crate) fn history_csv(history: &VecDeque<TempSample>) -> String {
+    let channels = channels(history);
+    let has_power = |c: Channel| history.iter().any(|s| c.power(s).is_some());
+    let mut out = String::from("time_s");
+    for c in &channels {
+        let key = c.key();
+        let _ = write!(out, ",{key}_temp_c,{key}_target_c");
+        if has_power(*c) {
+            let _ = write!(out, ",{key}_power_pct");
+        }
+    }
+    out.push('\n');
+    let cell = |out: &mut String, v: Option<f32>, decimals: usize| {
+        out.push(',');
+        if let Some(v) = v.filter(|v| v.is_finite()) {
+            let _ = write!(out, "{v:.decimals$}");
+        }
+    };
+    for s in history.iter().filter(|s| s.t.is_finite()) {
+        let _ = write!(out, "{:.1}", s.t);
+        for c in &channels {
+            let reading = c.reading(s);
+            cell(&mut out, reading.map(|r| r.0), 2);
+            cell(&mut out, reading.map(|r| r.1), 1);
+            if has_power(*c) {
+                cell(&mut out, c.power(s).map(|p| p.clamp(0.0, 1.0) * 100.0), 1);
+            }
+        }
+        out.push('\n');
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -582,5 +628,36 @@ mod tests {
         assert_eq!(nearest(&h, 99.0), Some(3));
         assert_eq!(nearest(&h, f64::NAN), None);
         assert_eq!(nearest(&VecDeque::new(), 1.0), None);
+    }
+
+    #[test]
+    fn csv_has_a_column_per_heater() {
+        let mut h = VecDeque::new();
+        h.push_back(TempSample {
+            t: 0.0,
+            hotends: vec![(24.5, 0.0)],
+            bed: Some((22.0, 60.0)),
+            hotend_power: vec![0.0],
+            bed_power: Some(1.0),
+            ..TempSample::default()
+        });
+        h.push_back(TempSample {
+            t: 1.04,
+            hotends: vec![(f32::NAN, 215.0)],
+            bed: None,
+            hotend_power: vec![0.646],
+            bed_power: None,
+            ..TempSample::default()
+        });
+        let csv = history_csv(&h);
+        let lines: Vec<_> = csv.lines().collect();
+        assert_eq!(
+            lines[0],
+            "time_s,T0_temp_c,T0_target_c,T0_power_pct,bed_temp_c,bed_target_c,bed_power_pct"
+        );
+        assert_eq!(lines[1], "0.0,24.50,0.0,0.0,22.00,60.0,100.0");
+        assert_eq!(lines[2], "1.0,,215.0,64.6,,,");
+        assert_eq!(lines.len(), 3);
+        assert_eq!(history_csv(&VecDeque::new()), "time_s\n");
     }
 }
