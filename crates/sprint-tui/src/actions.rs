@@ -242,7 +242,7 @@ pub fn macro_gcode(m: &Macro, args: &[String]) -> Result<String, String> {
         } else if let Ok(index) = key.parse::<usize>() {
             takes_args = true;
             if default.is_none() {
-                needed = needed.max(index + 1);
+                needed = needed.max(index.saturating_add(1));
             }
             match (args.get(index), default) {
                 (Some(arg), _) => out.push_str(arg),
@@ -742,6 +742,9 @@ mod tests {
         let (m, args) = macro_call(&macros, "hea 1 2").expect("prefix");
         assert_eq!((m.name.as_str(), args.len()), ("heat", 2));
         assert!(macro_call(&macros, "nothing here").is_err());
+        // Any placeholder, however large its number, is an error at most.
+        let huge = named("huge", &format!("M117 {{{}}}", usize::MAX));
+        assert!(macro_gcode(&huge, &[]).is_err());
         assert!(macro_call(&macros, "").is_err());
         // Defining replaces by name; removing takes the whole name.
         let mut list = macros.to_vec();
