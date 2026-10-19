@@ -41,8 +41,8 @@ use crate::widgets::{
 };
 
 use dialogs::{
-    Action, Confirm, ConnectDialog, OpenDialog, Outcome, Pending, PromptDialog, ReportSource,
-    ReportView, TempDialog, plain_input,
+    Action, Confirm, ConnectDialog, ObjectRow, ObjectsDialog, OpenDialog, Outcome, Pending,
+    PromptDialog, ReportSource, ReportView, TempDialog, plain_input,
 };
 use view::{PrinterView, TempHistory};
 
@@ -115,6 +115,7 @@ pub(crate) enum Modal {
     Confirm(Confirm),
     Report(ReportView),
     Prompt(PromptDialog),
+    Objects(ObjectsDialog),
 }
 
 /// How [`App::guard`] asks before sending.
@@ -927,6 +928,83 @@ impl App {
         )));
     }
 
+    /// The objects to show: those of the host print (with what is
+    /// excluded and printing) when it has any, else the loaded file's;
+    /// whether a host print runs (exclusion works); the dialog's title.
+    pub(crate) fn object_rows(&self) -> (Vec<ObjectRow>, bool, String) {
+        let job = self
+            .view
+            .job
+            .as_ref()
+            .filter(|j| j.kind == JobKind::HostPrint && !j.objects.is_empty());
+        if let Some(job) = job {
+            let running = job.status.is_active();
+            let rows = job
+                .objects
+                .iter()
+                .map(|name| ObjectRow {
+                    name: name.clone(),
+                    excluded: job.excluded_objects.contains(name),
+                    printing: running && job.current_object.as_ref() == Some(name),
+                })
+                .collect();
+            return (rows, running, format!("Objects · {}", job.name));
+        }
+        let Some(file) = &self.file else {
+            return (Vec::new(), false, "Objects".to_string());
+        };
+        let rows = file
+            .toolpath
+            .objects
+            .iter()
+            .map(|o| ObjectRow {
+                name: o.name.clone(),
+                excluded: false,
+                printing: false,
+            })
+            .collect();
+        (rows, false, format!("Objects · {}", file.name()))
+    }
+
+    /// `o` / `:objects`: the objects dialog, when there are objects.
+    fn open_objects(&mut self) {
+        if self.object_rows().0.is_empty() {
+            self.info(
+                "No objects: the file has no object labels (the slicer's cancel-object \
+                 option adds them)",
+            );
+            return;
+        }
+        self.modal = Some(Modal::Objects(ObjectsDialog::new(0)));
+    }
+
+    /// `:exclude <object>` (or `:include`): stop printing an object of the
+    /// running print, or print it again.
+    fn exclude_object(&mut self, name: &str, exclude: bool) {
+        let found = self.printer.with_state(|s| {
+            let job = actions::excludable_job(s).ok_or_else(|| {
+                "No print is running (objects are excluded while one runs)".to_string()
+            })?;
+            let label = actions::find_object(job, name)?;
+            let already = job.excluded_objects.iter().any(|e| e == label);
+            Ok::<_, String>((label.to_string(), already))
+        });
+        match found {
+            Err(why) => self.error(why),
+            Ok((label, true)) if exclude => self.info(format!("{label} is excluded already")),
+            Ok((label, false)) if !exclude => self.info(format!("{label} is not excluded")),
+            Ok((label, _)) => self.run_action(Action::ToggleObject {
+                name: label,
+                exclude,
+                selected: 0,
+            }),
+        }
+        // A toggle from the palette does not open the dialog.
+        if matches!(self.modal, Some(Modal::Objects(_))) {
+            self.modal = None;
+        }
+    }
+
     /// `:recover [line]`: ask before printing the loaded file again from
     /// the line its failed or cancelled print stopped at (or from
     /// `line`), showing the resume preamble that goes first.
@@ -1382,6 +1460,20 @@ impl App {
                     _ => {}
                 }
             }
+            Action::ToggleObject {
+                name,
+                exclude,
+                selected,
+            } => {
+                if exclude {
+                    self.printer.exclude_object(&name);
+                    self.info(format!("Excluding {name}"));
+                } else {
+                    self.printer.include_object(&name);
+                    self.info(format!("Printing {name} again"));
+                }
+                self.modal = Some(Modal::Objects(ObjectsDialog::new(selected)));
+            }
             Action::ApplySetting(setting) => {
                 self.printer.apply_setting(&setting);
                 self.info(format!(
@@ -1723,6 +1815,10 @@ impl App {
             Modal::Temps(d) => d.handle_key(key),
             Modal::Confirm(d) => d.handle_key(key),
             Modal::Report(d) => d.handle_key(key),
+            Modal::Objects(d) => {
+                let (rows, running, _) = self.object_rows();
+                d.handle_key(key, &rows, running)
+            }
             Modal::Prompt(d) => {
                 let outcome = d.handle_key(key);
                 if outcome == Outcome::Close {
@@ -1806,6 +1902,7 @@ impl App {
             KeyCode::Char('j') => self.enter_jog(),
             KeyCode::Char('t') => self.open_temp_dialog(),
             KeyCode::Char('p') => self.show_hidden_prompt(),
+            KeyCode::Char('o') => self.open_objects(),
             KeyCode::Char('a') => {
                 self.show_auto = !self.show_auto;
                 self.info(if self.show_auto {
@@ -2118,6 +2215,9 @@ impl App {
             },
             Command::Print { pause_at } => self.request_print(&pause_at),
             Command::Recover(line) => self.request_recover(line),
+            Command::Objects => self.open_objects(),
+            Command::Exclude(name) => self.exclude_object(&name, true),
+            Command::Include(name) => self.exclude_object(&name, false),
             Command::Pause => {
                 if self.view.job_active() {
                     self.printer.pause();
@@ -2456,6 +2556,9 @@ impl App {
             | Command::Info
             | Command::Print { .. }
             | Command::Recover(_)
+            | Command::Objects
+            | Command::Exclude(_)
+            | Command::Include(_)
             | Command::Pause
             | Command::Resume
             | Command::Cancel

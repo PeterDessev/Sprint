@@ -610,8 +610,17 @@ fn dialogs_draw_at_any_size() {
             prompt.selected = 8;
             Modal::Prompt(prompt)
         }),
+        Box::new(|| Modal::Objects(dialogs::ObjectsDialog::new(99))),
     ];
     let mut app = printing_app();
+    // Many objects with long names, for the objects dialog.
+    if let Some(job) = app.view.job.as_mut() {
+        job.objects = (0..30)
+            .map(|i| format!("Object {i} {}", "n".repeat(i * 3)))
+            .collect();
+        job.excluded_objects = vec![job.objects[2].clone()];
+        job.current_object = Some(job.objects[3].clone());
+    }
     let sizes = [
         (1, 1),
         (2, 2),
@@ -1853,6 +1862,98 @@ fn a_cancelled_print_is_recovered_from_the_line_it_stopped_at() {
         "{:?}",
         app.toast
     );
+}
+
+/// A plate of two objects labelled with M486, `layers` layers of a few
+/// short moves each.
+fn two_objects(dir: &std::path::Path, layers: usize) -> PathBuf {
+    let mut gcode = String::from("G28\nG90\nM83\nM486 T2\n");
+    for layer in 0..layers {
+        gcode.push_str(&format!("G1 Z{:.1} F600\n", 0.2 * (layer + 1) as f64));
+        for (id, name, x) in [(0, "Cube", 20), (1, "Cylinder", 60)] {
+            gcode.push_str(&format!("M486 S{id} A\"{name}\"\n"));
+            for i in 0..4 {
+                gcode.push_str(&format!("G1 X{} Y20 E0.5 F1200\n", x + (i % 2) * 10));
+            }
+            gcode.push_str("M486 S-1\n");
+        }
+    }
+    let path = dir.join("plate.gcode");
+    std::fs::write(&path, gcode).expect("write plate");
+    path
+}
+
+#[test]
+fn the_objects_dialog_excludes_and_includes_objects() {
+    let scratch = Scratch::new("objects");
+    let mut app = timed_app();
+    let plate = two_objects(&scratch.0, 30);
+    // No file: nothing to show.
+    press(&mut app, KeyCode::Char('o'));
+    assert!(app.modal.is_none());
+    app.open_file(plate.clone());
+    wait_app(&mut app, "the analysis", |a| a.loader.is_none());
+    // Before the print: the file's objects, not to be toggled.
+    press(&mut app, KeyCode::Char('o'));
+    assert!(matches!(app.modal, Some(Modal::Objects(_))));
+    press(&mut app, KeyCode::Char(' '));
+    assert!(
+        app.toast
+            .as_ref()
+            .is_some_and(|t| t.text.contains("excluded while the print runs")),
+        "{:?}",
+        app.toast
+    );
+    press(&mut app, KeyCode::Esc);
+    app.run_action(dialogs::Action::StartPrint(plate, Vec::new()));
+    wait(&mut app, "the print", |s| {
+        s.job.as_ref().is_some_and(|j| j.current_object.is_some())
+    });
+    assert!(app.hints().contains(&("o", "Objects")));
+    press(&mut app, KeyCode::Char('o'));
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Char(' '));
+    wait(&mut app, "the exclusion", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.excluded_objects == ["Cylinder".to_string()])
+    });
+    // The dialog stays, on the same row, and shows it.
+    let Some(Modal::Objects(dialog)) = &app.modal else {
+        panic!("the dialog closed: {:?}", app.toast);
+    };
+    assert_eq!(dialog.selected, 1);
+    let text = screen(&mut app, 120, 40);
+    assert!(text.contains("[x] Cylinder"), "{text}");
+    assert!(text.contains("excluded"), "{text}");
+    crate::snapshot::save(&render(&mut app, 120, 40), "tui-objects-120x40");
+    // Again: printed again.
+    press(&mut app, KeyCode::Enter);
+    wait(&mut app, "the inclusion", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.excluded_objects.is_empty())
+    });
+    press(&mut app, KeyCode::Esc);
+    assert!(app.modal.is_none());
+    // The palette commands do the same, without the dialog.
+    app.run_line("exclude cube");
+    assert!(app.modal.is_none());
+    wait(&mut app, "the palette exclusion", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.excluded_objects == ["Cube".to_string()])
+    });
+    app.run_line("exclude nothing");
+    assert!(
+        app.toast
+            .as_ref()
+            .is_some_and(|t| t.text.contains("no object 'nothing'")),
+        "{:?}",
+        app.toast
+    );
+    app.printer.cancel();
+    wait(&mut app, "the cancel", |s| !s.job_active());
 }
 
 #[test]

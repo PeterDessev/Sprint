@@ -179,6 +179,27 @@ pub static COMMANDS: &[CommandSpec] = &[
         group: Group::Job,
     },
     CommandSpec {
+        name: "objects",
+        aliases: &[],
+        usage: "objects",
+        summary: "The objects of the print (cancel-object labels), which one prints and which are excluded",
+        group: Group::Job,
+    },
+    CommandSpec {
+        name: "exclude",
+        aliases: &[],
+        usage: "exclude <object|number>",
+        summary: "Stop printing an object of the running print (the parts not printed yet)",
+        group: Group::Job,
+    },
+    CommandSpec {
+        name: "include",
+        aliases: &[],
+        usage: "include <object|number>",
+        summary: "Print an excluded object again (the parts not printed yet)",
+        group: Group::Job,
+    },
+    CommandSpec {
         name: "sd",
         aliases: &[],
         usage: "sd ls | print <name> | upload [file] [name] | rm <name>",
@@ -597,6 +618,13 @@ pub enum Command {
     Resume,
     /// `cancel`.
     Cancel,
+    /// `objects`: list the objects of the print.
+    Objects,
+    /// `exclude <object>`: stop printing an object of the running print
+    /// (its name, or its number in the `objects` list).
+    Exclude(String),
+    /// `include <object>`: print an excluded object again.
+    Include(String),
     /// `recover [line]`: print the loaded file again from the line its
     /// last print stopped at, or from this 1-based line.
     Recover(Option<u64>),
@@ -1038,6 +1066,17 @@ fn parse_command(spec: &'static CommandSpec, rest: &str) -> Result<Command, Pars
         "pause" => none(Command::Pause),
         "resume" => none(Command::Resume),
         "cancel" => none(Command::Cancel),
+        "objects" => none(Command::Objects),
+        "exclude" | "include" => {
+            let name = path_arg(rest)
+                .map(|p| p.to_string_lossy().into_owned())
+                .ok_or_else(|| ParseError::usage(spec, "which object?"))?;
+            Ok(if spec.name == "exclude" {
+                Command::Exclude(name)
+            } else {
+                Command::Include(name)
+            })
+        }
         "recover" => {
             at_most(spec, &args, 1)?;
             match arg(0) {
@@ -1596,6 +1635,9 @@ mod tests {
             ("resume", Command::Resume),
             ("cancel", Command::Cancel),
             ("recover", Command::Recover(None)),
+            ("objects", Command::Objects),
+            ("exclude \"Part 2\"", Command::Exclude("Part 2".into())),
+            ("include  Cube_id_0 ", Command::Include("Cube_id_0".into())),
             ("recover 1200", Command::Recover(Some(1200))),
             ("status", Command::Status),
             (

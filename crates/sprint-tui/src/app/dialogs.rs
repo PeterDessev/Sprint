@@ -68,6 +68,13 @@ pub(crate) enum Action {
     Autotune(Heater, f32, u32),
     /// A manual motion command (already checked).
     Motion(crate::actions::Motion),
+    /// Exclude (or include) an object of the running print, then show
+    /// the objects dialog again with row `selected`.
+    ToggleObject {
+        name: String,
+        exclude: bool,
+        selected: usize,
+    },
 }
 
 /// The result of a key in a dialog.
@@ -1009,6 +1016,140 @@ impl Confirm {
         ])
         .centered();
         frame.render_widget(Paragraph::new(row), buttons);
+    }
+}
+
+// ----- objects -----
+
+/// One object in the objects dialog.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ObjectRow {
+    /// The object's label.
+    pub name: String,
+    /// Excluded from the running print.
+    pub excluded: bool,
+    /// The stream is in it now.
+    pub printing: bool,
+}
+
+/// `o` / `:objects`: the objects of the print (cancel-object labels);
+/// while a host print runs, Space or Enter excludes the chosen one or
+/// prints it again.
+pub(crate) struct ObjectsDialog {
+    pub selected: usize,
+}
+
+impl ObjectsDialog {
+    /// A dialog with row `selected` chosen.
+    pub(crate) fn new(selected: usize) -> ObjectsDialog {
+        ObjectsDialog { selected }
+    }
+
+    /// `rows`: the objects now; `running`: a host print runs, so
+    /// exclusion works.
+    pub(crate) fn handle_key(
+        &mut self,
+        key: KeyEvent,
+        rows: &[ObjectRow],
+        running: bool,
+    ) -> Outcome {
+        let n = rows.len();
+        if n > 0 {
+            self.selected = self.selected.min(n - 1);
+        }
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q' | 'o') => Outcome::Close,
+            KeyCode::Up | KeyCode::Char('k') if n > 0 => {
+                self.selected = (self.selected + n - 1) % n;
+                Outcome::Keep
+            }
+            KeyCode::Down | KeyCode::Char('j') if n > 0 => {
+                self.selected = (self.selected + 1) % n;
+                Outcome::Keep
+            }
+            KeyCode::Enter | KeyCode::Char(' ' | 'x') => match rows.get(self.selected) {
+                Some(row) if running => Outcome::Run(Action::ToggleObject {
+                    name: row.name.clone(),
+                    exclude: !row.excluded,
+                    selected: self.selected,
+                }),
+                Some(_) => Outcome::Error("Objects are excluded while the print runs".to_string()),
+                None => Outcome::Keep,
+            },
+            _ => Outcome::Keep,
+        }
+    }
+
+    pub(crate) fn draw(
+        &mut self,
+        frame: &mut Frame,
+        theme: &Theme,
+        title: &str,
+        rows: &[ObjectRow],
+        running: bool,
+    ) {
+        let name_w = rows
+            .iter()
+            .map(|r| r.name.chars().count())
+            .max()
+            .unwrap_or(0)
+            .clamp(12, 48);
+        let width = u16::try_from(name_w + 24).unwrap_or(72).max(54);
+        let wanted = u16::try_from(rows.len()).unwrap_or(u16::MAX);
+        let inner = frame_dialog(frame, theme, title, width, wanted.saturating_add(5), false);
+        let hints: &[(&str, &str)] = if running {
+            &[
+                ("↑↓", "Choose"),
+                ("Space", "Exclude / include"),
+                ("Esc", "Close"),
+            ]
+        } else {
+            &[("↑↓", "Choose"), ("Esc", "Close")]
+        };
+        let body = hints_row(frame, theme, inner, hints);
+        let [list, _, note] = Layout::vertical([
+            Constraint::Fill(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .areas(body);
+        let visible = usize::from(list.height).max(1);
+        if !rows.is_empty() {
+            self.selected = self.selected.min(rows.len() - 1);
+        }
+        let first = self.selected.saturating_sub(visible - 1);
+        let lines: Vec<Line> = rows
+            .iter()
+            .enumerate()
+            .skip(first)
+            .take(visible)
+            .map(|(i, row)| {
+                let mark = if row.excluded { "[x] " } else { "[ ] " };
+                let mut spans = vec![
+                    Span::styled(mark, theme.text()),
+                    Span::styled(
+                        format!("{:<name_w$}", crate::widgets::util::sanitize(&row.name)),
+                        theme.text(),
+                    ),
+                ];
+                if row.excluded {
+                    spans.push(Span::styled("  excluded", theme.warning()));
+                } else if row.printing {
+                    spans.push(Span::styled("  ▶ printing", theme.accent()));
+                }
+                list_row(i == self.selected, theme, spans, list.width)
+            })
+            .collect();
+        frame.render_widget(Paragraph::new(lines).style(theme.surface()), list);
+        let text = if running {
+            "  [x] excluded: not printed from here on"
+        } else {
+            "  Objects are excluded while the print runs"
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(text, theme.dim()))).style(theme.surface()),
+            note,
+        );
     }
 }
 

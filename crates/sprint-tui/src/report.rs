@@ -1165,6 +1165,57 @@ pub fn gcode_help(doc: &GcodeDoc) -> Vec<ReportLine> {
     ]
 }
 
+/// The `objects` list: the objects (cancel-object labels) of the host
+/// print `job` with which one prints and which are excluded, or, without
+/// such a print, the objects of the loaded file (`file_objects`).
+pub fn object_lines(job: Option<&JobInfo>, file_objects: &[String]) -> Vec<ReportLine> {
+    let job = job.filter(|j| j.kind == JobKind::HostPrint && !j.objects.is_empty());
+    let (names, running) = match job {
+        Some(job) => (job.objects.as_slice(), job.status.is_active()),
+        None => (file_objects, false),
+    };
+    if names.is_empty() {
+        return vec![ReportLine::toned(
+            "No objects: the file has no object labels (the slicer's cancel-object or \
+             exclude-object option adds them).",
+            Tone::Dim,
+        )];
+    }
+    let width = names
+        .iter()
+        .map(|n| n.chars().count())
+        .max()
+        .unwrap_or(0)
+        .min(40)
+        + 2;
+    let mut lines: Vec<ReportLine> = names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            let mut line = ReportLine::new()
+                .with(format!("  {:>2}  ", i + 1), Tone::Dim)
+                .with(format!("{:<width$}", sanitize(name)), Tone::Plain);
+            if let Some(job) = job {
+                if job.excluded_objects.contains(name) {
+                    line.push("excluded", Tone::Warn);
+                } else if running && job.current_object.as_ref() == Some(name) {
+                    line.push("printing", Tone::Accent);
+                }
+            }
+            line
+        })
+        .collect();
+    lines.push(ReportLine::toned(
+        if running {
+            "exclude <object|number> skips the parts of one not printed yet; include prints them again"
+        } else {
+            "exclude and include work while the print runs"
+        },
+        Tone::Dim,
+    ));
+    lines
+}
+
 /// "Configuration file: <path>", under the lists of what is saved in it
 /// (profiles, macros), so the user knows which file the edits go to
 /// (`SPRINT_CONFIG` may name another one).
@@ -1718,6 +1769,29 @@ mod tests {
         assert!(text.contains("Total time    1d 6h 00m"), "{text}");
         assert!(text.contains("Round trip"), "{text}");
         assert!(joined(&stats_lines(None, &LinkStats::default())).contains("not reported"));
+    }
+
+    #[test]
+    fn objects_are_listed_with_what_is_excluded_and_printing() {
+        let mut job = JobInfo::new(JobKind::HostPrint, "plate.gcode", 10, 100);
+        job.status = JobStatus::Printing;
+        job.objects = vec!["Cube".into(), "Cylinder".into()];
+        job.excluded_objects = vec!["Cylinder".into()];
+        job.current_object = Some("Cube".into());
+        let text = joined(&object_lines(Some(&job), &[]));
+        assert!(text.contains("   1  Cube      printing"), "{text}");
+        assert!(text.contains("   2  Cylinder  excluded"), "{text}");
+        assert!(text.contains("exclude <object|number>"), "{text}");
+        // Finished: nothing prints any more.
+        job.status = JobStatus::Completed;
+        let text = joined(&object_lines(Some(&job), &[]));
+        assert!(!text.contains("printing"), "{text}");
+        assert!(text.contains("work while the print runs"), "{text}");
+        // No print: the loaded file's objects.
+        let text = joined(&object_lines(None, &["Vase".to_string()]));
+        assert!(text.contains("   1  Vase"), "{text}");
+        let text = joined(&object_lines(None, &[]));
+        assert!(text.starts_with("No objects"), "{text}");
     }
 
     #[test]

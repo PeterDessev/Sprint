@@ -490,6 +490,58 @@ pub fn pause_points(
     Ok(points)
 }
 
+/// The running host print whose objects can be excluded, if one runs.
+pub fn excludable_job(state: &PrinterState) -> Option<&JobInfo> {
+    state
+        .job
+        .as_ref()
+        .filter(|j| j.kind == JobKind::HostPrint && j.status.is_active())
+}
+
+/// The label of the object of `job` that `name` stands for: its name
+/// (exact, then without regard to case, then a unique prefix), or its
+/// number in the `objects` list (1 is the first). Errors are messages for
+/// the user.
+pub fn find_object<'a>(job: &'a JobInfo, name: &str) -> Result<&'a str, String> {
+    let name = name.trim();
+    let objects = &job.objects;
+    if objects.is_empty() {
+        return Err(format!(
+            "{} has no object labels (the slicer's cancel-object option adds them)",
+            job.name
+        ));
+    }
+    if let Some(found) = objects.iter().find(|o| o.as_str() == name) {
+        return Ok(found);
+    }
+    if let Some(found) = objects.iter().find(|o| o.eq_ignore_ascii_case(name)) {
+        return Ok(found);
+    }
+    if let Some(found) = name
+        .parse::<usize>()
+        .ok()
+        .and_then(|n| n.checked_sub(1))
+        .and_then(|i| objects.get(i))
+    {
+        return Ok(found);
+    }
+    let lower = name.to_lowercase();
+    let matches: Vec<&String> = objects
+        .iter()
+        .filter(|o| !lower.is_empty() && o.to_lowercase().starts_with(&lower))
+        .collect();
+    match matches.as_slice() {
+        [one] => Ok(one),
+        [] => Err(format!(
+            "{} has no object '{name}' (objects lists them)",
+            job.name
+        )),
+        _ => Err(format!(
+            "'{name}' matches several objects (objects lists them)"
+        )),
+    }
+}
+
 /// How to print a file again from a line: the line and the resume
 /// preamble that comes first.
 #[derive(Clone, Debug, PartialEq)]
@@ -1360,6 +1412,49 @@ mod tests {
             &sprint_host::sprint_gcode::AnalyzeOptions::default(),
         );
         LoadedFile::new(path, file, toolpath, Default::default())
+    }
+
+    #[test]
+    fn objects_are_found_by_name_prefix_or_number() {
+        let mut job = JobInfo::new(JobKind::HostPrint, "plate.gcode", 10, 100);
+        let err = find_object(&job, "x").expect_err("no labels");
+        assert!(err.contains("plate.gcode has no object labels"), "{err}");
+        job.objects = vec![
+            "Cube".into(),
+            "Cylinder".into(),
+            "cube copy".into(),
+            "2".into(),
+        ];
+        assert_eq!(find_object(&job, " Cube "), Ok("Cube"));
+        assert_eq!(find_object(&job, "cylinder"), Ok("Cylinder"));
+        assert_eq!(find_object(&job, "cyl"), Ok("Cylinder"));
+        // A name that is a number wins over the position.
+        assert_eq!(find_object(&job, "2"), Ok("2"));
+        assert_eq!(find_object(&job, "3"), Ok("cube copy"));
+        assert!(
+            find_object(&job, "cu")
+                .unwrap_err()
+                .contains("several objects")
+        );
+        assert!(
+            find_object(&job, "sphere")
+                .unwrap_err()
+                .contains("no object 'sphere'")
+        );
+        assert!(find_object(&job, "9").is_err());
+        // Only a running host print can have objects excluded.
+        let mut state = PrinterState {
+            job: Some(job.clone()),
+            ..PrinterState::default()
+        };
+        assert!(excludable_job(&state).is_some());
+        job.status = JobStatus::Completed;
+        state.job = Some(job.clone());
+        assert!(excludable_job(&state).is_none());
+        job.status = JobStatus::Printing;
+        job.kind = JobKind::SdPrint;
+        state.job = Some(job);
+        assert!(excludable_job(&state).is_none());
     }
 
     #[test]

@@ -1711,3 +1711,72 @@ fn recover_prints_a_cancelled_file_again_from_where_it_stopped() {
     shell.printer.cancel();
     wait_for(&shell, "the cancel", |s| !s.job_active());
 }
+
+/// A plate of two objects labelled with M486, `layers` layers of a few
+/// short moves each.
+fn two_objects(dir: &std::path::Path, layers: usize) -> PathBuf {
+    let mut gcode = String::from("G28\nG90\nM83\nM486 T2\n");
+    for layer in 0..layers {
+        gcode.push_str(&format!("G1 Z{:.1} F600\n", 0.2 * (layer + 1) as f64));
+        for (id, name, x) in [(0, "Cube", 20), (1, "Cylinder", 60)] {
+            gcode.push_str(&format!("M486 S{id} A\"{name}\"\n"));
+            for i in 0..4 {
+                gcode.push_str(&format!("G1 X{} Y20 E0.5 F1200\n", x + (i % 2) * 10));
+            }
+            gcode.push_str("M486 S-1\n");
+        }
+    }
+    let path = dir.join("plate.gcode");
+    std::fs::write(&path, gcode).expect("write plate");
+    path
+}
+
+#[test]
+fn objects_of_a_print_are_listed_excluded_and_included() {
+    let scratch = Scratch::new("objects");
+    let plate = two_objects(&scratch.0, 30);
+    let (mut shell, buffer) = connected_timed();
+    shell.load(&plate);
+    buffer.clear();
+    // Before printing: the file's objects; nothing to exclude yet.
+    script(&mut shell, &["objects", "exclude cube"]);
+    let text = buffer.text();
+    assert!(text.contains("   1  Cube"), "{text}");
+    assert!(text.contains("   2  Cylinder"), "{text}");
+    assert!(text.contains("No print is running"), "{text}");
+    let mut input = Script::new(["print"], false);
+    shell.run_lines_until_eof_without_leaving(&mut input);
+    wait_for(&shell, "the print", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.current_object.is_some() && j.objects.len() == 2)
+    });
+    buffer.clear();
+    let mut input = Script::new(
+        ["exclude 2", "exclude cylinder", "objects", "exclude sphere"],
+        true,
+    );
+    shell.run_lines_until_eof_without_leaving(&mut input);
+    shell.echo.settle();
+    let text = buffer.text();
+    assert!(text.contains("Excluded \"Cylinder\""), "{text}");
+    assert!(text.contains("Cylinder is excluded already"), "{text}");
+    assert!(text.contains("   2  Cylinder  excluded"), "{text}");
+    assert!(text.contains("no object 'sphere'"), "{text}");
+    assert_eq!(
+        shell
+            .printer
+            .with_state(|s| s.job.as_ref().map(|j| j.excluded_objects.clone())),
+        Some(vec!["Cylinder".to_string()])
+    );
+    // Excluding the last one says so; include prints one again.
+    buffer.clear();
+    let mut input = Script::new(["exclude cube", "include cube"], true);
+    shell.run_lines_until_eof_without_leaving(&mut input);
+    shell.echo.settle();
+    let text = buffer.text();
+    assert!(text.contains("Every object is excluded now"), "{text}");
+    assert!(text.contains("Printing \"Cube\" again"), "{text}");
+    shell.printer.cancel();
+    wait_for(&shell, "the cancel", |s| !s.job_active());
+}

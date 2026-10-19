@@ -662,6 +662,15 @@ impl Shell {
             },
             Command::Print { pause_at } => self.print(&pause_at),
             Command::Recover(line) => self.recover(line, input),
+            Command::Objects => {
+                let file_objects = file_object_names(self.file.as_ref());
+                let lines = self
+                    .printer
+                    .with_state(|s| report::object_lines(s.job.as_ref(), &file_objects));
+                self.out.lines(&lines);
+            }
+            Command::Exclude(name) => self.exclude_object(&name, true),
+            Command::Include(name) => self.exclude_object(&name, false),
             Command::Pause => {
                 if self.job_active() {
                     self.printer.pause();
@@ -1209,6 +1218,40 @@ impl Shell {
         }
     }
 
+    /// `exclude <object>` (or `include`): stop printing an object of the
+    /// running print, or print it again; the printer's console says it
+    /// took effect.
+    fn exclude_object(&self, name: &str, exclude: bool) {
+        let found = self.printer.with_state(|s| {
+            let job = actions::excludable_job(s).ok_or_else(|| {
+                "No print is running (objects are excluded while one runs)".to_string()
+            })?;
+            let label = actions::find_object(job, name)?;
+            let already = job.excluded_objects.iter().any(|e| e == label);
+            let left = job.objects.len() - job.excluded_objects.len();
+            Ok::<_, String>((label.to_string(), already, left))
+        });
+        match found {
+            Err(why) => self.out.error(why),
+            Ok((label, true, _)) if exclude => self.out.dim(format!("{label} is excluded already")),
+            Ok((label, false, _)) if !exclude => self.out.dim(format!("{label} is not excluded")),
+            Ok((label, _, left)) => {
+                if exclude {
+                    self.printer.exclude_object(&label);
+                    if left == 1 {
+                        self.out.warn(
+                            "Every object is excluded now: the print goes on without them \
+                             (cancel ends it)",
+                        );
+                    }
+                } else {
+                    self.printer.include_object(&label);
+                }
+                self.echo.settle();
+            }
+        }
+    }
+
     /// `recover [line]`: print the loaded file again from the line its
     /// failed or cancelled print stopped at (or from `line`), after the
     /// resume preamble, which is shown first and asked about on a
@@ -1643,6 +1686,9 @@ impl Shell {
             | Command::Info
             | Command::Print { .. }
             | Command::Recover(_)
+            | Command::Objects
+            | Command::Exclude(_)
+            | Command::Include(_)
             | Command::Pause
             | Command::Resume
             | Command::Cancel
@@ -1828,6 +1874,12 @@ impl Shell {
         });
         self.echo.settle();
     }
+}
+
+/// The object labels of the loaded file, for `objects` before a print.
+fn file_object_names(file: Option<&LoadedFile>) -> Vec<String> {
+    file.map(|f| f.toolpath.objects.iter().map(|o| o.name.clone()).collect())
+        .unwrap_or_default()
 }
 
 /// Whether the job is paused at a `print --pause-at-layer` point: fewer

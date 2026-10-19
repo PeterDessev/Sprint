@@ -853,6 +853,9 @@ impl App {
                     if self.view.job_context() == JobContext::Paused {
                         hints.push(("j", "Jog"));
                     }
+                    if self.object_rows().1 {
+                        hints.push(("o", "Objects"));
+                    }
                     hints.extend([
                         (":", "Command"),
                         ("i", "G-code"),
@@ -997,6 +1000,7 @@ impl App {
 
     fn draw_modal(&mut self, frame: &mut Frame) {
         let theme = self.theme.clone();
+        let objects = matches!(self.modal, Some(Modal::Objects(_))).then(|| self.object_rows());
         let Some(modal) = &mut self.modal else {
             return;
         };
@@ -1017,6 +1021,10 @@ impl App {
             Modal::Confirm(d) => d.draw(frame, &theme),
             Modal::Report(d) => d.draw(frame, &theme),
             Modal::Prompt(d) => d.draw(frame, &theme),
+            Modal::Objects(d) => {
+                let (rows, running, title) = objects.unwrap_or_default();
+                d.draw(frame, &theme, &title, &rows, running);
+            }
         }
     }
 }
@@ -1088,6 +1096,7 @@ pub(crate) fn help_sections() -> Vec<HelpSection<'static>> {
                 ),
                 ("t", "Temperatures and presets"),
                 ("p", "The printer's question again (after Esc hid it)"),
+                ("o", "Objects of the print: exclude one, or print it again"),
             ],
         ),
         HelpSection::new(
