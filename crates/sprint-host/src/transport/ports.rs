@@ -52,7 +52,10 @@ pub(crate) fn map_ports(ports: Vec<SerialPortInfo>) -> Vec<PortInfo> {
             .cmp(&a.likely_printer)
             .then_with(|| natural_cmp(&a.name, &b.name))
     });
-    out.dedup_by(|a, b| a.name == b.name);
+    // The same port can be listed twice (e.g. once with USB details);
+    // keep the first, most informative entry.
+    let mut seen = std::collections::HashSet::new();
+    out.retain(|p| seen.insert(p.name.clone()));
     out
 }
 
@@ -185,6 +188,23 @@ mod tests {
         assert_eq!(out[2].description, "PCI serial port");
         assert_eq!(out[3].description, "Bluetooth serial port");
         assert_eq!(out[4].description, "Some Mouse Thing");
+    }
+
+    #[test]
+    fn a_port_listed_twice_appears_once() {
+        // Sorting puts the USB entry first; the plain one is not adjacent.
+        let ports = vec![
+            SerialPortInfo {
+                port_name: "COM5".into(),
+                port_type: SerialPortType::Unknown,
+            },
+            usb("COM7", 0x046D, None),
+            usb("COM5", 0x1A86, None),
+        ];
+        let out = map_ports(ports);
+        let names: Vec<&str> = out.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["COM5", "COM7"]);
+        assert!(out[0].likely_printer);
     }
 
     #[test]
