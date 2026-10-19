@@ -371,7 +371,7 @@ impl Macros {
         if let Some(index) = run
             && let Some(m) = ctx.config.macros.get(index)
         {
-            if m.confirm || job_active {
+            if m.confirm || job_active || !dangerous_commands(&m.gcode).is_empty() {
                 self.pending_run = Some(m.clone());
             } else {
                 run_macro(ctx, m);
@@ -401,17 +401,57 @@ impl Macros {
     /// editor). Called once per frame after the sidebar.
     pub(super) fn dialogs(&mut self, ui: &Ui, ctx: &mut AppCtx<'_>) {
         let egui_ctx = ui.ctx().clone();
+        // The editor first: a confirmation it opens draws above it.
+        if let Some(editor) = &mut self.editor {
+            match editor_dialog(&egui_ctx, editor, ctx) {
+                EditorOutcome::Open => {}
+                EditorOutcome::TestSend => {
+                    if dangerous_commands(&editor.draft.gcode).is_empty() {
+                        run_macro(ctx, &editor.draft);
+                        let name = editor.draft.name.trim();
+                        let shown = if name.is_empty() { "macro" } else { name };
+                        ctx.toasts.info(format!("Sent {shown}"));
+                    } else {
+                        self.pending_run = Some(editor.draft.clone());
+                    }
+                }
+                EditorOutcome::Cancel => self.editor = None,
+                EditorOutcome::Save => {
+                    let mut saved = editor.draft.clone();
+                    saved.name = saved.name.trim().to_owned();
+                    match editor.index {
+                        Some(i) if i < ctx.config.macros.len() => ctx.config.macros[i] = saved,
+                        _ => ctx.config.macros.push(saved),
+                    }
+                    *ctx.config_dirty = true;
+                    self.editor = None;
+                }
+            }
+        }
         if let Some(m) = &self.pending_run {
-            let title = format!("Run “{}”?", m.name);
-            let message = if ctx.job_active() {
-                "A job is running: these commands are sent between the print's lines."
-            } else {
-                "This macro asks for confirmation before it runs."
-            };
+            let title = format!("Run “{}”?", m.name.trim());
+            let dangerous = dangerous_commands(&m.gcode);
+            let mut reasons = Vec::new();
+            if ctx.job_active() {
+                reasons.push(
+                    "A job is running: these commands are sent between the print's lines."
+                        .to_owned(),
+                );
+            }
+            if !dangerous.is_empty() {
+                reasons.push(format!(
+                    "It sends {}, which the G-code reference marks as dangerous.",
+                    dangerous.join(", ")
+                ));
+            }
+            if reasons.is_empty() {
+                reasons.push("This macro asks for confirmation before it runs.".to_owned());
+            }
+            let message = reasons.join(" ");
             let details = preview(&m.gcode);
-            let danger = ctx.job_active() || !dangerous_commands(&m.gcode).is_empty();
+            let danger = ctx.job_active() || !dangerous.is_empty();
             let answer = ConfirmDialog::new("sprint-controls-macro-run", &title)
-                .message(message)
+                .message(&message)
                 .details(&details)
                 .confirm_label("Run")
                 .icon(icons::MACRO)
@@ -448,22 +488,6 @@ impl Macros {
                         Some(DialogResult::Cancelled) => self.pending_delete = None,
                         None => {}
                     }
-                }
-            }
-        }
-        if let Some(editor) = &mut self.editor {
-            match editor_dialog(&egui_ctx, editor, ctx) {
-                EditorOutcome::Open => {}
-                EditorOutcome::Cancel => self.editor = None,
-                EditorOutcome::Save => {
-                    let mut saved = editor.draft.clone();
-                    saved.name = saved.name.trim().to_owned();
-                    match editor.index {
-                        Some(i) if i < ctx.config.macros.len() => ctx.config.macros[i] = saved,
-                        _ => ctx.config.macros.push(saved),
-                    }
-                    *ctx.config_dirty = true;
-                    self.editor = None;
                 }
             }
         }
@@ -560,6 +584,8 @@ fn macro_tile(ui: &mut Ui, m: &Macro, width: f32, runnable: bool, index: usize) 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum EditorOutcome {
     Open,
+    /// "Test send" was clicked (the editor stays open).
+    TestSend,
     Cancel,
     Save,
 }
@@ -652,7 +678,7 @@ fn editor_dialog(ctx: &egui::Context, editor: &mut Editor, app: &mut AppCtx<'_>)
                     ui,
                     icons::WARNING,
                     &format!(
-                        "Contains {}: consider asking before it runs.",
+                        "Contains {}: Sprint asks before sending it.",
                         dangerous.join(", ")
                     ),
                     theme::Tone::Warning,
@@ -677,13 +703,7 @@ fn editor_dialog(ctx: &egui::Context, editor: &mut Editor, app: &mut AppCtx<'_>)
                     test.on_disabled_hover_text("Type some G-code first")
                 };
                 if test.clicked() {
-                    run_macro(app, &editor.draft);
-                    let shown = if name_ok {
-                        editor.draft.name.trim().to_owned()
-                    } else {
-                        "macro".to_owned()
-                    };
-                    app.toasts.info(format!("Sent {shown}"));
+                    outcome = EditorOutcome::TestSend;
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let save = ui.add_enabled(

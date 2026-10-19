@@ -272,6 +272,44 @@ fn test_send_reaches_the_printer_without_saving() {
     assert!(!h.state().dirty);
 }
 
+/// G-code the reference marks as dangerous (M502 factory reset, M112, ...)
+/// is never sent without a question, whether the macro asks or not, and
+/// also not from the editor's test send.
+#[test]
+fn dangerous_macros_always_ask_first() {
+    let mut rig = Rig::simulator();
+    rig.config.macros.push(Macro {
+        name: "Factory".into(),
+        gcode: "M502\nM503".into(),
+        color: None,
+        confirm: false,
+    });
+    let mut h = harness(rig);
+    let printer = h.state().printer.clone();
+    click(&mut h, "Factory");
+    assert!(h.query(by_label("Run “Factory”?")).is_some(), "no question");
+    assert!(h.query(by_label_contains("It sends M502")).is_some());
+    click(&mut h, "Cancel");
+    wait_idle(&printer);
+    assert!(received(&printer).is_empty(), "{:?}", received(&printer));
+    // The editor's test send asks too, above the editor.
+    new_macro(&mut h, "Reset", "M502");
+    assert!(
+        h.query(by_label_contains("Sprint asks before sending it"))
+            .is_some()
+    );
+    h.get(by_label("Test send")).click();
+    settle(&mut h);
+    assert!(h.query(by_label("Run “Reset”?")).is_some(), "no question");
+    click(&mut h, "Run");
+    wait_for_commands(&printer, &["M502"]);
+    // The editor is still open with the draft.
+    assert!(h.query(by_label("Save")).is_some());
+    click(&mut h, "Cancel");
+    assert!(h.query(by_label("Save")).is_none());
+    assert!(!h.state().dirty);
+}
+
 #[test]
 fn macros_ask_first_while_a_job_runs() {
     let mut rig = Rig::simulator();
