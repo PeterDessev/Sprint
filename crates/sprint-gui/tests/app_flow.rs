@@ -510,3 +510,59 @@ fn closing_during_a_print_asks_first() {
             .is_some_and(|j| j.status.is_active())
     );
 }
+
+/// An in-memory eframe store.
+#[derive(Default)]
+struct MemoryStore(std::collections::HashMap<String, String>);
+
+impl eframe::Storage for MemoryStore {
+    fn get_string(&self, key: &str) -> Option<String> {
+        self.0.get(key).cloned()
+    }
+    fn set_string(&mut self, key: &str, value: String) {
+        self.0.insert(key.to_owned(), value);
+    }
+    fn remove_string(&mut self, key: &str) {
+        self.0.remove(key);
+    }
+    fn flush(&mut self) {}
+}
+
+#[test]
+fn ui_preferences_survive_a_restart() {
+    let mut h = app(AppOptions::headless(), WINDOW);
+    h.state_mut().push_action(AppAction::ShowTab(Tab::Gcode));
+    h.state_mut()
+        .push_action(AppAction::SetTheme(sprint_gui::theme::Theme::Light));
+    h.state_mut().set_side_panels(false, true);
+    // Typed commands are remembered even when nothing is connected.
+    h.state_mut().console_mut().set_input("M105");
+    h.state_mut().console_mut().focus_input();
+    settle(&mut h);
+    h.key_press(Key::Enter);
+    settle(&mut h);
+    let mut store = MemoryStore::default();
+    eframe::App::save(h.state_mut(), &mut store);
+    drop(h);
+
+    let store: &'static MemoryStore = Box::leak(Box::new(store));
+    let mut restored = Harness::builder()
+        .with_size(WINDOW)
+        .build_eframe(move |cc| {
+            cc.storage = Some(store);
+            SprintApp::new(
+                cc,
+                AppOptions {
+                    restore_prefs: true,
+                    ..AppOptions::headless()
+                },
+            )
+        });
+    restored.run_steps(3);
+    let prefs = restored.state().ui_prefs();
+    assert_eq!(restored.state().tab(), Tab::Gcode);
+    assert_eq!(prefs.theme, sprint_gui::theme::Theme::Light);
+    assert!(!prefs.show_sidebar);
+    assert_eq!(prefs.history, ["M105"]);
+    assert_eq!(restored.state().console().history(), ["M105"]);
+}
