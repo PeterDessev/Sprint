@@ -1207,6 +1207,47 @@ fn a_click_below_a_single_layer_lowers_the_bottom_handle() {
     assert!(lo < 50, "the bottom moved down: {lo}");
 }
 
+#[test]
+fn the_page_tabs_keep_off_the_side_panels() {
+    let mut h = app(sim_options(), WINDOW);
+    connect(&mut h);
+    // The central area between the controls (300 wide) and the console
+    // (360 wide), below the tab strip.
+    let (left, right) = (300.0, WINDOW.x - 360.0);
+    for tab in [
+        Tab::Temperature,
+        Tab::Printer,
+        Tab::Tuning,
+        Tab::Calibration,
+        Tab::BedMesh,
+        Tab::SdCard,
+    ] {
+        h.state_mut().push_action(AppAction::ShowTab(tab));
+        settle(&mut h);
+        let mut checked = 0;
+        for node in h.root().children_recursive() {
+            let Some(b) = node.accesskit_node().bounding_box() else {
+                continue;
+            };
+            let r = egui::Rect::from_min_max(
+                egui::pos2(b.x0 as f32, b.y0 as f32),
+                egui::pos2(b.x1 as f32, b.y1 as f32),
+            );
+            let inside = r.center().x > left && r.center().x < right && r.top() > 125.0;
+            if !inside || r.bottom() > WINDOW.y - 95.0 || r.width() < 1.0 {
+                continue;
+            }
+            checked += 1;
+            let label = node.accesskit_node().label().unwrap_or_default();
+            assert!(
+                r.left() >= left + 8.0 && r.right() <= right - 8.0,
+                "{tab:?}: {label:?} {r:?} touches a side panel"
+            );
+        }
+        assert!(checked > 3, "{tab:?}: {checked} widgets");
+    }
+}
+
 /// The rectangle of the toast "Something happened" (the whole card, not
 /// its title).
 fn toast_rect(h: &Harness<'_, SprintApp>) -> egui::Rect {

@@ -66,6 +66,14 @@ const TAB_PAD: f32 = 12.0;
 const ICON_TAB_PAD: f32 = 9.0;
 /// Width of the panel toggles at the right end of the tab strip.
 const TOGGLES_W: f32 = 64.0;
+/// Margin around the page tabs (Temperature, Printer, Tuning, Calibration,
+/// Bed mesh, SD card).
+const PAGE_MARGIN: Margin = Margin {
+    left: 14,
+    right: 14,
+    top: 10,
+    bottom: 8,
+};
 
 /// How the app starts (see [`SprintApp::new`]).
 #[derive(Clone, Debug)]
@@ -1635,12 +1643,23 @@ impl SprintApp {
                 self.panels.viewer.ui(ui, &mut c, extras);
             }
             Tab::Gcode => self.panels.gcode.ui(ui, &mut c),
-            Tab::Temperature => self.panels.temperature.ui(ui, &mut c),
-            Tab::Printer => self.panels.printer_info.ui(ui, &mut c),
-            Tab::Tuning => self.panels.tuning.ui(ui, &mut c),
-            Tab::Calibration => self.panels.calibration.ui(ui, &mut c),
-            Tab::BedMesh => self.panels.bed_mesh.ui(ui, &mut c),
-            Tab::SdCard => self.panels.sd_card.ui(ui, &mut c),
+            // The page tabs draw edge to edge: a margin keeps their cards
+            // and header buttons off the side panels' borders (the 3D view
+            // and the G-code pad their own toolbars).
+            tab => {
+                Frame::new().inner_margin(PAGE_MARGIN).show(ui, |ui| {
+                    ui.set_min_size(ui.available_size());
+                    match tab {
+                        Tab::Temperature => self.panels.temperature.ui(ui, &mut c),
+                        Tab::Printer => self.panels.printer_info.ui(ui, &mut c),
+                        Tab::Tuning => self.panels.tuning.ui(ui, &mut c),
+                        Tab::Calibration => self.panels.calibration.ui(ui, &mut c),
+                        Tab::BedMesh => self.panels.bed_mesh.ui(ui, &mut c),
+                        Tab::SdCard => self.panels.sd_card.ui(ui, &mut c),
+                        Tab::View3D | Tab::Gcode => {}
+                    }
+                });
+            }
         }
     }
 
