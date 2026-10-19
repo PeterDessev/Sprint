@@ -965,6 +965,91 @@ fn a_click_below_a_single_layer_lowers_the_bottom_handle() {
     assert!(lo < 50, "the bottom moved down: {lo}");
 }
 
+// A real pointer click (press and release) at `pos`.
+fn click_at(h: &mut Harness<'_, SprintApp>, pos: egui::Pos2) {
+    h.hover_at(pos);
+    h.step();
+    h.drag_at(pos);
+    h.step();
+    h.drop_at(pos);
+    h.step();
+}
+
+/// The jog moves (G91 / G1 / G90) the printer received.
+fn jogs_received(app: &SprintApp) -> Vec<String> {
+    received(app)
+        .into_iter()
+        .filter(|c| c.starts_with("G1 ") || c == "G91")
+        .collect()
+}
+
+#[test]
+fn keyboard_jog_leaves_the_layer_keys_to_the_3d_view() {
+    let options = with_file(sim_options(), sample("calibration-cube.gcode"));
+    let mut h = app(options, egui::vec2(1440.0, 1200.0));
+    expect(&mut h, "the cube to be analyzed", analyzed);
+    if h.state().viewer_tab().viewer().is_none() {
+        eprintln!("no GPU viewer on this machine: not tested");
+        return;
+    }
+    connect(&mut h);
+    let control = h.state().printer().sim_control().expect("simulator");
+    // Wait for the sidebar to stop changing (firmware and settings shown).
+    expect(&mut h, "the settings", |app| {
+        app.state().settings_loaded && analyzed(app)
+    });
+    settle(&mut h);
+    // Keyboard jog on, by a click on its toggle: the keys jog.
+    let toggle = h.get_by_label("Keyboard jog").rect().center();
+    click_at(&mut h, toggle);
+    settle(&mut h);
+    assert!(
+        h.query_by_label_contains("PgUp/PgDn Z").is_some(),
+        "keyboard jog is on"
+    );
+    h.key_press(Key::ArrowDown);
+    expect(&mut h, "the keyboard jog", |app| {
+        jogs_received(app).iter().any(|c| c == "G1 Y-1 F3000")
+    });
+    // Shift never makes a move down ten times as far.
+    control.clear_received();
+    h.key_press_modifiers(Modifiers::SHIFT, Key::PageDown);
+    expect(&mut h, "the Z jog", |app| {
+        jogs_received(app).iter().any(|c| c.starts_with("G1 Z"))
+    });
+    assert!(
+        jogs_received(h.state()).contains(&"G1 Z-1 F600".to_owned()),
+        "{:?}",
+        jogs_received(h.state())
+    );
+    // A click into the 3D view (between the legend and the file card,
+    // below the part): the layer keys move the layers, not the printer.
+    h.state_mut().viewer_tab_mut().set_layer_range(20, 60);
+    settle(&mut h);
+    let view = egui::pos2(660.0, 980.0);
+    click_at(&mut h, view);
+    settle(&mut h);
+    control.clear_received();
+    h.key_press(Key::ArrowDown);
+    settle(&mut h);
+    assert_eq!(h.state().viewer_tab().layer_range(), Some((20, 59)));
+    h.key_press_modifiers(Modifiers::SHIFT, Key::PageDown);
+    settle(&mut h);
+    assert_eq!(h.state().viewer_tab().layer_range(), Some((10, 59)));
+    // Back in the controls, but with the pointer over the view: the view
+    // still has the keys.
+    // (On the sidebar's margin, beside the toggle.)
+    click_at(&mut h, egui::pos2(4.0, toggle.y));
+    h.hover_at(view);
+    settle(&mut h);
+    h.key_press(Key::ArrowUp);
+    settle(&mut h);
+    assert_eq!(h.state().viewer_tab().layer_range(), Some((10, 60)));
+    std::thread::sleep(Duration::from_millis(200));
+    settle(&mut h);
+    assert_eq!(jogs_received(h.state()), Vec::<String>::new());
+}
+
 #[test]
 fn the_menu_bar_runs_commands() {
     let mut h = app(AppOptions::headless(), WINDOW);

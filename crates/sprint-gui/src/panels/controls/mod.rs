@@ -46,9 +46,18 @@ pub struct ControlsSidebar {
     extruder: extruder::Extruder,
     tuning: tuning::Tuning,
     macros: macros::Macros,
+    keys_elsewhere: bool,
 }
 
 impl ControlsSidebar {
+    /// Whether the window gives the arrow and page keys to another part of
+    /// it (the shell decides, from where the user clicked and points):
+    /// keyboard jogging then leaves them alone. Off by default, so the
+    /// sidebar on its own jogs whenever keyboard jogging is on.
+    pub fn set_keys_elsewhere(&mut self, elsewhere: bool) {
+        self.keys_elsewhere = elsewhere;
+    }
+
     /// Draw the panel (it scrolls vertically by itself).
     pub fn ui(&mut self, ui: &mut Ui, ctx: &mut AppCtx<'_>) {
         egui::ScrollArea::vertical()
@@ -68,7 +77,7 @@ impl ControlsSidebar {
                     );
                 }
                 self.temperatures.show(ui, ctx);
-                self.motion.show(ui, ctx);
+                self.motion.show(ui, ctx, self.keys_elsewhere);
                 self.extruder.show(ui, ctx);
                 self.tuning.show(ui, ctx);
                 self.macros.show(ui, ctx);

@@ -705,6 +705,11 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("Home / End", "First / last layer"),
     ("Shift + layer keys", "Move the lower layer handle"),
     (
+        "Arrows / PgUp, PgDn",
+        "Keyboard jog X/Y / Z, once on (after a click in the controls)",
+    ),
+    ("Shift + jog keys", "Jog ten times as far (never down)"),
+    (
         "Enter / Shift+Enter",
         "Console: send / new line; Find: next / previous",
     ),

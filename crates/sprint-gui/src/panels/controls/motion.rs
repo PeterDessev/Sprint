@@ -24,7 +24,9 @@ const DEFAULT_XY_FEED: f32 = 3000.0;
 const DEFAULT_Z_FEED: f32 = 600.0;
 /// Keyboard jog step sizes (mm).
 const KEY_STEPS: [f32; 3] = [0.1, 1.0, 10.0];
-/// The largest keyboard step (Shift × the biggest step).
+/// The largest keyboard step (Shift × the biggest step). Z down is never
+/// multiplied: one key press must not drive the nozzle 100 mm down into
+/// the bed or the part.
 const MAX_KEY_STEP: f32 = 100.0;
 /// Absolute moves never travel in XY closer to the bed than this (mm).
 pub(super) const SAFE_TRAVEL_Z: f32 = 5.0;
@@ -43,6 +45,9 @@ pub(super) struct Motion {
     /// The card was open last frame: keyboard jogging only works while
     /// its controls are in view.
     open: bool,
+    /// The keys went to another part of the window last frame (see
+    /// [`Motion::show`]), for the hint under the toggle.
+    keys_elsewhere: bool,
 }
 
 impl Default for Motion {
@@ -53,6 +58,7 @@ impl Default for Motion {
             target: [0.0, 0.0, 10.0],
             seeded: false,
             open: true,
+            keys_elsewhere: false,
         }
     }
 }
@@ -207,14 +213,15 @@ pub(super) fn refresh_position(printer: &Printer, state: &PrinterState) {
 }
 
 /// The jog for a key press: arrows move X/Y, Page Up/Down move Z, Shift
-/// multiplies the step by ten.
+/// multiplies the step by ten (except Z down, which always moves one step).
 pub(super) fn key_jog(key: Key, shift: bool, step: f32) -> Option<(HostAxis, f32)> {
     let step = if step.is_finite() && step > 0.0 {
         step
     } else {
         1.0
     };
-    let step = if shift { step * 10.0 } else { step }.min(MAX_KEY_STEP);
+    let times_ten = shift && key != Key::PageDown;
+    let step = if times_ten { step * 10.0 } else { step }.min(MAX_KEY_STEP);
     match key {
         Key::ArrowLeft => Some((HostAxis::X, -step)),
         Key::ArrowRight => Some((HostAxis::X, step)),
@@ -259,8 +266,10 @@ pub(super) fn take_jog_keys(events: &mut Vec<Event>, step: f32) -> Vec<(HostAxis
 }
 
 impl Motion {
-    /// Draw the section.
-    pub(super) fn show(&mut self, ui: &mut Ui, ctx: &mut AppCtx<'_>) {
+    /// Draw the section. `keys_elsewhere`: the window gives the arrow and
+    /// page keys to another part of it this frame (the 3D view's layer
+    /// keys), so keyboard jogging leaves them alone.
+    pub(super) fn show(&mut self, ui: &mut Ui, ctx: &mut AppCtx<'_>, keys_elsewhere: bool) {
         let printer = ctx.printer;
         let state = ctx.state;
         let connected = ctx.connected();
@@ -275,7 +284,8 @@ impl Motion {
         }
         // Whether anything here moved the machine this frame.
         let mut moved = false;
-        if self.keyboard && self.open && lock.is_none() && keyboard_free(ui) {
+        self.keys_elsewhere = keys_elsewhere;
+        if self.keyboard && self.open && lock.is_none() && !keys_elsewhere && keyboard_free(ui) {
             let jogs = ui.input_mut(|i| take_jog_keys(&mut i.events, self.key_step));
             for (axis, distance) in jogs {
                 printer.jog(axis, distance, feed_for(axis, feeds));
@@ -457,9 +467,11 @@ impl Motion {
             |ui| {
                 ui.add(Toggle::new(&mut self.keyboard).label("Keyboard jog"))
                     .on_hover_text(
-                        "Jog with the keyboard: arrows move X/Y, Page Up/Down move Z, \
-                         Shift moves ten times as far. Ignored while typing in a field, \
-                         while a menu or dialog is open and while this card is collapsed.",
+                        "Jog with the keyboard after a click in the controls: arrows move \
+                         X/Y, Page Up/Down move Z, Shift moves ten times as far (not down). \
+                         Ignored while the pointer is over the tabs (the 3D view keeps its \
+                         layer keys), while typing in a field, while a menu or dialog is \
+                         open and while this card is collapsed.",
                     );
             },
             |ui| {
@@ -474,7 +486,14 @@ impl Motion {
             },
         );
         if self.keyboard {
-            caption(ui, "← → X   ↑ ↓ Y   PgUp/PgDn Z   Shift ×10");
+            caption(
+                ui,
+                if self.keys_elsewhere {
+                    "Keys paused: click in the controls to jog"
+                } else {
+                    "← → X   ↑ ↓ Y   PgUp/PgDn Z   Shift ×10 (not down)"
+                },
+            );
         }
     }
 }
@@ -697,9 +716,15 @@ mod tests {
             Some((HostAxis::X, -1.0))
         );
         assert_eq!(key_jog(Key::ArrowUp, false, 0.1), Some((HostAxis::Y, 0.1)));
+        // Shift never multiplies a move down.
+        assert_eq!(key_jog(Key::PageDown, true, 1.0), Some((HostAxis::Z, -1.0)));
         assert_eq!(
-            key_jog(Key::PageDown, true, 1.0),
+            key_jog(Key::PageDown, true, 10.0),
             Some((HostAxis::Z, -10.0))
+        );
+        assert_eq!(
+            key_jog(Key::ArrowDown, true, 1.0),
+            Some((HostAxis::Y, -10.0))
         );
         assert_eq!(
             key_jog(Key::PageUp, true, 50.0),

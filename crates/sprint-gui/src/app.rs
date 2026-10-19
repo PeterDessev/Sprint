@@ -283,6 +283,12 @@ pub struct SprintApp {
     native_dialogs: bool,
     state_override: Option<PrinterState>,
     toast_top: f32,
+    /// The controls sidebar (when shown) and the central area of the last
+    /// frame, for [`SprintApp::route_keys`].
+    sidebar_rect: Option<Rect>,
+    center_rect: Option<Rect>,
+    /// The last pointer press landed on the controls sidebar.
+    pressed_in_sidebar: bool,
     egui_ctx: egui::Context,
 }
 
@@ -368,6 +374,9 @@ impl SprintApp {
             native_dialogs: options.native_dialogs,
             state_override: None,
             toast_top: crate::widgets::TOAST_OFFSET.y,
+            sidebar_rect: None,
+            center_rect: None,
+            pressed_in_sidebar: false,
             egui_ctx: ctx,
         };
         if let Some(path) = options.file {
@@ -546,6 +555,7 @@ impl SprintApp {
         self.handle_close_request(&ctx);
         self.shortcuts(&ctx);
         self.handle_dropped_files(&ctx);
+        self.route_keys(&ctx, ui.layer_id());
         self.draw(ui);
         self.show_dialogs(&ctx);
         // Below the top bars (and the halted banner) so toasts never cover
@@ -1296,6 +1306,31 @@ impl SprintApp {
         self.core.actions.push(AppAction::LoadFile(path));
     }
 
+    /// Decide who gets the arrow and page keys this frame. The controls
+    /// sidebar is drawn before the tabs, so its keyboard jogging would take
+    /// the 3D view's layer keys and move the printer instead: it gets them
+    /// only after a click into the sidebar, and never while the pointer is
+    /// over the tabs (where the view's layer keys work by hovering).
+    fn route_keys(&mut self, ctx: &egui::Context, root: egui::LayerId) {
+        let (press, hover) = ctx.input(|i| {
+            let press = if i.pointer.any_pressed() {
+                i.pointer.press_origin()
+            } else {
+                None
+            };
+            (press, i.pointer.hover_pos())
+        });
+        if let Some(pos) = press {
+            // A press on a menu, popup or dialog above the sidebar is not a
+            // click into the controls.
+            self.pressed_in_sidebar = ctx.layer_id_at(pos) == Some(root)
+                && self.sidebar_rect.is_some_and(|r| r.contains(pos));
+        }
+        let over_tabs = hover.is_some_and(|pos| self.center_rect.is_some_and(|r| r.contains(pos)));
+        let to_controls = self.prefs.show_sidebar && self.pressed_in_sidebar && !over_tabs;
+        self.panels.controls.set_keys_elsewhere(!to_controls);
+    }
+
     fn prompt_is_open(&self) -> bool {
         self.core.state.prompt.is_some() && self.prompt.is_none()
     }
@@ -1385,7 +1420,7 @@ impl SprintApp {
                 let mut c = self.core.ctx();
                 self.panels.job_bar.ui(ui, &mut c, load.as_ref());
             });
-        egui::Panel::left("sprint-controls")
+        let sidebar = egui::Panel::left("sprint-controls")
             .frame(
                 Frame::new()
                     .fill(p.panel)
@@ -1402,6 +1437,7 @@ impl SprintApp {
                         self.panels.controls.ui(ui, &mut c);
                     });
             });
+        self.sidebar_rect = sidebar.map(|r| r.response.rect);
         egui::Panel::right("sprint-console")
             .frame(Frame::new().fill(p.panel))
             .size_range(300.0..=760.0)
@@ -1412,6 +1448,7 @@ impl SprintApp {
             });
         egui::CentralPanel::no_frame().show(ui, |ui| {
             let rect = ui.max_rect();
+            self.center_rect = Some(rect);
             self.toast_top = rect.top() + TAB_STRIP_H + 8.0;
             ui.painter().rect_filled(rect, 0.0, p.bg);
             self.tab_strip(ui, &p);
