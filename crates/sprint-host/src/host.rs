@@ -440,7 +440,8 @@ impl Printer {
 
     /// Called (from engine threads, at most every 16 ms, never losing the
     /// last change) whenever the state changes; UIs use it to request a
-    /// repaint. Replaces any previous waker.
+    /// repaint. The link clock ([`LinkStats::connected_secs`](crate::LinkStats::connected_secs))
+    /// alone wakes it once per second. Replaces any previous waker.
     pub fn set_waker(&self, waker: impl Fn() + Send + Sync + 'static) {
         self.shared().set_waker(Arc::new(waker));
     }

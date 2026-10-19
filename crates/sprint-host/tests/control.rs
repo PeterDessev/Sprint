@@ -340,6 +340,39 @@ fn the_waker_is_called_and_rate_limited() {
 }
 
 #[test]
+fn an_idle_connection_does_not_keep_waking_the_ui() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    // Nothing reports or polls: only the connection clock moves.
+    let sim = SimConfig {
+        auto_report_temps: false,
+        auto_report_position: false,
+        ..fast_sim(20.0)
+    };
+    let printer = connect(
+        sim,
+        ConnectOptions {
+            temp_poll_secs: 0.0,
+            ..options()
+        },
+    );
+    let calls = Arc::new(AtomicUsize::new(0));
+    let c = Arc::clone(&calls);
+    printer.set_waker(move || {
+        c.fetch_add(1, Ordering::Relaxed);
+    });
+    // Let the 2 s lines-per-second window empty.
+    std::thread::sleep(Duration::from_millis(2200));
+    let before = calls.load(Ordering::Relaxed);
+    std::thread::sleep(Duration::from_millis(1000));
+    let woken = calls.load(Ordering::Relaxed) - before;
+    // The clock is worth one wake-up per second, not one per 20 ms tick.
+    assert!(woken <= 2, "{woken} wake-ups in a second of idling");
+    let secs = printer.with_state(|s| s.link.connected_secs);
+    assert!(secs > 3.0, "the clock still runs: {secs}");
+}
+
+#[test]
 fn a_manual_m110_renumbers_the_following_lines() {
     let printer = connect(fast_sim(20.0), options());
     let before = last_seq(&printer);

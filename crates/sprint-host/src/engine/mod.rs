@@ -1272,9 +1272,18 @@ impl Engine {
         let stats = self.stats.clone();
         let mut state = self.shared.state.write();
         if state.link != stats {
+            // The connection clock changes on every tick; on its own it is
+            // worth a wake-up (a repaint) only once per second.
+            let clock_only = LinkStats {
+                connected_secs: state.link.connected_secs,
+                ..stats.clone()
+            } == state.link;
+            let new_second = state.link.connected_secs.floor() != stats.connected_secs.floor();
             state.link = stats;
             drop(state);
-            self.shared.request_wake();
+            if !clock_only || new_second {
+                self.shared.request_wake();
+            }
         }
     }
 }
