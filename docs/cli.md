@@ -216,13 +216,13 @@ error if the listener fails.
 
 ```bash
 sprint sim                                   # 127.0.0.1:5000, real time
-sprint sim --tcp 0.0.0.0:0 --time-scale 20   # any free port, 20x faster
+sprint sim --tcp 127.0.0.1:0 --time-scale 20 # any free port, 20x faster
 sprint tui --connect tcp://127.0.0.1:5000    # in another terminal
 ```
 
 | Option | Meaning |
 |---|---|
-| `--tcp ADDR` | Address to listen on; port 0 picks a free port (default `127.0.0.1:5000`) |
+| `--tcp ADDR` | Address to listen on; port 0 picks a free port (default `127.0.0.1:5000`). `0.0.0.0` lets other machines connect, without a password. |
 | `--time-scale X` | Simulation speed: 1 is real time, 10 is ten times faster (0.01 to 10000, default 1) |
 | `--extruders N` | Number of extruders, 1 to 8 (default 1) |
 | `--checksum-error-rate R` | Probability (0 to 1) that a numbered line is rejected as corrupted, to exercise resends |
