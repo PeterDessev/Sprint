@@ -678,6 +678,14 @@ impl SdCardTab {
         let Some(confirm) = self.confirm.clone() else {
             return;
         };
+        // The job asked about ended while the question was open: confirming
+        // would cancel whatever runs by then.
+        if let Confirm::CancelJob(kind) = confirm
+            && !sd_job(ctx.state).is_some_and(|j| j.kind == kind && j.status.is_active())
+        {
+            self.confirm = None;
+            return;
+        }
         let answer = match &confirm {
             Confirm::Print(name, label) => {
                 let title = format!("Print {label}?");

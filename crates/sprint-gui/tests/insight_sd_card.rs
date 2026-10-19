@@ -329,6 +329,25 @@ fn a_released_card_offers_only_initializing() {
 }
 
 #[test]
+fn the_cancel_question_goes_away_with_its_job() {
+    let mut h = tab(Theme::Dark, (1000.0, 760.0), printing_state());
+    h.get_by_label("Cancel print").click();
+    h.run_ok();
+    assert!(h.query_by_label("Cancel the SD print?").is_some());
+    // The print ends (and another job may start) while the question is
+    // open: "Cancel job" must not cancel whatever runs by then.
+    if let Some(s) = h.state_mut().state.as_mut() {
+        s.sd.printing = None;
+        let mut job = JobInfo::new(JobKind::HostPrint, "cube.gcode", 10, 100);
+        job.status = JobStatus::Printing;
+        s.job = Some(job);
+    }
+    h.run_ok();
+    assert!(h.query_by_label("Cancel the SD print?").is_none());
+    assert!(h.query_by_label("Cancel job").is_none());
+}
+
+#[test]
 fn odd_file_lists_never_panic() {
     let mut state = sd_state();
     state.sd.files = vec![
