@@ -230,6 +230,7 @@ impl Extruder {
         let connected = ctx.connected();
         let job_active = ctx.job_active();
         let lock = super::motion_lock(ctx);
+        let lock_title = super::lock_title(ctx);
         let profile = ctx.config.active();
         if !self.seeded {
             let feed = profile.extrude_feedrate;
@@ -292,8 +293,8 @@ impl Extruder {
             "Extruder",
             |_| {},
             |ui| {
-                if job_active && connected {
-                    notice(ui, icons::LOCK, "Locked while a job runs", Tone::Warning)
+                if let Some(title) = lock_title {
+                    notice(ui, icons::LOCK, title, Tone::Warning)
                         .on_hover_text(lock.unwrap_or_default());
                 }
                 ui.add_enabled_ui(lock.is_none(), |ui| {

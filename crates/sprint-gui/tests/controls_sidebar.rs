@@ -615,6 +615,37 @@ fn keyboard_jogging_pauses_while_the_motion_card_is_collapsed() {
     wait_for_commands(&p, &["G91", "G1 Y1 F3000", "G90"]);
 }
 
+/// After an emergency stop the printer ignores commands until its firmware
+/// restarts: the sidebar says so and locks motion and extrusion.
+#[test]
+fn a_halted_printer_locks_motion_and_says_why() {
+    let mut h = sidebar_fixed(Theme::Dark, (420.0, 2600.0), Rig::simulator());
+    controls_common::settle(&mut h);
+    let p = printer(&h);
+    assert!(!h.get_by_label("XY jog").accesskit_node().is_disabled());
+    p.emergency_stop();
+    wait_for(&p, "the halt", |s| s.halted);
+    run_for(&mut h, Duration::from_millis(50));
+    h.run_ok();
+    assert!(
+        h.query_all_by_label_contains("The printer is halted")
+            .next()
+            .is_some(),
+        "no halt notice"
+    );
+    assert_eq!(
+        h.query_all_by_label("Locked while the printer is halted")
+            .count(),
+        2
+    );
+    for label in ["XY jog", "Move", "Center", "Load", "Retract"] {
+        assert!(
+            h.get_by_label(label).accesskit_node().is_disabled(),
+            "{label} is enabled while halted"
+        );
+    }
+}
+
 #[test]
 fn offline_sidebar_sends_nothing_and_does_not_panic() {
     let mut h = sidebar_fixed(Theme::Light, (420.0, 2600.0), Rig::offline());

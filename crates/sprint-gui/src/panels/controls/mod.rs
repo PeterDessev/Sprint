@@ -58,6 +58,14 @@ impl ControlsSidebar {
                 ui.spacing_mut().item_spacing.y = theme::GAP;
                 if !ctx.connected() {
                     offline_hint(ui, ctx);
+                } else if ctx.state.halted {
+                    notice(
+                        ui,
+                        icons::WARNING,
+                        "The printer is halted (emergency stop or a firmware error). It \
+                         ignores commands until its firmware restarts (M999).",
+                        Tone::Danger,
+                    );
                 }
                 self.temperatures.show(ui, ctx);
                 self.motion.show(ui, ctx);
@@ -75,11 +83,30 @@ impl ControlsSidebar {
 fn motion_lock(ctx: &AppCtx<'_>) -> Option<&'static str> {
     if !ctx.connected() {
         Some("Connect to a printer to use these controls.")
+    } else if ctx.state.halted {
+        Some(
+            "The printer is halted and ignores commands until its firmware restarts \
+             (M999).",
+        )
     } else if ctx.job_active() {
         Some(
             "Locked while a job runs: moves and extrusion would be interleaved \
              with the print. Live tuning, fans and temperatures stay available.",
         )
+    } else {
+        None
+    }
+}
+
+/// The short notice above controls locked by [`motion_lock`] while
+/// connected (offline, the sidebar's own hint explains it).
+fn lock_title(ctx: &AppCtx<'_>) -> Option<&'static str> {
+    if !ctx.connected() {
+        None
+    } else if ctx.state.halted {
+        Some("Locked while the printer is halted")
+    } else if ctx.job_active() {
+        Some("Locked while a job runs")
     } else {
         None
     }

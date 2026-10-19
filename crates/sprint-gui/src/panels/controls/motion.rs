@@ -265,7 +265,7 @@ impl Motion {
         let state = ctx.state;
         let connected = ctx.connected();
         let lock = super::motion_lock(ctx);
-        let job_active = ctx.job_active();
+        let lock_title = super::lock_title(ctx);
         let profile = ctx.config.active();
         let feeds = feedrates(profile);
         if !self.seeded {
@@ -299,10 +299,9 @@ impl Motion {
                 }
             },
             |ui| {
-                if job_active && connected {
-                    let reason = lock.unwrap_or_default();
-                    notice(ui, icons::LOCK, "Locked while a job runs", Tone::Warning)
-                        .on_hover_text(reason);
+                if let Some(title) = lock_title {
+                    notice(ui, icons::LOCK, title, Tone::Warning)
+                        .on_hover_text(lock.unwrap_or_default());
                 }
                 position_readout(ui, state.position.as_ref().filter(|_| connected));
                 ui.add_enabled_ui(lock.is_none(), |ui| {
