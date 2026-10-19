@@ -5,6 +5,7 @@
 //! answers with a placeholder instead of panicking.
 
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use sprint_host::{JobInfo, JobKind, JobStatus};
@@ -63,14 +64,29 @@ fn local_offset_seconds() -> i64 {
     })
 }
 
+/// No frozen clock (see [`freeze_clock`]).
+const NOT_FROZEN: i64 = i64::MIN;
+static FROZEN_CLOCK: AtomicI64 = AtomicI64::new(NOT_FROZEN);
+
+/// Make [`clock_after`] count from a fixed local time (seconds since the
+/// epoch, already in local time) instead of the wall clock, or go back to
+/// the wall clock with `None`. For reproducible screenshots and tests.
+pub fn freeze_clock(local_now: Option<i64>) {
+    FROZEN_CLOCK.store(local_now.unwrap_or(NOT_FROZEN), Ordering::Relaxed);
+}
+
 /// The local wall-clock time `after` from now, as `"14:05"`; with a day
 /// suffix (`"14:05 +1d"`) when it falls on a later day.
 pub fn clock_after(after: Duration) -> String {
+    let after = after.as_secs().min(10 * 365 * 86_400) as i64;
+    let frozen = FROZEN_CLOCK.load(Ordering::Relaxed);
+    if frozen != NOT_FROZEN {
+        return clock_at(frozen, after, 0);
+    }
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs()) as i64;
-    let offset = local_offset_seconds();
-    clock_at(now, after.as_secs().min(10 * 365 * 86_400) as i64, offset)
+    clock_at(now, after, local_offset_seconds())
 }
 
 /// Clock time of `now + after` (unix seconds) in a zone `offset` seconds
@@ -256,6 +272,10 @@ mod tests {
         // Never panics on extremes.
         let _ = clock_at(i64::MAX, i64::MAX, i64::MAX);
         let _ = clock_after(Duration::MAX);
+        // A frozen clock is reproducible.
+        freeze_clock(Some(noon));
+        assert_eq!(clock_after(Duration::from_secs(90 * 60)), "13:30");
+        freeze_clock(None);
     }
 
     #[test]
