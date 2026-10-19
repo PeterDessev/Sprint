@@ -249,7 +249,12 @@ impl SettingsDialog {
                                 });
                         },
                     );
-                    ui.separator();
+                    // As tall as the body: a plain separator takes all the
+                    // height left on screen and stretches the dialog.
+                    ui.add_sized(
+                        vec2(ui.spacing().item_spacing.x, body_h),
+                        egui::Separator::default().vertical(),
+                    );
                     ui.allocate_ui_with_layout(
                         vec2(ui.available_width(), body_h),
                         Layout::top_down(Align::Min),
