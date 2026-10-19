@@ -759,8 +759,10 @@ impl Widget for CommandLine<'_> {
     }
 }
 
-/// The part of `text` from column `skip` that fits in `cols` columns
-/// (wide characters cut by either edge are left out).
+/// The part of `text` from column `skip` that fits in `cols` columns.
+/// Wide characters cut by either edge are left out; one cut by the left
+/// edge leaves blanks, so the rest of the text stays in its columns (where
+/// the cursor position expects it).
 fn visible_slice(text: &str, skip: usize, cols: usize) -> String {
     let mut out = String::new();
     let mut col = 0;
@@ -769,6 +771,11 @@ fn visible_slice(text: &str, skip: usize, cols: usize) -> String {
         let w = char_width(c);
         if col < skip {
             col += w;
+            if col > skip {
+                let blank = (col - skip).min(cols);
+                out.extend(std::iter::repeat_n(' ', blank));
+                used += blank;
+            }
             continue;
         }
         if used + w > cols {
@@ -1348,6 +1355,19 @@ mod tests {
         let (rows, cursor) = draw(CommandLine::new(&input), 12, 1);
         assert_eq!(rows[0], ">  X100 Y100");
         assert_eq!(cursor, Some(Position::new(11, 0)));
+    }
+
+    #[test]
+    fn wide_characters_cut_at_the_left_edge_keep_the_text_in_place() {
+        let input = typed("M117 日本語日本語日本語");
+        let (rows, cursor) = draw(CommandLine::new(&input), 12, 1);
+        // The visible half of the cut character is blank, so the text ends
+        // right before the cursor.
+        assert_eq!(rows[0], ">  語日本語 ");
+        assert_eq!(cursor, Some(Position::new(11, 0)));
+        assert_eq!(visible_slice("日本", 1, 1), " ");
+        assert_eq!(visible_slice("日本", 1, 3), " 本");
+        assert_eq!(visible_slice("日本", 0, 3), "日");
     }
 
     #[test]
