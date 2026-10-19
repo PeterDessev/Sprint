@@ -1033,6 +1033,7 @@ impl Analyzer {
             retractions,
             bounds: Bounds::empty(),
             travel_bounds: Bounds::empty(),
+            part_bounds: Bounds::empty(),
             stats: Stats::default(),
             metadata,
             line_count,
@@ -1134,6 +1135,11 @@ impl Analyzer {
         let mut speed_distance = 0.0f64;
         let mut bounds = Bounds::empty();
         let mut travel_bounds = Bounds::empty();
+        // Part extent: everything that is not start/end G-code, purge,
+        // skirt or wipe tower, and inside an object when there are any.
+        let has_objects = !toolpath.objects.is_empty();
+        let mut part_bounds = Bounds::empty();
+        let mut all_beads = Bounds::empty();
         for s in &self.segments {
             travel_bounds.include(s.start);
             travel_bounds.include(s.end);
@@ -1141,6 +1147,14 @@ impl Analyzer {
             if s.kind == MoveKind::Extrude {
                 bounds.include(s.start);
                 bounds.include(s.end);
+                all_beads.include_bead(s);
+                let not_part = matches!(
+                    s.feature,
+                    Feature::Custom | Feature::Skirt | Feature::WipeTower
+                );
+                if !not_part && (!has_objects || s.object_index().is_some()) {
+                    part_bounds.include_bead(s);
+                }
                 extrude_moves += 1;
                 let acc = &mut features[s.feature.index()];
                 acc.time += f64::from(s.duration);
@@ -1203,6 +1217,11 @@ impl Analyzer {
         let layer_heights: Vec<f32> = toolpath.layers.iter().map(|l| l.height).collect();
         toolpath.bounds = bounds;
         toolpath.travel_bounds = travel_bounds;
+        toolpath.part_bounds = if part_bounds.is_empty() {
+            all_beads
+        } else {
+            part_bounds
+        };
         toolpath.stats = Stats {
             estimated_time: total_time as f32,
             filament_length: filament as f32,
@@ -1995,20 +2014,90 @@ G1 X0 Y0
         assert_eq!(cube.lines, vec![5..9, 15..18]);
         assert_eq!(cube.segments, 4);
         assert_eq!(cube.extruded, 2.0);
+        // The beads: half a width around the path, down to the layer below.
+        let half = tp
+            .segments
+            .iter()
+            .find(|s| s.line == 8)
+            .map_or(0.0, |s| s.width * 0.5);
+        assert!(half > 0.0);
         assert_eq!(
             (cube.bounds.min, cube.bounds.max),
-            ([10.0, 10.0, 0.2], [20.0, 10.0, 0.4])
+            (
+                [10.0 - half, 10.0 - half, 0.0],
+                [20.0 + half, 10.0 + half, 0.4]
+            )
         );
         assert!(cube.time > 0.0);
         let cyl = &tp.objects[1];
         assert_eq!(cyl.lines, vec![10..13]);
-        assert_eq!((cyl.bounds.min[1], cyl.bounds.max[1]), (10.0, 12.0));
+        assert!(cyl.bounds.min[1] < 10.0 && cyl.bounds.max[1] > 12.0);
+        // The part is both objects, without the skirt.
+        assert_eq!(tp.part_bounds.min, cube.bounds.min);
+        assert_eq!(tp.part_bounds.max[0], cyl.bounds.max[0]);
+        assert!(tp.bounds.min[0] == 0.0 && tp.bounds.max[0] == 50.0);
         assert_eq!(tp.object_at_line(7), Some(0));
         assert_eq!(tp.object_at_line(12), Some(1));
         assert_eq!(tp.object_at_line(4), None);
         assert_eq!(tp.object_at_line(18), None);
         // The final travel is outside every object.
         assert_eq!(tp.segments.last().and_then(Segment::object_index), None);
+    }
+
+    #[test]
+    fn part_bounds_leave_out_purge_skirt_and_wipe_tower() {
+        // Known issue K1: the part size must not include the purge line.
+        let tp = run("\
+M83
+;WIDTH:0.4
+;TYPE:Custom
+G1 Z0.2 F600
+G1 X0 Y-3
+G1 X60 Y-3 E9 F1000
+;TYPE:Skirt
+G1 X90 Y90
+G1 X140 Y90 E2
+;TYPE:Wipe tower
+G1 X170 Y170
+G1 X180 Y170 E1
+;TYPE:External perimeter
+G1 X100 Y100
+G1 X120 Y100 E1
+G1 X120 Y120 E1
+G1 Z0.4
+G1 X100 Y120 E1
+");
+        let p = tp.part_bounds;
+        for axis in 0..2 {
+            assert!(approx(p.min[axis], 99.8, 1e-6), "{p:?}");
+            assert!(approx(p.max[axis], 120.2, 1e-6), "{p:?}");
+        }
+        assert_eq!((p.min[2], p.max[2]), (0.0, 0.4));
+        assert_eq!((tp.bounds.min[1], tp.bounds.max[0]), (-3.0, 180.0));
+        // Only a skirt: fall back to every extrusion.
+        let tp = run(";TYPE:Skirt\nM83\n;WIDTH:0.5\nG1 Z0.3\nG1 X10 Y10 E1 F600\n");
+        assert_eq!(tp.part_bounds.min, [-0.25, -0.25, 0.0]);
+        assert_eq!(tp.part_bounds.max, [10.25, 10.25, 0.3]);
+        // Nothing extruded: empty.
+        assert!(run("G1 X10 Y10\n").part_bounds.is_empty());
+        // With object labels, extrusions outside every object are left out
+        // whatever their feature.
+        let tp = run("\
+M83
+;WIDTH:0.4
+G1 Z0.2
+G1 X0 Y0
+G1 X50 Y0 E2
+M486 S0
+G1 X10 Y10
+G1 X20 Y10 E1
+M486 S-1
+");
+        let p = tp.part_bounds;
+        assert!(
+            approx(p.min[0], 9.8, 1e-6) && approx(p.max[0], 20.2, 1e-6),
+            "{p:?}"
+        );
     }
 
     #[test]

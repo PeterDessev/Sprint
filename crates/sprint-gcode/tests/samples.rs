@@ -87,6 +87,25 @@ fn every_sample_line_round_trips_through_clean_line() {
 }
 
 #[test]
+fn calibration_cube_part_is_20_mm() {
+    // Known issue K1: the purge line at Y-3 and the skirt are not the part.
+    let (_, tp) = analyzed("calibration-cube.gcode");
+    let size = tp.part_bounds.size();
+    for (axis, extent) in size.iter().enumerate() {
+        assert!((extent - 20.0).abs() < 0.1, "axis {axis}: {size:?}");
+    }
+    assert!(tp.part_bounds.min[2].abs() < 1e-4, "{:?}", tp.part_bounds);
+    assert!(
+        tp.bounds.size()[0] > 100.0,
+        "the purge line is in the bounds"
+    );
+    // A vase without labels: its purge lines (start G-code) are left out.
+    let (_, tp) = analyzed("twisted-vase.gcode");
+    assert!(tp.part_bounds.min[0] > 70.0, "{:?}", tp.part_bounds);
+    assert!((tp.part_bounds.size()[2] - 60.0).abs() < 0.1);
+}
+
+#[test]
 fn every_sample_is_sniffed_as_gcode() {
     for name in [
         "calibration-cube.gcode",

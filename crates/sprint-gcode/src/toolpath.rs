@@ -317,6 +317,31 @@ impl Bounds {
             (self.min[2] + self.max[2]) * 0.5,
         ]
     }
+
+    /// Grow to contain the deposited bead of `segment`: its path widened by
+    /// half the extrusion width in X and Y and reaching one layer height
+    /// below it (the bead sits on the layer below). Travel moves have no
+    /// width or height, so this includes just their path. Non-finite
+    /// coordinates are ignored.
+    pub fn include_bead(&mut self, segment: &Segment) {
+        let finite = |v: f32| if v.is_finite() { v.max(0.0) } else { 0.0 };
+        let half_width = finite(segment.width) * 0.5;
+        let height = finite(segment.height);
+        let (s, e) = (segment.start, segment.end);
+        if s.iter().chain(&e).any(|v| !v.is_finite()) {
+            return;
+        }
+        self.include([
+            s[0].min(e[0]) - half_width,
+            s[1].min(e[1]) - half_width,
+            s[2].min(e[2]) - height,
+        ]);
+        self.include([
+            s[0].max(e[0]) + half_width,
+            s[1].max(e[1]) + half_width,
+            s[2].max(e[2]),
+        ]);
+    }
 }
 
 /// Per-feature totals over extruding segments.
@@ -489,7 +514,8 @@ pub struct ObjectInfo {
     pub name: String,
     /// Numeric id of M486 objects (`S<id>`).
     pub id: Option<u32>,
-    /// Bounds of the object's extruding segments (empty when it has none).
+    /// Physical extent of the object's extrusions ([`Bounds::include_bead`];
+    /// empty when it has none).
     pub bounds: Bounds,
     /// Source line ranges of the object's blocks that contain moves, from
     /// the start marker up to (not including) the end marker, ascending.
@@ -525,6 +551,13 @@ pub struct Toolpath {
     pub bounds: Bounds,
     /// Bounds of all moves (including travel).
     pub travel_bounds: Bounds,
+    /// Physical extent of the printed part(s) ([`Bounds::include_bead`] of
+    /// the extrusions): without start/end G-code and purge lines
+    /// (`Feature::Custom`), skirt/brim and wipe tower, and, when the file
+    /// labels objects, without extrusions outside every object. Falls back to
+    /// all extrusions when none of them qualifies. The size of the part a
+    /// 20 mm calibration cube was sliced from is about 20 x 20 x 20 mm.
+    pub part_bounds: Bounds,
     /// Whole-file statistics.
     pub stats: Stats,
     /// Slicer metadata read from comments.

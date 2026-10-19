@@ -152,8 +152,7 @@ impl ObjectTracker {
             total.0 += f64::from(s.duration);
             if s.is_extrusion() {
                 total.1 += f64::from(s.extruded);
-                obj.bounds.include(s.start);
-                obj.bounds.include(s.end);
+                obj.bounds.include_bead(s);
             }
         }
         for (obj, (time, extruded)) in out.iter_mut().zip(totals) {

@@ -333,6 +333,17 @@ pub fn resume_preamble(file: &GcodeFile, line: usize, options: &ResumeOptions) -
   after, wins). The same label written as a comment and as `M486 ... A`
   is one object. Purge lines, skirts and start G-code outside the markers
   belong to no object. The host's exclusion uses the same names.
+  `ObjectInfo::bounds` is the object's physical extent
+  (`Bounds::include_bead`).
+* Part size: `Toolpath::part_bounds` is the physical extent of the printed
+  part(s): `Bounds::include_bead` (the path widened by half the extrusion
+  width in X/Y and reaching one layer height down) of the extrusions,
+  leaving out `Feature::Custom` (start/end G-code, purge lines), `Skirt`
+  and `WipeTower`, and, when the file labels objects, extrusions outside
+  every object. It falls back to all extrusions when none qualifies and is
+  empty when nothing extrudes. Front ends show it as the part size (the
+  calibration cube sample reports 20 x 20 x 20 mm); `bounds` stays the path
+  extent of every extrusion, purge line included.
 * `meta`: `is_layer_marker`, `parse_duration`; `SlicerMetadata` gained
   `filament_density`, `layer_count`, `flavor`.
 
