@@ -773,6 +773,9 @@ impl Printer {
     /// Pause the running host print (pause script) before each of these 0-based file lines not streamed
     /// yet, as if the file had ";@pause" there; replaces earlier points ("pause at layer N").
     pub fn pause_at_lines(&self, lines: &[usize]);
+    /// Exclude (cancel) one object of the running host print, or print it again: effective for
+    /// the parts not streamed yet (names from JobInfo::objects; unknown names are reported).
+    pub fn exclude_object(&self, name: &str); pub fn include_object(&self, name: &str);
     pub fn start_sd_print(&self, filename: &str) -> Result<(), HostError>;   // M23 + M24, then M27 S<n>
     pub fn upload_to_sd(&self, file: std::sync::Arc<GcodeFile>, sd_name: &str) -> Result<(), HostError>; // M28 ... M29 as a job
     /// Answer an active host prompt (M876 S<index>).
@@ -895,6 +898,9 @@ pub struct JobInfo {
     pub filament_used_mm: f32,
     pub pause_at: Vec<usize>,          // host prints: pause points still ahead (0-based lines, ascending)
     pub stopped_at: Option<usize>,     // failed/cancelled host print: first 0-based line not acknowledged (the recovery start_line); kept until the next job
+    pub objects: Vec<String>,          // host prints: object labels of the file, first-seen order
+    pub excluded_objects: Vec<String>, // excluded while printing
+    pub current_object: Option<String>,// the object the stream is in (as sent)
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)] pub enum JobKind { HostPrint, SdPrint, SdUpload }
 #[derive(Clone, Debug, PartialEq)]
@@ -1213,6 +1219,20 @@ Every public item is also re-exported at the crate root.
   minutes; M600 keeps its own dialogue. When the active hotend is more
   than 5 °C short of its target the pause script's extruder-only moves
   (the retract) are left out, and the resume's (the prime) with them.
+  Objects (exclude / cancel while printing): the engine reads the labels
+  from the stream itself, one style per file, the first present of
+  Klipper `EXCLUDE_OBJECT_DEFINE/START/END NAME=..`, Marlin `M486`
+  (`T<count>`, `S<id>` starts, `S-1` ends, `A"name"`/`Aname` names;
+  unnamed objects are "Object <id>"), `; printing object NAME` / `; stop
+  printing object NAME`, Cura `;MESH:NAME` (until the next `;MESH:`,
+  `;MESH:NONMESH` ends it); names are the marker text, trimmed. Inside an
+  excluded object the host sends none of its G0..G3 and G10/G11 (moves,
+  extrusions, retractions, primes) but follows them in the job's
+  `MachineState`; everything else (fan, temperatures, `G92`, modes, the
+  markers) is sent. Before the next move after skipped ones it sends a
+  non-extruding `G0 X Y Z F6000` to the file's position, `G1 F<file
+  feedrate>` and, for absolute extrusion, `G92 E<file E>` (in absolute mm,
+  the file's modes restored after).
   Host commands in the file are never sent to the firmware: `@pause` and
   Printrun's `;@pause` pause the job there (pause script), `@cancel` and
   `@abort` cancel it, other `@...` lines are reported and skipped (uploads

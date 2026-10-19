@@ -476,6 +476,29 @@ impl Printer {
         self.command(Command::PauseAt(lines.to_vec()));
     }
 
+    /// Stop printing one object of the running host print (cancel object,
+    /// Printrun's Excluder): the moves, extrusions, retractions and primes
+    /// of its parts not streamed yet are left out, and after each of them
+    /// the printer travels to where the file is (with `G92 E` for absolute
+    /// extrusion). `name` is one of
+    /// [`JobInfo::objects`](crate::JobInfo::objects) (object labels in the
+    /// file); unknown names are reported in the console.
+    pub fn exclude_object(&self, name: &str) {
+        self.command(Command::ExcludeObject {
+            name: name.to_string(),
+            exclude: true,
+        });
+    }
+
+    /// Undo [`Printer::exclude_object`]: the parts of the object not
+    /// streamed yet are printed again.
+    pub fn include_object(&self, name: &str) {
+        self.command(Command::ExcludeObject {
+            name: name.to_string(),
+            exclude: false,
+        });
+    }
+
     /// Cancel the job (host prints: drop the stream and run the cancel
     /// script; SD prints: M524; uploads: close and delete the file).
     pub fn cancel(&self) {

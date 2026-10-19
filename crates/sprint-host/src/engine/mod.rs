@@ -6,6 +6,7 @@
 mod flow;
 mod jobs;
 mod meta;
+mod objects;
 mod reader;
 mod replies;
 mod scripts;
@@ -220,6 +221,10 @@ pub(crate) enum Command {
     Resume,
     Cancel,
     PauseAt(Vec<usize>),
+    ExcludeObject {
+        name: String,
+        exclude: bool,
+    },
     AnswerPrompt(usize),
     Extrude {
         tool: u8,
@@ -1147,6 +1152,7 @@ impl Engine {
             Command::Resume => self.resume_job(now),
             Command::Cancel => self.cancel_job(now),
             Command::PauseAt(lines) => self.set_pause_points(lines),
+            Command::ExcludeObject { name, exclude } => self.exclude_object(&name, exclude),
             Command::AnswerPrompt(index) => self.answer_prompt(index),
             Command::Extrude {
                 tool,

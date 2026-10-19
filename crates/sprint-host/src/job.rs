@@ -161,6 +161,15 @@ pub struct JobInfo {
     /// pause script), still ahead of the stream, ascending
     /// ([`Printer::pause_at_lines`](crate::Printer::pause_at_lines)).
     pub pause_at: Vec<usize>,
+    /// Host prints: the objects of the file (object labels: Klipper
+    /// `EXCLUDE_OBJECT_*`, Marlin `M486`, `; printing object`, Cura
+    /// `;MESH:`), in first-seen order.
+    pub objects: Vec<String>,
+    /// The objects excluded while printing
+    /// ([`Printer::exclude_object`](crate::Printer::exclude_object)).
+    pub excluded_objects: Vec<String>,
+    /// The object the stream is in (as sent to the printer).
+    pub current_object: Option<String>,
     /// A failed or cancelled host print: the 0-based index of the first
     /// file line the printer did not acknowledge, where a recovery resumes
     /// ([`PrintOptions::start_line`] with
@@ -193,6 +202,9 @@ impl JobInfo {
             layer: None,
             filament_used_mm: 0.0,
             pause_at: Vec::new(),
+            objects: Vec::new(),
+            excluded_objects: Vec::new(),
+            current_object: None,
             stopped_at: None,
         }
     }

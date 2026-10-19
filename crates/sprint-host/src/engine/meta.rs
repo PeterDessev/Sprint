@@ -43,6 +43,9 @@ pub(crate) enum JobLine {
     Script,
     /// `M73` progress report.
     Progress,
+    /// Travel (and `G92 E`) back to the file's position after the moves of
+    /// an excluded object were left out.
+    Resync,
 }
 
 /// A command the engine sent or will send.

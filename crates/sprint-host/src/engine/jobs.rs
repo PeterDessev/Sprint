@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use sprint_gcode::{GcodeFile, MachineState, ParsedLine, clean_line, state_at_line};
 
 use super::meta::{CmdMeta, JobLine, Meta, Source};
+use super::objects::{Objects, is_object_motion, resync};
 use super::scripts::{
     ResumeExtras, guarded, hotend_hot, in_script_modes, modes_after, render_job_script,
     resume_script, without_extruder_moves,
@@ -69,6 +70,13 @@ pub(super) struct JobRuntime {
     /// A host command the stream reached (`@pause`, a pause point); the
     /// stream holds until the engine acts on it.
     held: Option<(HostCommand, usize)>,
+    /// Object labels and the excluded objects.
+    objects: Objects,
+    /// Moves of an excluded object were left out since the printer last
+    /// matched the file's position.
+    skipped_motion: bool,
+    /// Lines that bring the printer back to the file's position.
+    resync: VecDeque<String>,
 }
 
 /// A command for the host, not the printer, met in the job stream.
@@ -150,6 +158,9 @@ impl JobRuntime {
             retract_skipped: false,
             wait_broken_at: None,
             held: None,
+            objects: Objects::default(),
+            skipped_motion: false,
+            resync: VecDeque::new(),
             options,
         }
     }
@@ -215,6 +226,9 @@ impl JobRuntime {
         if !self.streaming() {
             return None;
         }
+        if let Some(line) = self.resync.pop_front() {
+            return Some(CmdMeta::new(line, Source::Job(JobLine::Resync)));
+        }
         if let Some(m73) = self.pending_m73.take() {
             return Some(CmdMeta::new(m73, Source::Job(JobLine::Progress)));
         }
@@ -242,9 +256,29 @@ impl JobRuntime {
                 }
                 continue;
             }
+            let host_print = self.info.kind == JobKind::HostPrint;
+            if host_print && self.objects.track(file.line(index)) {
+                self.info.current_object.clone_from(&self.objects.current);
+                self.dirty = true;
+            }
             let Some(cmd) = file.command(index) else {
                 continue;
             };
+            if host_print && is_object_motion(&cmd) {
+                if self.objects.skipping() {
+                    // Not sent, but the file's position moves on.
+                    self.machine.apply(&sprint_gcode::parse_line(&cmd));
+                    self.skipped_motion = true;
+                    continue;
+                }
+                if std::mem::take(&mut self.skipped_motion) {
+                    // Back to where the file is, then this line.
+                    self.resync.extend(resync(&self.machine));
+                    self.next_line = index;
+                    let line = self.resync.pop_front()?;
+                    return Some(CmdMeta::new(line, Source::Job(JobLine::Resync)));
+                }
+            }
             if self.info.kind == JobKind::SdUpload {
                 // The file's own M28/M29 would end the upload early.
                 let parsed = sprint_gcode::parse_line(&cmd);
@@ -373,9 +407,16 @@ impl Engine {
         } else {
             MachineState::new()
         };
+        let mut objects = Objects::scan(&file);
+        for i in 0..start.min(file.len()) {
+            objects.track(file.line(i));
+        }
+        info.objects.clone_from(&objects.names);
+        info.current_object.clone_from(&objects.current);
         let mut job = JobRuntime::new(info, Some(file), options, now);
         job.preamble = preamble;
         job.machine = machine;
+        job.objects = objects;
         job.refresh(now);
         self.begin_job(job);
         Ok(())
@@ -822,6 +863,43 @@ impl Engine {
                 ));
             }
         }
+    }
+
+    /// Exclude (`exclude`) an object of the running host print, or print it
+    /// again: effective for the parts of it not streamed yet.
+    pub(super) fn exclude_object(&mut self, name: &str, exclude: bool) {
+        let name = name.trim();
+        let Some(job) = self
+            .job
+            .as_mut()
+            .filter(|j| j.kind() == JobKind::HostPrint && j.is_active())
+        else {
+            self.warn(format!(
+                "No host print is running: object \"{name}\" left as it is"
+            ));
+            return;
+        };
+        if !job.objects.names.iter().any(|n| n == name) {
+            self.warn(format!("This print has no object named \"{name}\""));
+            return;
+        }
+        let excluded = job.objects.excluded.iter().any(|n| n == name);
+        if excluded == exclude {
+            return;
+        }
+        if exclude {
+            job.objects.excluded.push(name.to_string());
+        } else {
+            job.objects.excluded.retain(|n| n != name);
+        }
+        job.info.excluded_objects.clone_from(&job.objects.excluded);
+        let info = job.info.clone();
+        self.shared.update(|s| s.job = Some(info));
+        self.info(if exclude {
+            format!("Excluded \"{name}\": the rest of it is not printed")
+        } else {
+            format!("Printing \"{name}\" again from here")
+        });
     }
 
     /// Pause the host print before each of `lines` (0-based file lines)
