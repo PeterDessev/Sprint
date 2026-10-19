@@ -989,6 +989,9 @@ impl ZJog {
 // ---------------------------------------------------------------------------
 // Extruder
 
+/// Smallest length (mm) and speed (mm/s) the [`ExtruderControl`] reports.
+const MIN_EXTRUDER_AMOUNT: f32 = 0.1;
+
 /// What the [`ExtruderControl`] asks for. Speeds are in mm/s.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ExtruderAction {
@@ -1012,7 +1015,9 @@ pub enum ExtruderAction {
 /// and an optional reason that blocks extrusion (e.g. a cold hotend).
 ///
 /// A length or speed that is NaN, infinite or not positive is reset to
-/// 5 so the control never reports a move that cannot be sent.
+/// 5, and one below 0.1 or above its [limit](Self::limits) is clamped, so
+/// the control never reports a move that cannot be sent or exceeds the
+/// limits.
 ///
 /// ```no_run
 /// # use sprint_gui::widgets::{ExtruderAction, ExtruderControl};
@@ -1061,12 +1066,13 @@ impl<'a> ExtruderControl<'a> {
         self
     }
 
-    /// Upper limits for length (mm) and speed (mm/s).
+    /// Upper limits for length (mm) and speed (mm/s); values not above
+    /// 0.1 are ignored.
     pub fn limits(mut self, max_length: f32, max_speed: f32) -> Self {
-        if max_length.is_finite() && max_length > 0.1 {
+        if max_length.is_finite() && max_length > MIN_EXTRUDER_AMOUNT {
             self.max_length = max_length;
         }
-        if max_speed.is_finite() && max_speed > 0.1 {
+        if max_speed.is_finite() && max_speed > MIN_EXTRUDER_AMOUNT {
             self.max_speed = max_speed;
         }
         self
@@ -1085,6 +1091,10 @@ impl<'a> ExtruderControl<'a> {
         }
         let max_length = self.max_length;
         let max_speed = self.max_speed;
+        // The fields keep out-of-range values (they only warn), so bound
+        // them here: a saved 2000 mm must not become a 2000 mm extrusion.
+        *self.length = self.length.clamp(MIN_EXTRUDER_AMOUNT, max_length);
+        *self.speed = self.speed.clamp(MIN_EXTRUDER_AMOUNT, max_speed);
         let response = ui
             .vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 8.0;
@@ -1093,7 +1103,7 @@ impl<'a> ExtruderControl<'a> {
                     NumericField::new(&mut *self.length)
                         .label("Length")
                         .unit("mm")
-                        .range(0.1..=max_length)
+                        .range(MIN_EXTRUDER_AMOUNT..=max_length)
                         .decimals(1)
                         .speed(0.1)
                         .label_width(label_w),
@@ -1106,7 +1116,7 @@ impl<'a> ExtruderControl<'a> {
                             let selected = (*self.length - preset).abs() < 1e-3;
                             let text = step_label(*preset);
                             if ui.add(super::Chip::new(&text).selected(selected)).clicked() {
-                                *self.length = preset.min(max_length);
+                                *self.length = preset.clamp(MIN_EXTRUDER_AMOUNT, max_length);
                             }
                         }
                     });
@@ -1115,7 +1125,7 @@ impl<'a> ExtruderControl<'a> {
                     NumericField::new(&mut *self.speed)
                         .label("Speed")
                         .unit("mm/s")
-                        .range(0.1..=max_speed)
+                        .range(MIN_EXTRUDER_AMOUNT..=max_speed)
                         .decimals(1)
                         .speed(0.1)
                         .label_width(label_w),

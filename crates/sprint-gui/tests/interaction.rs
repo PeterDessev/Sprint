@@ -684,3 +684,30 @@ fn widget_state_survives_layout_changes_above() {
     h.run_ok();
     assert_eq!(h.state().1, vec![TemperatureAction::SetTarget(60.0)]);
 }
+
+#[test]
+fn extruder_never_reports_beyond_its_limits() {
+    let mut h = harness_state(
+        Theme::Dark,
+        (360.0, 260.0),
+        (2000.0_f32, 0.01_f32, Vec::new()),
+        |ui, (length, speed, actions)| {
+            if let Some(a) = ExtruderControl::new(length, speed)
+                .limits(100.0, 20.0)
+                .show(ui)
+                .action
+            {
+                actions.push(a);
+            }
+        },
+    );
+    h.get_by_label("Extrude").click();
+    h.run_ok();
+    assert_eq!(
+        h.state().2,
+        vec![ExtruderAction::Extrude {
+            length: 100.0,
+            speed: 0.1
+        }]
+    );
+}
