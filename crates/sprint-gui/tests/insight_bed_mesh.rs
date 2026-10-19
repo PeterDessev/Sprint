@@ -52,6 +52,26 @@ fn bed_mesh_narrow_layout() {
 }
 
 #[test]
+fn a_narrow_header_keeps_its_title_readable() {
+    let width = 380.0;
+    let h = tab(Theme::Dark, (width, 2400.0), demo_state());
+    // The header's buttons do not fit next to the title: they go below it
+    // instead of over it.
+    let title = h.get_by_label("Bed mesh").rect();
+    for label in ["Probe bed", "Load", "Leveling on"] {
+        let control = h.get_by_label(label).rect();
+        assert!(
+            control.min.y >= title.max.y,
+            "{label} at {control:?} covers the title at {title:?}"
+        );
+    }
+    // A wide tab keeps the buttons next to the title.
+    let h = tab(Theme::Dark, (1180.0, 1240.0), demo_state());
+    let title = h.get_by_label("Bed mesh").rect();
+    assert!(h.get_by_label("Probe bed").rect().center().y < title.max.y);
+}
+
+#[test]
 fn screw_helper_follows_the_reference_and_thread() {
     // Tall enough for the screw editor.
     let mut h = tab(Theme::Light, (1180.0, 1700.0), demo_state());

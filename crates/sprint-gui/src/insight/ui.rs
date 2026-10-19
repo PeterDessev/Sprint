@@ -22,8 +22,14 @@ pub(crate) fn icon_font(ui: &Ui, size: f32) -> FontId {
     }
 }
 
+/// Room the title of a [`page_header`] keeps next to its controls (points,
+/// after the icon tile); with less, the controls go on a row below.
+const HEADER_TITLE_ROOM: f32 = 150.0;
+
 /// The header of a tab: an icon tile, a title, an optional dim subtitle
-/// and controls on the right.
+/// and controls on the right. When the controls leave the title less than
+/// [`HEADER_TITLE_ROOM`], they move to a row of their own under it (wrapping
+/// if need be) instead of being drawn over the title.
 pub(crate) fn page_header(
     ui: &mut Ui,
     icon: &str,
@@ -34,20 +40,48 @@ pub(crate) fn page_header(
     let p = theme::ui_palette(ui);
     let height = 40.0;
     let width = ui.available_width();
+    // The controls' width from the last frame decides the layout.
+    let memory = ui.id().with(("insight-page-header", title));
+    let last_controls: f32 = ui.data(|d| d.get_temp(memory)).unwrap_or(0.0);
+    let fits =
+        |controls: f32| controls <= 0.0 || controls + 12.0 + 48.0 + HEADER_TITLE_ROOM <= width;
+    let stacked = !fits(last_controls);
     let (rect, response) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, title));
-    let mut right_ui = ui.new_child(
-        UiBuilder::new()
-            .max_rect(rect)
-            .layout(Layout::right_to_left(Align::Center)),
-    );
-    right_ui.spacing_mut().item_spacing.x = 6.0;
-    right(&mut right_ui);
-    let used = right_ui.min_rect();
-    let text_end = if used.width() > 0.0 {
-        used.min.x - 12.0
+    let controls = if stacked {
+        ui.add_space(6.0);
+        let mut row = ui.new_child(
+            UiBuilder::new()
+                // One button high: the controls centre on that row (and
+                // wrap onto more rows below it).
+                .max_rect(Rect::from_min_size(ui.cursor().min, vec2(width, 30.0)))
+                .layout(Layout::left_to_right(Align::Center).with_main_wrap(true)),
+        );
+        row.spacing_mut().item_spacing = vec2(6.0, 6.0);
+        right(&mut row);
+        let used = row.min_rect();
+        ui.advance_cursor_after_rect(used);
+        used
     } else {
+        let mut right_ui = ui.new_child(
+            UiBuilder::new()
+                .max_rect(rect)
+                .layout(Layout::right_to_left(Align::Center)),
+        );
+        right_ui.spacing_mut().item_spacing.x = 6.0;
+        right(&mut right_ui);
+        right_ui.min_rect()
+    };
+    let controls_width = controls.width().max(0.0);
+    ui.data_mut(|d| d.insert_temp(memory, controls_width));
+    if fits(controls_width) == stacked {
+        // The layout changes next frame: do not show this one.
+        ui.ctx().request_discard("page header layout");
+    }
+    let text_end = if stacked || controls_width <= 0.0 {
         rect.max.x
+    } else {
+        controls.min.x - 12.0
     };
     if !ui.is_rect_visible(rect) {
         return;

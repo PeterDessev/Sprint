@@ -472,6 +472,41 @@ pub fn demo_state() -> PrinterState {
     }
 }
 
+/// Labelled widgets that reach past `width` (the right edge of the
+/// window), as "label (right edge)": content wider than the tab is cut off.
+pub fn overflowing<S>(h: &Harness<'_, S>, width: f32) -> Vec<String> {
+    use egui_kittest::kittest::NodeT as _;
+    h.root()
+        .children_recursive()
+        .filter_map(|n| {
+            let node = n.accesskit_node();
+            let label = node.label().or_else(|| node.value())?;
+            node.bounding_box()?;
+            let right = n.rect().max.x;
+            (right > width + 0.5).then(|| format!("{label} ({right:.0})"))
+        })
+        .collect()
+}
+
+/// Labelled widgets whose rectangles overlap another labelled widget's
+/// (siblings drawn over each other), as "a / b".
+pub fn overlapping<S>(h: &Harness<'_, S>, labels: &[&str]) -> Vec<String> {
+    use egui_kittest::kittest::Queryable as _;
+    let rects: Vec<(String, egui::Rect)> = labels
+        .iter()
+        .filter_map(|l| h.query_by_label(l).map(|n| (l.to_string(), n.rect())))
+        .collect();
+    let mut out = Vec::new();
+    for (i, (a, ra)) in rects.iter().enumerate() {
+        for (b, rb) in &rects[i + 1..] {
+            if ra.shrink(1.0).intersects(rb.shrink(1.0)) {
+                out.push(format!("{a} / {b}"));
+            }
+        }
+    }
+    out
+}
+
 /// Snapshot name with the theme: "insight_printer_dark".
 pub fn themed(base: &str, theme: sprint_gui::theme::Theme) -> String {
     format!("{base}_{}", theme.name().to_lowercase())
