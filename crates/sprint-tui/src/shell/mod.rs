@@ -595,11 +595,19 @@ impl Shell {
                 }
             }
             Command::Cancel => {
-                if !self.job_active() {
-                    self.out.warn("No job is running");
-                } else if self.confirm(input, "Cancel the job? It cannot be resumed.", true) {
-                    self.printer.cancel();
-                    self.out.dim("Cancelling…");
+                let question = self.printer.with_state(|s| {
+                    s.job
+                        .as_ref()
+                        .filter(|j| j.status.is_active())
+                        .map(|j| actions::cancel_question(j, &self.profile.cancel_script))
+                });
+                match question {
+                    None => self.out.warn("No job is running"),
+                    Some(question) if self.confirm(input, &question.line(), true) => {
+                        self.printer.cancel();
+                        self.out.dim("Cancelling…");
+                    }
+                    Some(_) => self.out.dim("Not cancelled"),
                 }
             }
             Command::Status => {

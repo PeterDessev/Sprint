@@ -6,7 +6,8 @@ use std::sync::Arc;
 
 use sprint_host::sprint_proto::{GcodeDoc, PrinterSettings, SettingCommand, gcode_doc};
 use sprint_host::{
-    ConnectTarget, Heater, Macro, PrintOptions, PrinterProfile, PrinterState, TempPreset,
+    ConnectTarget, Heater, JobInfo, JobKind, Macro, PrintOptions, PrinterProfile, PrinterState,
+    TempPreset,
 };
 
 use crate::commands::TempTarget;
@@ -330,6 +331,90 @@ pub fn waiting_for_user(state: &PrinterState) -> bool {
         })
 }
 
+/// The question before cancelling a job, worded for what cancelling it
+/// does (the same words in the shell and the TUI).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CancelQuestion {
+    /// "Cancel the print?"
+    pub title: String,
+    /// What happens, a sentence per line.
+    pub message: Vec<String>,
+    /// The answer that cancels.
+    pub yes: &'static str,
+    /// The answer that goes on.
+    pub no: &'static str,
+}
+
+impl CancelQuestion {
+    /// The question on one line (the shell): what happens, then the
+    /// question.
+    pub fn line(&self) -> String {
+        format!("{} {}", self.message.join(" "), self.title)
+    }
+}
+
+/// What cancelling `job` does: a host print stops and the profile's
+/// `cancel_script` runs (it can be printed again from a line later); an
+/// SD print is aborted by the printer (M524) without a script; an upload
+/// stops and the partial file is deleted from the card.
+pub fn cancel_question(job: &JobInfo, cancel_script: &str) -> CancelQuestion {
+    let name = &job.name;
+    let at = crate::format::percent(f64::from(job.progress));
+    match job.kind {
+        JobKind::HostPrint => CancelQuestion {
+            title: "Cancel the print?".into(),
+            message: vec![
+                format!("{name} stops at {at}."),
+                match script_summary(cancel_script) {
+                    Some(script) => format!("The cancel script runs: {script}."),
+                    None => "The profile has no cancel script: the heaters stay on.".into(),
+                },
+                "It can be printed again from a line later.".into(),
+            ],
+            yes: "Cancel print",
+            no: "Keep printing",
+        },
+        JobKind::SdPrint => CancelQuestion {
+            title: "Stop the SD print?".into(),
+            message: vec![
+                format!("{name} on the printer's SD card stops at {at} (M524)."),
+                "No cancel script runs: the printer ends the print itself.".into(),
+            ],
+            yes: "Stop SD print",
+            no: "Keep printing",
+        },
+        JobKind::SdUpload => CancelQuestion {
+            title: "Cancel the upload?".into(),
+            message: vec![
+                format!("Writing {name} to the SD card stops at {at}."),
+                format!("The partial file {name} is deleted from the card."),
+            ],
+            yes: "Cancel upload",
+            no: "Keep uploading",
+        },
+    }
+}
+
+/// A script's first commands: "M104 S0, M140 S0, M107, G91, … (8
+/// commands)", or `None` when it has none.
+fn script_summary(script: &str) -> Option<String> {
+    /// Commands shown.
+    const SHOWN: usize = 4;
+    let lines: Vec<&str> = script
+        .lines()
+        .map(|l| l.split(';').next().unwrap_or_default().trim())
+        .filter(|l| !l.is_empty())
+        .collect();
+    if lines.is_empty() {
+        return None;
+    }
+    let mut text = lines[..lines.len().min(SHOWN)].join(", ");
+    if lines.len() > SHOWN {
+        text.push_str(&format!(", … ({} commands)", lines.len()));
+    }
+    Some(text)
+}
+
 /// Why a print cannot start, if it cannot.
 pub fn print_blocker(state: &PrinterState, loaded: Option<&LoadedFile>) -> Option<String> {
     if !state.is_connected() {
@@ -466,6 +551,40 @@ mod tests {
                 Heater::Chamber
             ]
         );
+    }
+
+    #[test]
+    fn cancelling_is_described_for_the_kind_of_job() {
+        let job = |kind: JobKind| {
+            let mut job = JobInfo::new(kind, "cube.gco", 100, 1000);
+            job.progress = 0.52;
+            job
+        };
+        let script = "M104 S0\nM140 S0 ; heaters\n\nM107\nG91\nG1 Z10\nG90\nM84\n";
+        let print = cancel_question(&job(JobKind::HostPrint), script);
+        assert_eq!(print.title, "Cancel the print?");
+        assert_eq!((print.yes, print.no), ("Cancel print", "Keep printing"));
+        assert_eq!(
+            print.line(),
+            "cube.gco stops at 52.0%. The cancel script runs: M104 S0, M140 S0, M107, G91, \
+             … (7 commands). It can be printed again from a line later. Cancel the print?"
+        );
+        let bare = cancel_question(&job(JobKind::HostPrint), " ; nothing\n");
+        assert!(bare.message[1].contains("no cancel script"), "{bare:?}");
+        let sd = cancel_question(&job(JobKind::SdPrint), script);
+        assert_eq!(sd.title, "Stop the SD print?");
+        assert!(sd.message[0].contains("(M524)"), "{sd:?}");
+        assert!(sd.message[1].contains("No cancel script runs"), "{sd:?}");
+        let upload = cancel_question(&job(JobKind::SdUpload), script);
+        assert_eq!(upload.title, "Cancel the upload?");
+        assert_eq!((upload.yes, upload.no), ("Cancel upload", "Keep uploading"));
+        assert!(
+            upload.message[1].contains("partial file cube.gco is deleted"),
+            "{upload:?}"
+        );
+        for q in [print, sd, upload] {
+            assert!(!q.line().contains("cannot be resumed"), "{q:?}");
+        }
     }
 
     #[test]

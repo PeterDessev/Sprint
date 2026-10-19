@@ -1041,7 +1041,7 @@ pub(crate) fn help_sections() -> Vec<HelpSection<'static>> {
             [
                 ("F5", "Print the loaded file"),
                 ("F6", "Pause / resume"),
-                ("F7", "Cancel the print"),
+                ("F7", "Cancel the job (print, SD print or upload)"),
                 ("F8 F8", "EMERGENCY STOP (M112), press twice"),
                 ("j", "Jog mode: arrows X/Y, PgUp/PgDn Z, +/- step, h home"),
                 ("t", "Temperatures and presets"),

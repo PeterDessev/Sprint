@@ -895,26 +895,19 @@ impl App {
         }
     }
 
-    /// F7: ask before cancelling.
+    /// F7: ask before cancelling, in words that fit the job (a print, an
+    /// SD print, an upload).
     fn request_cancel(&mut self) {
-        if !self.view.job_active() {
+        let Some(job) = self.view.job.as_ref().filter(|j| j.status.is_active()) else {
             self.warn("No job is running");
             return;
-        }
-        let name = self
-            .view
-            .job
-            .as_ref()
-            .map(|j| j.name.clone())
-            .unwrap_or_default();
+        };
+        let question = actions::cancel_question(job, &self.profile.cancel_script);
         self.modal = Some(Modal::Confirm(Confirm::new(
-            "Cancel the print?",
-            vec![
-                format!("{name} stops and the cancel script runs."),
-                "It cannot be resumed afterwards.".to_string(),
-            ],
-            "Cancel print",
-            "Keep printing",
+            question.title,
+            question.message,
+            question.yes,
+            question.no,
             true,
             Action::CancelJob,
         )));

@@ -1909,3 +1909,40 @@ fn the_palette_runs_pronsole_commands() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn the_cancel_question_fits_the_job() {
+    let mut app = printing_app();
+    app.run_line("cancel");
+    let Some(Modal::Confirm(confirm)) = &app.modal else {
+        panic!("no question: {:?}", app.toast);
+    };
+    assert_eq!(confirm.title, "Cancel the print?");
+    assert_eq!(confirm.yes, "Cancel print");
+    let text = confirm.message.join(" ");
+    assert!(text.contains("The cancel script runs: M104 S0"), "{text}");
+    assert!(text.contains("printed again from a line"), "{text}");
+    assert!(!text.contains("cannot be resumed"), "{text}");
+    // An upload: the partial file goes, no cancel script.
+    app.modal = None;
+    if let Some(job) = &mut app.view.job {
+        job.kind = sprint_host::JobKind::SdUpload;
+        job.name = "CUBE.GCO".into();
+    }
+    app.run_line("cancel");
+    let Some(Modal::Confirm(confirm)) = &app.modal else {
+        panic!("no question: {:?}", app.toast);
+    };
+    assert_eq!(confirm.title, "Cancel the upload?");
+    assert_eq!(
+        (confirm.yes.as_str(), confirm.no.as_str()),
+        ("Cancel upload", "Keep uploading")
+    );
+    assert!(
+        confirm
+            .message
+            .join(" ")
+            .contains("partial file CUBE.GCO is deleted")
+    );
+    assert_eq!(confirm.action, dialogs::Action::CancelJob);
+}
