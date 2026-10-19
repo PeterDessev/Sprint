@@ -27,11 +27,16 @@ const NOON: i64 = 1_704_110_400;
 
 /// The app with the calibration cube loaded and analyzed.
 fn with_cube(options: AppOptions) -> Harness<'static, SprintApp> {
+    with_cube_at(options, WINDOW)
+}
+
+/// [`with_cube`] in a window of `size`.
+fn with_cube_at(options: AppOptions, size: egui::Vec2) -> Harness<'static, SprintApp> {
     let options = AppOptions {
         file: Some(app_support::sample("calibration-cube.gcode")),
         ..options
     };
-    let mut h = app(options, WINDOW);
+    let mut h = app(options, size);
     h.state_mut().set_side_panels(false, true);
     expect(&mut h, "the cube to be analyzed", |app| {
         app.file().is_some_and(|f| f.toolpath.is_some()) && !app.is_loading()
@@ -246,4 +251,20 @@ fn light_theme() {
     console_traffic(h.state_mut());
     settle(&mut h);
     snapshot(&mut h, "app_light");
+}
+
+#[test]
+fn smallest_window() {
+    sprint_gui::format::freeze_clock(Some(NOON));
+    let size = egui::Vec2::from(sprint_gui::MIN_WINDOW_SIZE);
+    let mut h = with_cube_at(AppOptions::headless(), size);
+    let state = printing_state(h.state());
+    h.state_mut().set_state_override(Some(state));
+    settle(&mut h);
+    // The toolbar is compact and the cards share the narrow view.
+    assert!(
+        h.query_by_label("Follow print: move the top layer with the print")
+            .is_some()
+    );
+    snapshot(&mut h, "app_smallest");
 }
