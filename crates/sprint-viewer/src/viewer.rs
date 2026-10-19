@@ -31,6 +31,45 @@ const MARKER_PX: f32 = 3.5;
 pub const DEFAULT_LOD_PIXELS: f32 = 3.0;
 /// Pick tolerance in pixels for thin beads.
 const PICK_TOLERANCE_PX: f32 = 2.5;
+/// Darkening of the grooves between resolved beads (0..1).
+const CAVITY: f32 = 0.5;
+/// Projected bead thickness (pixels) over which the grooves between beads
+/// fade in. The bead's own rounded normal takes over from its macro normal
+/// later, between half and two and a half times the upper bound (see
+/// `bead_light` in the shader).
+const DETAIL_PIXELS: (f32, f32) = (1.2, 4.5);
+/// Strength of the depth cueing towards the background (0..1).
+const DEPTH_CUE: f32 = 0.35;
+/// Exposure applied to lit surfaces before the highlight shoulder.
+const EXPOSURE: f32 = 1.18;
+
+/// Camera-relative studio lights: direction towards the light (xyz) and
+/// intensity (w).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct LightRig {
+    key: [f32; 4],
+    fill: [f32; 4],
+    rim: [f32; 4],
+}
+
+impl LightRig {
+    /// Key from the upper left front, fill from the right, rim from behind
+    /// and above. Lights follow the camera (so every view is lit the same
+    /// way) but lean towards world up so top surfaces read as tops.
+    fn for_camera(cam: &Camera) -> LightRig {
+        let (r, u, f) = (cam.right(), cam.up(), cam.forward());
+        let dir = |v: Vec3, fallback: Vec3| v.normalize_or(fallback);
+        let key = dir(r * -0.5 + u * 0.42 - f * 0.68 + Vec3::Z * 0.2, Vec3::Z);
+        let fill = dir(r * 0.7 + u * 0.05 - f * 0.7, -f);
+        let rim = dir(f * 0.8 + u * 0.6, Vec3::Z);
+        let pack = |v: Vec3, w: f32| [v.x, v.y, v.z, w];
+        LightRig {
+            key: pack(key, 0.8),
+            fill: pack(fill, 0.26),
+            rim: pack(rim, 0.16),
+        }
+    }
+}
 
 /// What [`GcodeViewer::ui`] reports back.
 #[derive(Clone, Debug)]
@@ -1007,18 +1046,40 @@ impl GcodeViewer {
         (p.is_finite() && p.abs().max_element() < MAX_COORD).then_some(p)
     }
 
+    /// Depth-cue start distance and `1 / (end - start)` for a camera: haze
+    /// starts a little in front of the scene centre and is complete at the
+    /// far side of the bed or print, whichever reaches further.
+    fn depth_cue_range(&self, cam: &Camera) -> (f32, f32) {
+        let (min, max) = self.fit_box();
+        let bed = self.bed.volume();
+        let lo = min.min(Vec3::new(bed.min[0], bed.min[1], 0.0));
+        let hi = max.max(Vec3::new(bed.max[0], bed.max[1], 0.0));
+        let centre = (lo + hi) * 0.5;
+        let radius = ((hi - lo).length() * 0.5).max(1.0);
+        let dist = (cam.eye() - centre).length();
+        let start = (dist - radius * 0.25).max(0.0);
+        let end = dist + radius;
+        let span = (end - start).max(1e-3);
+        if start.is_finite() && span.is_finite() {
+            (start, 1.0 / span)
+        } else {
+            (0.0, 0.0)
+        }
+    }
+
     fn build_params(&self, size: (u32, u32)) -> DrawParams {
         let o = &self.options;
         let cam = self.active_camera();
         let aspect = size.0.max(1) as f32 / size.1.max(1) as f32;
-        let (r, u, f) = (cam.right(), cam.up(), cam.forward());
+        let f = cam.forward();
         let persp = cam.projection == Projection::Perspective;
         let pixel = match cam.projection {
             Projection::Perspective => 2.0 * (cam.fov_y * 0.5).tan() / size.1.max(1) as f32,
             Projection::Orthographic => 2.0 * cam.half_height() / size.1.max(1) as f32,
         };
-        let key = (r * -0.45 + u * 0.55 - f * 0.35 + Vec3::Z * 0.55).normalize_or(Vec3::Z);
+        let rig = LightRig::for_camera(cam);
         let eye = cam.eye();
+        let (fog_start, fog_inv_span) = self.depth_cue_range(cam);
 
         let lin4 = |c: [u8; 3], a: f32| {
             let l = srgb_to_linear_rgb(c);
@@ -1080,7 +1141,7 @@ impl GcodeViewer {
             view_proj: cam.view_proj(aspect).to_cols_array_2d(),
             eye: [eye.x, eye.y, eye.z, if persp { 1.0 } else { 0.0 }],
             forward: [f.x, f.y, f.z, pixel],
-            key_light: [key.x, key.y, key.z, 0.55],
+            key_light: rig.key,
             bed: [bed_min[0], bed_min[1], bed_max[0], bed_max[1]],
             feature_colors,
             tool_colors,
@@ -1110,6 +1171,15 @@ impl GcodeViewer {
                 0,
             ],
             range: [scalar.0, scalar.1, MARKER_PX, 0.0],
+            fill_light: rig.fill,
+            rim_light: rig.rim,
+            fog: {
+                let [r, g, b] = srgb_to_linear_rgb(o.background);
+                let strength = if persp { DEPTH_CUE } else { 0.0 };
+                [r, g, b, strength]
+            },
+            fog_range: [fog_start, fog_inv_span, 0.0, 0.0],
+            shading: [CAVITY, DETAIL_PIXELS.0, DETAIL_PIXELS.1, EXPOSURE],
         };
 
         let (prisms, ribbons) = match (range, &self.info) {
@@ -1631,6 +1701,31 @@ mod tests {
                     assert_eq!(covered(&lists), want, "layers {a}..={b}, lod {lod}");
                 }
             }
+        }
+    }
+
+    #[test]
+    fn light_rig_keys_from_the_upper_left_front_in_every_view() {
+        for preset in ViewPreset::ALL {
+            let mut cam = Camera::default();
+            cam.set_preset(preset);
+            let rig = LightRig::for_camera(&cam);
+            for light in [rig.key, rig.fill, rig.rim] {
+                let d = Vec3::new(light[0], light[1], light[2]);
+                assert!((d.length() - 1.0).abs() < 1e-4, "{preset:?}: {d:?}");
+                assert!(light[3] > 0.0 && light[3] <= 1.0);
+            }
+            let key = Vec3::new(rig.key[0], rig.key[1], rig.key[2]);
+            let fill = Vec3::new(rig.fill[0], rig.fill[1], rig.fill[2]);
+            let rim = Vec3::new(rig.rim[0], rig.rim[1], rig.rim[2]);
+            // Key: left, above and in front; fill: right and in front; rim:
+            // behind.
+            assert!(key.dot(cam.right()) < -0.3, "{preset:?}");
+            assert!(key.dot(cam.up()) > 0.3, "{preset:?}");
+            assert!(key.dot(-cam.forward()) > 0.4, "{preset:?}");
+            assert!(fill.dot(cam.right()) > 0.4 && fill.dot(-cam.forward()) > 0.4);
+            assert!(rim.dot(cam.forward()) > 0.5, "{preset:?}");
+            assert!(rig.key[3] > 2.0 * rig.fill[3], "the key dominates");
         }
     }
 

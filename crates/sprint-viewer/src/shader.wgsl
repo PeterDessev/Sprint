@@ -32,6 +32,17 @@ struct Globals {
     layers: vec4<u32>,
     // x/y: scalar range min/max, z: marker radius in pixels, w: unused.
     range: vec4<f32>,
+    // xyz: unit direction towards the fill light; w: intensity.
+    fill_light: vec4<f32>,
+    // xyz: unit direction towards the rim light; w: intensity.
+    rim_light: vec4<f32>,
+    // rgb: linear haze color (the background); a: depth-cue strength.
+    fog: vec4<f32>,
+    // x: depth-cue start distance, y: 1 / (end - start), z/w: unused.
+    fog_range: vec4<f32>,
+    // x: cavity (groove) darkening, y/z: projected bead thickness in pixels
+    // where shading detail fades in (y) and is complete (z), w: exposure.
+    shading: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -102,24 +113,156 @@ fn view_vector(world: vec3<f32>) -> vec3<f32> {
     return -g.forward.xyz;
 }
 
-// Headlight + key light + hemispherical ambient with a subtle specular.
-fn shade(world: vec3<f32>, normal_in: vec3<f32>, base: vec3<f32>, emissive: f32) -> vec3<f32> {
-    let v = view_vector(world);
-    var n = normalize(normal_in);
-    // Interpolated normals can tilt away near silhouettes; keep them facing us.
+// ---------------------------------------------------------------- lighting
+//
+// A studio rig fixed to the camera, like slicer previews: a warm key light
+// from the upper left front, a cool fill from the right, a rim light from
+// behind that catches silhouettes, a sky/ground hemisphere and a weak
+// headlight so nothing facing the viewer goes black.
+
+const SKY: vec3<f32> = vec3<f32>(0.115, 0.125, 0.15);
+const GROUND: vec3<f32> = vec3<f32>(0.03, 0.029, 0.032);
+const KEY_COLOR: vec3<f32> = vec3<f32>(1.0, 0.96, 0.9);
+const FILL_COLOR: vec3<f32> = vec3<f32>(0.78, 0.86, 1.0);
+const HEADLIGHT: f32 = 0.07;
+
+// Keep a normal on the visible side: interpolated normals can tilt away
+// near silhouettes.
+fn facing(n_in: vec3<f32>, v: vec3<f32>) -> vec3<f32> {
+    let n = normalize(n_in);
     let nv = dot(n, v);
     if (nv < 0.0) {
-        n = normalize(n - v * nv * 1.01);
+        return normalize(n - v * nv * 1.01);
     }
+    return n;
+}
+
+// Light a surface point with normal `n` (facing the viewer). `gloss`
+// scales the specular highlight (0 = matte).
+fn light(world: vec3<f32>, n: vec3<f32>, base: vec3<f32>, emissive: f32, gloss: f32) -> vec3<f32> {
+    let v = view_vector(world);
+    let nv = max(dot(n, v), 0.0);
     let l = g.key_light.xyz;
-    let head = max(dot(n, v), 0.0);
-    let key = max(dot(n, l), 0.0);
-    let hemi = n.z * 0.5 + 0.5;
-    let ambient = mix(vec3<f32>(0.035, 0.036, 0.042), vec3<f32>(0.15, 0.16, 0.18), hemi);
-    let diffuse = ambient + vec3<f32>(0.62 * head) + vec3<f32>(1.0, 0.97, 0.92) * (g.key_light.w * key);
+    let nl = dot(n, l);
+    let key = max(nl, 0.0) * g.key_light.w;
+    let fill = max(dot(n, g.fill_light.xyz), 0.0) * g.fill_light.w;
+    let ambient = mix(GROUND, SKY, n.z * 0.5 + 0.5);
+    let diffuse = ambient + KEY_COLOR * key + FILL_COLOR * fill + vec3<f32>(HEADLIGHT * nv);
     let h = normalize(l + v);
-    let spec = pow(max(dot(n, h), 0.0), 56.0) * 0.22 + pow(head, 24.0) * 0.06;
-    return base * diffuse + vec3<f32>(spec) + base * emissive;
+    let spec = pow(max(dot(n, h), 0.0), 48.0) * 0.2 * gloss * smoothstep(0.0, 0.2, nl);
+    // Rim: grazing surfaces facing away from the camera towards the rim
+    // light pick up a soft edge, which separates parts from the background.
+    let rim = pow(1.0 - nv, 3.0) * g.rim_light.w * clamp(dot(n, g.rim_light.xyz) + 0.35, 0.0, 1.0);
+    return base * (diffuse + vec3<f32>(emissive)) + KEY_COLOR * spec + (base * 0.6 + vec3<f32>(0.4)) * rim;
+}
+
+// Generic lit surface (markers, meshes).
+fn shade(world: vec3<f32>, normal_in: vec3<f32>, base: vec3<f32>, emissive: f32) -> vec3<f32> {
+    let n = facing(normal_in, view_vector(world));
+    return light(world, n, base, emissive, 1.0);
+}
+
+// Highlight shoulder on the brightest channel: keeps hue and saturation
+// while bright lit faces roll off instead of clipping flat.
+fn tone(c: vec3<f32>) -> vec3<f32> {
+    let x = c * g.shading.w;
+    let m = max(x.r, max(x.g, x.b));
+    let knee = 0.78;
+    if (m <= knee) {
+        return x;
+    }
+    let mapped = knee + (1.0 - knee) * (1.0 - exp(-(m - knee) / (1.0 - knee)));
+    return x * (mapped / m);
+}
+
+// Gentle depth cueing: distant geometry fades towards the background.
+fn depth_cue(world: vec3<f32>, c: vec3<f32>) -> vec3<f32> {
+    if (g.fog.a <= 0.0 || g.eye.w < 0.5) {
+        return c;
+    }
+    let d = length(world - g.eye.xyz);
+    let f = clamp((d - g.fog_range.x) * g.fog_range.y, 0.0, 1.0);
+    return mix(c, g.fog.rgb, f * f * g.fog.a);
+}
+
+// Final color of a lit surface: depth cue, then tone.
+fn post(world: vec3<f32>, c: vec3<f32>) -> vec3<f32> {
+    return tone(depth_cue(world, c));
+}
+
+// ------------------------------------------------------------ bead shading
+//
+// Up close a bead is a rounded tube; far away it covers less than a pixel
+// and its rounded normals alias (moire) and average out to a flat color, so
+// a wall would read the same whichever way it faces. Each bead therefore
+// gets a macro normal: the mean normal of what is visible of it, given that
+// neighbours hide most of a wall bead's top and most of an infill bead's
+// sides. Shading blends from the macro normal to the bead's own normal as
+// the bead grows on screen (per instance, identical for prisms and ribbons,
+// so LOD switches do not pop), and grooves between beads darken (cavity)
+// only once they are resolved.
+
+// Walls: external, inner and overhang perimeters.
+const WALL_FEATURES: u32 = 14u;
+// Horizontal surfaces: solid, top and bridge infill, gap fill, support
+// interface and ironing.
+const SURFACE_FEATURES: u32 = 6624u;
+
+struct BeadMacro {
+    normal: vec3<f32>,
+    // Projected thickness of the bead in pixels.
+    pixels: f32,
+};
+
+// `right`/`up`: cross-section axes; `a`/`b`: half width / half height;
+// `mid`: bead centre.
+fn bead_macro(feature: u32, right: vec3<f32>, up: vec3<f32>, a: f32, b: f32, mid: vec3<f32>) -> BeadMacro {
+    let v = view_vector(mid);
+    let vr = dot(v, right);
+    let vu = dot(v, up);
+    // Projected areas of the side and top faces that neighbours leave
+    // visible: a box for lone beads, sides for walls, tops for surfaces.
+    let bit = 1u << min(feature, 31u);
+    var ws = b;
+    var wt = a;
+    if ((bit & WALL_FEATURES) != 0u) {
+        ws = 1.0;
+        wt = 0.12;
+    } else if ((bit & SURFACE_FEATURES) != 0u) {
+        ws = 0.12;
+        wt = 1.0;
+    }
+    let mn = right * (vr * ws) + up * (vu * wt);
+    let len = length(mn);
+    var out: BeadMacro;
+    out.normal = v;
+    if (len > 1e-6) {
+        out.normal = mn / len;
+    }
+    // Thickness of the bead's cross-section as seen from the camera.
+    let k = vr * vr + vu * vu;
+    var thick = 2.0 * max(a, b);
+    if (k > 1e-4) {
+        thick = 2.0 * sqrt((a * a * vu * vu + b * b * vr * vr) / k);
+    }
+    out.pixels = thick / max(pixel_size_at(mid), 1e-9);
+    return out;
+}
+
+// Shade a bead fragment from its own normal `n_bead` (facing the viewer),
+// its macro normal `m` and its projected thickness in pixels. Grooves
+// between beads appear as soon as they can be resolved (a few pixels); the
+// bead's own rounded normal takes over from the macro normal only up close,
+// so the part's form keeps reading at middle distances.
+fn bead_light(world: vec3<f32>, n_bead: vec3<f32>, m: vec3<f32>, pixels: f32, base: vec3<f32>, emissive: f32) -> vec3<f32> {
+    let groove_detail = smoothstep(g.shading.y, g.shading.z, pixels);
+    let shape_detail = smoothstep(g.shading.z * 0.5, g.shading.z * 2.5, pixels);
+    let n = normalize(mix(m, n_bead, shape_detail));
+    // Grooves: where the bead turns away from the surface it belongs to.
+    let groove = 1.0 - clamp(dot(n_bead, m), 0.0, 1.0);
+    let cavity = mix(1.0 - 0.18 * g.shading.x, 1.0 - g.shading.x * groove * groove, groove_detail);
+    let c = light(world, n, base, emissive, mix(0.3, 1.0, shape_detail));
+    return c * cavity;
 }
 
 // --------------------------------------------------------- segment attrs
@@ -248,14 +391,14 @@ struct LitOut {
 @fragment
 fn fs_lit(in: LitOut) -> @location(0) vec4<f32> {
     let c = shade(in.world, in.normal, in.color.rgb, in.color.a);
-    return finish(vec4<f32>(c, 1.0));
+    return finish(vec4<f32>(post(in.world, c), 1.0));
 }
 
 // Occluded parts of markers (drawn with an inverted depth test): faint.
 @fragment
 fn fs_xray(in: LitOut) -> @location(0) vec4<f32> {
     let c = shade(in.world, in.normal, in.color.rgb, in.color.a);
-    return finish(vec4<f32>(c, 0.32));
+    return finish(vec4<f32>(post(in.world, c), 0.32));
 }
 
 // ------------------------------------------------------------------ tubes
@@ -265,9 +408,18 @@ struct TubeVertex {
     @location(1) normal: vec4<f32>,
 };
 
+struct PrismOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) /*SAMPLE*/ world: vec3<f32>,
+    @location(1) /*SAMPLE*/ normal: vec3<f32>,
+    @location(2) @interpolate(flat) color: vec4<f32>,
+    // xyz: macro normal, w: projected bead thickness (pixels).
+    @location(3) @interpolate(flat) macro_n: vec4<f32>,
+};
+
 @vertex
-fn vs_tube(v: TubeVertex, s: SegmentIn) -> LitOut {
-    var out: LitOut;
+fn vs_tube(v: TubeVertex, s: SegmentIn) -> PrismOut {
+    var out: PrismOut;
     if (!extrusion_visible(s)) {
         out.clip = HIDDEN_POS;
         return out;
@@ -283,7 +435,8 @@ fn vs_tube(v: TubeVertex, s: SegmentIn) -> LitOut {
     let grow = bead_scale(s.line);
     let hw = 0.5 * s.width * grow;
     let hh = 0.5 * s.height * grow;
-    let center = mix(s.start, s.end, v.profile.x) - vec3<f32>(0.0, 0.0, 0.5 * s.height);
+    let drop = vec3<f32>(0.0, 0.0, 0.5 * s.height);
+    let center = mix(s.start, s.end, v.profile.x) - drop;
     let world = center + right * (v.profile.y * hw) + up * (v.profile.z * hh) + dir * (v.profile.w * hw);
     // Inverse-scale the profile normal (softened so beads read round).
     let sh = mix(hh, hw, 0.3);
@@ -291,7 +444,16 @@ fn vs_tube(v: TubeVertex, s: SegmentIn) -> LitOut {
     out.world = world;
     out.clip = g.view_proj * vec4<f32>(world, 1.0);
     out.color = segment_shade(s);
+    let bm = bead_macro(feature_of(s), right, up, hw, hh, (s.start + s.end) * 0.5 - drop);
+    out.macro_n = vec4<f32>(bm.normal, bm.pixels);
     return out;
+}
+
+@fragment
+fn fs_tube(in: PrismOut) -> @location(0) vec4<f32> {
+    let n = facing(in.normal, view_vector(in.world));
+    let c = bead_light(in.world, n, in.macro_n.xyz, in.macro_n.w, in.color.rgb, in.color.a);
+    return finish(vec4<f32>(post(in.world, c), 1.0));
 }
 
 // ---------------------------------------------------------------- ribbons
@@ -308,6 +470,8 @@ struct RibbonOut {
     @location(2) @interpolate(flat) color: vec4<f32>,
     @location(3) @interpolate(flat) n_mid: vec3<f32>,
     @location(4) @interpolate(flat) n_edge: vec3<f32>,
+    // xyz: macro normal, w: projected bead thickness (pixels).
+    @location(5) @interpolate(flat) macro_n: vec4<f32>,
 };
 
 @vertex
@@ -363,6 +527,8 @@ fn vs_ribbon(@builtin(vertex_index) vi: u32, s: SegmentIn) -> RibbonOut {
     out.color = segment_shade(s);
     out.n_mid = n_mid;
     out.n_edge = n_edge;
+    let bm = bead_macro(feature_of(s), right, up, a, b, mid);
+    out.macro_n = vec4<f32>(bm.normal, bm.pixels);
     return out;
 }
 
@@ -371,9 +537,9 @@ fn fs_ribbon(in: RibbonOut) -> @location(0) vec4<f32> {
     let u = clamp(in.u, -1.0, 1.0);
     // Flatten the middle a little: printed beads are squashed on top.
     let w = mix(u, u * u * u, 0.45);
-    let n = in.n_mid * sqrt(max(1.0 - w * w, 0.0)) + in.n_edge * w;
-    let c = shade(in.world, n, in.color.rgb, in.color.a);
-    return finish(vec4<f32>(c, 1.0));
+    let n_bead = facing(in.n_mid * sqrt(max(1.0 - w * w, 0.0)) + in.n_edge * w, view_vector(in.world));
+    let c = bead_light(in.world, n_bead, in.macro_n.xyz, in.macro_n.w, in.color.rgb, in.color.a);
+    return finish(vec4<f32>(post(in.world, c), 1.0));
 }
 
 // ------------------------------------------------------------ flat output
@@ -551,5 +717,5 @@ fn fs_bed(in: BedOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
     if (!front) {
         alpha = alpha * 0.35;
     }
-    return finish(vec4<f32>(color, alpha));
+    return finish(vec4<f32>(depth_cue(in.world, color), alpha));
 }

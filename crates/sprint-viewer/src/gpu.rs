@@ -47,6 +47,17 @@ pub(crate) struct Globals {
     pub lines: [u32; 4],
     pub layers: [u32; 4],
     pub range: [f32; 4],
+    /// Direction towards the fill light (xyz) and its intensity (w).
+    pub fill_light: [f32; 4],
+    /// Direction towards the rim light (xyz) and its intensity (w).
+    pub rim_light: [f32; 4],
+    /// Linear haze color (rgb) and depth-cue strength (a).
+    pub fog: [f32; 4],
+    /// Depth-cue start distance (x) and `1 / (end - start)` (y).
+    pub fog_range: [f32; 4],
+    /// Cavity darkening (x), projected bead thickness in pixels where
+    /// shading detail starts (y) and is complete (z), exposure (w).
+    pub shading: [f32; 4],
 }
 
 /// Bits of `Globals::mode[2]`.
@@ -1032,7 +1043,7 @@ fn create_pipelines(
         tube: make(
             "sprint-viewer tubes",
             "vs_tube",
-            "fs_lit",
+            "fs_tube",
             &[Some(tube_vertices), Some(segment_instances.clone())],
             TriangleList,
             Some(wgpu::Face::Back),

@@ -582,3 +582,171 @@ fn large_toolpaths_stream_in_over_several_polls() {
     let img = render(&mut viewer);
     assert!(img.chunks_exact(4).any(|p| p[0] > 120 && p[0] > p[2] + 40));
 }
+
+/// A hollow 20 x 20 mm square tower of external-perimeter loops, `layers`
+/// layers of 0.2 mm, wound counter-clockwise like a slicer's outer walls.
+fn tower(layers: u32) -> Toolpath {
+    let mut tp = Toolpath::default();
+    let mut line = 0;
+    let corners = [
+        [100.0f32, 100.0],
+        [120.0, 100.0],
+        [120.0, 120.0],
+        [100.0, 120.0],
+        [100.0, 100.0],
+    ];
+    for layer in 0..layers {
+        let z = 0.2 + layer as f32 * 0.2;
+        let start = tp.segments.len();
+        for side in corners.windows(2) {
+            for k in 0..10 {
+                let lerp = |t: f32| {
+                    [
+                        side[0][0] + (side[1][0] - side[0][0]) * t,
+                        side[0][1] + (side[1][1] - side[0][1]) * t,
+                        z,
+                    ]
+                };
+                tp.segments.push(Segment {
+                    start: lerp(k as f32 / 10.0),
+                    end: lerp((k + 1) as f32 / 10.0),
+                    feedrate: 30.0,
+                    width: 0.45,
+                    height: 0.2,
+                    line,
+                    layer,
+                    kind: MoveKind::Extrude,
+                    feature: Feature::ExternalPerimeter,
+                    ..Default::default()
+                });
+                line += 1;
+            }
+        }
+        tp.layers.push(Layer {
+            z,
+            height: 0.2,
+            segments: start..tp.segments.len(),
+            lines: start as u32..line,
+            ..Default::default()
+        });
+        tp.bounds.include([100.0, 100.0, z]);
+        tp.bounds.include([120.0, 120.0, z]);
+    }
+    tp.line_count = line;
+    tp
+}
+
+fn luma(p: [u8; 4]) -> f32 {
+    0.2126 * p[0] as f32 + 0.7152 * p[1] as f32 + 0.0722 * p[2] as f32
+}
+
+/// Mean luminance of a small square of pixels around a projected point.
+fn patch_luma(viewer: &GcodeViewer, img: &[u8], p: Vec3) -> f32 {
+    let s = viewer
+        .camera()
+        .project_to_screen(p, Vec2::new(W as f32, H as f32))
+        .expect("visible");
+    let (cx, cy) = (s.x as i32, s.y as i32);
+    let mut sum = 0.0;
+    let mut n = 0.0;
+    for y in cy - 1..=cy + 1 {
+        for x in cx - 1..=cx + 1 {
+            sum += luma(px(img, x as u32, y as u32));
+            n += 1.0;
+        }
+    }
+    sum / n
+}
+
+/// Iso view of the tower from `distance` mm.
+fn tower_view(device: &wgpu::Device, queue: &wgpu::Queue, distance: f32) -> GcodeViewer {
+    let mut viewer = loaded_viewer(device, queue, tower(100));
+    viewer.options_mut().show_bed = false;
+    viewer.options_mut().show_axes = false;
+    let cam = viewer.camera_mut();
+    cam.target = Vec3::new(110.0, 110.0, 10.0);
+    cam.distance = distance;
+    viewer
+}
+
+#[test]
+fn distant_walls_shade_by_the_way_they_face() {
+    // Far away every layer is thinner than a pixel. The wall facing the
+    // key light (upper left) must still read clearly brighter than the one
+    // facing right, as on a solid part.
+    let Some((device, queue)) = device() else {
+        return;
+    };
+    let mut viewer = tower_view(&device, &queue, 160.0);
+    let img = render(&mut viewer);
+    let left = patch_luma(&viewer, &img, Vec3::new(100.0, 110.0, 10.0));
+    let front = patch_luma(&viewer, &img, Vec3::new(110.0, 100.0, 10.0));
+    assert!(
+        left > front * 1.2 && front > 25.0,
+        "left wall {left:.1} vs front wall {front:.1}"
+    );
+}
+
+#[test]
+fn distant_layers_do_not_shimmer() {
+    // Layers a fraction of a pixel thick: neighbouring pixels down a wall
+    // must not alternate between bright and dark (moire).
+    let Some((device, queue)) = device() else {
+        return;
+    };
+    for distance in [110.0, 160.0, 260.0] {
+        let mut viewer = tower_view(&device, &queue, distance);
+        let img = render(&mut viewer);
+        let size = Vec2::new(W as f32, H as f32);
+        for face in [
+            [Vec3::new(100.0, 104.0, 3.0), Vec3::new(100.0, 104.0, 17.0)],
+            [Vec3::new(116.0, 100.0, 3.0), Vec3::new(116.0, 100.0, 17.0)],
+        ] {
+            let a = viewer.camera().project_to_screen(face[0], size).expect("a");
+            let b = viewer.camera().project_to_screen(face[1], size).expect("b");
+            let x = ((a.x + b.x) * 0.5) as u32;
+            let (y0, y1) = (b.y.min(a.y) as u32, b.y.max(a.y) as u32);
+            let column: Vec<f32> = (y0..=y1).map(|y| luma(px(&img, x, y))).collect();
+            assert!(column.len() > 8, "face too small at {distance} mm");
+            let steps: f32 = column.windows(2).map(|w| (w[1] - w[0]).abs()).sum();
+            let mean = steps / (column.len() - 1) as f32;
+            assert!(
+                mean < 2.5,
+                "{distance} mm: mean step {mean:.2} down the wall at x {x}: {column:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn prisms_and_ribbons_agree_at_middle_distances() {
+    // Where beads are a few pixels thick (the LOD switch), both paths use
+    // the same shading model, so switching must not visibly pop.
+    let Some((device, queue)) = device() else {
+        return;
+    };
+    for distance in [45.0, 70.0, 110.0] {
+        let mut viewer = tower_view(&device, &queue, distance);
+        viewer.set_lod_pixels(0.0);
+        let prisms = render(&mut viewer);
+        viewer.set_lod_pixels(f32::MAX);
+        let ribbons = render(&mut viewer);
+        let lit =
+            |img: &[u8], i: usize| !near([img[i], img[i + 1], img[i + 2], 255], BACKGROUND, 6);
+        let (mut diff, mut n) = (0.0f64, 0usize);
+        for i in (0..prisms.len()).step_by(4) {
+            if lit(&prisms, i) && lit(&ribbons, i) {
+                diff += (luma([prisms[i], prisms[i + 1], prisms[i + 2], 255])
+                    - luma([ribbons[i], ribbons[i + 1], ribbons[i + 2], 255]))
+                .abs() as f64;
+                n += 1;
+            }
+        }
+        assert!(n > 1000, "{distance} mm: only {n} pixels covered");
+        let mean = diff / n as f64;
+        assert!(
+            mean < 9.0,
+            "{distance} mm: mean luminance difference {mean:.2}"
+        );
+    }
+}
