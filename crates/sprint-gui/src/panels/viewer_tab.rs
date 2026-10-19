@@ -327,11 +327,12 @@ impl ViewerTab {
                     (Key::End, i64::MAX / 4),
                     (Key::Home, i64::MIN / 4),
                 ] {
-                    if i.consume_key(Modifiers::NONE, key) {
-                        moves.push((true, delta));
-                    }
+                    // Shift first: a plain pattern also matches Shift+key.
                     if i.consume_key(Modifiers::SHIFT, key) {
                         moves.push((false, delta));
+                    }
+                    if i.consume_key(Modifiers::NONE, key) {
+                        moves.push((true, delta));
                     }
                 }
                 moves
