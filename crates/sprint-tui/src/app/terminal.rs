@@ -251,19 +251,9 @@ mod tests {
         session::connect_blocking(&printer, sim, ConnectOptions::default(), &interrupt)
             .expect("connect");
         session::wait_setup(&printer, Duration::from_secs(30), &interrupt).expect("setup");
-        let mut gcode = String::from(
-            "M104 S200
-M140 S60
-G28
-G1 Z0.3 F600
-",
-        );
+        let mut gcode = String::from("M104 S200\nM140 S60\nG28\nG1 Z0.3 F600\n");
         for i in 0..400 {
-            gcode.push_str(&format!(
-                "G1 X{} Y20 F600
-",
-                20 + (i % 2) * 5
-            ));
+            gcode.push_str(&format!("G1 X{} Y20 F600\n", 20 + (i % 2) * 5));
         }
         let file = Arc::new(sprint_host::sprint_gcode::GcodeFile::from_text(
             "slow.gcode",
