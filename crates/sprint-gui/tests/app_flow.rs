@@ -360,6 +360,35 @@ fn shortcuts_switch_tabs_and_open_dialogs() {
 }
 
 #[test]
+fn escape_closes_find_and_go_to_line() {
+    let options = with_file(AppOptions::headless(), sample("calibration-cube.gcode"));
+    let mut h = app(options, WINDOW);
+    expect(&mut h, "the cube to be analyzed", analyzed);
+    // Typing in the find field, then Escape.
+    h.key_press_modifiers(Modifiers::COMMAND, Key::F);
+    settle(&mut h);
+    h.event(egui::Event::Text("G1 X1".into()));
+    settle(&mut h);
+    assert_eq!(h.state().gcode_tab().find().query, "G1 X1");
+    h.key_press(Key::Escape);
+    settle(&mut h);
+    assert!(
+        !h.state().gcode_tab().find().open,
+        "Escape closes the find bar"
+    );
+    assert!(h.state().gcode_tab().find().query.is_empty());
+    // The same for "go to line".
+    h.key_press_modifiers(Modifiers::COMMAND, Key::G);
+    settle(&mut h);
+    assert!(h.state().gcode_tab().is_goto_open());
+    h.event(egui::Event::Text("12".into()));
+    settle(&mut h);
+    h.key_press(Key::Escape);
+    settle(&mut h);
+    assert!(!h.state().gcode_tab().is_goto_open());
+}
+
+#[test]
 fn selecting_a_line_syncs_the_views() {
     let options = with_file(AppOptions::headless(), sample("calibration-cube.gcode"));
     let mut h = app(options, WINDOW);

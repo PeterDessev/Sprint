@@ -604,6 +604,11 @@ impl GcodeTab {
         &self.find
     }
 
+    /// True while the "go to line" field is shown.
+    pub fn is_goto_open(&self) -> bool {
+        self.goto.is_some()
+    }
+
     /// Set the search query (tests and scripting).
     pub fn set_query(&mut self, query: &str) {
         self.find.open = true;
@@ -798,7 +803,10 @@ impl GcodeTab {
             edit.request_focus();
             self.find.focus = false;
         }
-        let escape = edit.has_focus() && ui.input(|i| i.key_pressed(Key::Escape));
+        // Escape takes the focus away before the field sees it (egui clears
+        // it at the start of the frame), hence `lost_focus` too.
+        let escape =
+            (edit.has_focus() || edit.lost_focus()) && ui.input(|i| i.key_pressed(Key::Escape));
         ui.add(egui::Button::selectable(self.find.case_sensitive, "Aa").small())
             .on_hover_text("Match case")
             .clicked()
