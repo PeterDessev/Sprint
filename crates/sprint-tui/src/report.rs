@@ -1263,10 +1263,20 @@ pub fn preset_lines(presets: &[TempPreset]) -> Vec<ReportLine> {
 
 /// A one-line live status for `monitor` and `sprint print`:
 /// `"Printing 42.0%  layer 12/100  ETA 20:00  T0 205/210  B 60/60"`.
+/// Without a connection it starts with why (`"Disconnected (link lost)"`)
+/// and leaves out the temperatures and the position, which are no longer
+/// known.
 pub fn monitor_text(state: &PrinterState) -> String {
     let mut out = String::new();
-    if !state.status.is_connected() {
-        out.push_str(state.status.label());
+    match &state.status {
+        ConnectionStatus::Connected => {}
+        ConnectionStatus::Failed(why) if !why.trim().is_empty() => {
+            let _ = write!(out, "Disconnected ({})", sanitize(why.trim()));
+        }
+        ConnectionStatus::Failed(_) | ConnectionStatus::Disconnected => {
+            out.push_str("Disconnected");
+        }
+        other => out.push_str(other.label()),
     }
     if let Some(job) = state.job.as_ref() {
         if !out.is_empty() {
@@ -1289,6 +1299,9 @@ pub fn monitor_text(state: &PrinterState) -> String {
         let _ = write!(out, "  waiting for the user: {}", sanitize(&prompt.message));
     } else if crate::actions::waiting_for_user(state) {
         out.push_str("  waiting for the user");
+    }
+    if !state.status.is_connected() {
+        return out.trim().to_string();
     }
     let temp = |current: f32, target: Option<f32>| {
         let now = format::fixed(f64::from(current), 0);
@@ -1696,6 +1709,24 @@ mod tests {
             "Printing 42.0%  layer 12/100  ETA 20:00  T0 205/210  B 60/60  Z 0.20"
         );
         assert_eq!(monitor_text(&PrinterState::default()), "Disconnected");
+    }
+
+    #[test]
+    fn monitor_after_a_lost_link_says_why_once_and_drops_stale_readings() {
+        let mut state = connected_state();
+        state.status = ConnectionStatus::Failed("link lost".into());
+        if let Some(job) = &mut state.job {
+            job.status = JobStatus::Failed("the connection was lost".into());
+        }
+        assert_eq!(
+            monitor_text(&state),
+            "Disconnected (link lost)  Failed 42.0%  layer 12/100"
+        );
+        state.status = ConnectionStatus::Failed(String::new());
+        assert!(monitor_text(&state).starts_with("Disconnected  Failed"));
+        state.status = ConnectionStatus::Connecting;
+        state.job = None;
+        assert_eq!(monitor_text(&state), "Connecting");
     }
 
     #[test]
