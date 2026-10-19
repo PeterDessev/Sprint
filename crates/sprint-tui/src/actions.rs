@@ -515,6 +515,15 @@ pub fn cancel_question(job: &JobInfo, cancel_script: &str) -> CancelQuestion {
     }
 }
 
+/// The profile's cancel script with its placeholders rendered (for
+/// example `{heaters_off}` becomes one `M104` per hotend plus `M140 S0`),
+/// ready for [`cancel_question`].
+pub fn rendered_cancel_script(profile: &PrinterProfile) -> String {
+    let state = sprint_host::sprint_gcode::MachineState::new();
+    let ctx = profile.script_context(&state);
+    sprint_host::script::render_script_with(&profile.cancel_script, &ctx).join("\n")
+}
+
 /// A script's first commands: "M104 S0, M140 S0, M107, G91, … (8
 /// commands)", or `None` when it has none.
 fn script_summary(script: &str) -> Option<String> {

@@ -643,11 +643,12 @@ impl Shell {
                 }
             }
             Command::Cancel => {
+                let script = actions::rendered_cancel_script(&self.profile);
                 let question = self.printer.with_state(|s| {
                     s.job
                         .as_ref()
                         .filter(|j| j.status.is_active())
-                        .map(|j| actions::cancel_question(j, &self.profile.cancel_script))
+                        .map(|j| actions::cancel_question(j, &script))
                 });
                 match question {
                     None => self.out.warn("No job is running"),

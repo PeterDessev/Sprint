@@ -986,7 +986,8 @@ impl App {
             self.warn("No job is running");
             return;
         };
-        let question = actions::cancel_question(job, &self.profile.cancel_script);
+        let script = actions::rendered_cancel_script(&self.profile);
+        let question = actions::cancel_question(job, &script);
         self.modal = Some(Modal::Confirm(Confirm::new(
             question.title,
             question.message,
