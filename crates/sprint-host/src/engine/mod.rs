@@ -802,6 +802,11 @@ impl Engine {
 
     /// Whether new commands get line numbers.
     fn numbered(&self) -> bool {
+        // A halted firmware has lost its line counter; a stopped Marlin still
+        // takes unnumbered commands (M999 and friends).
+        if self.halted {
+            return false;
+        }
         match self.options.checksum {
             ChecksumMode::Always => true,
             ChecksumMode::PrintOnly => self.job.as_ref().is_some_and(|j| j.is_active()),
@@ -845,7 +850,7 @@ impl Engine {
             if self.flow.next_line() >= LINE_NUMBER_LIMIT {
                 self.renumber_pending = true;
             }
-            if self.renumber_pending {
+            if self.renumber_pending && !self.halted {
                 if self.flow.is_idle() {
                     self.renumber_pending = false;
                     let meta = CmdMeta::new("M110 N0", Source::Setup);

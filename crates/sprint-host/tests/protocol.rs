@@ -287,6 +287,18 @@ fn fatal_errors_halt_and_m999_restarts() {
             .with_state(|s| s.last_error.clone())
             .is_some_and(|e| e.contains("stopped"))
     );
+    // While halted, commands go out unnumbered (the counter is unknown).
+    let seq = last_seq(&printer);
+    printer.send("M105");
+    wait_for(&printer, "M105 while halted", |_| {
+        log.lock().unwrap().iter().any(|c| c == "M105")
+    });
+    let sent = printer
+        .console_since(seq, usize::MAX)
+        .into_iter()
+        .find(|e| e.kind == ConsoleKind::Sent)
+        .unwrap();
+    assert_eq!((sent.text.as_str(), sent.line), ("M105", None));
     printer.firmware_restart();
     wait_for(&printer, "running again", |s| !s.halted);
     printer.send("G28");
