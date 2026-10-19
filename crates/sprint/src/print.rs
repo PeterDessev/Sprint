@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use sprint_gcode::{ResumeOptions, resume_preamble};
-use sprint_host::{Event, JobStatus, Printer, PrinterProfile};
+use sprint_host::{Event, JobStatus, PrintOptions, Printer, PrinterProfile};
 use sprint_tui::format;
 use sprint_tui::interrupt::{self, Interrupt};
 use sprint_tui::loader::LoadedFile;
@@ -65,19 +65,7 @@ pub fn run(args: &PrintArgs) -> Result<ExitCode> {
         }
         Err(e) => return Err(e),
     };
-    let mut options = sprint_tui::actions::print_options(&loaded, &profile);
-    if let Some(line) = args.start_line {
-        let total = loaded.file.len();
-        let index = usize::try_from(line - 1).unwrap_or(usize::MAX);
-        if index >= total {
-            bail!(
-                "--start-line {line} is past the end of {} ({total} lines)",
-                loaded.name()
-            );
-        }
-        options.start_line = index;
-        options.preamble = resume_preamble(&loaded.file, index, &resume_options(args));
-    }
+    let options = print_options(args, &loaded, &profile)?;
     let pauses = pause_points(&loaded, &args.pause_at_layer, options.start_line)?;
 
     let printer = Printer::with_console_capacity(config.console_max_lines);
@@ -163,6 +151,32 @@ pub fn run(args: &PrintArgs) -> Result<ExitCode> {
             other.label()
         )),
     }
+}
+
+/// The print's options: the profile's (its `emit_progress` included, see
+/// [`sprint_tui::actions::print_options`]), M73 progress also with
+/// `--progress-on-printer`, and with `--start-line` the line to start from
+/// and the resume preamble.
+fn print_options(
+    args: &PrintArgs,
+    loaded: &LoadedFile,
+    profile: &PrinterProfile,
+) -> Result<PrintOptions> {
+    let mut options = sprint_tui::actions::print_options(loaded, profile);
+    options.emit_progress |= args.progress_on_printer;
+    if let Some(line) = args.start_line {
+        let total = loaded.file.len();
+        let index = usize::try_from(line - 1).unwrap_or(usize::MAX);
+        if index >= total {
+            bail!(
+                "--start-line {line} is past the end of {} ({total} lines)",
+                loaded.name()
+            );
+        }
+        options.start_line = index;
+        options.preamble = resume_preamble(&loaded.file, index, &resume_options(args));
+    }
+    Ok(options)
 }
 
 /// A `--pause-at-layer` point: the print pauses before `line`, the first
@@ -979,6 +993,34 @@ mod tests {
         let toolpath =
             sprint_gcode::analyze_simple(&file, &sprint_gcode::AnalyzeOptions::default());
         LoadedFile::new("layers.gcode".into(), file, toolpath, Duration::ZERO)
+    }
+
+    #[test]
+    fn progress_on_the_printer_comes_from_the_flag_or_the_profile() {
+        let loaded = layered_loaded(2);
+        let mut profile = PrinterProfile::default();
+        let plain = print_options(&print_args(&[]), &loaded, &profile).expect("options");
+        assert!(!plain.emit_progress && plain.toolpath.is_some());
+        let flag = print_args(&["--progress-on-printer"]);
+        assert!(
+            print_options(&flag, &loaded, &profile)
+                .expect("options")
+                .emit_progress
+        );
+        profile.emit_progress = true;
+        assert!(
+            print_options(&print_args(&[]), &loaded, &profile)
+                .expect("options")
+                .emit_progress
+        );
+        // --start-line: the line and the preamble.
+        let resume =
+            print_options(&print_args(&["--start-line", "5"]), &loaded, &profile).expect("options");
+        assert_eq!(resume.start_line, 4);
+        assert!(!resume.preamble.is_empty());
+        let past = print_options(&print_args(&["--start-line", "999"]), &loaded, &profile)
+            .expect_err("past the end");
+        assert!(past.to_string().contains("is past the end"), "{past}");
     }
 
     #[test]

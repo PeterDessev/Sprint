@@ -67,7 +67,14 @@ pub enum Command {
     /// Print a file without a UI, showing progress.
     ///
     /// When the print fails or is cancelled, the line it stopped at is
-    /// printed as the command that resumes it (--start-line).
+    /// printed as the command that resumes it (--start-line). The
+    /// profile's hooks run as the print starts, completes, fails or is
+    /// cancelled: on_start_command, on_finish_command, on_fail_command and
+    /// on_cancel_command, shell commands run by the host with SPRINT_FILE,
+    /// SPRINT_STATUS, SPRINT_ELAPSED_SECS and SPRINT_PRINTER (and
+    /// SPRINT_REASON for failures) in their environment. Progress shows on
+    /// the printer's display (M73) when the profile's emit_progress is on,
+    /// or with --progress-on-printer.
     Print(PrintArgs),
     /// Analyze a G-code file and print its statistics.
     Analyze(AnalyzeArgs),
@@ -197,6 +204,10 @@ pub struct PrintArgs {
     /// resumes the print (Ctrl+C cancels it).
     #[arg(long, value_name = "L", value_parser = clap::value_parser!(u64).range(1..))]
     pub pause_at_layer: Vec<u64>,
+    /// Show the print's progress on the printer's display (M73), as the
+    /// profile's emit_progress does.
+    #[arg(long)]
+    pub progress_on_printer: bool,
     /// Do not show the progress line on stderr.
     #[arg(long)]
     pub no_progress: bool,
@@ -461,7 +472,7 @@ mod tests {
         assert_eq!(p.start_line, Some(120));
         assert!(p.no_progress);
         assert_eq!(p.answer_prompts, AnswerPrompts::Continue);
-        assert!(p.pause_at_layer.is_empty());
+        assert!(p.pause_at_layer.is_empty() && !p.progress_on_printer);
         let Ok(Command::Print(p)) = parse(&[
             "print",
             "a.gcode",
@@ -471,10 +482,12 @@ mod tests {
             "12",
             "--pause-at-layer",
             "3",
+            "--progress-on-printer",
         ]) else {
             panic!("print");
         };
         assert_eq!(p.pause_at_layer, [12, 3]);
+        assert!(p.progress_on_printer);
         let Ok(Command::Send(s)) = parse(&["send", "--connect", "sim", "G28", "M105"]) else {
             panic!("send");
         };

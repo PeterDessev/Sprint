@@ -107,7 +107,7 @@ fn help_says_what_the_configuration_and_targets_do() {
 }
 
 #[test]
-fn print_help_explains_recovery_and_pauses() {
+fn print_help_explains_recovery_pauses_progress_and_hooks() {
     let output = sprint(&["print", "--help"]);
     assert!(output.status.success(), "{}", stderr(&output));
     let text = stdout(&output)
@@ -121,6 +121,9 @@ fn print_help_explains_recovery_and_pauses() {
         "homes X and Y (never Z: the part is below the nozzle)",
         "--pause-at-layer <L>",
         "Enter resumes the print",
+        "--progress-on-printer",
+        "on_start_command, on_finish_command, on_fail_command and on_cancel_command",
+        "SPRINT_FILE",
     ] {
         assert!(text.contains(fact), "missing {fact:?} in\n{text}");
     }

@@ -356,7 +356,15 @@ fn print_pauses_at_the_layers_asked_for() {
     assert!(!err.contains("Connecting"), "{err}");
     // Paused before layer 2; Enter on standard input resumes it.
     let output = scratch.run_with_input(
-        &["print", &cube, "-c", PRINT_SIM, "--pause-at-layer", "2"],
+        &[
+            "print",
+            &cube,
+            "-c",
+            PRINT_SIM,
+            "--pause-at-layer",
+            "2",
+            "--progress-on-printer",
+        ],
         "\n",
     );
     let err = stderr(&output);
