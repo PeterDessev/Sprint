@@ -203,13 +203,40 @@ fn macro_editor_dialog() {
         settle(&mut h);
         h.get(by_label("Color #3CC6C6")).click();
         settle(&mut h);
-        assert!(
-            h.query_all_by_role(egui::accesskit::Role::Label)
-                .any(|n| n.value().is_some_and(|v| v.contains("Contains M502")))
-        );
+        assert!(h.query_all_by_role(egui::accesskit::Role::Label).any(|n| {
+            n.value()
+                .is_some_and(|v| v.contains("Sprint asks before sending it. M502"))
+        }));
         pointer_away(&mut h);
         snapshot(&mut h, &name("macro_editor", theme));
     }
+}
+
+/// The arguments dialog of a macro written with `{0}` / `{1=60}`, with
+/// the G-code it would send.
+#[test]
+fn macro_arguments_dialog() {
+    let mut rig = rig(heating_state());
+    rig.config.macros.insert(
+        0,
+        Macro {
+            name: "Preheat".into(),
+            gcode: "M104 S{0}\nM140 S{1=60} ; bed\nM117 Preheat {args}".into(),
+            color: Some([0xFF, 0x7A, 0x1A]),
+            confirm: false,
+        },
+    );
+    let mut h = sidebar_fixed(Theme::Dark, (720.0, 2400.0), rig);
+    settle(&mut h);
+    h.get(by_label("Preheat…")).click();
+    settle(&mut h);
+    h.set_size(egui::vec2(720.0, 620.0));
+    settle(&mut h);
+    h.event(egui::Event::Text("215".into()));
+    settle(&mut h);
+    assert!(h.query(by_label("Run “Preheat”")).is_some());
+    pointer_away(&mut h);
+    snapshot(&mut h, &name("macro_arguments", Theme::Dark));
 }
 
 /// With a babystep offset, the readout, its undo button and the step

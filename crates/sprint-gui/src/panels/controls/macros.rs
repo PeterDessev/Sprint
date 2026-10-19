@@ -1,6 +1,14 @@
 //! Macros: a grid of the user's G-code buttons (from the config), with an
-//! editor dialog, confirmation where asked for, a context menu to edit,
-//! duplicate, reorder and delete, and a set of useful defaults.
+//! editor dialog, a context menu to edit, duplicate, reorder and delete,
+//! and a set of useful defaults.
+//!
+//! Running a macro: its arguments (`{0}`, `{1=200}`, `{args}`, see
+//! [`crate::macro_args`]) are asked for in a small dialog, never sent as
+//! placeholders; the G-code it sends, with `{x}`, `{heaters_off}` and the
+//! other script placeholders rendered, then goes through the shared
+//! command-safety classifier ([`crate::safety`]), which decides whether it
+//! runs at once, asks first (also when the macro asks for confirmation)
+//! or is refused.
 
 use egui::color_picker::{self, Alpha};
 use egui::ecolor::Hsva;
@@ -9,14 +17,17 @@ use egui::{
     Popup, PopupCloseBehavior, Response, RichText, ScrollArea, Sense, Stroke, StrokeKind, TextEdit,
     Ui, WidgetInfo, WidgetType, text::LayoutJob, vec2,
 };
-use sprint_host::{Macro, PrinterProfile};
+use sprint_host::{Macro, PrinterProfile, PrinterState};
+use sprint_proto::JobContext;
 
 use super::motion::refresh_position;
 use super::{caption, section};
 use crate::context::AppCtx;
-use crate::icons;
+use crate::macro_args::{self, MacroParams};
+use crate::safety::{self, Assessment};
 use crate::theme::{self, Palette, TextRole, mix, readable_text_on, with_alpha};
 use crate::widgets::{ActionButton, ConfirmDialog, DialogResult, IconButton, Toggle};
+use crate::{format, icons};
 
 /// Colors offered in the editor (besides "none" and a custom picker).
 const SWATCHES: [[u8; 3]; 8] = [
@@ -53,19 +64,17 @@ pub(super) fn macro_lines(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// Commands in `text` the G-code reference marks as dangerous (M502,
-/// M112, ...), each listed once, in order.
-pub(super) fn dangerous_commands(text: &str) -> Vec<&'static str> {
-    let mut found: Vec<&'static str> = Vec::new();
-    for line in macro_lines(text) {
-        if let Some(doc) = sprint_host::sprint_proto::gcode_doc(&line)
-            && doc.dangerous
-            && !found.contains(&doc.code)
-        {
-            found.push(doc.code);
-        }
-    }
-    found
+/// Why the classifier would ask before a macro with `text` runs on an idle
+/// printer (dangerous commands such as M502), for the editor.
+pub(super) fn idle_reasons(text: &str) -> Vec<String> {
+    safety::assess(&macro_lines(text), JobContext::Idle).confirm
+}
+
+/// What a macro sends now: its G-code (arguments filled in) with the script
+/// placeholders rendered from the printer's state and the profile, one
+/// command per line.
+pub(super) fn rendered(gcode: &str, state: &PrinterState, profile: &PrinterProfile) -> String {
+    macro_args::rendered(gcode, state, profile).join("\n")
 }
 
 /// A short preview of a macro's G-code (first lines, "…" when cut).
@@ -165,6 +174,16 @@ fn run_macro(ctx: &AppCtx<'_>, m: &Macro) {
     refresh_position(ctx.printer, ctx.state);
 }
 
+/// [`run_macro`]; a `test` send from the editor says so in a toast.
+fn run_now(ctx: &mut AppCtx<'_>, m: &Macro, test: bool) {
+    run_macro(ctx, m);
+    if test {
+        let name = m.name.trim();
+        let shown = if name.is_empty() { "macro" } else { name };
+        ctx.toasts.info(format!("Sent {shown}"));
+    }
+}
+
 /// A change to the macro list, applied after the grid is drawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ListOp {
@@ -232,23 +251,88 @@ impl Editor {
     }
 }
 
+/// A macro waiting for "Run?" confirmation.
+#[derive(Clone, Debug)]
+struct PendingRun {
+    /// The macro with its arguments filled in.
+    run: Macro,
+    /// Why it asks (empty when only the macro itself asks).
+    check: Assessment,
+    /// What the job was doing then.
+    job: JobContext,
+    /// A test send from the editor (a toast says it was sent).
+    test: bool,
+}
+
+/// A macro waiting for its arguments.
+#[derive(Clone, Debug)]
+struct ArgsDialog {
+    run: Macro,
+    params: MacroParams,
+    fields: Vec<String>,
+    /// Focus the first field on the first frame.
+    focus: bool,
+    /// A test send from the editor.
+    test: bool,
+}
+
 /// UI state of the macros section.
 #[derive(Debug, Default)]
 pub(super) struct Macros {
     editor: Option<Editor>,
     /// A macro waiting for "Run?" confirmation.
-    pending_run: Option<Macro>,
+    pending_run: Option<PendingRun>,
     /// A macro waiting for "Delete?" confirmation.
     pending_delete: Option<usize>,
+    /// A macro waiting for its arguments.
+    args: Option<ArgsDialog>,
 }
 
 impl Macros {
+    /// Run `m` as the user asked: its arguments first, when it takes any
+    /// (see [`crate::macro_args`]), then [`Macros::check_and_run`]. `test`:
+    /// a test send from the editor.
+    fn request_run(&mut self, ctx: &mut AppCtx<'_>, m: &Macro, test: bool) {
+        let params = macro_args::params(&m.gcode);
+        if params.any() {
+            self.args = Some(ArgsDialog {
+                run: m.clone(),
+                fields: params.initial_fields(),
+                params,
+                focus: true,
+                test,
+            });
+            return;
+        }
+        self.check_and_run(ctx, m.clone(), test);
+    }
+
+    /// Run `m` (its arguments filled in) through the command-safety
+    /// classifier: at once, after a question (also when the macro asks
+    /// for one), or not at all.
+    fn check_and_run(&mut self, ctx: &mut AppCtx<'_>, m: Macro, test: bool) {
+        let lines = macro_args::rendered(&m.gcode, ctx.state, ctx.config.active());
+        let job = safety::job_context(ctx.state);
+        let check = safety::assess(&lines, job);
+        if !check.blocked.is_empty() {
+            ctx.toasts
+                .warning(format!("“{}” not run", m.name.trim()))
+                .message(check.blocked.join("\n"));
+        } else if m.confirm || !check.confirm.is_empty() {
+            self.pending_run = Some(PendingRun {
+                run: m,
+                check,
+                job,
+                test,
+            });
+        } else {
+            run_now(ctx, &m, test);
+        }
+    }
+
     /// Draw the section.
     pub(super) fn show(&mut self, ui: &mut Ui, ctx: &mut AppCtx<'_>) {
         let connected = ctx.connected();
-        // Also a print the printer runs from its card: the macro's
-        // commands would come between its lines just the same.
-        let job_active = ctx.printer_busy();
         let mut op = None;
         let mut run = None;
         let mut add_header = false;
@@ -304,11 +388,12 @@ impl Macros {
                 let columns = if width >= 330.0 { 3 } else { 2 };
                 let tile_w = ((width - gap * (columns - 1) as f32) / columns as f32).max(40.0);
                 ui.spacing_mut().item_spacing = vec2(gap, gap);
+                let preview_with = (ctx.state, &*ctx.config);
                 for (row, chunk) in macros.chunks(columns).enumerate() {
                     ui.horizontal(|ui| {
                         for (col, m) in chunk.iter().enumerate() {
                             let index = row * columns + col;
-                            let r = macro_tile(ui, m, tile_w, connected, index);
+                            let r = macro_tile(ui, m, tile_w, connected, index, preview_with);
                             let r = if connected {
                                 r
                             } else {
@@ -371,13 +456,9 @@ impl Macros {
             },
         );
         if let Some(index) = run
-            && let Some(m) = ctx.config.macros.get(index)
+            && let Some(m) = ctx.config.macros.get(index).cloned()
         {
-            if m.confirm || job_active || !dangerous_commands(&m.gcode).is_empty() {
-                self.pending_run = Some(m.clone());
-            } else {
-                run_macro(ctx, m);
-            }
+            self.request_run(ctx, &m, false);
         }
         if add || add_header {
             self.editor = Some(Editor::new(None, new_macro("", "", None, false)));
@@ -400,22 +481,20 @@ impl Macros {
     }
 
     /// Show the open dialogs (run confirmation, delete confirmation, the
-    /// editor). Called once per frame after the sidebar.
+    /// editor, the arguments). Called once per frame after the sidebar.
     pub(super) fn dialogs(&mut self, ui: &Ui, ctx: &mut AppCtx<'_>) {
         let egui_ctx = ui.ctx().clone();
         // The editor first: a confirmation it opens draws above it.
+        let mut test_send = None;
         if let Some(editor) = &mut self.editor {
             match editor_dialog(&egui_ctx, editor, ctx) {
                 EditorOutcome::Open => {}
                 EditorOutcome::TestSend => {
-                    if dangerous_commands(&editor.draft.gcode).is_empty() {
-                        run_macro(ctx, &editor.draft);
-                        let name = editor.draft.name.trim();
-                        let shown = if name.is_empty() { "macro" } else { name };
-                        ctx.toasts.info(format!("Sent {shown}"));
-                    } else {
-                        self.pending_run = Some(editor.draft.clone());
-                    }
+                    let mut draft = editor.draft.clone();
+                    // The draft's own question is about running it from
+                    // its button; testing it is what the user just asked.
+                    draft.confirm = false;
+                    test_send = Some(draft);
                 }
                 EditorOutcome::Cancel => self.editor = None,
                 EditorOutcome::Save => {
@@ -430,27 +509,24 @@ impl Macros {
                 }
             }
         }
-        if let Some(m) = &self.pending_run {
-            let title = format!("Run “{}”?", m.name.trim());
-            let dangerous = dangerous_commands(&m.gcode);
-            let mut reasons = Vec::new();
-            if ctx.printer_busy() {
-                reasons.push(
-                    "A print is running: these commands are sent between its lines.".to_owned(),
-                );
-            }
-            if !dangerous.is_empty() {
-                reasons.push(format!(
-                    "It sends {}, which the G-code reference marks as dangerous.",
-                    dangerous.join(", ")
-                ));
-            }
-            if reasons.is_empty() {
-                reasons.push("This macro asks for confirmation before it runs.".to_owned());
-            }
-            let message = reasons.join(" ");
-            let details = preview(&m.gcode);
-            let danger = ctx.printer_busy() || !dangerous.is_empty();
+        if let Some(draft) = test_send {
+            self.request_run(ctx, &draft, true);
+        }
+        self.args_dialog(&egui_ctx, ctx);
+        if let Some(pending) = &self.pending_run {
+            let title = format!("Run “{}”?", pending.run.name.trim());
+            let message = if pending.check.confirm.is_empty() {
+                "This macro asks for confirmation before it runs.".to_owned()
+            } else {
+                pending.check.message(pending.job)
+            };
+            // What it sends now, its placeholders rendered.
+            let details = preview(&rendered(
+                &pending.run.gcode,
+                ctx.state,
+                ctx.config.active(),
+            ));
+            let danger = !pending.check.confirm.is_empty();
             let answer = ConfirmDialog::new("sprint-controls-macro-run", &title)
                 .message(&message)
                 .details(&details)
@@ -460,10 +536,35 @@ impl Macros {
                 .show(&egui_ctx);
             match answer {
                 Some(DialogResult::Confirmed) => {
-                    if ctx.connected() {
-                        run_macro(ctx, m);
+                    if let Some(pending) = self.pending_run.take() {
+                        // The job may have moved on meanwhile: what was
+                        // agreed to must still be all there is.
+                        let lines = macro_args::rendered(
+                            &pending.run.gcode,
+                            ctx.state,
+                            ctx.config.active(),
+                        );
+                        let job = safety::job_context(ctx.state);
+                        let check = safety::assess(&lines, job);
+                        if !ctx.connected() || ctx.state.halted {
+                            ctx.toasts
+                                .warning(format!("“{}” not run", pending.run.name.trim()))
+                                .message("The printer is not ready for it any more.");
+                        } else if !check.blocked.is_empty() {
+                            ctx.toasts
+                                .warning(format!("“{}” not run", pending.run.name.trim()))
+                                .message(check.blocked.join("\n"));
+                        } else if job != pending.job && !check.is_clear() {
+                            self.pending_run = Some(PendingRun {
+                                run: pending.run,
+                                check,
+                                job,
+                                test: pending.test,
+                            });
+                        } else {
+                            run_now(ctx, &pending.run, pending.test);
+                        }
                     }
-                    self.pending_run = None;
                 }
                 Some(DialogResult::Cancelled) => self.pending_run = None,
                 None => {}
@@ -493,15 +594,129 @@ impl Macros {
             }
         }
     }
+
+    /// The "arguments of the macro" dialog, while one waits.
+    fn args_dialog(&mut self, egui_ctx: &egui::Context, ctx: &mut AppCtx<'_>) {
+        let Some(dialog) = &mut self.args else {
+            return;
+        };
+        let p = theme::palette(egui_ctx);
+        let args = dialog.params.args(&dialog.fields);
+        let filled = macro_args::fill(&dialog.run.gcode, &args);
+        let missing = dialog.params.missing(&dialog.fields);
+        let mut outcome = None;
+        let modal = Modal::new(Id::new("sprint-controls-macro-args"))
+            .frame(crate::dialogs::modal_frame(egui_ctx))
+            .backdrop_color(crate::dialogs::backdrop(egui_ctx))
+            .show(egui_ctx, |ui| {
+                ui.set_width(380.0);
+                ui.spacing_mut().item_spacing.y = 8.0;
+                crate::dialogs::dialog_title(
+                    ui,
+                    icons::MACRO,
+                    &format!("Run “{}”", format::sanitize(dialog.run.name.trim(), 40)),
+                    p.accent,
+                );
+                caption(ui, "This macro takes arguments: fill them in.");
+                let numbered = !dialog.params.numbered.is_empty();
+                for (i, field) in dialog.fields.iter_mut().enumerate() {
+                    let label = if numbered {
+                        format!("Argument {{{i}}}")
+                    } else {
+                        "Arguments (separated by spaces)".to_owned()
+                    };
+                    field_label(ui, &p, &label);
+                    let hint = dialog
+                        .params
+                        .numbered
+                        .get(i)
+                        .cloned()
+                        .flatten()
+                        .map_or_else(String::new, |d| format!("default {d}"));
+                    let edit = ui.add(
+                        TextEdit::singleline(field)
+                            .id(Id::new(("sprint-controls-macro-arg", i)))
+                            .hint_text(hint)
+                            .desired_width(f32::INFINITY),
+                    );
+                    if dialog.focus && i == 0 {
+                        edit.request_focus();
+                        dialog.focus = false;
+                    }
+                }
+                field_label(ui, &p, "Sends");
+                let text = match &filled {
+                    Ok(gcode) => preview(&rendered(gcode, ctx.state, ctx.config.active())),
+                    Err(e) => e.clone(),
+                };
+                ui.label(
+                    RichText::new(text)
+                        .font(theme::builtin_font(ui, egui::TextStyle::Monospace))
+                        .color(if filled.is_ok() {
+                            p.text_dim
+                        } else {
+                            p.warning
+                        }),
+                );
+                ui.add_space(4.0);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let ready = filled.is_ok() && missing.is_empty() && ctx.connected();
+                    let run = ui
+                        .add_enabled(ready, ActionButton::new("Run").icon(icons::SEND).primary())
+                        .on_disabled_hover_text(if ctx.connected() {
+                            "Fill in every argument without a default"
+                        } else {
+                            "Connect to a printer first"
+                        });
+                    if run.clicked() {
+                        outcome = Some(true);
+                    }
+                    if ui.add(ActionButton::new("Cancel")).clicked() {
+                        outcome = Some(false);
+                    }
+                });
+            });
+        let enter = modal.is_top_modal
+            && filled.is_ok()
+            && missing.is_empty()
+            && egui_ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Enter));
+        if enter {
+            outcome = Some(true);
+        }
+        if outcome.is_none() && modal.should_close() {
+            outcome = Some(false);
+        }
+        match (outcome, filled) {
+            (Some(true), Ok(gcode)) => {
+                if let Some(dialog) = self.args.take() {
+                    let run = Macro {
+                        gcode,
+                        ..dialog.run
+                    };
+                    self.check_and_run(ctx, run, dialog.test);
+                }
+            }
+            (Some(_), _) => self.args = None,
+            (None, _) => {}
+        }
+    }
 }
 
 /// One macro button: its color (or a neutral fill), name truncated to the
-/// width, "…" when it asks before running.
-fn macro_tile(ui: &mut Ui, m: &Macro, width: f32, runnable: bool, index: usize) -> Response {
+/// width, "…" when it asks before running (or for arguments).
+fn macro_tile(
+    ui: &mut Ui,
+    m: &Macro,
+    width: f32,
+    runnable: bool,
+    index: usize,
+    (state, config): (&PrinterState, &sprint_host::AppConfig),
+) -> Response {
     let p = theme::ui_palette(ui);
     let (rect, response) = ui.allocate_exact_size(vec2(width, TILE_HEIGHT), Sense::click());
     let id = Id::new(("sprint-controls-macro", index));
-    let label = if m.confirm {
+    let asks = m.confirm || macro_args::params(&m.gcode).any();
+    let label = if asks {
         format!("{}…", m.name.trim())
     } else {
         m.name.trim().to_owned()
@@ -565,8 +780,15 @@ fn macro_tile(ui: &mut Ui, m: &Macro, width: f32, runnable: bool, index: usize) 
             CursorIcon::Default
         })
         .on_hover_ui(|ui| {
-            // Built only while hovered: a macro can be long.
-            let gcode = preview(&m.gcode);
+            // Built only while hovered: a macro can be long. What it sends
+            // now, with the placeholders rendered; a macro taking
+            // arguments shows its G-code as written.
+            let params = macro_args::params(&m.gcode);
+            let gcode = if params.any() {
+                preview(&m.gcode)
+            } else {
+                preview(&rendered(&m.gcode, state, config.active()))
+            };
             let p = theme::ui_palette(ui);
             ui.label(RichText::new(name).font(theme::font(ui, TextRole::Title)));
             if gcode.is_empty() {
@@ -576,6 +798,13 @@ fn macro_tile(ui: &mut Ui, m: &Macro, width: f32, runnable: bool, index: usize) 
                     RichText::new(gcode)
                         .font(theme::builtin_font(ui, egui::TextStyle::Monospace))
                         .color(p.text_dim),
+                );
+            }
+            if params.any() {
+                ui.label(
+                    RichText::new("Asks for its arguments when it runs.")
+                        .size(12.0)
+                        .color(p.text_faint),
                 );
             }
         })
@@ -608,10 +837,13 @@ fn editor_dialog(ctx: &egui::Context, editor: &mut Editor, app: &mut AppCtx<'_>)
     let width = (screen.width() - 48.0).clamp(280.0, 480.0);
     let code_height = (screen.height() - EDITOR_CHROME).clamp(MIN_CODE_HEIGHT, MAX_CODE_HEIGHT);
     let lines = macro_lines(&editor.draft.gcode);
-    let dangerous = dangerous_commands(&editor.draft.gcode);
+    let dangerous = idle_reasons(&editor.draft.gcode);
+    let params = macro_args::params(&editor.draft.gcode);
     let name_ok = !editor.draft.name.trim().is_empty();
     let can_save = name_ok && !lines.is_empty();
-    let can_test = app.connected() && !app.printer_busy() && !lines.is_empty();
+    // A test run is for an idle printer: during a print the macro runs
+    // from its button, through the classifier's questions.
+    let can_test = app.command_blocker().is_none() && !app.printer_busy() && !lines.is_empty();
     let modal = Modal::new(Id::new("sprint-controls-macro-editor"))
         .frame(frame)
         .backdrop_color(backdrop)
@@ -671,17 +903,25 @@ fn editor_dialog(ctx: &egui::Context, editor: &mut Editor, app: &mut AppCtx<'_>)
                 ui,
                 &format!(
                     "{summary} Comments after ; are ignored; {{x}} {{y}} {{z}} {{hotend}} {{bed}} \
-                     {{fan}} {{park_x}} … are filled in when it runs."
+                     {{fan}} {{park_x}} {{heaters_off}} … are filled in when it runs; {{0}}, \
+                     {{1=200}} and {{args}} are arguments it asks for."
                 ),
             );
+            if params.any() {
+                let fields = params.fields();
+                caption(
+                    ui,
+                    &format!(
+                        "Asks for {fields} argument{} when it runs.",
+                        if fields == 1 { "" } else { "s" }
+                    ),
+                );
+            }
             if !dangerous.is_empty() {
                 super::notice(
                     ui,
                     icons::WARNING,
-                    &format!(
-                        "Contains {}: Sprint asks before sending it.",
-                        dangerous.join(", ")
-                    ),
+                    &format!("Sprint asks before sending it. {}", dangerous.join(" ")),
                     theme::Tone::Warning,
                 );
             }
@@ -696,12 +936,12 @@ fn editor_dialog(ctx: &egui::Context, editor: &mut Editor, app: &mut AppCtx<'_>)
                         .icon(icons::SEND)
                         .tooltip("Send the G-code now without saving"),
                 );
-                let test = if app.printer_busy() {
-                    test.on_disabled_hover_text("Not while a print runs")
-                } else if !app.connected() {
-                    test.on_disabled_hover_text("Connect to a printer first")
-                } else {
-                    test.on_disabled_hover_text("Type some G-code first")
+                let test = match app.command_blocker() {
+                    Some(reason) => test.on_disabled_hover_text(reason),
+                    None if app.printer_busy() => {
+                        test.on_disabled_hover_text("Not while a print runs")
+                    }
+                    None => test.on_disabled_hover_text("Type some G-code first"),
                 };
                 if test.clicked() {
                     outcome = EditorOutcome::TestSend;
@@ -881,10 +1121,23 @@ mod tests {
     }
 
     #[test]
-    fn dangerous_commands_are_found_once() {
-        assert_eq!(dangerous_commands("M502\nM500\nm502"), ["M502"]);
-        assert!(dangerous_commands("G28\nM503").is_empty());
-        assert_eq!(dangerous_commands("M112"), ["M112"]);
+    fn the_editor_names_what_asks_on_an_idle_printer() {
+        let reasons = idle_reasons("M502\nM500\nm502 ; again");
+        assert_eq!(reasons.len(), 1, "{reasons:?}");
+        assert!(reasons[0].starts_with("M502"), "{reasons:?}");
+        assert!(idle_reasons("G28\nM503\n{heaters_off}").is_empty());
+        // An emergency stop never asks.
+        assert!(idle_reasons("M112").is_empty());
+    }
+
+    #[test]
+    fn previews_render_the_placeholders() {
+        let state = PrinterState::default();
+        let profile = PrinterProfile::default();
+        assert_eq!(
+            rendered("{heaters_off}\nM107 ; fan", &state, &profile),
+            "M104 S0\nM140 S0\nM107"
+        );
     }
 
     #[test]

@@ -22,6 +22,7 @@ pub mod icons;
 pub mod insight;
 pub mod job_text;
 pub mod loader;
+pub mod macro_args;
 pub mod menu;
 pub mod native_dialog;
 pub mod notify;

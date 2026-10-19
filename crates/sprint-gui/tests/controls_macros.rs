@@ -288,7 +288,7 @@ fn dangerous_macros_always_ask_first() {
     let printer = h.state().printer.clone();
     click(&mut h, "Factory");
     assert!(h.query(by_label("Run “Factory”?")).is_some(), "no question");
-    assert!(h.query(by_label_contains("It sends M502")).is_some());
+    assert!(h.query(by_label_contains("M502 (")).is_some());
     click(&mut h, "Cancel");
     wait_idle(&printer);
     assert!(received(&printer).is_empty(), "{:?}", received(&printer));
@@ -308,6 +308,48 @@ fn dangerous_macros_always_ask_first() {
     click(&mut h, "Cancel");
     assert!(h.query(by_label("Save")).is_none());
     assert!(!h.state().dirty);
+}
+
+/// Macros written in the shell with arguments (`{0}`, `{1=60}`, `{args}`)
+/// ask for them in a dialog; the placeholders never reach the printer.
+#[test]
+fn macros_with_arguments_ask_for_them() {
+    let mut rig = Rig::simulator();
+    rig.config.macros.push(Macro {
+        name: "Heat".into(),
+        gcode: "M104 S{0}\nM140 S{1=60}\nM117 {args} at X{x}".into(),
+        color: None,
+        confirm: false,
+    });
+    let mut h = harness(rig);
+    let printer = h.state().printer.clone();
+    // The tile says it asks before running.
+    click(&mut h, "Heat…");
+    assert!(h.query(by_label("Run “Heat”")).is_some(), "no dialog");
+    assert!(h.query(by_label("Argument {0}")).is_some());
+    assert!(h.query(by_label("Argument {1}")).is_some());
+    // {0} has no default: Run waits for it.
+    assert!(!is_enabled(&h, "Run"));
+    // The first field has the focus.
+    h.event(Event::Text("205".into()));
+    settle(&mut h);
+    assert!(is_enabled(&h, "Run"));
+    // The preview shows what goes out, the host's placeholders rendered.
+    assert!(
+        h.query(by_label_contains("M104 S205\nM140 S60\nM117 205 60 at X"))
+            .is_some()
+    );
+    click(&mut h, "Run");
+    let got = wait_for_commands(&printer, &["M104 S205", "M140 S60"]);
+    assert!(!got.iter().any(|c| c.contains('{')), "{got:?}");
+    assert!(h.query(by_label("Run “Heat”")).is_none());
+    // Cancel sends nothing.
+    wait_idle(&printer);
+    controls_common::sim(&printer).clear_received();
+    click(&mut h, "Heat…");
+    click(&mut h, "Cancel");
+    wait_idle(&printer);
+    assert!(received(&printer).is_empty(), "{:?}", received(&printer));
 }
 
 #[test]
