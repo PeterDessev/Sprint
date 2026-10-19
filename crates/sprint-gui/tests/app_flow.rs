@@ -1542,6 +1542,29 @@ fn console_motion_is_guarded_while_a_job_runs() {
 }
 
 #[test]
+fn the_gcode_footer_says_what_the_job_bar_says() {
+    let options = with_file(AppOptions::headless(), sample("calibration-cube.gcode"));
+    let mut h = app(options, WINDOW);
+    expect(&mut h, "the cube to be analyzed", analyzed);
+    h.state_mut().push_action(AppAction::ShowTab(Tab::Gcode));
+    for (status, badge) in [
+        (JobStatus::Printing, "PRINTING"),
+        (JobStatus::Paused, "PAUSED"),
+        (JobStatus::Cancelling, "CANCELLING"),
+    ] {
+        let mut state = printing_state(status);
+        if let Some(job) = &mut state.job {
+            job.name = "calibration-cube.gcode".into();
+        }
+        h.state_mut().set_state_override(Some(state));
+        settle(&mut h);
+        // The job bar's badge and the footer's.
+        assert_eq!(h.query_all_by_label(badge).count(), 2, "{badge}");
+    }
+    assert!(h.query_by_label("PRINTING").is_none());
+}
+
+#[test]
 fn an_upload_of_the_file_is_not_shown_as_a_print() {
     let options = with_file(AppOptions::headless(), sample("calibration-cube.gcode"));
     let mut h = app(options, WINDOW);

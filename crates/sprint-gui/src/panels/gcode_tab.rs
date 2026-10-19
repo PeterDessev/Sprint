@@ -1214,7 +1214,12 @@ impl GcodeTab {
                         ui.label(small(size));
                     }
                     if let Some(done) = progress {
-                        ui.add(Badge::new("PRINTING").tone(theme::Tone::Accent));
+                        // As the job bar says it: PAUSED, CANCELLING, ...
+                        let (badge, tone) = ctx.state.job.as_ref().map_or_else(
+                            || ("PRINTING".to_owned(), theme::Tone::Accent),
+                            crate::panels::job_bar::job_badge,
+                        );
+                        ui.add(Badge::new(&badge).tone(tone));
                         let done = format::count(done as u64);
                         ui.label(small(if compact {
                             format!("{done} done")
