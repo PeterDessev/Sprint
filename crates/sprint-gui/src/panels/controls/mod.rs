@@ -22,6 +22,7 @@
 mod extruder;
 mod motion;
 mod temperatures;
+mod tuning;
 
 use egui::{Align, CornerRadius, Frame, Label, Layout, Margin, Response, RichText, Ui};
 
@@ -40,6 +41,7 @@ use crate::widgets::Card;
 pub struct ControlsSidebar {
     motion: motion::Motion,
     extruder: extruder::Extruder,
+    tuning: tuning::Tuning,
 }
 
 impl ControlsSidebar {
@@ -56,6 +58,7 @@ impl ControlsSidebar {
                 temperatures::show(ui, ctx);
                 self.motion.show(ui, ctx);
                 self.extruder.show(ui, ctx);
+                self.tuning.show(ui, ctx);
             });
     }
 }
