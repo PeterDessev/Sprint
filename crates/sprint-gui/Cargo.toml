@@ -32,6 +32,7 @@ skrifa = { version = "0.44", default-features = false, features = ["std"] }
 time = { version = "0.3", default-features = false, features = ["std", "local-offset"] }
 
 [dev-dependencies]
-egui_kittest.workspace = true
+# "eframe" drives the whole SprintApp headless in the app_* tests.
+egui_kittest = { workspace = true, features = ["eframe"] }
 # Custom adapter selection for the snapshot renderer (see tests/common).
 egui-wgpu.workspace = true
