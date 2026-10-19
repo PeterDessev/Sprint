@@ -4,7 +4,7 @@
 //! by the test suite.** Auto-detection is generic over a link factory so
 //! its logic is tested with in-memory fakes.
 
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -19,6 +19,9 @@ pub(crate) const AUTO_BAUD_WAIT: Duration = Duration::from_millis(2500);
 const DTR_PULSE: Duration = Duration::from_millis(100);
 /// The probe sent at each baud rate.
 const PROBE: &[u8] = b"M110 N0\nM105\n";
+/// How long a write may keep timing out (the port timeout also applies to
+/// writes) before the link counts as broken.
+const WRITE_PATIENCE: Duration = Duration::from_secs(5);
 
 /// Open `port` at `baud`, 8N1, no flow control, ~100 ms read timeout;
 /// optionally pulse DTR to reset the board.
@@ -38,9 +41,45 @@ pub(crate) fn open(port: &str, baud: u32, reset: bool) -> Result<Link, HostError
     let reader = writer.try_clone()?;
     Ok(Link {
         reader: Box::new(reader),
-        writer: Box::new(writer),
+        writer: Box::new(RetryWriter::new(writer, WRITE_PATIENCE)),
         control: LinkControl::None,
     })
+}
+
+/// A writer that retries writes that time out (a serial port's timeout
+/// also applies to writes, and a large batch at a low baud rate can take
+/// longer than it) until `patience` has passed without progress.
+pub(crate) struct RetryWriter<W> {
+    inner: W,
+    patience: Duration,
+}
+
+impl<W: Write> RetryWriter<W> {
+    pub(crate) fn new(inner: W, patience: Duration) -> RetryWriter<W> {
+        RetryWriter { inner, patience }
+    }
+}
+
+impl<W: Write> Write for RetryWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let start = Instant::now();
+        loop {
+            match self.inner.write(buf) {
+                Err(e) if is_no_data(&e) && start.elapsed() < self.patience => {}
+                other => return other,
+            }
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        let start = Instant::now();
+        loop {
+            match self.inner.flush() {
+                Err(e) if is_no_data(&e) && start.elapsed() < self.patience => {}
+                other => return other,
+            }
+        }
+    }
 }
 
 /// Reset the board: DTR low for a moment, then high again.
@@ -287,5 +326,66 @@ mod tests {
             &mut |_| {},
         );
         assert!(result.is_err());
+    }
+
+    /// Times out `timeouts` times, then accepts everything.
+    struct Slow {
+        timeouts: usize,
+        written: Vec<u8>,
+        fail_with: Option<io::ErrorKind>,
+    }
+
+    impl Write for Slow {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            if let Some(kind) = self.fail_with {
+                return Err(io::Error::new(kind, "broken"));
+            }
+            if self.timeouts > 0 {
+                self.timeouts -= 1;
+                return Err(io::Error::new(io::ErrorKind::TimedOut, "busy"));
+            }
+            self.written.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn write_timeouts_are_retried() {
+        let mut w = RetryWriter::new(
+            Slow {
+                timeouts: 3,
+                written: Vec::new(),
+                fail_with: None,
+            },
+            Duration::from_secs(5),
+        );
+        w.write_all(b"N1 G28*18\n").unwrap();
+        w.flush().unwrap();
+        assert_eq!(w.inner.written, b"N1 G28*18\n");
+    }
+
+    #[test]
+    fn real_errors_and_endless_timeouts_fail() {
+        let mut w = RetryWriter::new(
+            Slow {
+                timeouts: 0,
+                written: Vec::new(),
+                fail_with: Some(io::ErrorKind::BrokenPipe),
+            },
+            Duration::from_secs(5),
+        );
+        assert_eq!(w.write(b"x").unwrap_err().kind(), io::ErrorKind::BrokenPipe);
+        let mut w = RetryWriter::new(
+            Slow {
+                timeouts: usize::MAX,
+                written: Vec::new(),
+                fail_with: None,
+            },
+            Duration::from_millis(20),
+        );
+        assert_eq!(w.write(b"x").unwrap_err().kind(), io::ErrorKind::TimedOut);
     }
 }
