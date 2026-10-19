@@ -1,11 +1,18 @@
 //! Application configuration: printer profiles, connection options, user
 //! macros and recent files, stored as TOML.
 //!
+//! The file is [`AppConfig::path`]: the file named by the `SPRINT_CONFIG`
+//! environment variable ([`CONFIG_ENV`]) when it is set, else
+//! [`AppConfig::default_path`]. Every front end loads and saves through it,
+//! so a portable setup or a test pointing `SPRINT_CONFIG` at a scratch file
+//! never reads, auto-connects from or writes the user's real configuration.
+//!
 //! [`AppConfig::save_to`] writes atomically (temporary file + rename), so a
 //! crash never leaves a half-written file behind. [`AppConfig::load`] never
 //! fails: a missing file gives the defaults, and a corrupt one is moved
 //! aside to `config.toml.bak` before the defaults are used.
 
+use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -26,6 +33,10 @@ pub const MAX_RECENT_FILES: usize = 12;
 pub const DEFAULT_CONSOLE_LINES: usize = 5000;
 /// Largest accepted [`ConnectOptions::max_in_flight`].
 pub const MAX_IN_FLIGHT_LIMIT: usize = 32;
+/// Environment variable naming the configuration file to use instead of
+/// [`AppConfig::default_path`] (a portable setup, or a test that must not
+/// touch the user's configuration). Blank counts as unset.
+pub const CONFIG_ENV: &str = "SPRINT_CONFIG";
 
 /// When outgoing lines carry `N<n> ... *<checksum>` framing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -504,10 +515,19 @@ impl AppConfig {
         Ok(result?)
     }
 
-    /// `<config dir>/Sprint/config.toml` (on Windows
+    /// The configuration file in use: the file named by `SPRINT_CONFIG`
+    /// ([`CONFIG_ENV`]) when that is set and not blank, else
+    /// [`AppConfig::default_path`]. [`AppConfig::load`] and
+    /// [`AppConfig::save`] use it, and so must every front end.
+    pub fn path() -> PathBuf {
+        path_from_env(std::env::var_os(CONFIG_ENV))
+    }
+
+    /// The platform location of the configuration file, ignoring
+    /// `SPRINT_CONFIG`: `<config dir>/Sprint/config.toml` (on Windows
     /// `%APPDATA%\Sprint\config.toml`), or `sprint-config.toml` in the
     /// working directory when the platform has no configuration directory.
-    pub fn path() -> PathBuf {
+    pub fn default_path() -> PathBuf {
         directories::BaseDirs::new().map_or_else(
             || PathBuf::from("sprint-config.toml"),
             |dirs| dirs.config_dir().join("Sprint").join("config.toml"),
@@ -556,6 +576,14 @@ impl AppConfig {
         self.console_max_lines = self.console_max_lines.clamp(100, 1_000_000);
         self
     }
+}
+
+/// `value` of `SPRINT_CONFIG` when set and not blank, else the platform
+/// location.
+fn path_from_env(value: Option<OsString>) -> PathBuf {
+    value
+        .filter(|v| !v.to_string_lossy().trim().is_empty())
+        .map_or_else(AppConfig::default_path, PathBuf::from)
 }
 
 /// `config.toml` -> `config.toml.bak`.
@@ -798,6 +826,23 @@ mod tests {
         assert_eq!(c.profiles[0].pause_script, DEFAULT_PAUSE_SCRIPT);
         let empty: AppConfig = toml::from_str("").unwrap();
         assert_eq!(empty, AppConfig::default());
+    }
+
+    #[test]
+    fn sprint_config_overrides_the_platform_path() {
+        assert_eq!(
+            path_from_env(Some(OsString::from("D:/portable/sprint.toml"))),
+            PathBuf::from("D:/portable/sprint.toml")
+        );
+        assert_eq!(path_from_env(None), AppConfig::default_path());
+        assert_eq!(
+            path_from_env(Some(OsString::from("  "))),
+            AppConfig::default_path()
+        );
+        assert_eq!(
+            path_from_env(Some(OsString::new())),
+            AppConfig::default_path()
+        );
     }
 
     #[test]

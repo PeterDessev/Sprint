@@ -120,7 +120,7 @@ fn wrong_types_and_out_of_range_values_are_repaired_or_rejected() {
 
 #[test]
 fn default_path_is_under_a_sprint_directory() {
-    let path = AppConfig::path();
+    let path = AppConfig::default_path();
     let fallback = path.as_os_str() == "sprint-config.toml";
     assert!(
         fallback

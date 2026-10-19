@@ -939,7 +939,8 @@ impl AppConfig {
     pub fn load_from(path: &std::path::Path) -> Result<AppConfig, HostError>;
     pub fn save(&self) -> Result<(), HostError>;
     pub fn save_to(&self, path: &std::path::Path) -> Result<(), HostError>;
-    pub fn path() -> std::path::PathBuf;               // <config dir>/Sprint/config.toml
+    pub fn path() -> std::path::PathBuf;               // $SPRINT_CONFIG if set, else default_path()
+    pub fn default_path() -> std::path::PathBuf;       // <config dir>/Sprint/config.toml
     pub fn active(&self) -> &PrinterProfile; pub fn active_mut(&mut self) -> &mut PrinterProfile;
     pub fn push_recent(&mut self, path: std::path::PathBuf);
 }
@@ -1036,7 +1037,11 @@ Every public item is also re-exported at the crate root.
   (20 ms port timeout). Writes that make no progress (on Windows a
   timed-out write returns `Ok(0)`) are retried for up to 5 s before the
   link counts as lost; what was written before a close still goes out.
-* `config`: `ConnectOptions` is `#[serde(default)]`; `sanitized()` clamps
+* `config`: `CONFIG_ENV` (`SPRINT_CONFIG`): `AppConfig::path()` (and so
+  `load()`/`save()`) use the file it names when set and not blank, so every
+  front end (GUI included) honours it for loading, auto-connecting and
+  saving; `default_path()` is the platform location.
+  `ConnectOptions` is `#[serde(default)]`; `sanitized()` clamps
   every value (`max_in_flight` 1..=32, `MAX_IN_FLIGHT_LIMIT`).
   `AppConfig::load_or_default(path)` (what `load()` uses: a corrupt file is
   renamed to `<name>.bak`, also when it is not UTF-8); `MAX_RECENT_FILES`
