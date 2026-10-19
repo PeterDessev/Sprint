@@ -185,12 +185,9 @@ fn auto_reported_temperatures_fill_state_history_and_events() {
         samples.windows(2).all(|w| w[1] - w[0] >= 0.99),
         "{samples:?}"
     );
-    assert!(
-        events
-            .iter()
-            .take(200)
-            .any(|e| matches!(e, Event::Temperatures(_)))
-    );
+    wait_for_event(&events, "a temperature event", |e| {
+        matches!(e, Event::Temperatures(_)).then_some(())
+    });
     // Auto-reports are automatic traffic; nothing was polled.
     let entries = console(&printer);
     assert!(
@@ -520,7 +517,19 @@ fn replies_to_the_hosts_own_queries_are_not_messages() {
     let seq = last_seq(&printer);
     printer.request_bed_mesh();
     printer.request_sd_files();
-    wait_idle(&printer);
+    // (The listing answers last: read every event up to its end rather
+    // than look after an idle link, which a loaded machine can show
+    // before the engine took the queries.)
+    let messages: Vec<String> = events_until(&events, "the SD listing", |e| {
+        matches!(e, Event::SdFiles(_))
+    })
+    .into_iter()
+    .filter_map(|e| match e {
+        Event::FirmwareMessage(m) => Some(m),
+        _ => None,
+    })
+    .collect();
+    assert!(messages.is_empty(), "{messages:?}");
     let received: Vec<String> = printer
         .console_since(seq, usize::MAX)
         .into_iter()
@@ -531,24 +540,13 @@ fn replies_to_the_hosts_own_queries_are_not_messages() {
         received.iter().any(|t| t.starts_with("echo:Bed Leveling")),
         "{received:?}"
     );
-    let messages: Vec<String> = events
-        .try_iter()
-        .filter_map(|e| match e {
-            Event::FirmwareMessage(m) => Some(m),
-            _ => None,
-        })
-        .collect();
-    assert!(messages.is_empty(), "{messages:?}");
     assert!(printer.with_state(|s| s.firmware_messages.is_empty()));
 
     // The same command typed by the user still shows what it says.
     printer.send("M420 V");
-    wait_idle(&printer);
-    assert!(
-        events
-            .try_iter()
-            .any(|e| matches!(e, Event::FirmwareMessage(m) if m.starts_with("Bed Leveling")))
-    );
+    wait_for_event(&events, "the mesh message", |e| {
+        matches!(e, Event::FirmwareMessage(m) if m.starts_with("Bed Leveling")).then_some(())
+    });
 }
 
 #[test]

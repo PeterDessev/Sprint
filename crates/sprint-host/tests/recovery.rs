@@ -34,11 +34,18 @@ fn m999_cannot_recover_a_killed_marlin_but_a_board_reset_can() {
         tail(&printer, 10)
     );
 
+    let control = printer.sim_control().unwrap();
+    control.clear_received();
     printer.reset_board().expect("the simulator can be reset");
     wait_for(&printer, "a fresh handshake", |s| {
-        s.is_connected() && !s.halted && s.settings_loaded
+        s.is_connected() && !s.halted
     });
-    let control = printer.sim_control().unwrap();
+    // (settings_loaded is still true from before the reset: wait for the
+    // setup queries themselves, M114 is the last.)
+    wait_for(&printer, "the setup after the reset", |_| {
+        control.received_commands().iter().any(|c| c == "M114")
+    });
+    wait_idle(&printer);
     control.clear_received();
     printer.send("G28\nM114");
     wait_idle(&printer);

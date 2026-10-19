@@ -41,11 +41,10 @@ fn listing_reports_the_card_contents() {
     assert!(long.iter().any(|n| n == "calibration_cube.gcode"), "{sd:?}");
     assert!(long.iter().any(|n| n == "first layer test.gcode"), "{sd:?}");
     assert!(sd.files.iter().all(|f| f.size.is_some()));
-    assert!(
-        events
-            .try_iter()
-            .any(|e| matches!(e, Event::SdFiles(f) if f.len() == sd.files.len()))
-    );
+    // (The event follows the state change: wait for it rather than look.)
+    wait_for_event(&events, "the listing", |e| {
+        matches!(e, Event::SdFiles(f) if f.len() == sd.files.len()).then_some(())
+    });
     // EXTENDED_M20 is advertised, so long names were requested.
     let sent: Vec<String> = console(&printer)
         .into_iter()

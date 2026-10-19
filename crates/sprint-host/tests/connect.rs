@@ -57,10 +57,15 @@ fn settings_report_headers_are_not_firmware_messages() {
         messages.iter().all(|m| !m.starts_with(';')),
         "report headers kept as messages: {messages:?}"
     );
-    let headers = events
-        .try_iter()
-        .filter(|e| matches!(e, Event::FirmwareMessage(m) if m.starts_with(';')))
-        .count();
+    // (The reports come before M500's message: read up to its event.)
+    let headers = events_until(
+        &events,
+        "M500's message",
+        |e| matches!(e, Event::FirmwareMessage(m) if m.contains("Settings Stored")),
+    )
+    .iter()
+    .filter(|e| matches!(e, Event::FirmwareMessage(m) if m.starts_with(';')))
+    .count();
     assert_eq!(headers, 0);
     // The headers are still in the console.
     assert!(
@@ -104,13 +109,16 @@ fn status_events_are_published() {
         )
         .unwrap();
     wait_for(&printer, "connected", |s| s.is_connected());
-    let statuses: Vec<ConnectionStatus> = events
-        .try_iter()
-        .filter_map(|e| match e {
-            Event::Status(s) => Some(s),
-            _ => None,
-        })
-        .collect();
+    // (The event follows the state change: wait for it rather than look.)
+    let statuses: Vec<ConnectionStatus> = events_until(&events, "Connected", |e| {
+        matches!(e, Event::Status(ConnectionStatus::Connected))
+    })
+    .into_iter()
+    .filter_map(|e| match e {
+        Event::Status(s) => Some(s),
+        _ => None,
+    })
+    .collect();
     assert_eq!(
         statuses,
         [

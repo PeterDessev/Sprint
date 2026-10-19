@@ -26,11 +26,12 @@ fn pid_autotune_reports_the_result_and_refreshes_settings() {
     let (kp, ki, kd) = at.result.expect("a result");
     assert!(kp > 0.0 && ki > 0.0 && kd > 0.0, "{at:?}");
     assert_eq!(at.error, None);
-    let finished = events.try_iter().find_map(|e| match e {
+    // (The event follows the state change: wait for it rather than look.)
+    let finished = wait_for_event(&events, "AutotuneFinished", |e| match *e {
         Event::AutotuneFinished { heater, kp, ki, kd } => Some((heater, kp, ki, kd)),
         _ => None,
     });
-    assert_eq!(finished, Some((Heater::Hotend(0), kp, ki, kd)));
+    assert_eq!(finished, (Heater::Hotend(0), kp, ki, kd));
     // U1 applied the values; the settings refresh shows them.
     wait_idle(&printer);
     let pid = printer.with_state(|s| s.settings.hotend_pid(0)).unwrap();
@@ -60,11 +61,9 @@ fn failed_autotune_is_reported() {
             .as_ref()
             .is_some_and(|a| !a.running && a.error.is_some())
     });
-    assert!(
-        events
-            .try_iter()
-            .any(|e| matches!(e, Event::AutotuneFailed(_)))
-    );
+    wait_for_event(&events, "AutotuneFailed", |e| {
+        matches!(e, Event::AutotuneFailed(_)).then_some(())
+    });
 }
 
 #[test]
@@ -77,7 +76,9 @@ fn probing_reports_a_bed_mesh() {
     let mesh = printer.with_state(|s| s.mesh.clone()).unwrap();
     assert_eq!((mesh.rows(), mesh.cols()), (5, 5));
     assert!(mesh.range().is_some_and(|r| r > 0.0), "a warped bed");
-    assert!(events.try_iter().any(|e| matches!(e, Event::Mesh(_))));
+    wait_for_event(&events, "the mesh", |e| {
+        matches!(e, Event::Mesh(_)).then_some(())
+    });
     let control = printer.sim_control().unwrap();
     let got = control.received_commands();
     let g28 = got.iter().position(|c| c == "G28").unwrap();

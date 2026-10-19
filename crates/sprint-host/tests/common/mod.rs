@@ -31,8 +31,9 @@ impl Drop for TempDir {
 
 use std::time::{Duration, Instant};
 
+use crossbeam_channel::Receiver;
 use sprint_host::sprint_sim::SimConfig;
-use sprint_host::{ConnectOptions, ConnectTarget, ConsoleEntry, Printer, PrinterState};
+use sprint_host::{ConnectOptions, ConnectTarget, ConsoleEntry, Event, Printer, PrinterState};
 
 /// Generous upper bound for anything a test waits for.
 pub const PATIENCE: Duration = Duration::from_secs(30);
@@ -101,6 +102,43 @@ pub fn wait_for_within(
         }
         std::thread::sleep(Duration::from_millis(5));
     }
+}
+
+/// Read `events` until `pick` returns something for one of them, failing
+/// after [`PATIENCE`]. The engine changes the state before it announces
+/// the change, so a test that saw the state must wait for the event rather
+/// than look for it with `try_iter`.
+pub fn wait_for_event<T>(
+    events: &Receiver<Event>,
+    what: &str,
+    mut pick: impl FnMut(&Event) -> Option<T>,
+) -> T {
+    let deadline = Instant::now() + PATIENCE;
+    loop {
+        match events.recv_deadline(deadline) {
+            Ok(event) => {
+                if let Some(found) = pick(&event) {
+                    return found;
+                }
+            }
+            Err(_) => panic!("timed out waiting for the event: {what}"),
+        }
+    }
+}
+
+/// Every event up to and including the first one `last` accepts (failing
+/// after [`PATIENCE`]).
+pub fn events_until(
+    events: &Receiver<Event>,
+    what: &str,
+    last: impl Fn(&Event) -> bool,
+) -> Vec<Event> {
+    let mut seen = Vec::new();
+    wait_for_event(events, what, |e| {
+        seen.push(e.clone());
+        last(e).then_some(())
+    });
+    seen
 }
 
 /// Wait until nothing is queued or in flight.

@@ -133,13 +133,16 @@ fn pause_and_resume_run_the_scripts_between_stream_lines() {
     // Then the rest of the stream, nothing lost or repeated.
     assert_eq!(&got[r + resume.len()..], &want[p..]);
 
-    let statuses: Vec<JobStatus> = events
-        .try_iter()
-        .filter_map(|e| match e {
-            Event::Job(s) => Some(s),
-            _ => None,
-        })
-        .collect();
+    // (The event follows the state change: read up to it.)
+    let statuses: Vec<JobStatus> = events_until(&events, "Completed", |e| {
+        matches!(e, Event::Job(JobStatus::Completed))
+    })
+    .into_iter()
+    .filter_map(|e| match e {
+        Event::Job(s) => Some(s),
+        _ => None,
+    })
+    .collect();
     assert_eq!(
         statuses,
         [
