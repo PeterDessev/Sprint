@@ -12,6 +12,11 @@ use crate::theme::{self, Palette, Tone};
 use crate::widgets::{ActionButton, EStopButton, StatusPill};
 use crate::{format, icons};
 
+/// Width of the link quality bars.
+const QUALITY_W: f32 = 22.0;
+/// Text size of the firmware label.
+const FIRMWARE_FONT: f32 = 13.0;
+
 /// The kind of connection target chosen in the bar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TargetKind {
@@ -112,8 +117,7 @@ impl ConnectionBar {
         open: Option<&ConnectTarget>,
     ) {
         let p = theme::ui_palette(ui);
-        let status = ctx.state.status.clone();
-        let locked = status.is_open() || connecting;
+        let locked = ctx.state.status.is_open() || connecting;
         let now = ui.input(|i| i.time);
         let shown = open
             .filter(|_| locked)
@@ -121,24 +125,8 @@ impl ConnectionBar {
             .unwrap_or_else(|| ctx.config.active().connection.clone());
         ui.horizontal_centered(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
-            self.profile_combo(ui, ctx, locked);
-            ui.add_space(2.0);
-            self.target_combo(ui, ctx, locked, now, &shown);
-            self.target_details(ui, ctx, locked, &shown);
-            ui.add_space(4.0);
-            self.connect_button(ui, ctx, &status, connecting);
-            ui.add_space(4.0);
-            let (label, tone, pulse) = status_pill(&status, ctx.state.halted);
-            let pill = ui.add(StatusPill::new(label, tone).pulse(pulse));
-            if let ConnectionStatus::Failed(reason) = &status {
-                pill.on_hover_text(format::sanitize(reason, 300));
-            } else if let Some(target) = &ctx.state.target {
-                pill.on_hover_text(format::sanitize(target, 120));
-            }
-            if status.is_connected() {
-                self.firmware_label(ui, ctx, &p);
-                self.quality_bars(ui, ctx, &p);
-            }
+            // The E-STOP first, at the right end; the rest gets the room
+            // left of it, and the extras that do not fit stay out.
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let estop = EStopButton::new().show_above_modals(ui);
                 if estop.changed() {
@@ -153,8 +141,74 @@ impl ConnectionBar {
                             .message("No printer is connected, nothing was sent.");
                     }
                 }
+                ui.add_space(8.0);
+                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                    self.connection_controls(ui, ctx, connecting, now, &shown, &p);
+                });
             });
         });
+    }
+
+    /// Everything left of the E-STOP.
+    fn connection_controls(
+        &mut self,
+        ui: &mut Ui,
+        ctx: &mut AppCtx<'_>,
+        connecting: bool,
+        now: f64,
+        shown: &ConnectTarget,
+        p: &Palette,
+    ) {
+        let status = ctx.state.status.clone();
+        let locked = status.is_open() || connecting;
+        self.profile_combo(ui, ctx, locked);
+        ui.add_space(2.0);
+        self.target_combo(ui, ctx, locked, now, shown);
+        self.target_details(ui, ctx, locked, shown);
+        ui.add_space(4.0);
+        self.connect_button(ui, ctx, &status, connecting);
+        ui.add_space(4.0);
+        let (label, tone, pulse) = status_pill(&status, ctx.state.halted);
+        let pill = ui.add(StatusPill::new(label, tone).pulse(pulse));
+        let firmware = ctx
+            .state
+            .firmware
+            .as_ref()
+            .filter(|_| status.is_connected())
+            .map(|fw| firmware_text(&fw.name, fw.version.as_deref()));
+        // The firmware label and the link bars where they fit (the bars
+        // first: they are small); a firmware left out is on the pill.
+        let spacing = ui.spacing().item_spacing.x;
+        let bars = status.is_connected() && ui.available_width() >= QUALITY_W + spacing;
+        let firmware_fits = firmware.as_ref().is_some_and(|text| {
+            let width = ui
+                .painter()
+                .layout_no_wrap(
+                    icons::with_text(icons::FIRMWARE, text),
+                    egui::FontId::proportional(FIRMWARE_FONT),
+                    p.text_dim,
+                )
+                .size()
+                .x;
+            ui.available_width() >= width + spacing + if bars { QUALITY_W + spacing } else { 0.0 }
+        });
+        let hover = match (&status, &ctx.state.target) {
+            (ConnectionStatus::Failed(reason), _) => Some(format::sanitize(reason, 300)),
+            (_, Some(target)) => Some(match firmware.as_ref().filter(|_| !firmware_fits) {
+                Some(fw) => format!("{} · {fw}", format::sanitize(target, 120)),
+                None => format::sanitize(target, 120),
+            }),
+            _ => None,
+        };
+        if let Some(text) = hover {
+            pill.on_hover_text(text);
+        }
+        if firmware_fits {
+            self.firmware_label(ui, ctx, p);
+        }
+        if bars {
+            self.quality_bars(ui, ctx, p);
+        }
     }
 
     fn profile_combo(&mut self, ui: &mut Ui, ctx: &mut AppCtx<'_>, locked: bool) {
@@ -452,7 +506,7 @@ impl ConnectionBar {
         let r = ui.label(
             RichText::new(icons::with_text(icons::FIRMWARE, &text))
                 .color(p.text_dim)
-                .size(13.0),
+                .size(FIRMWARE_FONT),
         );
         r.on_hover_ui(|ui| {
             ui.label(RichText::new(format::sanitize(&fw.name, 120)).strong());
@@ -472,7 +526,7 @@ impl ConnectionBar {
     fn quality_bars(&self, ui: &mut Ui, ctx: &AppCtx<'_>, p: &Palette) {
         let link = &ctx.state.link;
         let level = self.quality.level(link.rtt_avg_ms);
-        let (rect, response) = ui.allocate_exact_size(vec2(22.0, 18.0), Sense::hover());
+        let (rect, response) = ui.allocate_exact_size(vec2(QUALITY_W, 18.0), Sense::hover());
         let color = match level {
             4 | 3 => p.success,
             2 => p.warning,

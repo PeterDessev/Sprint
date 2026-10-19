@@ -1056,6 +1056,41 @@ fn the_gcode_toolbar_fits_a_narrow_tab() {
 }
 
 #[test]
+fn nothing_runs_under_the_estop_in_a_narrow_window() {
+    let size = egui::Vec2::from(sprint_gui::MIN_WINDOW_SIZE);
+    let mut options = AppOptions::headless();
+    let profile = &mut options.config.profiles[0];
+    profile.name = "Workshop printer with a long name".into();
+    profile.connection = ConnectTarget::Tcp {
+        host: "octopi-workshop-printer.local".into(),
+        port: 8080,
+    };
+    let mut h = app(options, size);
+    h.state_mut().set_state_override(Some(PrinterState {
+        status: ConnectionStatus::Connected,
+        target: Some("tcp://octopi-workshop-printer.local:8080".into()),
+        firmware: sprint_host::sprint_proto::parse_firmware_line(
+            "FIRMWARE_NAME:Marlin 2.1.2.1 (Github) PROTOCOL_VERSION:1.0 EXTRUDER_COUNT:1",
+        ),
+        ..PrinterState::default()
+    }));
+    settle(&mut h);
+    let estop = h.get_by_label("E-STOP").rect();
+    let mut left: Vec<egui::Rect> = h
+        .query_all_by_label_contains("Marlin")
+        .map(|n| n.rect())
+        .collect();
+    left.push(h.get_by_label("Connected").rect());
+    left.push(h.get_by_label("Disconnect").rect());
+    for rect in left {
+        assert!(
+            rect.right() <= estop.left(),
+            "{rect:?} runs under the E-STOP at {estop:?}"
+        );
+    }
+}
+
+#[test]
 fn a_stray_click_beside_the_settings_keeps_the_edits() {
     let mut h = app(AppOptions::headless(), WINDOW);
     h.state_mut().push_action(AppAction::OpenSettings);
