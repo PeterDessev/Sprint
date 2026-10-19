@@ -1736,8 +1736,8 @@ fn notice_strip(
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
-                ui.label(RichText::new(icon).color(p.tone(tone)));
-                ui.add(egui::Label::new(RichText::new(text).color(p.text)).truncate());
+                // Buttons first, from the right; the text is cut to the room
+                // left of them (in full on hover).
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     for (i, (label, primary)) in buttons.iter().enumerate() {
                         let mut button = crate::widgets::ActionButton::new(label).small();
@@ -1748,6 +1748,10 @@ fn notice_strip(
                             clicked = Some(i);
                         }
                     }
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                        ui.label(RichText::new(icon).color(p.tone(tone)));
+                        ui.add(egui::Label::new(RichText::new(text).color(p.text)).truncate());
+                    });
                 });
             });
         });

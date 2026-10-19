@@ -145,10 +145,14 @@ impl JobBar {
             ui.horizontal(|ui| {
                 let (text, tone) = job_badge(job);
                 ui.add(Badge::new(&text).tone(tone));
-                ui.label(
-                    RichText::new(format::sanitize(&job.name, 60))
-                        .font(title.clone())
-                        .color(p.text),
+                // Names are cut to the room left of the statistics.
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(format::sanitize(&job.name, 120))
+                            .font(title.clone())
+                            .color(p.text),
+                    )
+                    .truncate(),
                 );
             });
             let fraction = job.progress.clamp(0.0, 1.0);
@@ -167,11 +171,18 @@ impl JobBar {
         }
         if let Some(load) = load {
             ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new(format::sanitize(&load.name, 60))
-                        .font(title.clone())
-                        .color(p.text),
-                );
+                // Room for the cancel button right of the name.
+                ui.scope(|ui| {
+                    ui.set_max_width((ui.available_width() - 30.0).max(40.0));
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(format::sanitize(&load.name, 120))
+                                .font(title.clone())
+                                .color(p.text),
+                        )
+                        .truncate(),
+                    );
+                });
                 if ui
                     .add(
                         IconButton::new(icons::CLOSE)
@@ -206,13 +217,16 @@ impl JobBar {
         match ctx.file {
             Some(file) => {
                 ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new(icons::with_text(
-                            icons::FILE,
-                            &format::sanitize(file.file.name(), 60),
-                        ))
-                        .font(title.clone())
-                        .color(p.text),
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(icons::with_text(
+                                icons::FILE,
+                                &format::sanitize(file.file.name(), 120),
+                            ))
+                            .font(title.clone())
+                            .color(p.text),
+                        )
+                        .truncate(),
                     );
                 });
                 ui.horizontal(|ui| match job.filter(|j| j.status.is_finished()) {
@@ -228,7 +242,10 @@ impl JobBar {
                                 format::duration_of(last.elapsed)
                             ),
                         };
-                        ui.label(RichText::new(detail).color(p.text_dim).size(12.0));
+                        ui.add(
+                            egui::Label::new(RichText::new(detail).color(p.text_dim).size(12.0))
+                                .truncate(),
+                        );
                     }
                     None => {
                         let text = if file.toolpath.is_none() {

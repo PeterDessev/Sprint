@@ -575,39 +575,42 @@ pub fn prompt_dialog(egui_ctx: &egui::Context, prompt: &HostPrompt) -> Option<us
 /// The red banner shown while the firmware is halted.
 pub fn halted_banner(ui: &mut Ui, ctx: &mut AppCtx<'_>) {
     let p = theme::ui_palette(ui);
-    ui.horizontal_centered(|ui| {
+    // Buttons first, from the right; the message takes what is left (and
+    // is cut short there instead of running under them).
+    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
         ui.spacing_mut().item_spacing.x = 10.0;
-        ui.label(RichText::new(icons::ERROR).size(18.0).color(p.danger));
-        ui.label(
-            RichText::new("Printer halted")
-                .font(theme::font(ui, TextRole::Title))
-                .color(p.danger),
-        );
-        let reason = ctx.state.last_error.as_deref().map_or(
-            "The firmware stopped (emergency stop, thermal protection or a kill).".to_owned(),
-            |e| format::sanitize(e, 160),
-        );
-        ui.add(egui::Label::new(RichText::new(reason).color(p.text)).truncate());
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if ui
-                .add(ActionButton::new("Reconnect").icon(icons::CONNECT))
-                .on_hover_text("Close and reopen the connection (resets most boards)")
-                .clicked()
-            {
-                ctx.actions.push(AppAction::Reconnect);
-            }
-            if ui
-                .add(
-                    ActionButton::new("Restart firmware (M999)")
-                        .icon(icons::RESTART)
-                        .danger(),
-                )
-                .on_hover_text("Ask the firmware to leave the halted state")
-                .clicked()
-            {
-                ctx.printer.firmware_restart();
-                ctx.toasts.info("Restarting the firmware (M999)");
-            }
+        if ui
+            .add(ActionButton::new("Reconnect").icon(icons::CONNECT))
+            .on_hover_text("Close and reopen the connection (resets most boards)")
+            .clicked()
+        {
+            ctx.actions.push(AppAction::Reconnect);
+        }
+        if ui
+            .add(
+                ActionButton::new("Restart firmware (M999)")
+                    .icon(icons::RESTART)
+                    .danger(),
+            )
+            .on_hover_text("Ask the firmware to leave the halted state")
+            .clicked()
+        {
+            ctx.printer.firmware_restart();
+            ctx.toasts.info("Restarting the firmware (M999)");
+        }
+        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+            ui.label(RichText::new(icons::ERROR).size(18.0).color(p.danger));
+            ui.label(
+                RichText::new("Printer halted")
+                    .font(theme::font(ui, TextRole::Title))
+                    .color(p.danger),
+            );
+            let reason = ctx.state.last_error.as_deref().map_or(
+                "The firmware stopped (emergency stop, thermal protection or a kill).".to_owned(),
+                |e| format::sanitize(e, 400),
+            );
+            // Cut to the room left; the full text shows on hover.
+            ui.add(egui::Label::new(RichText::new(reason).color(p.text)).truncate());
         });
     });
 }

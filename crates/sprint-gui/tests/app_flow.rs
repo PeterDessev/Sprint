@@ -825,3 +825,61 @@ fn the_console_completes_gcode() {
     let first = sprint_gui::panels::console::suggestions("M10")[0].code;
     assert_eq!(h.state().console().input(), format!("{first} "));
 }
+
+#[test]
+fn long_texts_are_cut_before_the_buttons() {
+    let size = egui::Vec2::from(sprint_gui::MIN_WINDOW_SIZE);
+    let options = with_file(AppOptions::headless(), sample("calibration-cube.gcode"));
+    let mut h = app(options, size);
+    expect(&mut h, "the cube to be analyzed", analyzed);
+    let right_of = |a: egui::Rect, b: egui::Rect| a.right() <= b.left() + 0.5;
+
+    // A long job name stops before the job statistics.
+    let mut state = printing_state(JobStatus::Printing);
+    if let Some(job) = &mut state.job {
+        job.name = "Benchy_0.2mm_PLA_MK3S_1h23m_with_supports_and_a_long_name.gcode".into();
+        // Every statistic shown, as in a real print.
+        job.elapsed = Duration::from_secs(18 * 60 + 41);
+        job.eta = Some(Duration::from_secs(24 * 60 + 5));
+        job.layer = Some((40, 100));
+        job.filament_used_mm = 1834.0;
+    }
+    h.state_mut().set_state_override(Some(state));
+    settle(&mut h);
+    let name = h.get_by_label_contains("Benchy_0.2mm").rect();
+    let stats = h.get_by_label_contains("Elapsed").rect();
+    assert!(right_of(name, stats), "{name:?} runs into {stats:?}");
+
+    // A long halt reason stops before the banner's buttons, a long prompt
+    // before its notice's button.
+    let mut state = printing_state(JobStatus::Failed("halted".into()));
+    state.halted = true;
+    state.last_error = Some(
+        "Heating failed, system stopped! Heater_ID: 0 - Printer halted. kill() called! \
+         Thermal runaway protection triggered on the hotend"
+            .into(),
+    );
+    state.prompt = Some(sprint_host::HostPrompt {
+        message: "Filament runout detected on extruder 1: insert new filament, then press \
+                  Continue on the printer or here to purge and resume printing"
+            .into(),
+        buttons: vec!["Continue".into()],
+    });
+    h.state_mut().set_state_override(Some(state));
+    settle(&mut h);
+    h.get_by_label("Hide").click();
+    settle(&mut h);
+    let reason = h.get_by_label_contains("Heating failed").rect();
+    let restart = h.get_by_label("Restart firmware (M999)").rect();
+    assert!(
+        right_of(reason, restart),
+        "{reason:?} runs into {restart:?}"
+    );
+    let waiting = h.get_by_label_contains("The printer is waiting").rect();
+    let answer = h.get_by_label("Answer").rect();
+    assert!(
+        right_of(waiting, answer),
+        "{waiting:?} runs into {answer:?}"
+    );
+    assert!(answer.right() <= size.x);
+}
