@@ -441,6 +441,86 @@ fn a_board_reset_mid_print_fails_the_job_and_reconnects() {
 }
 
 #[test]
+fn toolpath_progress_eta_layers_and_filament() {
+    use sprint_host::sprint_gcode::{AnalyzeOptions, analyze_simple};
+    let file = cube();
+    let toolpath = Arc::new(analyze_simple(&file, &AnalyzeOptions::default()));
+    let layers = toolpath.layers.len();
+    assert!(layers > 10);
+    let mut sim = fast_sim(1000.0);
+    sim.instant_moves = false;
+    let printer = connect(sim, options());
+    let events = printer.subscribe();
+    printer
+        .start_print(
+            Arc::clone(&file),
+            PrintOptions {
+                toolpath: Some(Arc::clone(&toolpath)),
+                ..PrintOptions::default()
+            },
+        )
+        .unwrap();
+    let mut samples = Vec::new();
+    let deadline = Instant::now() + PATIENCE;
+    loop {
+        let job = printer.with_state(|s| s.job.clone()).unwrap();
+        let done = !job.status.is_active();
+        samples.push(job);
+        if done {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the print did not finish");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let last = samples.last().unwrap().clone();
+    assert_eq!(last.status, JobStatus::Completed);
+    assert_eq!(last.progress, 1.0);
+    assert_eq!(last.layer, Some((layers - 1, layers)));
+    let total = toolpath.stats.filament_length;
+    assert!(
+        (last.filament_used_mm - total).abs() <= total * 0.01,
+        "{} vs {total}",
+        last.filament_used_mm
+    );
+    assert_eq!(last.eta, Some(Duration::ZERO));
+    // Along the way: monotonic progress, layers and filament, and an ETA.
+    for w in samples.windows(2) {
+        assert!(
+            w[1].progress >= w[0].progress,
+            "{} -> {}",
+            w[0].progress,
+            w[1].progress
+        );
+        assert!(w[1].current_line >= w[0].current_line);
+        assert!(w[1].filament_used_mm >= w[0].filament_used_mm);
+        assert!(w[1].layer >= w[0].layer);
+    }
+    let midway: Vec<_> = samples
+        .iter()
+        .filter(|j| j.progress > 0.1 && j.progress < 0.9)
+        .collect();
+    assert!(midway.len() >= 3, "too few samples: {}", samples.len());
+    assert!(
+        midway
+            .iter()
+            .all(|j| j.eta.is_some() && j.estimated_total.is_some())
+    );
+    let lines: Vec<usize> = events
+        .try_iter()
+        .filter_map(|e| match e {
+            Event::JobProgress { line, total } => {
+                assert_eq!(total, file.len());
+                Some(line)
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(lines.len() >= 3);
+    assert!(lines.windows(2).all(|w| w[0] <= w[1]));
+    assert_eq!(lines.last(), Some(&file.len()));
+}
+
+#[test]
 #[ignore = "benchmark: cargo test -p sprint-host --test print -- --ignored --nocapture"]
 fn throughput() {
     for max_in_flight in [1, 2, 4, 8] {
