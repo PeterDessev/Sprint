@@ -152,6 +152,126 @@ pub fn find_profile(profiles: &[PrinterProfile], name: &str) -> Result<usize, St
     }
 }
 
+/// The macro a `macro <name> [args…]` line runs, and its arguments. Macro
+/// names may contain spaces ("Bed mesh"): the longest run of leading
+/// words that names a macro wins, the words after it are the arguments.
+/// Without such a name the whole text may be a unique prefix of one (no
+/// arguments), and then its first word (the rest are arguments).
+pub fn macro_call<'a>(macros: &'a [Macro], text: &str) -> Result<(&'a Macro, Vec<String>), String> {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    for take in (1..=words.len()).rev() {
+        let name = words[..take].join(" ");
+        if let Some(m) = macros.iter().find(|m| m.name.eq_ignore_ascii_case(&name)) {
+            let args = words[take..].iter().map(|w| (*w).to_string()).collect();
+            return Ok((m, args));
+        }
+    }
+    if let Ok(m) = find_macro(macros, text) {
+        return Ok((m, Vec::new()));
+    }
+    match words.split_first() {
+        Some((first, rest)) if !rest.is_empty() => {
+            find_macro(macros, first).map(|m| (m, rest.iter().map(|w| (*w).to_string()).collect()))
+        }
+        _ => find_macro(macros, text).map(|m| (m, Vec::new())),
+    }
+}
+
+/// Define macro `name` with `gcode` in `macros`, replacing one with the
+/// same name (case-insensitive; its colour and confirmation are kept).
+/// Returns whether one was replaced.
+pub fn define_macro(macros: &mut Vec<Macro>, name: &str, gcode: &str) -> bool {
+    match macros
+        .iter_mut()
+        .find(|m| m.name.eq_ignore_ascii_case(name))
+    {
+        Some(existing) => {
+            existing.gcode = gcode.to_string();
+            true
+        }
+        None => {
+            macros.push(Macro {
+                name: name.to_string(),
+                gcode: gcode.to_string(),
+                color: None,
+                confirm: false,
+            });
+            false
+        }
+    }
+}
+
+/// Remove the macro called `name` (case-insensitive, the whole name) from
+/// `macros`; returns it.
+pub fn remove_macro(macros: &mut Vec<Macro>, name: &str) -> Option<Macro> {
+    let index = macros
+        .iter()
+        .position(|m| m.name.eq_ignore_ascii_case(name.trim()))?;
+    Some(macros.remove(index))
+}
+
+/// A macro's G-code with its arguments filled in, as pronsole does:
+/// `{0}`, `{1}`, … are the arguments in order, `{1=200}` gives a default,
+/// and `{args}` is all of them. Other placeholders (`{x}`, `{max_z}`) are
+/// left for the machine-state ones the host fills in. Fails when an
+/// argument without a default is missing, or arguments are given to a
+/// macro that takes none.
+pub fn macro_gcode(m: &Macro, args: &[String]) -> Result<String, String> {
+    let mut out = String::with_capacity(m.gcode.len());
+    let mut rest = m.gcode.as_str();
+    let mut takes_args = false;
+    // Arguments up to the last one without a default.
+    let mut needed = 0usize;
+    let mut missing = false;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('}') else {
+            out.push_str(&rest[open..]);
+            rest = "";
+            break;
+        };
+        let inner = &after[..close];
+        let (key, default) = match inner.split_once('=') {
+            Some((key, default)) => (key.trim(), Some(default)),
+            None => (inner.trim(), None),
+        };
+        if key == "args" {
+            takes_args = true;
+            out.push_str(&args.join(" "));
+        } else if let Ok(index) = key.parse::<usize>() {
+            takes_args = true;
+            if default.is_none() {
+                needed = needed.max(index + 1);
+            }
+            match (args.get(index), default) {
+                (Some(arg), _) => out.push_str(arg),
+                (None, Some(default)) => out.push_str(default),
+                (None, None) => missing = true,
+            }
+        } else {
+            out.push_str(&rest[open..open + close + 2]);
+        }
+        rest = &after[close + 1..];
+    }
+    out.push_str(rest);
+    if missing {
+        return Err(format!(
+            "macro {} needs {needed} argument{} (macro {} <args…>)",
+            m.name,
+            if needed == 1 { "" } else { "s" },
+            m.name
+        ));
+    }
+    if !takes_args && !args.is_empty() {
+        return Err(format!(
+            "macro {} takes no arguments (its G-code has no {{0}} or {{args}})",
+            m.name
+        ));
+    }
+    Ok(out)
+}
+
 /// Every heater the printer has: the hotends it reports (or the profile's
 /// extruder count), the bed and the chamber when present.
 pub fn heaters(state: &PrinterState, profile: &PrinterProfile) -> Vec<Heater> {
@@ -551,6 +671,59 @@ mod tests {
                 Heater::Chamber
             ]
         );
+    }
+
+    fn named(name: &str, gcode: &str) -> Macro {
+        Macro {
+            name: name.into(),
+            gcode: gcode.into(),
+            color: None,
+            confirm: false,
+        }
+    }
+
+    #[test]
+    fn macros_take_arguments_like_pronsole() {
+        let heat = named("heat", "M104 S{0}\nM140 S{1=60}\nM117 {args} at {x}");
+        assert_eq!(
+            macro_gcode(&heat, &["210".into()]).as_deref(),
+            Ok("M104 S210\nM140 S60\nM117 210 at {x}")
+        );
+        assert_eq!(
+            macro_gcode(&heat, &["200".into(), "70".into()]).as_deref(),
+            Ok("M104 S200\nM140 S70\nM117 200 70 at {x}")
+        );
+        let missing = macro_gcode(&heat, &[]).expect_err("missing");
+        assert!(missing.contains("needs 1 argument"), "{missing}");
+        let home = named("Home", "G28 {unclosed");
+        assert_eq!(macro_gcode(&home, &[]).as_deref(), Ok("G28 {unclosed"));
+        let extra = macro_gcode(&home, &["5".into()]).expect_err("no arguments");
+        assert!(extra.contains("takes no arguments"), "{extra}");
+        // Names with spaces, then the arguments.
+        let macros = [
+            named("Bed mesh", "G29"),
+            heat.clone(),
+            named("Bed", "M140 S{0}"),
+        ];
+        let (m, args) = macro_call(&macros, "bed mesh").expect("bed mesh");
+        assert_eq!((m.name.as_str(), args.len()), ("Bed mesh", 0));
+        let (m, args) = macro_call(&macros, "Bed 55").expect("bed");
+        assert_eq!((m.name.as_str(), args), ("Bed", vec!["55".to_string()]));
+        let (m, args) = macro_call(&macros, "hea 1 2").expect("prefix");
+        assert_eq!((m.name.as_str(), args.len()), ("heat", 2));
+        assert!(macro_call(&macros, "nothing here").is_err());
+        assert!(macro_call(&macros, "").is_err());
+        // Defining replaces by name; removing takes the whole name.
+        let mut list = macros.to_vec();
+        assert!(define_macro(&mut list, "HEAT", "M104 S{0}"));
+        assert_eq!(list[1].gcode, "M104 S{0}");
+        assert!(!define_macro(&mut list, "park", "G91"));
+        assert_eq!(list.len(), 4);
+        assert_eq!(
+            remove_macro(&mut list, "bed").map(|m| m.name),
+            Some("Bed".into())
+        );
+        assert!(remove_macro(&mut list, "bed").is_none());
     }
 
     #[test]

@@ -46,7 +46,10 @@ pub(crate) enum Action {
     Quit,
     EepromReset,
     Send(String),
-    RunMacro(String),
+    /// Run the macro with this name and these arguments.
+    RunMacro(String, Vec<String>),
+    /// Delete the macro with this name from the configuration.
+    DeleteMacro(String),
     SdPrint(String),
     SdDelete(String),
     AnswerPrompt(usize),

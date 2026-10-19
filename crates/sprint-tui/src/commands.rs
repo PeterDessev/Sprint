@@ -356,8 +356,8 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "macro",
         aliases: &["macros"],
-        usage: "macro [name]",
-        summary: "List the profile's macros or run one",
+        usage: "macro [name [args]] | define <name> [gcode | gcode] | edit <name> | rm <name>",
+        summary: "List the macros, run one ({0}, {1}, {args} take the arguments), or define, edit or delete one",
         group: Group::Printer,
     },
     CommandSpec {
@@ -676,8 +676,21 @@ pub enum Command {
         /// Cycles.
         cycles: u32,
     },
-    /// `macro [name]`.
+    /// `macro [name [args]]`: list the macros, or run one (the text is
+    /// the name and the arguments, see [`crate::actions::macro_call`]).
     Macro(Option<String>),
+    /// `macro define <name> [gcode]` or `macro edit <name> [gcode]`.
+    MacroDefine {
+        /// The macro's name.
+        name: String,
+        /// Its G-code, a line per `|`; `None` reads the lines that follow
+        /// (the shell), up to a blank line.
+        gcode: Option<String>,
+        /// `edit`: the macro must exist already.
+        edit: bool,
+    },
+    /// `macro rm <name>`.
+    MacroRemove(String),
     /// `log [on|off]` (`None` reports the current mode).
     Log(Option<bool>),
     /// `exit` / `quit`.
@@ -1225,7 +1238,7 @@ fn parse_command(spec: &'static CommandSpec, rest: &str) -> Result<Command, Pars
             }
         }
         "sd" => parse_sd(spec, &args),
-        "macro" => Ok(Command::Macro((!rest.is_empty()).then(|| rest.to_string()))),
+        "macro" => parse_macro(spec, rest),
         "log" => {
             at_most(spec, &args, 1)?;
             match arg(0).map(|a| a.to_ascii_lowercase()) {
@@ -1248,6 +1261,53 @@ fn parse_command(spec: &'static CommandSpec, rest: &str) -> Result<Command, Pars
             spec.name
         ))),
     }
+}
+
+/// `macro [name [args]] | define <name> [gcode] | edit <name> [gcode] |
+/// rm <name>`.
+fn parse_macro(spec: &'static CommandSpec, rest: &str) -> Result<Command, ParseError> {
+    let (sub, after) = match rest.find(char::is_whitespace) {
+        Some(i) => (&rest[..i], rest[i..].trim()),
+        None => (rest, ""),
+    };
+    let edit = match sub.to_ascii_lowercase().as_str() {
+        "define" | "def" | "new" => false,
+        "edit" => true,
+        "rm" | "del" | "delete" | "remove" => {
+            return path_arg(after)
+                .map(|name| Command::MacroRemove(name.to_string_lossy().into_owned()))
+                .ok_or_else(|| ParseError::usage(spec, "which macro?"));
+        }
+        _ => return Ok(Command::Macro((!rest.is_empty()).then(|| rest.to_string()))),
+    };
+    // A quoted name may have spaces; the rest of the line is the G-code.
+    let (name, gcode) = match after.chars().next() {
+        Some(q @ ('"' | '\'')) => match after[1..].find(q) {
+            Some(end) => (&after[1..=end], after[end + 2..].trim()),
+            None => return Err(ParseError::usage(spec, format!("missing closing {q}"))),
+        },
+        _ => match after.find(char::is_whitespace) {
+            Some(i) => (&after[..i], after[i..].trim()),
+            None => (after, ""),
+        },
+    };
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(ParseError::usage(spec, "which macro?"));
+    }
+    let gcode = (!gcode.is_empty()).then(|| {
+        gcode
+            .split('|')
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n")
+    });
+    Ok(Command::MacroDefine {
+        name: name.to_string(),
+        gcode,
+        edit,
+    })
 }
 
 /// pronsole's own options (its `set` command), not firmware settings.
@@ -1724,6 +1784,35 @@ mod tests {
             ),
             ("macro", Command::Macro(None)),
             ("macro Bed mesh", Command::Macro(Some("Bed mesh".into()))),
+            (
+                "macro heat 210 60",
+                Command::Macro(Some("heat 210 60".into())),
+            ),
+            (
+                "macro define park G91 | G1 Z{0=10} |  | G90",
+                Command::MacroDefine {
+                    name: "park".into(),
+                    gcode: Some("G91\nG1 Z{0=10}\nG90".into()),
+                    edit: false,
+                },
+            ),
+            (
+                "macro define \"Bed level\"",
+                Command::MacroDefine {
+                    name: "Bed level".into(),
+                    gcode: None,
+                    edit: false,
+                },
+            ),
+            (
+                "macro EDIT 'Bed level' G29",
+                Command::MacroDefine {
+                    name: "Bed level".into(),
+                    gcode: Some("G29".into()),
+                    edit: true,
+                },
+            ),
+            ("macro rm Bed mesh", Command::MacroRemove("Bed mesh".into())),
             ("log", Command::Log(None)),
             ("log on", Command::Log(Some(true))),
             ("log OFF", Command::Log(Some(false))),
@@ -1931,6 +2020,27 @@ mod tests {
                 Some("connect [target] [baud] [--save]"),
             ),
             ("status now", "unexpected argument 'now'", Some("status")),
+            (
+                "macro define",
+                "which macro?",
+                Some(
+                    "macro [name [args]] | define <name> [gcode | gcode] | edit <name> | rm <name>",
+                ),
+            ),
+            (
+                "macro rm",
+                "which macro?",
+                Some(
+                    "macro [name [args]] | define <name> [gcode | gcode] | edit <name> | rm <name>",
+                ),
+            ),
+            (
+                "macro define \"open",
+                "missing closing \"",
+                Some(
+                    "macro [name [args]] | define <name> [gcode | gcode] | edit <name> | rm <name>",
+                ),
+            ),
             (
                 "sd upload \"a.gcode",
                 "missing closing \"",

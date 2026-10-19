@@ -281,7 +281,10 @@ fn macros_ask_first_while_a_job_runs() {
     let Some(Modal::Confirm(confirm)) = &app.modal else {
         panic!("no question: {:?}", app.toast);
     };
-    assert_eq!(confirm.action, dialogs::Action::RunMacro("Home".into()));
+    assert_eq!(
+        confirm.action,
+        dialogs::Action::RunMacro("Home".into(), Vec::new())
+    );
     assert!(confirm.danger, "asked as a dangerous action");
     assert!(!confirm.on_yes, "the safe answer is the default");
     assert!(
@@ -1976,4 +1979,39 @@ fn f6_releases_a_wait_for_the_user_without_a_prompt() {
         fake.received()
     );
     app.printer.disconnect();
+}
+
+#[test]
+fn the_palette_defines_and_runs_macros_with_arguments() {
+    let mut app = connected_app();
+    received(&app);
+    app.run_line("macro define park G91 | G1 Z{0=7} | G90");
+    assert!(
+        app.toast
+            .as_ref()
+            .is_some_and(|t| t.text.contains("Saved macro park (3 lines)")),
+        "{:?}",
+        app.toast
+    );
+    app.run_line("macro park 12");
+    app.run_line("macro define lines");
+    assert!(
+        app.toast
+            .as_ref()
+            .is_some_and(|t| t.text.contains("| separates lines")),
+        "{:?}",
+        app.toast
+    );
+    wait_idle(&mut app);
+    let got = received(&app);
+    assert!(got.iter().any(|c| c == "G1 Z12"), "{got:?}");
+    app.run_line("macro rm park");
+    let Some(Modal::Confirm(confirm)) = &app.modal else {
+        panic!("no question: {:?}", app.toast);
+    };
+    assert_eq!(confirm.action, dialogs::Action::DeleteMacro("park".into()));
+    let action = confirm.action.clone();
+    app.modal = None;
+    app.run_action(action);
+    assert!(!app.config.macros.iter().any(|m| m.name == "park"));
 }

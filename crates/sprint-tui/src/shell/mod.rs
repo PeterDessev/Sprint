@@ -652,6 +652,10 @@ impl Shell {
                 });
             }
             Command::Macro(None) => self.out.lines(&report::macro_lines(&self.config.macros)),
+            Command::MacroDefine { name, gcode, edit } => {
+                self.define_macro(&name, gcode, edit, input);
+            }
+            Command::MacroRemove(name) => self.remove_macro(&name, input),
             Command::Preheat(None) => self
                 .out
                 .lines(&report::preset_lines(&self.profile.temp_presets)),
@@ -667,6 +671,119 @@ impl Shell {
             }
         }
         Flow::Continue
+    }
+
+    /// `macro define|edit <name> [gcode]`: save a macro; without G-code
+    /// on the line, the lines that follow are its G-code, up to a blank
+    /// line (pronsole's way).
+    fn define_macro(
+        &mut self,
+        name: &str,
+        gcode: Option<String>,
+        edit: bool,
+        input: &mut dyn LineSource,
+    ) {
+        let existing = self
+            .config
+            .macros
+            .iter()
+            .find(|m| m.name.eq_ignore_ascii_case(name))
+            .cloned();
+        if edit && existing.is_none() {
+            self.out.error(format!(
+                "no macro '{name}' (macro lists them; macro define makes one)"
+            ));
+            return;
+        }
+        let gcode = match gcode {
+            Some(gcode) => gcode,
+            None => {
+                if input.interactive() {
+                    if let Some(m) = &existing {
+                        self.out.dim(format!("{} now:", m.name));
+                        for line in m.gcode.lines() {
+                            self.out.dim(format!("  {line}"));
+                        }
+                    }
+                    self.out.dim(format!(
+                        "Type the G-code of {name}, a line at a time; a blank line ends it"
+                    ));
+                }
+                let mut lines = Vec::new();
+                loop {
+                    match input.read("... ") {
+                        Read::Line(line) if line.trim().is_empty() => break,
+                        Read::Line(line) => lines.push(line.trim().to_string()),
+                        Read::Eof => break,
+                        Read::Interrupted => {
+                            self.out.warn(format!("{name} not saved"));
+                            return;
+                        }
+                    }
+                }
+                lines.join("\n")
+            }
+        };
+        if gcode.trim().is_empty() {
+            self.out.warn(format!("{name} not saved: it has no G-code"));
+            return;
+        }
+        let name = existing.map_or_else(|| name.to_string(), |m| m.name);
+        let lines = gcode.lines().count();
+        let mut replaced = false;
+        match crate::config::edit_config(self.config_path.as_deref(), &self.config, |config| {
+            replaced = actions::define_macro(&mut config.macros, &name, &gcode);
+        }) {
+            Ok(saved) => {
+                self.keep_profile(saved);
+                self.out.good(format!(
+                    "{} macro {name} ({lines} line{})",
+                    if replaced { "Changed" } else { "Saved" },
+                    if lines == 1 { "" } else { "s" }
+                ));
+            }
+            Err(why) => self.out.error(format!("{name} not saved: {why}")),
+        }
+    }
+
+    /// `macro rm <name>`: delete a macro (asks first on a terminal).
+    fn remove_macro(&mut self, name: &str, input: &mut dyn LineSource) {
+        let Some(m) = self
+            .config
+            .macros
+            .iter()
+            .find(|m| m.name.eq_ignore_ascii_case(name.trim()))
+            .cloned()
+        else {
+            self.out
+                .error(format!("no macro '{name}' (macro lists them)"));
+            return;
+        };
+        if !self.confirm(input, &format!("Delete the macro {}?", m.name), true) {
+            self.out.dim("Kept");
+            return;
+        }
+        match crate::config::edit_config(self.config_path.as_deref(), &self.config, |config| {
+            actions::remove_macro(&mut config.macros, &m.name);
+        }) {
+            Ok(saved) => {
+                self.keep_profile(saved);
+                self.out.good(format!("Deleted the macro {}", m.name));
+            }
+            Err(why) => self.out.error(format!("{} not deleted: {why}", m.name)),
+        }
+    }
+
+    /// Use `config` (just saved) and keep this session's profile active.
+    fn keep_profile(&mut self, mut config: AppConfig) {
+        if let Some(index) = config
+            .profiles
+            .iter()
+            .position(|p| p.name == self.profile.name)
+        {
+            config.active_profile = index;
+        }
+        self.config = config;
     }
 
     /// `eta`: where the job is and how long it has left.
@@ -1260,9 +1377,12 @@ impl Shell {
                     format::trimmed(f64::from(celsius), 1)
                 ));
             }
-            Command::Macro(Some(name)) => match actions::find_macro(&self.config.macros, &name) {
+            Command::Macro(Some(text)) => match actions::macro_call(&self.config.macros, &text)
+                .and_then(|(m, args)| {
+                    let gcode = actions::macro_gcode(m, &args)?;
+                    Ok(sprint_host::Macro { gcode, ..m.clone() })
+                }) {
                 Ok(m) => {
-                    let m = m.clone();
                     // While a job runs the commands go between the print's
                     // lines (a G28 there ruins it): asked on a terminal.
                     let question = if self.job_active() {
@@ -1287,6 +1407,8 @@ impl Shell {
             Command::Help(_)
             | Command::Connect { .. }
             | Command::Profile(_)
+            | Command::MacroDefine { .. }
+            | Command::MacroRemove(_)
             | Command::Eta
             | Command::Source(_)
             | Command::WaitOnline

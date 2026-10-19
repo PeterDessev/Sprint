@@ -1158,7 +1158,7 @@ pub fn gcode_help(doc: &GcodeDoc) -> Vec<ReportLine> {
 pub fn macro_lines(macros: &[Macro]) -> Vec<ReportLine> {
     if macros.is_empty() {
         return vec![ReportLine::toned(
-            "No macros defined (add them to the configuration file).",
+            "No macros defined (macro define <name> adds one).",
             Tone::Dim,
         )];
     }

@@ -1237,11 +1237,33 @@ impl App {
                 self.warn("Settings reset to factory defaults (M502); eeprom save keeps them");
             }
             Action::Send(gcode) => self.printer.send(&gcode),
-            Action::RunMacro(name) => {
-                if let Ok(m) = actions::find_macro(&self.config.macros, &name) {
-                    let m = m.clone();
-                    self.printer.run_macro(&m);
-                    self.info(format!("Macro {}", m.name));
+            Action::RunMacro(name, args) => {
+                let found = actions::find_macro(&self.config.macros, &name).and_then(|m| {
+                    let gcode = actions::macro_gcode(m, &args)?;
+                    Ok(sprint_host::Macro { gcode, ..m.clone() })
+                });
+                match found {
+                    Ok(m) => {
+                        self.printer.run_macro(&m);
+                        self.info(format!("Macro {}", m.name));
+                    }
+                    Err(why) => self.error(why),
+                }
+            }
+            Action::DeleteMacro(name) => {
+                let saved = crate::config::edit_config(
+                    self.config_path.as_deref(),
+                    &self.config,
+                    |config| {
+                        actions::remove_macro(&mut config.macros, &name);
+                    },
+                );
+                match saved {
+                    Ok(config) => {
+                        self.keep_profile(config);
+                        self.info(format!("Deleted the macro {name}"));
+                    }
+                    Err(why) => self.error(format!("{name} not deleted: {why}")),
                 }
             }
             Action::SdPrint(name) => match self.printer.start_sd_print(&name) {
@@ -1890,6 +1912,28 @@ impl App {
                 let lines = report::macro_lines(&self.config.macros);
                 self.show_report("Macros", lines);
             }
+            Command::MacroDefine { name, gcode, edit } => self.define_macro(&name, gcode, edit),
+            Command::MacroRemove(name) => {
+                match self
+                    .config
+                    .macros
+                    .iter()
+                    .find(|m| m.name.eq_ignore_ascii_case(name.trim()))
+                {
+                    Some(m) => {
+                        let name = m.name.clone();
+                        self.modal = Some(Modal::Confirm(Confirm::new(
+                            format!("Delete the macro {name}?"),
+                            macro_preview(&m.gcode),
+                            "Delete",
+                            "Keep",
+                            true,
+                            Action::DeleteMacro(name),
+                        )));
+                    }
+                    None => self.error(format!("no macro '{name}' (macro lists them)")),
+                }
+            }
             Command::Preheat(None) => {
                 let lines = report::preset_lines(&self.profile.temp_presets);
                 self.show_report("Presets", lines);
@@ -2147,10 +2191,12 @@ impl App {
                     format::trimmed(f64::from(celsius), 1)
                 ));
             }
-            Command::Macro(Some(name)) => match actions::find_macro(&self.config.macros, &name) {
+            Command::Macro(Some(text)) => match actions::macro_call(&self.config.macros, &text)
+                .and_then(|(m, args)| actions::macro_gcode(m, &args).map(|gcode| (m, args, gcode)))
+            {
                 // While a job runs the commands go between the print's
                 // lines (a G28 there ruins it): always asked, as danger.
-                Ok(m) if m.confirm || self.view.job_active() => {
+                Ok((m, args, gcode)) if m.confirm || self.view.job_active() => {
                     let name = m.name.clone();
                     let job_active = self.view.job_active();
                     let mut message = Vec::new();
@@ -2160,19 +2206,19 @@ impl App {
                                 .to_string(),
                         );
                     }
-                    message.extend(macro_preview(&m.gcode));
+                    message.extend(macro_preview(&gcode));
                     self.modal = Some(Modal::Confirm(Confirm::new(
                         format!("Run {name}?"),
                         message,
                         "Run",
                         "Not now",
                         job_active,
-                        Action::RunMacro(name),
+                        Action::RunMacro(name, args),
                     )));
                 }
-                Ok(m) => {
+                Ok((m, args, _)) => {
                     let name = m.name.clone();
-                    self.run_action(Action::RunMacro(name));
+                    self.run_action(Action::RunMacro(name, args));
                 }
                 Err(why) => self.error(why),
             },
@@ -2180,6 +2226,8 @@ impl App {
             Command::Help(_)
             | Command::Connect { .. }
             | Command::Profile(_)
+            | Command::MacroDefine { .. }
+            | Command::MacroRemove(_)
             | Command::Eta
             | Command::Source(_)
             | Command::WaitOnline
@@ -2198,6 +2246,57 @@ impl App {
             | Command::Log(_)
             | Command::Exit => {}
         }
+    }
+
+    /// `macro define|edit <name> <gcode>`: save a macro (`|` separates its
+    /// lines; the palette has one line).
+    fn define_macro(&mut self, name: &str, gcode: Option<String>, edit: bool) {
+        let existing = self
+            .config
+            .macros
+            .iter()
+            .find(|m| m.name.eq_ignore_ascii_case(name))
+            .map(|m| m.name.clone());
+        if edit && existing.is_none() {
+            self.error(format!("no macro '{name}' (macro define makes one)"));
+            return;
+        }
+        let Some(gcode) = gcode else {
+            self.warn(format!(
+                "Give the G-code on the line: macro define {name} G28 | G1 Z10 (| separates lines)"
+            ));
+            return;
+        };
+        let name = existing.unwrap_or_else(|| name.to_string());
+        let mut replaced = false;
+        let saved =
+            crate::config::edit_config(self.config_path.as_deref(), &self.config, |config| {
+                replaced = actions::define_macro(&mut config.macros, &name, &gcode);
+            });
+        match saved {
+            Ok(config) => {
+                self.keep_profile(config);
+                let lines = gcode.lines().count();
+                self.good(format!(
+                    "{} macro {name} ({lines} line{})",
+                    if replaced { "Changed" } else { "Saved" },
+                    if lines == 1 { "" } else { "s" }
+                ));
+            }
+            Err(why) => self.error(format!("{name} not saved: {why}")),
+        }
+    }
+
+    /// Use `config` (just saved) and keep this session's profile active.
+    fn keep_profile(&mut self, mut config: AppConfig) {
+        if let Some(index) = config
+            .profiles
+            .iter()
+            .position(|p| p.name == self.profile.name)
+        {
+            config.active_profile = index;
+        }
+        self.config = config;
     }
 
     /// `profile <name>`: use another printer profile from now on, saved

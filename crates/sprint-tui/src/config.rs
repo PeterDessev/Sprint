@@ -72,6 +72,25 @@ pub fn update(
     Ok(config)
 }
 
+/// [`update`] the configuration file at `path`, or change `current` in
+/// memory without one (tests). Errors are messages for the user.
+pub fn edit_config(
+    path: Option<&Path>,
+    current: &AppConfig,
+    edit: impl FnOnce(&mut AppConfig),
+) -> Result<AppConfig, String> {
+    match path {
+        Some(path) => {
+            update(path, current, edit).map_err(|e| format!("cannot save {}: {e}", path.display()))
+        }
+        None => {
+            let mut config = current.clone();
+            edit(&mut config);
+            Ok(config)
+        }
+    }
+}
+
 /// Use the profile called `name` (see [`find_profile`]) for this session
 /// instead of the active one; the file is not changed. Nothing happens
 /// without a name.

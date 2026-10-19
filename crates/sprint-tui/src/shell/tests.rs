@@ -919,3 +919,58 @@ fn a_wait_for_the_user_without_a_prompt_is_told_and_released() {
     );
     shell.printer.disconnect();
 }
+
+#[test]
+fn macros_are_defined_run_with_arguments_and_deleted() {
+    let scratch = Scratch::new("macros");
+    let path = scratch.0.join("config.toml");
+    let (mut shell, buffer) = shell_with(AppConfig::default(), Some(path.clone()));
+    shell.connect(fast_sim());
+    assert!(shell.printer.is_connected(), "{}", buffer.text());
+    received(&shell);
+    // pronsole's way: the lines after `macro define` up to a blank one.
+    script(
+        &mut shell,
+        &[
+            "macro define warm",
+            "M104 S{0}",
+            "M140 S{1=55}",
+            "",
+            "macro warm 190",
+            "macro warm",
+            "macro define park G91 | G1 Z{0=7} | G90",
+            "macro park",
+        ],
+    );
+    let got = received(&shell);
+    for want in ["M104 S190", "M140 S55", "G1 Z7"] {
+        assert!(got.iter().any(|c| c == want), "missing {want} in {got:?}");
+    }
+    let text = buffer.text();
+    assert!(text.contains("Saved macro warm (2 lines)"), "{text}");
+    assert!(text.contains("macro warm needs 1 argument"), "{text}");
+    let on_disk = AppConfig::load_from(&path).expect("saved");
+    let warm = on_disk
+        .macros
+        .iter()
+        .find(|m| m.name == "warm")
+        .expect("warm saved");
+    assert_eq!(warm.gcode, "M104 S{0}\nM140 S{1=55}");
+    // Edit and delete.
+    buffer.clear();
+    script(
+        &mut shell,
+        &[
+            "macro edit warm M104 S{0}",
+            "macro rm park",
+            "macro rm park",
+        ],
+    );
+    let text = buffer.text();
+    assert!(text.contains("Changed macro warm (1 line)"), "{text}");
+    assert!(text.contains("Deleted the macro park"), "{text}");
+    assert!(text.contains("no macro 'park'"), "{text}");
+    let on_disk = AppConfig::load_from(&path).expect("saved");
+    assert!(!on_disk.macros.iter().any(|m| m.name == "park"));
+    shell.printer.disconnect();
+}
