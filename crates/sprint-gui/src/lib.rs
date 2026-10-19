@@ -6,6 +6,7 @@ use std::path::PathBuf;
 pub mod fonts;
 pub mod icons;
 pub mod theme;
+pub mod widgets;
 
 /// Options for launching the GUI.
 #[derive(Clone, Debug, Default)]
