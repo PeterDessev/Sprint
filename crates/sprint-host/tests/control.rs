@@ -510,3 +510,43 @@ fn homed_axes_follow_homing_motors_off_and_halts() {
     printer.disconnect();
     assert_eq!(homed(&printer), None);
 }
+
+#[test]
+fn replies_to_the_hosts_own_queries_are_not_messages() {
+    // A UI opening its bed mesh view sends M420 V by itself: the echo
+    // lines that answer it belong in the console, not in a toast.
+    let printer = connect(fast_sim(50.0), options());
+    let events = printer.subscribe();
+    let seq = last_seq(&printer);
+    printer.request_bed_mesh();
+    printer.request_sd_files();
+    wait_idle(&printer);
+    let received: Vec<String> = printer
+        .console_since(seq, usize::MAX)
+        .into_iter()
+        .filter(|e| e.kind == ConsoleKind::Received)
+        .map(|e| e.text)
+        .collect();
+    assert!(
+        received.iter().any(|t| t.starts_with("echo:Bed Leveling")),
+        "{received:?}"
+    );
+    let messages: Vec<String> = events
+        .try_iter()
+        .filter_map(|e| match e {
+            Event::FirmwareMessage(m) => Some(m),
+            _ => None,
+        })
+        .collect();
+    assert!(messages.is_empty(), "{messages:?}");
+    assert!(printer.with_state(|s| s.firmware_messages.is_empty()));
+
+    // The same command typed by the user still shows what it says.
+    printer.send("M420 V");
+    wait_idle(&printer);
+    assert!(
+        events
+            .try_iter()
+            .any(|e| matches!(e, Event::FirmwareMessage(m) if m.starts_with("Bed Leveling")))
+    );
+}

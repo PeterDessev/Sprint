@@ -200,6 +200,8 @@ impl Shared {
 pub(crate) enum Command {
     /// Cleaned, non-emergency commands for the priority queue.
     Send(Vec<String>),
+    /// Queries of the convenience methods (queued like `Send`).
+    Query(Vec<String>),
     /// Bypass queue and flow control.
     Immediate(String),
     EmergencyStop,
@@ -1123,6 +1125,11 @@ impl Engine {
             Command::Send(lines) => {
                 for line in lines {
                     self.queue_user(line);
+                }
+            }
+            Command::Query(lines) => {
+                for line in lines {
+                    self.manual.push_back(CmdMeta::new(line, Source::Query));
                 }
             }
             Command::Immediate(text) => {

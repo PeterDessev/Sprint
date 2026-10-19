@@ -183,6 +183,9 @@ impl Engine {
                     .flow
                     .in_flight()
                     .any(|e| e.meta.is('M', 503) || e.meta.is('M', 501)) => {}
+            // Replies to the host's own queries (a UI opening its mesh or
+            // SD view, the setup) stay in the console.
+            Reply::Echo(_) | Reply::Info(_) if self.answering_a_query() => {}
             Reply::Echo(message) | Reply::Info(message) => self.firmware_message(message),
             Reply::PrintTime(_) | Reply::Other(_) => {}
         }
@@ -309,10 +312,20 @@ impl Engine {
         }
     }
 
+    /// The oldest command awaiting its `ok` (the one the firmware is
+    /// answering) is a query of the host's own, not the user's.
+    fn answering_a_query(&self) -> bool {
+        self.flow
+            .front()
+            .is_some_and(|e| matches!(e.meta.source, Source::Query | Source::Setup))
+    }
+
     fn on_unknown_command(&mut self, cmd: String) {
         let text = format!("Unknown command: {cmd}");
-        self.shared.update(|s| s.push_message(text.clone()));
-        self.shared.emit(Event::FirmwareMessage(text));
+        if !self.answering_a_query() {
+            self.shared.update(|s| s.push_message(text.clone()));
+            self.shared.emit(Event::FirmwareMessage(text));
+        }
         if cmd.trim().to_ascii_uppercase().starts_with("M524")
             || self.flow.front().is_some_and(|e| e.meta.is('M', 524))
         {

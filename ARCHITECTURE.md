@@ -1121,7 +1121,13 @@ Every public item is also re-exported at the crate root.
   `FIRMWARE_MESSAGES_LEN`. Temperature reports are merged (readings missing
   from a report keep their value); `Event::Temperatures` carries the merged
   report. Echo lines that arrive while an M503/M501 report is in flight
-  belong to the report (console only, not `firmware_messages`).
+  belong to the report (console only, not `firmware_messages`). The
+  `request_*` queries (temperatures, position, firmware info, settings,
+  endstops, SD files, bed mesh, stats), which UIs
+  send on their own, are marked as the host's: `echo:` lines and "Unknown
+  command" answering them, or the setup queries, stay in the console and
+  are neither `Event::FirmwareMessage`s nor `firmware_messages` (the same
+  command sent with `send` still is).
 * `event`: `EventBus` (public fan-out), `EVENT_QUEUE_LIMIT`: a subscriber
   that stops reading keeps at most 65536 events; newer ones are dropped for
   it (the state stays authoritative). Queues grow with the events queued

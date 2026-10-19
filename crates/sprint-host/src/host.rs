@@ -672,24 +672,35 @@ impl Printer {
         self.send(&format!("T{tool}"));
     }
 
+    /// Queue a query of the host's own: like [`Printer::send`], but the
+    /// firmware's `echo:` replies and "Unknown command" stay in the console
+    /// instead of becoming [`Event::FirmwareMessage`]s (UIs send these on
+    /// their own, the user did not ask for messages).
+    fn query(&self, gcode: &str) {
+        let lines: Vec<String> = command_lines(gcode).collect();
+        if !lines.is_empty() {
+            self.command(Command::Query(lines));
+        }
+    }
+
     /// `M105`.
     pub fn request_temperatures(&self) {
-        self.send("M105");
+        self.query("M105");
     }
 
     /// `M114`.
     pub fn request_position(&self) {
-        self.send("M114");
+        self.query("M114");
     }
 
     /// `M115`.
     pub fn request_firmware_info(&self) {
-        self.send("M115");
+        self.query("M115");
     }
 
     /// `M503`: replaces `state.settings` when the report completes.
     pub fn request_settings(&self) {
-        self.send("M503");
+        self.query("M503");
     }
 
     /// `M500`: store the settings in EEPROM.
@@ -715,7 +726,7 @@ impl Printer {
 
     /// `M119`.
     pub fn request_endstops(&self) {
-        self.send("M119");
+        self.query("M119");
     }
 
     /// `M21` if the card is not known to be mounted, then `M20 L` (long
@@ -732,7 +743,7 @@ impl Printer {
             gcode.push_str("M21\n");
         }
         gcode.push_str(if extended { "M20 L" } else { "M20" });
-        self.send(&gcode);
+        self.query(&gcode);
     }
 
     /// Delete a file from the SD card (`M30`).
@@ -751,7 +762,7 @@ impl Printer {
                 .as_ref()
                 .is_some_and(|f| f.flavor == FirmwareFlavor::Klipper)
         });
-        self.send(if klipper { "BED_MESH_OUTPUT" } else { "M420 V" });
+        self.query(if klipper { "BED_MESH_OUTPUT" } else { "M420 V" });
     }
 
     /// Probe the bed: `G28` (unless every axis is known to be homed, see
@@ -763,7 +774,7 @@ impl Printer {
 
     /// `M78` (print statistics).
     pub fn request_stats(&self) {
-        self.send("M78");
+        self.query("M78");
     }
 
     /// PID autotune: `M303 E<n|-1|-2> S<target> C<cycles> U1`. The result

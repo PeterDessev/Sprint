@@ -9,6 +9,10 @@ use sprint_gcode::{Code, parse_line};
 pub(crate) enum Source {
     /// `send`, convenience controls, macros.
     User,
+    /// A query of a convenience method (`request_bed_mesh`, ...), often
+    /// sent by a UI on its own: its `echo:` replies are not messages for
+    /// the user.
+    Query,
     /// Handshake and post-handshake queries.
     Setup,
     /// Periodic polls.
