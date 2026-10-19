@@ -1013,9 +1013,8 @@ fn the_settings_show_each_profile_its_own_address() {
     };
     // Garbage typed into the first profile's address...
     h.query_all_by_role(Role::TextInput)
-        .filter(|n| n.value().as_deref() == Some("a.local:23"))
-        .last()
-        .expect("the address field")
+        .rfind(|n| n.value().as_deref() == Some("a.local:23"))
+        .expect("the address field (the dialog's, after the bar's)")
         .click();
     settle(&mut h);
     h.key_press_modifiers(Modifiers::COMMAND, Key::A);
