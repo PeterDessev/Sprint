@@ -24,6 +24,12 @@ const JOB_NOTE: &str = concat!(
     "available.",
 );
 
+/// Shown while the firmware is halted.
+const HALTED_NOTE: &str = concat!(
+    "It ignores commands until its firmware restarts: restart it (M999) or reconnect ",
+    "to run the wizards.",
+);
+
 pub use esteps::EstepsWizard;
 pub use flow::FlowWizard;
 pub use pid::PidWizard;
@@ -125,6 +131,16 @@ impl CalibrationTab {
                 icons::INFO,
                 "Not connected",
                 Some("Connect to a printer to run the wizards. The flow calculator works offline."),
+                None,
+            );
+            ui.add_space(theme::GAP);
+        } else if ctx.state.halted {
+            kit::notice(
+                ui,
+                Tone::Danger,
+                icons::WARNING,
+                "The printer is halted",
+                Some(HALTED_NOTE),
                 None,
             );
             ui.add_space(theme::GAP);

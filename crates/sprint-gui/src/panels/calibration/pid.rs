@@ -24,6 +24,9 @@ const INTRO: &str = concat!(
     "derives PID gains from the swings. It takes 5 to 10 minutes.",
 );
 
+/// The autotune error shown when the firmware halted during a run.
+const HALTED_DURING_AUTOTUNE: &str = "the printer halted";
+
 /// Advice for hotend autotunes.
 const FAN_NOTE: &str = concat!(
     "Set the part-cooling fan to the speed you usually print with: it changes how ",
@@ -190,7 +193,10 @@ impl PidWizard {
                 }
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
-                    let can_start = ctx.connected() && !ctx.job_active() && !running;
+                    let blocker = ctx
+                        .command_blocker()
+                        .or_else(|| ctx.job_active().then_some("Not while a job runs"));
+                    let can_start = blocker.is_none() && !running;
                     let target = *self.target_mut();
                     let label = format!("Start autotune at {target:.0} °C");
                     if ui
@@ -198,6 +204,7 @@ impl PidWizard {
                             can_start,
                             ActionButton::new(&label).icon(icons::PLAY).primary(),
                         )
+                        .on_disabled_hover_text(blocker.unwrap_or("An autotune is running"))
                         .clicked()
                     {
                         let baseline = current_pid(&state.settings, self.heater);
@@ -223,7 +230,11 @@ impl PidWizard {
             });
         if let Some(a) = &autotune {
             ui.add_space(theme::GAP_LG);
-            if a.running {
+            if a.running && state.halted {
+                // A halted firmware ends the autotune without a report: the
+                // run must not read as going on.
+                failure(ui, HALTED_DURING_AUTOTUNE);
+            } else if a.running {
                 self.progress(ui, ctx, a.heater, a.target, a.cycles, hotends);
             } else if let Some(error) = &a.error {
                 failure(ui, error);
@@ -388,7 +399,7 @@ impl PidWizard {
                     kit::dim(ui, note);
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        let connected = ctx.connected();
+                        let ready = ctx.command_blocker().is_none();
                         let code = match heater {
                             Heater::Hotend(_) => "M301",
                             Heater::Bed => "M304",
@@ -397,7 +408,7 @@ impl PidWizard {
                         if !applied
                             && ui
                                 .add_enabled(
-                                    connected,
+                                    ready,
                                     ActionButton::new("Apply gains")
                                         .icon(icons::CHECK)
                                         .primary()
@@ -417,7 +428,7 @@ impl PidWizard {
                         };
                         let no_eeprom = kit::lacks_eeprom(state);
                         if ui
-                            .add_enabled(connected && applied && !no_eeprom, save_button)
+                            .add_enabled(ready && applied && !no_eeprom, save_button)
                             .on_disabled_hover_text(if no_eeprom {
                                 kit::NO_EEPROM
                             } else {
@@ -452,7 +463,9 @@ fn close(a: PidGains, b: PidGains) -> bool {
 
 fn failure(ui: &mut Ui, error: &str) {
     let lower = error.to_lowercase();
-    let tip = if lower.contains("temperature too high") || lower.contains("too high") {
+    let tip = if lower.contains("halted") {
+        "Restart the firmware (M999) or reconnect, then start the autotune again."
+    } else if lower.contains("temperature too high") || lower.contains("too high") {
         TOO_HIGH_TIP
     } else if lower.contains("timeout") {
         TIMEOUT_TIP

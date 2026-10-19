@@ -168,7 +168,7 @@ impl EstepsWizard {
             let label = format!("Heat to {:.0} °C", self.temperature);
             if ui
                 .add_enabled(
-                    ctx.connected(),
+                    ctx.command_blocker().is_none(),
                     ActionButton::new(&label).icon(icons::HEATING),
                 )
                 .clicked()
@@ -250,7 +250,7 @@ impl EstepsWizard {
         // One extrusion per mark: a second one would push the mark past
         // what the measurement assumes (or into the extruder).
         let extruded = self.extrude_started.is_some();
-        let can = ctx.connected() && !ctx.job_active() && hot && !extruded;
+        let can = ctx.command_blocker().is_none() && !ctx.job_active() && hot && !extruded;
         ui.horizontal(|ui| {
             let label = format!("Extrude {:.0} mm", ESTEPS_EXTRUDE_MM);
             let tip = if extruded {
@@ -380,7 +380,7 @@ impl EstepsWizard {
                 }
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    let connected = ctx.connected();
+                    let ready = ctx.command_blocker().is_none();
                     // This result was applied and the printer reports it (a
                     // new measurement needs applying again).
                     let target = (r.new_steps * 100.0).round() / 100.0;
@@ -393,7 +393,7 @@ impl EstepsWizard {
                     if !applied
                         && ui
                             .add_enabled(
-                                connected,
+                                ready,
                                 ActionButton::new(&label).icon(icons::CHECK).primary(),
                             )
                             .clicked()
@@ -412,7 +412,7 @@ impl EstepsWizard {
                     let save = if applied { save.primary() } else { save };
                     let no_eeprom = kit::lacks_eeprom(ctx.state);
                     if ui
-                        .add_enabled(connected && applied && !no_eeprom, save)
+                        .add_enabled(ready && applied && !no_eeprom, save)
                         .on_disabled_hover_text(if no_eeprom {
                             kit::NO_EEPROM
                         } else {

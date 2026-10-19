@@ -115,7 +115,19 @@ impl TuningTab {
         ui.add_space(theme::GAP);
         self.toolbar(ui, ctx);
         ui.add_space(theme::GAP);
-        if ctx.job_active() {
+        if connected && ctx.state.halted {
+            kit::notice(
+                ui,
+                Tone::Danger,
+                icons::WARNING,
+                "The printer is halted",
+                Some(
+                    "It ignores commands until its firmware restarts (M999) or Sprint reconnects.",
+                ),
+                None,
+            );
+            ui.add_space(theme::GAP);
+        } else if ctx.job_active() {
             kit::notice(
                 ui,
                 Tone::Warning,
@@ -216,10 +228,13 @@ impl TuningTab {
             self.auto_requested = false;
             self.confirm = None;
         }
-        if !state.is_connected() {
+        // A halted firmware ignores M500 / M501 / M502: confirming would
+        // report a success that did not happen.
+        if !state.is_connected() || state.halted {
             self.confirm = None;
         }
         if state.is_connected()
+            && !state.halted
             && !state.settings_loaded
             && !self.auto_requested
             && state
@@ -278,7 +293,7 @@ impl TuningTab {
     }
 
     fn header(&mut self, ui: &mut Ui, ctx: &mut AppCtx<'_>) {
-        let connected = ctx.connected();
+        let blocker = ctx.command_blocker();
         let n = self.draft.entries().len();
         let subtitle = if n == 0 {
             "Firmware settings".to_owned()
@@ -290,7 +305,7 @@ impl TuningTab {
         // Narrow tabs get icon buttons so the title keeps its room.
         let compact = ui.available_width() < 780.0;
         kit::page_header(ui, icons::TUNING, "Tuning", Some(&subtitle), |ui| {
-            ui.add_enabled_ui(connected, |ui| {
+            ui.add_enabled_ui(blocker.is_none(), |ui| {
                 let actions = [
                     (
                         Confirm::Save,
@@ -331,7 +346,8 @@ impl TuningTab {
                         };
                         ui.add_enabled(enabled, button)
                     };
-                    if response.on_disabled_hover_text(kit::NO_EEPROM).clicked() {
+                    let why = blocker.unwrap_or(kit::NO_EEPROM);
+                    if response.on_disabled_hover_text(why).clicked() {
                         confirm = Some(which);
                     }
                 }
@@ -344,7 +360,7 @@ impl TuningTab {
 
     fn toolbar(&mut self, ui: &mut Ui, ctx: &mut AppCtx<'_>) {
         let p = theme::ui_palette(ui);
-        let connected = ctx.connected();
+        let blocker = ctx.command_blocker();
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
             let search_w = (ui.available_width() - 4.0 * 36.0 - 24.0).clamp(140.0, 320.0);
@@ -416,9 +432,10 @@ impl TuningTab {
                 }
                 if ui
                     .add_enabled(
-                        connected,
+                        blocker.is_none(),
                         IconButton::new(icons::REFRESH).tooltip("Reload from the printer (M503)"),
                     )
+                    .on_disabled_hover_text(blocker.unwrap_or_default())
                     .clicked()
                 {
                     ctx.printer.request_settings();
@@ -554,7 +571,7 @@ impl TuningTab {
 
     fn changes_bar(&mut self, ui: &mut Ui, ctx: &mut AppCtx<'_>, modified: usize, invalid: usize) {
         let p = theme::ui_palette(ui);
-        let connected = ctx.connected();
+        let blocker = ctx.command_blocker();
         let changes = self.draft.changes();
         let mut apply = false;
         let mut revert = false;
@@ -615,14 +632,12 @@ impl TuningTab {
                         1 => "Apply change".to_owned(),
                         n => format!("Apply {n} changes"),
                     };
-                    let tip = if connected {
-                        "Send the changed settings to the printer, then reload them (M503)"
-                    } else {
-                        "Connect to apply"
-                    };
+                    let tip = blocker.unwrap_or(
+                        "Send the changed settings to the printer, then reload them (M503)",
+                    );
                     if ui
                         .add_enabled(
-                            connected && !changes.is_empty(),
+                            blocker.is_none() && !changes.is_empty(),
                             ActionButton::new(&label)
                                 .icon(icons::CHECK)
                                 .primary()

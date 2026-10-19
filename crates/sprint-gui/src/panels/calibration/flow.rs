@@ -185,7 +185,7 @@ impl FlowWizard {
                         );
                         if ui
                             .add_enabled(
-                                ctx.connected(),
+                                ctx.command_blocker().is_none(),
                                 ActionButton::new(&label).icon(icons::FLOW),
                             )
                             .clicked()

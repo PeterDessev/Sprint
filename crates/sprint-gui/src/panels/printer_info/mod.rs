@@ -154,8 +154,9 @@ impl PrinterInfoTab {
         }
         // Not during a job, and not behind commands still waiting to go
         // out: behind a heat wait, homing or an autotune a poll a second
-        // would pile up and flood the printer once it is done.
-        if ctx.job_active() || ctx.state.link.queue_len > 0 {
+        // would pile up and flood the printer once it is done. Nor to a
+        // halted firmware, which ignores it.
+        if ctx.job_active() || ctx.state.link.queue_len > 0 || ctx.command_blocker().is_some() {
             return;
         }
         let now = ui.input(|i| i.time);

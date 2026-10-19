@@ -235,7 +235,12 @@ impl BedMeshTab {
             self.confirm_probe = false;
             return;
         }
-        if !self.auto_requested && ctx.state.mesh.is_none() && !ctx.job_active() {
+        // Not to a halted firmware, which ignores it.
+        if !self.auto_requested
+            && ctx.state.mesh.is_none()
+            && !ctx.job_active()
+            && ctx.command_blocker().is_none()
+        {
             ctx.printer.request_bed_mesh();
             self.auto_requested = true;
         }
@@ -296,14 +301,15 @@ impl BedMeshTab {
             }
             None => "Probe the bed or load the stored mesh".to_owned(),
         };
-        let connected = ctx.connected();
+        let blocker = ctx.command_blocker();
+        let connected = blocker.is_none();
         let job = ctx.job_active();
         let probing = self.probing.is_some();
         let printer = ctx.printer;
         let mut probe = false;
         kit::page_header(ui, icons::MESH, "Bed mesh", Some(&subtitle), |ui| {
-            let tip = if !connected {
-                "Connect to a printer first"
+            let tip = if let Some(reason) = blocker {
+                reason
             } else if job {
                 "Not while a job runs"
             } else if probing {
@@ -330,6 +336,7 @@ impl BedMeshTab {
                         .icon(icons::DOWNLOAD)
                         .tooltip("Read the mesh stored in the printer (M420 V)"),
                 )
+                .on_disabled_hover_text(blocker.unwrap_or_default())
                 .clicked()
             {
                 printer.request_bed_mesh();
@@ -369,12 +376,15 @@ impl BedMeshTab {
         } else {
             NO_MESH_HELP
         };
-        let r = EmptyState::new(icons::MESH, "No bed mesh")
-            .message(message)
-            .action("Probe bed")
-            .action_icon(icons::MESH)
-            .show(ui);
-        if r.action_clicked() && !ctx.job_active() && self.probing.is_none() {
+        // Offered only when the printer can probe now.
+        let can_probe =
+            ctx.command_blocker().is_none() && !ctx.job_active() && self.probing.is_none();
+        let mut empty = EmptyState::new(icons::MESH, "No bed mesh").message(message);
+        if can_probe {
+            empty = empty.action("Probe bed").action_icon(icons::MESH);
+        }
+        let r = empty.show(ui);
+        if r.action_clicked() && can_probe {
             self.confirm_probe = true;
         }
     }
@@ -499,7 +509,7 @@ impl BedMeshTab {
         let state = ctx.state;
         let enabled = leveling_enabled(state);
         let reported_fade = fade_height(state);
-        let connected = ctx.connected();
+        let connected = ctx.command_blocker().is_none();
         let job = ctx.job_active();
         Card::new("Leveling")
             .icon(icons::LAYERS)
@@ -625,7 +635,7 @@ impl BedMeshTab {
         match answer {
             Some(DialogResult::Confirmed) => {
                 self.confirm_probe = false;
-                if ctx.connected() && !ctx.job_active() {
+                if ctx.command_blocker().is_none() && !ctx.job_active() {
                     ctx.printer.probe_bed_mesh();
                     self.probing = Some(Probing {
                         started: ui.input(|i| i.time),

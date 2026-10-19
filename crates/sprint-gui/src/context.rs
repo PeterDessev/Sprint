@@ -187,6 +187,67 @@ impl AppCtx<'_> {
             .as_ref()
             .is_some_and(|job| job.status.is_active())
     }
+
+    /// Why the printer takes no commands now (see [`command_blocker`]).
+    pub fn command_blocker(&self) -> Option<&'static str> {
+        command_blocker(self.state)
+    }
+
+    /// True while the printer is busy printing or uploading (see
+    /// [`printer_busy`]).
+    pub fn printer_busy(&self) -> bool {
+        printer_busy(self.state)
+    }
+
+    /// Why the machine must not be moved, homed, probed or calibrated now
+    /// (see [`motion_blocker`]).
+    pub fn motion_blocker(&self) -> Option<&'static str> {
+        motion_blocker(self.state)
+    }
+}
+
+/// Why the printer takes no commands now: it is not connected, or its
+/// firmware is halted (it ignores everything but M999 until it restarts).
+/// Panels disable their actions with this as the hover text, and skip
+/// their automatic queries.
+pub fn command_blocker(state: &PrinterState) -> Option<&'static str> {
+    if !state.is_connected() {
+        Some("Connect to a printer first")
+    } else if state.halted {
+        Some("The printer is halted: restart its firmware (M999) or reconnect")
+    } else {
+        None
+    }
+}
+
+/// True while the printer is busy printing or uploading: a job Sprint runs
+/// (host print, SD print or SD upload), or a print from the card started
+/// on the printer itself (its SD progress reports). The last report of an
+/// SD print Sprint ran and that has ended is not a print.
+pub fn printer_busy(state: &PrinterState) -> bool {
+    if state.job_active() {
+        return true;
+    }
+    let sd_print_ended = state
+        .job
+        .as_ref()
+        .is_some_and(|j| j.kind == sprint_host::JobKind::SdPrint && j.status.is_finished());
+    state.sd.printing.is_some() && !sd_print_ended
+}
+
+/// Why the machine must not be moved, homed, probed or calibrated now:
+/// [`command_blocker`], or a print or upload running ([`printer_busy`]),
+/// whose moves the commands would interleave with.
+pub fn motion_blocker(state: &PrinterState) -> Option<&'static str> {
+    command_blocker(state).or_else(|| {
+        if state.job_active() {
+            Some("Not while a job runs")
+        } else if printer_busy(state) {
+            Some("Not while the printer prints from its card")
+        } else {
+            None
+        }
+    })
 }
 
 #[cfg(test)]

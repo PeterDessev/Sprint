@@ -149,7 +149,7 @@ impl Tuning {
             "Live tuning",
             |_| {},
             |ui| {
-                ui.add_enabled_ui(connected, |ui| {
+                ui.add_enabled_ui(ctx.command_blocker().is_none(), |ui| {
                     let speed = KnobSpec {
                         knob: Knob::Speed,
                         icon: icons::SPEED,

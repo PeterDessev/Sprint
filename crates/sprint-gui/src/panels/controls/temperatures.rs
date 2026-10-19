@@ -400,7 +400,7 @@ impl Temperatures {
             .show(ui.ctx());
         match answer {
             Some(DialogResult::Confirmed) => {
-                if ctx.connected() {
+                if ctx.command_blocker().is_none() {
                     apply(ctx.printer, &pending.targets);
                 }
                 self.pending = None;
@@ -415,6 +415,8 @@ impl Temperatures {
 fn show(ui: &mut Ui, ctx: &mut AppCtx<'_>) -> Option<(Change, Vec<(Heater, f32)>)> {
     let state = ctx.state;
     let connected = ctx.connected();
+    // A halted firmware ignores heater commands (it switched them off).
+    let ready = ctx.command_blocker().is_none();
     let profile = ctx.config.active();
     let views = heaters(state, profile, connected);
     let hotends = hotend_count(state, profile);
@@ -431,7 +433,7 @@ fn show(ui: &mut Ui, ctx: &mut AppCtx<'_>) -> Option<(Change, Vec<(Heater, f32)>
         "Temperatures",
         |_| {},
         |ui| {
-            ui.add_enabled_ui(connected, |ui| {
+            ui.add_enabled_ui(ready, |ui| {
                 for view in &views {
                     let menu: Vec<(&str, f32)> = presets
                         .iter()

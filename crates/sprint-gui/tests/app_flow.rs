@@ -584,6 +584,64 @@ fn the_estop_halts_and_the_banner_recovers() {
 }
 
 #[test]
+fn a_halted_printer_is_offered_no_actions() {
+    let options = with_file(sim_options(), sample("calibration-cube.gcode"));
+    let mut h = app(options, egui::vec2(1600.0, 1000.0));
+    expect(&mut h, "the cube to be analyzed", analyzed);
+    connect(&mut h);
+    expect(&mut h, "the settings", |app| app.state().settings_loaded);
+    // An autotune runs when the firmware halts.
+    h.state()
+        .printer()
+        .start_pid_autotune(sprint_host::Heater::Hotend(0), 210.0, 8);
+    expect(&mut h, "the autotune", |app| {
+        app.state().autotune.as_ref().is_some_and(|a| a.running)
+    });
+    h.state().printer().emergency_stop();
+    expect(&mut h, "the firmware to halt", |app| app.state().halted);
+    let control = h.state().printer().sim_control().expect("simulator");
+    control.clear_received();
+    let disabled = |h: &Harness<'_, SprintApp>, label: &str| {
+        h.get_by_label(label).accesskit_node().is_disabled()
+    };
+    // The sidebar's heater presets (above the macro of that name).
+    let cool_down = h
+        .get_all_by_label("Cool down")
+        .min_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
+        .expect("cool down");
+    assert!(cool_down.accesskit_node().is_disabled());
+    for (tab, labels) in [
+        (Tab::Calibration, vec!["Start autotune at 210 °C"]),
+        (Tab::BedMesh, vec!["Probe bed"]),
+        (Tab::Tuning, vec!["Save to EEPROM", "Load from EEPROM"]),
+        (Tab::SdCard, vec!["Upload", "Initialize"]),
+    ] {
+        h.state_mut().push_action(AppAction::ShowTab(tab));
+        settle(&mut h);
+        for label in labels {
+            assert!(disabled(&h, label), "{tab:?}: {label}");
+        }
+    }
+    // The autotune does not read as running for good.
+    h.state_mut()
+        .push_action(AppAction::ShowTab(Tab::Calibration));
+    settle(&mut h);
+    assert!(h.query_by_label_contains("Autotune failed").is_some());
+    assert!(h.query_by_label("Abort").is_none());
+    h.state_mut().push_action(AppAction::ShowTab(Tab::SdCard));
+    settle(&mut h);
+    // The SD card's empty state offers nothing to click.
+    assert!(h.query_by_label("Upload loaded file").is_none());
+    // Nor are the tabs' automatic queries sent to the halted firmware.
+    std::thread::sleep(Duration::from_millis(200));
+    settle(&mut h);
+    let got = control.received_commands();
+    for code in ["M420", "M20", "M21", "M503"] {
+        assert!(!got.iter().any(|c| c.starts_with(code)), "{code}: {got:?}");
+    }
+}
+
+#[test]
 fn an_emergency_stop_typed_in_the_console_goes_out_at_once() {
     let mut h = app(sim_options(), WINDOW);
     connect(&mut h);

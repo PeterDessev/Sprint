@@ -177,7 +177,8 @@ impl SdCardTab {
                         "Card released",
                         Some(RELEASED_HELP),
                         Some("Initialize card"),
-                    ) {
+                    ) && ctx.command_blocker().is_none()
+                    {
                         self.init_card(ctx);
                     }
                     ui.add_space(theme::GAP_LG);
@@ -264,6 +265,7 @@ impl SdCardTab {
         let sd = &ctx.state.sd;
         if !self.auto_requested
             && !ctx.job_active()
+            && ctx.command_blocker().is_none()
             && !kit::lacks_capability(ctx.state, "SDCARD")
             && sd.card_present != Some(false)
             && sd.files.is_empty()
@@ -341,6 +343,7 @@ impl SdCardTab {
             )
         };
         let connected = ctx.connected();
+        let blocker = ctx.command_blocker();
         // A print started on the printer's display reads the card too.
         let job = ctx.job_active() || self.card_printing.is_some();
         let file_name = ctx.file.map(|f| f.file.name().to_owned());
@@ -351,6 +354,7 @@ impl SdCardTab {
             let upload_tip = match (&file_name, connected, job) {
                 (None, _, _) => "Open a G-code file to upload it".to_owned(),
                 (_, false, _) => "Connect to a printer first".to_owned(),
+                _ if let Some(reason) = blocker => reason.to_owned(),
                 _ if no_write => NO_SD_WRITE.to_owned(),
                 (_, _, true) => "Not while a job runs".to_owned(),
                 _ if released => "Initialize the card first".to_owned(),
@@ -358,7 +362,7 @@ impl SdCardTab {
             };
             if ui
                 .add_enabled(
-                    connected && !job && !released && !no_write && file_name.is_some(),
+                    blocker.is_none() && !job && !released && !no_write && file_name.is_some(),
                     ActionButton::new("Upload")
                         .icon(icons::UPLOAD)
                         .primary()
@@ -370,9 +374,10 @@ impl SdCardTab {
             }
             if ui
                 .add_enabled(
-                    connected && !no_sd,
+                    blocker.is_none() && !no_sd,
                     IconButton::new(icons::REFRESH).tooltip("Read the file list again (M20)"),
                 )
+                .on_disabled_hover_text(blocker.unwrap_or_default())
                 .clicked()
             {
                 refresh = true;
@@ -552,7 +557,8 @@ impl SdCardTab {
     fn files_card(&mut self, ui: &mut Ui, ctx: &mut AppCtx<'_>) {
         let state = ctx.state;
         let sd = &state.sd;
-        let connected = ctx.connected();
+        let blocker = ctx.command_blocker();
+        let ready = blocker.is_none();
         let sd_busy =
             sd_job(state).is_some_and(|j| j.status.is_active()) || self.card_printing.is_some();
         // No new print while any job runs, nor while the card prints a
@@ -590,28 +596,30 @@ impl SdCardTab {
                         ui.add_space(8.0);
                     }
                     if sd.card_present == Some(false) {
-                        let r = EmptyState::new(icons::SD_CARD, "No SD card")
-                            .message("The printer reports no card. Insert one and initialize it.")
-                            .action("Initialize card")
-                            .show(ui);
-                        if r.action_clicked() {
+                        let mut empty = EmptyState::new(icons::SD_CARD, "No SD card")
+                            .message("The printer reports no card. Insert one and initialize it.");
+                        if ready {
+                            empty = empty.action("Initialize card");
+                        }
+                        if empty.show(ui).action_clicked() && ready {
                             self.init_card(ctx);
                         }
                     } else if sd.files.is_empty() && !sd.listing {
                         let has_file = ctx.file.is_some();
-                        let r = EmptyState::new(icons::FILE, "No files")
-                            .message(if has_file {
+                        let mut empty =
+                            EmptyState::new(icons::FILE, "No files").message(if has_file {
                                 EMPTY_WITH_FILE
                             } else {
                                 "The card is empty, or the list has not been read yet."
-                            })
-                            .action(if has_file {
+                            });
+                        if ready {
+                            empty = empty.action(if has_file {
                                 "Upload loaded file"
                             } else {
                                 "Read the card"
-                            })
-                            .show(ui);
-                        if r.action_clicked() {
+                            });
+                        }
+                        if empty.show(ui).action_clicked() && ready {
                             if has_file {
                                 self.open_upload(ctx);
                             } else {
@@ -658,8 +666,8 @@ impl SdCardTab {
                                         is_selected,
                                         n % 2 == 1,
                                         (
-                                            connected && !job_active && !released,
-                                            connected && !sd_busy && !released,
+                                            ready && !job_active && !released,
+                                            ready && !sd_busy && !released,
                                         ),
                                     )
                                 })
@@ -682,12 +690,15 @@ impl SdCardTab {
                         // print or upload.
                         if ui
                             .add_enabled(
-                                connected && !sd_busy,
+                                ready && !sd_busy,
                                 ActionButton::new("Initialize")
                                     .icon(icons::SD_CARD)
                                     .ghost()
                                     .small()
                                     .tooltip("M21: mount the card (after inserting it)"),
+                            )
+                            .on_disabled_hover_text(
+                                blocker.unwrap_or("Not while the card is in use"),
                             )
                             .clicked()
                         {
@@ -695,7 +706,7 @@ impl SdCardTab {
                         }
                         if ui
                             .add_enabled(
-                                connected && !sd_busy && !released,
+                                ready && !sd_busy && !released,
                                 ActionButton::new("Release")
                                     .icon(icons::phosphor::EJECT)
                                     .ghost()
@@ -824,7 +835,7 @@ impl SdCardTab {
                 .any(|f| f.name.trim().eq_ignore_ascii_case(n))
         });
         let can_upload = validated.is_ok()
-            && ctx.connected()
+            && ctx.command_blocker().is_none()
             && !ctx.job_active()
             && self.card_printing.is_none()
             && !self.released

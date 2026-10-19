@@ -167,14 +167,14 @@ impl ZOffsetWizard {
                 });
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    let connected = ctx.connected();
+                    let ready = ctx.command_blocker().is_none();
                     let label = match src {
                         ZOffsetSource::Probe => "Apply to probe offset",
                         ZOffsetSource::HomeOffset => "Apply to home offset",
                     };
                     if ui
                         .add_enabled(
-                            connected && changed,
+                            ready && changed,
                             ActionButton::new(label)
                                 .icon(icons::CHECK)
                                 .primary()
@@ -207,7 +207,7 @@ impl ZOffsetWizard {
                     }
                     if ui
                         .add_enabled(
-                            connected && !kit::lacks_eeprom(state),
+                            ready && !kit::lacks_eeprom(state),
                             ActionButton::new("Save to EEPROM")
                                 .icon(icons::SAVE)
                                 .tooltip("M500: keep the offset after a restart"),
@@ -232,7 +232,7 @@ impl ZOffsetWizard {
 
     fn babystep_panel(&mut self, ui: &mut Ui, ctx: &mut AppCtx<'_>) {
         let p = theme::ui_palette(ui);
-        let connected = ctx.connected();
+        let ready = ctx.command_blocker().is_none();
         let source = z_offset_source(&ctx.state.settings);
         let mut step_by = None;
         egui::Frame::new()
@@ -268,7 +268,7 @@ impl ZOffsetWizard {
                     });
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.spacing_mut().item_spacing.x = 6.0;
-                        ui.add_enabled_ui(connected, |ui| {
+                        ui.add_enabled_ui(ready, |ui| {
                             let size = format::trimmed(f64::from(self.step), 3);
                             if ui
                                 .add(
@@ -333,7 +333,7 @@ impl ZOffsetWizard {
                         .clicked();
                     home = ui
                         .add_enabled(
-                            connected && !job,
+                            ready && !job,
                             ActionButton::new("Home")
                                 .icon(icons::HOME)
                                 .small()
