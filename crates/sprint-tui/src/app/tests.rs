@@ -1718,20 +1718,38 @@ fn a_pasted_block_sends_one_command_per_line_after_asking() {
 }
 
 #[test]
-fn the_statistics_use_the_bounds_measured_at_load() {
-    // Measuring the part walks every segment: millions in a big file, too
-    // slow for every frame. The panel shows what the load measured.
+fn the_statistics_show_the_part_size_the_analyzer_measured() {
+    // The part's own size (the bead included, without the purge line),
+    // not the extent of every extrusion.
     let mut app = app();
     load(&mut app, "calibration-cube.gcode");
-    let file = app.file.as_mut().expect("loaded");
-    assert_eq!(file.part_bounds, crate::part_bounds(&file.toolpath));
-    file.part_bounds = sprint_host::sprint_gcode::Bounds {
-        min: [0.0, 0.0, 0.0],
-        max: [123.0, 45.0, 6.0],
-    };
     press(&mut app, KeyCode::Char('s'));
     let text = screen(&mut app, 120, 40);
-    assert!(text.contains("123.0 x 45.0 x 6.0 mm"), "{text}");
+    assert!(
+        text.contains("Size         20.0 x 20.0 x 20.0 mm"),
+        "{text}"
+    );
+    let file = app.file.as_ref().expect("loaded");
+    assert_eq!(
+        crate::part_bounds(&file.toolpath),
+        file.toolpath.part_bounds
+    );
+    assert!(
+        file.toolpath.bounds.size()[0] > 25.0,
+        "the purge line is wider"
+    );
+    // :info says the same.
+    app.run_line("info");
+    let Some(Modal::Report(report)) = &app.modal else {
+        panic!("no report");
+    };
+    let lines: Vec<String> = report.lines.iter().map(ReportLine::text).collect();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.starts_with("Size") && l.ends_with("20.0 x 20.0 x 20.0 mm")),
+        "{lines:?}"
+    );
 }
 
 /// The question F10 asks while the view's job is of `kind`.

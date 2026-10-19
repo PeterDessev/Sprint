@@ -1021,7 +1021,7 @@ pub fn file_lines(loaded: &LoadedFile) -> Vec<ReportLine> {
     let rows = summary_rows(
         &toolpath.stats,
         &toolpath.metadata,
-        Some(&loaded.part_bounds),
+        Some(&toolpath.part_bounds),
     );
     let width = rows.iter().map(|r| r.label.len()).max().unwrap_or(0) + 2;
     for row in rows {

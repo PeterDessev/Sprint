@@ -11,7 +11,6 @@ use sprint_gcode::{Bounds, Feature, SlicerMetadata, Stats, ThumbnailFormat, Tool
 
 use crate::format::{self, MISSING};
 use crate::theme::{Theme, default_theme};
-use crate::widgets::layer_canvas::object_bounds;
 use crate::widgets::util::{self, sanitize};
 
 /// Most object names listed in the summary.
@@ -85,33 +84,21 @@ fn thumbnail_format(format: ThumbnailFormat) -> &'static str {
     }
 }
 
-/// Bounds of the printed part itself: extrusions except start/end G-code
-/// (purge lines), skirt/brim and wipe tower. Falls back to
-/// [`object_bounds`] when that leaves nothing.
+/// The size of the printed part itself, as the analyzer measured it
+/// ([`Toolpath::part_bounds`]): the physical extent of the extrusions (the
+/// bead's width and height included) without start/end G-code and purge
+/// lines, skirt/brim and wipe tower, and without extrusions outside every
+/// labelled object; all extrusions when none of them qualifies. Use it
+/// wherever a part size is shown: [`Toolpath::bounds`] includes the purge
+/// line.
 pub fn part_bounds(toolpath: &Toolpath) -> Bounds {
-    let mut bounds = Bounds::empty();
-    let excluded = [Feature::Custom, Feature::Skirt, Feature::WipeTower];
-    for s in toolpath
-        .segments
-        .iter()
-        .filter(|s| s.is_extrusion() && !excluded.contains(&s.feature))
-    {
-        if s.start.iter().chain(&s.end).all(|v| v.is_finite()) {
-            bounds.include(s.start);
-            bounds.include(s.end);
-        }
-    }
-    if bounds.is_empty() {
-        object_bounds(toolpath)
-    } else {
-        bounds
-    }
+    toolpath.part_bounds
 }
 
 /// The summary rows for a toolpath's statistics and slicer metadata, in
 /// display order. `bounds` adds size and bounds rows: pass
 /// [`part_bounds`] for the size of the part (the extrusion bounds
-/// include purge lines and skirts). The height is the top Z for parts
+/// [`Toolpath::bounds`] include purge lines and skirts). The height is the top Z for parts
 /// that start on the bed. Text from the file is sanitized; missing data
 /// gives short placeholders or leaves rows out.
 pub fn summary_rows(
@@ -505,7 +492,7 @@ impl<'a> StatsPanel<'a> {
     }
 
     /// A panel for a toolpath: its statistics, metadata and
-    /// [`part_bounds`] (computed here, a pass over the segments).
+    /// [`part_bounds`].
     pub fn from_toolpath(toolpath: &'a Toolpath) -> StatsPanel<'a> {
         StatsPanel::new(&toolpath.stats, &toolpath.metadata).bounds(Some(part_bounds(toolpath)))
     }
@@ -673,6 +660,7 @@ pub fn label_width(rows: &[StatRow]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widgets::layer_canvas::object_bounds;
     use crate::widgets::testutil::{lines, render};
     use sprint_gcode::{AnalyzeOptions, FeatureStat, GcodeFile, Thumbnail, analyze_simple};
 
@@ -985,7 +973,8 @@ G1 X30 Y10 E1 F1200\nG1 X30 Y30 E1\nG1 Z0.4\nG1 X10 Y30 E1\n";
         let panel = StatsPanel::from_toolpath(&tp);
         let buf = render(panel, 80, 30);
         let text = lines(&buf).join("\n");
-        assert!(text.contains("Size         20.0 x 20.0 x 0.4 mm"), "{text}");
+        // The 10..30 mm paths and half a bead on each side.
+        assert!(text.contains("Size         20.6 x 20.6 x 0.4 mm"), "{text}");
         assert!(text.contains("Hotend       205 °C"), "{text}");
         assert!(text.contains("■ Perimeter"), "{text}");
     }
@@ -1000,18 +989,23 @@ M83\n;TYPE:Custom\nG1 Z0.2 F600\nG1 X0 Y-3\nG1 X60 Y-3 E9 F1000\n\
             &GcodeFile::from_text("p.gcode", text),
             &AnalyzeOptions::default(),
         );
+        // The analyzer's part bounds: the perimeter at X/Y 100..120 and its
+        // bead, without the purge line (X 0..60) and the skirt (to 140).
         let part = part_bounds(&tp);
-        assert_eq!((part.min[0], part.max[0]), (100.0, 120.0));
-        assert_eq!((part.min[1], part.max[1]), (100.0, 120.0));
+        assert_eq!(part, tp.part_bounds);
+        for axis in 0..2 {
+            assert!(part.min[axis] > 99.0 && part.min[axis] < 100.0, "{part:?}");
+            assert!(part.max[axis] > 120.0 && part.max[axis] < 121.0, "{part:?}");
+        }
         // The skirt still counts for the view fit.
         assert_eq!(object_bounds(&tp).max[0], 140.0);
-        // Only a skirt: fall back to the object bounds.
+        // Only a skirt: all extrusions.
         let text = ";TYPE:Skirt\nM83\nG1 Z0.2\nG1 X10 Y10 E1 F600\n";
         let tp = analyze_simple(
             &GcodeFile::from_text("s.gcode", text),
             &AnalyzeOptions::default(),
         );
-        assert_eq!(part_bounds(&tp), object_bounds(&tp));
+        assert!(!part_bounds(&tp).is_empty());
         assert!(part_bounds(&Toolpath::default()).is_empty());
     }
 

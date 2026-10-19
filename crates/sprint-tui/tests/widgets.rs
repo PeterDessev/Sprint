@@ -111,8 +111,8 @@ fn stats_panel_describes_the_calibration_cube() {
         "{screen}"
     );
     assert!(screen.contains("Layers       100, 0.20 mm"), "{screen}");
-    // Path centrelines of a 20 mm cube: a little under 20 mm wide, as tall
-    // as its top layer.
+    // The physical size of a 20 mm cube (the analyzer's part bounds, the bead
+    // included): 20 mm wide and as tall as its top layer.
     let expected = format!("Size         {:.1} x {:.1} x 20.0 mm", size[0], size[1]);
     assert!(screen.contains(&expected), "{expected}\n{screen}");
     assert!(

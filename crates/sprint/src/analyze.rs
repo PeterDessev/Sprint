@@ -11,7 +11,7 @@ use sprint_gcode::{
 };
 use sprint_tui::format;
 use sprint_tui::widgets::stats::label_width;
-use sprint_tui::{feature_rows, part_bounds, summary_rows};
+use sprint_tui::{feature_rows, summary_rows};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::cli::AnalyzeArgs;
@@ -191,8 +191,11 @@ pub fn write_report(
     writeln!(out, "{facts}")?;
     writeln!(out)?;
 
-    let bounds = part_bounds(toolpath);
-    let rows = summary_rows(&toolpath.stats, &toolpath.metadata, Some(&bounds));
+    let rows = summary_rows(
+        &toolpath.stats,
+        &toolpath.metadata,
+        Some(&toolpath.part_bounds),
+    );
     let label_cols = label_width(&rows) + 2;
     for row in &rows {
         match &row.note {
@@ -294,8 +297,9 @@ struct JsonReport<'a> {
     bounds: &'a Bounds,
     /// Bounds of every move, travel included.
     travel_bounds: &'a Bounds,
-    /// Bounds of the part without purge lines, skirt and wipe tower.
-    part_bounds: Bounds,
+    /// The part's physical extent (the analyzer's part bounds): the bead
+    /// included, without purge lines, skirt and wipe tower.
+    part_bounds: &'a Bounds,
     layers: Vec<JsonLayer>,
 }
 
@@ -314,7 +318,7 @@ pub fn write_json(out: &mut impl Write, file: &GcodeFile, toolpath: &Toolpath) -
         metadata: &toolpath.metadata,
         bounds: &toolpath.bounds,
         travel_bounds: &toolpath.travel_bounds,
-        part_bounds: part_bounds(toolpath),
+        part_bounds: &toolpath.part_bounds,
         layers: toolpath
             .layers
             .iter()
@@ -371,7 +375,10 @@ G1 Z0.4 F600\nG1 X30 Y10 E1 F1200\nG2 X30 Y30 I0 J10 E1\n\
             "(slicer 1m 30s, Sprint ",
             "Filament     ",
             "(slicer 9.0 mm)",
-            "Size         20.0 x 20.0 x 0.4 mm",
+            // The part's physical extent: the 10..30 mm paths plus half
+            // a bead on each side; the skirt (to X 40) is left out.
+            "Size         20.6 x 20.6 x 0.4 mm",
+            "Bounds       X 9.7..30.3, Y 9.7..30.3, Z 0.0..0.4",
             "Layers       2, 0.20 mm",
             "Hotend       215 °C",
             "Bed          60 °C",
@@ -433,7 +440,14 @@ G1 Z0.4 F600\nG1 X30 Y10 E1 F1200\nG2 X30 Y30 I0 J10 E1\n\
             number(&json["bounds"]["max"][0]),
             Some(toolpath.bounds.max[0])
         );
-        assert_eq!(number(&json["part_bounds"]["min"][0]), Some(10.0));
+        // The old extrusion bounds stay (skirt included); the part bounds
+        // are the analyzer's.
+        assert_eq!(number(&json["bounds"]["max"][0]), Some(40.0));
+        assert_eq!(
+            number(&json["part_bounds"]["min"][0]),
+            Some(toolpath.part_bounds.min[0])
+        );
+        assert!(toolpath.part_bounds.min[0] < 10.0 && toolpath.part_bounds.max[0] < 31.0);
         assert_eq!(
             json["layers"].as_array().map(Vec::len),
             Some(toolpath.layers.len())
