@@ -1,6 +1,8 @@
 //! Temperatures: one [`TemperatureCard`] per heater, material presets that
 //! set hotend and bed in one click, and "Cool down".
 
+use std::ops::RangeInclusive;
+
 use egui::{
     Color32, CornerRadius, CursorIcon, FontId, Pos2, Response, Sense, Stroke, StrokeKind, Ui,
     WidgetInfo, WidgetType, vec2,
@@ -19,6 +21,36 @@ pub(super) const MAX_HOTENDS: usize = 8;
 
 /// Seconds of history drawn in each card's sparkline.
 const SPARKLINE_SECS: f64 = 120.0;
+
+/// Readings outside this range are sensor faults, not temperatures (°C):
+/// they show as "no reading" instead of a number that breaks the layout.
+const PLAUSIBLE_READING: RangeInclusive<f32> = -273.0..=2000.0;
+
+/// The hottest target Sprint offers or sends from presets (°C); hobby
+/// hotends top out well below.
+pub(super) const MAX_TARGET: f32 = 500.0;
+
+/// A reading as shown: NaN unless it is a plausible temperature.
+pub(super) fn plausible_reading(celsius: f32) -> f32 {
+    if PLAUSIBLE_READING.contains(&celsius) {
+        celsius
+    } else {
+        f32::NAN
+    }
+}
+
+/// A reported target as shown: 0 (off) unless it is a plausible, positive
+/// temperature.
+pub(super) fn plausible_target(target: Option<f32>) -> f32 {
+    target
+        .filter(|t| *t > 0.0 && *t <= *PLAUSIBLE_READING.end())
+        .unwrap_or(0.0)
+}
+
+/// Whether a preset temperature can be sent: 0 (off) up to [`MAX_TARGET`].
+pub(super) fn valid_preset_temp(celsius: f32) -> bool {
+    (0.0..=MAX_TARGET).contains(&celsius)
+}
 
 /// Everything a heater card shows.
 #[derive(Clone, Debug, PartialEq)]
@@ -81,35 +113,39 @@ pub(super) fn reading(state: &PrinterState, heater: Heater) -> Option<&HeaterRea
     }
 }
 
-/// Current temperature of a heater (NaN without a reading).
+/// Current temperature of a heater (NaN without a plausible reading).
 pub(super) fn current_temp(state: &PrinterState, heater: Heater) -> f32 {
-    reading(state, heater).map_or(f32::NAN, |r| r.current)
+    reading(state, heater).map_or(f32::NAN, |r| plausible_reading(r.current))
 }
 
 /// Target of a heater (0 = off or unknown).
 pub(super) fn target_temp(state: &PrinterState, heater: Heater) -> f32 {
-    reading(state, heater)
-        .and_then(|r| r.target)
-        .filter(|t| t.is_finite() && *t > 0.0)
-        .unwrap_or(0.0)
+    plausible_target(reading(state, heater).and_then(|r| r.target))
 }
 
-/// Finite readings of `heater` from the last `secs` seconds of history.
+/// Plausible readings of `heater` from the last `secs` seconds of history.
 pub(super) fn heater_history(state: &PrinterState, heater: Heater, secs: f64) -> Vec<f32> {
-    let Some(last) = state.temp_history.back() else {
+    // The newest sample with a usable time sets the window.
+    let Some(last) = state
+        .temp_history
+        .iter()
+        .rev()
+        .map(|s| s.t)
+        .find(|t| t.is_finite())
+    else {
         return Vec::new();
     };
-    let since = last.t - secs;
+    let since = last - secs;
     state
         .temp_history
         .iter()
-        .filter(|s| s.t >= since)
+        .filter(|s| s.t >= since && s.t <= last)
         .filter_map(|s| match heater {
             Heater::Hotend(tool) => s.hotends.get(usize::from(tool)).map(|h| h.0),
             Heater::Bed => s.bed.map(|b| b.0),
             Heater::Chamber => s.chamber.map(|c| c.0),
         })
-        .filter(|v| v.is_finite())
+        .filter(|v| PLAUSIBLE_READING.contains(v))
         .collect()
 }
 
@@ -138,12 +174,12 @@ pub(super) fn heaters(
                 heater,
                 name: heater_name(heater, hotends),
                 kind,
-                current: reading.map_or(f32::NAN, |r| r.current),
-                target: reading
-                    .and_then(|r| r.target)
-                    .filter(|t| t.is_finite() && *t > 0.0)
-                    .unwrap_or(0.0),
-                power: reading.and_then(|r| r.power).filter(|p| p.is_finite()),
+                current: reading.map_or(f32::NAN, |r| plausible_reading(r.current)),
+                target: plausible_target(reading.and_then(|r| r.target)),
+                power: reading
+                    .and_then(|r| r.power)
+                    .filter(|p| p.is_finite())
+                    .map(|p| p.clamp(0.0, 1.0)),
                 history: if connected {
                     heater_history(state, heater, SPARKLINE_SECS)
                 } else {
@@ -155,13 +191,14 @@ pub(super) fn heaters(
 }
 
 /// What one click on a preset sets: the hotend of `tool` and, when the
-/// printer has one, the bed. Invalid (NaN, negative) values are skipped.
+/// printer has one, the bed. Invalid values (NaN, negative, above
+/// [`MAX_TARGET`]) are skipped.
 pub(super) fn preset_targets(
     preset: &TempPreset,
     tool: u8,
     heated_bed: bool,
 ) -> Vec<(Heater, f32)> {
-    let valid = |t: f32| t.is_finite() && t >= 0.0;
+    let valid = valid_preset_temp;
     let mut targets = Vec::with_capacity(2);
     if valid(preset.hotend) {
         targets.push((Heater::Hotend(tool), preset.hotend));
@@ -187,9 +224,10 @@ pub(super) fn cool_down_targets(hotends: usize, bed: bool, chamber: bool) -> Vec
     targets
 }
 
-/// A temperature for display in a preset: "205", "Off" for 0.
+/// A temperature for display in a preset: "205", "off" for 0 (or a value
+/// that is not sent).
 fn short_temp(value: f32) -> String {
-    if !value.is_finite() || value <= 0.0 {
+    if !valid_preset_temp(value) || value <= 0.0 {
         "off".to_owned()
     } else {
         format!("{value:.0}")
@@ -233,7 +271,7 @@ pub(super) fn show(ui: &mut Ui, ctx: &mut AppCtx<'_>) {
                             };
                             (p.name.as_str(), t)
                         })
-                        .filter(|(_, t)| t.is_finite() && *t > 0.0)
+                        .filter(|(_, t)| *t > 0.0 && valid_preset_temp(*t))
                         .collect();
                     let menu = if view.kind == HeaterKind::Chamber {
                         Vec::new()
@@ -396,6 +434,42 @@ mod tests {
             [(Heater::Hotend(0), 0.0)]
         );
         assert!(preset_targets(&preset(-5.0, f32::INFINITY), 0, true).is_empty());
+        assert!(preset_targets(&preset(1e9, 501.0), 0, true).is_empty());
+        assert_eq!(
+            preset_targets(&preset(MAX_TARGET, 0.0), 0, true),
+            [(Heater::Hotend(0), MAX_TARGET), (Heater::Bed, 0.0)]
+        );
+    }
+
+    #[test]
+    fn implausible_reports_are_hidden() {
+        assert_eq!(plausible_reading(215.0), 215.0);
+        assert_eq!(plausible_reading(-15.0), -15.0);
+        for bad in [f32::NAN, f32::INFINITY, f32::MAX, -300.0, 1e9] {
+            assert!(plausible_reading(bad).is_nan(), "{bad}");
+        }
+        assert_eq!(plausible_target(Some(210.0)), 210.0);
+        for bad in [None, Some(0.0), Some(-5.0), Some(f32::NAN), Some(1e30)] {
+            assert_eq!(plausible_target(bad), 0.0, "{bad:?}");
+        }
+        let mut state = PrinterState::default();
+        state.temps.hotends = vec![HeaterReading {
+            current: f32::MAX,
+            target: Some(f32::INFINITY),
+            power: Some(7.0),
+        }];
+        state.temps.bed = Some(HeaterReading {
+            current: 60.0,
+            target: Some(60.0),
+            power: Some(f32::NAN),
+        });
+        let views = heaters(&state, &PrinterProfile::default(), true);
+        assert!(views[0].current.is_nan());
+        assert_eq!(views[0].target, 0.0);
+        assert_eq!(views[0].power, Some(1.0));
+        assert_eq!(views[1].power, None);
+        assert!(current_temp(&state, Heater::Hotend(0)).is_nan());
+        assert_eq!(target_temp(&state, Heater::Hotend(0)), 0.0);
     }
 
     #[test]
@@ -491,6 +565,13 @@ mod tests {
         assert_eq!(heater_history(&state, Heater::Bed, 10.0).len(), 5);
         assert!(heater_history(&state, Heater::Chamber, 10.0).is_empty());
         assert!(heater_history(&PrinterState::default(), Heater::Bed, 10.0).is_empty());
+        // A corrupt newest time does not empty the sparkline.
+        state.temp_history.push_back(TempSample {
+            t: f64::NAN,
+            hotends: vec![(1.0, 0.0)],
+            ..TempSample::default()
+        });
+        assert_eq!(heater_history(&state, Heater::Hotend(0), 120.0).len(), 120);
     }
 
     #[test]
@@ -502,5 +583,6 @@ mod tests {
         assert_eq!(short_temp(205.0), "205");
         assert_eq!(short_temp(0.0), "off");
         assert_eq!(short_temp(f32::NAN), "off");
+        assert_eq!(short_temp(1e9), "off");
     }
 }

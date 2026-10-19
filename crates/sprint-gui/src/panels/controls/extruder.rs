@@ -6,7 +6,7 @@ use egui::Ui;
 use sprint_host::sprint_proto::FirmwareFlavor;
 use sprint_host::{Event, Heater, Printer, PrinterState, TempPreset};
 
-use super::temperatures::{MAX_HOTENDS, current_temp, hotend_count, target_temp};
+use super::temperatures::{MAX_HOTENDS, MAX_TARGET, current_temp, hotend_count, target_temp};
 use super::{caption, notice, section};
 use crate::context::AppCtx;
 use crate::icons;
@@ -120,16 +120,22 @@ pub(super) fn native_load_unload(state: &PrinterState) -> bool {
             && state.settings.iter().any(|s| s.code == "M603"))
 }
 
+/// Whether a hotend temperature is hot enough to move filament and still
+/// a sane target.
+fn extrusion_temp(celsius: f32) -> bool {
+    (MIN_EXTRUDE_TEMP..=MAX_TARGET).contains(&celsius)
+}
+
 /// The temperature a filament change heats to: the current target when it
 /// is hot enough, else the first preset that is, else 200 °C.
 pub(super) fn heat_temperature(target: f32, presets: &[TempPreset]) -> f32 {
-    if target.is_finite() && target >= MIN_EXTRUDE_TEMP {
+    if extrusion_temp(target) {
         return target;
     }
     presets
         .iter()
         .map(|p| p.hotend)
-        .find(|t| t.is_finite() && *t >= MIN_EXTRUDE_TEMP)
+        .find(|t| extrusion_temp(*t))
         .unwrap_or(FALLBACK_HEAT)
 }
 
@@ -137,7 +143,7 @@ pub(super) fn heat_temperature(target: f32, presets: &[TempPreset]) -> f32 {
 pub(super) fn heat_preset(presets: &[TempPreset]) -> Option<(&str, f32)> {
     presets
         .iter()
-        .find(|p| p.hotend.is_finite() && p.hotend >= MIN_EXTRUDE_TEMP)
+        .find(|p| extrusion_temp(p.hotend))
         .map(|p| (p.name.as_str(), p.hotend))
 }
 
@@ -156,7 +162,7 @@ pub(super) fn filament_plan(
         String::new()
     };
     let heat = if heat_to.is_finite() {
-        heat_to.clamp(MIN_EXTRUDE_TEMP, 400.0)
+        heat_to.clamp(MIN_EXTRUDE_TEMP, MAX_TARGET)
     } else {
         FALLBACK_HEAT
     };
@@ -291,22 +297,10 @@ impl Extruder {
                         .on_hover_text(lock.unwrap_or_default());
                 }
                 ui.add_enabled_ui(lock.is_none(), |ui| {
-                    if hotends > 1 {
-                        let options: Vec<(u8, String)> =
-                            (0..=last_tool).map(|t| (t, format!("T{t}"))).collect();
-                        let mut picked = tool;
-                        let r = ui
-                            .add(
-                                SegmentedControl::new(&mut picked, &options)
-                                    .fill_width(true)
-                                    .id_salt("sprint-controls-tool"),
-                            )
-                            .on_hover_text(
-                                "Tool to extrude with (the printer switches to it first)",
-                            );
-                        if r.changed() {
-                            self.tool = Some(picked);
-                        }
+                    if hotends > 1
+                        && let Some(picked) = tool_selector(ui, tool, last_tool)
+                    {
+                        self.tool = Some(picked);
                     }
                     let control = ExtruderControl::new(&mut self.length, &mut self.speed)
                         .limits(MAX_EXTRUDE_LENGTH, 100.0)
@@ -384,6 +378,41 @@ impl Extruder {
     }
 }
 
+/// Narrowest segment of the tool selector before it becomes a drop-down.
+const MIN_TOOL_SEGMENT: f32 = 30.0;
+
+/// The tool picker: one segment per tool while they fit the width, else a
+/// drop-down. Returns a newly picked tool.
+fn tool_selector(ui: &mut Ui, tool: u8, last_tool: u8) -> Option<u8> {
+    const TIP: &str = "Tool to extrude with (the printer switches to it first)";
+    let options: Vec<(u8, String)> = (0..=last_tool).map(|t| (t, format!("T{t}"))).collect();
+    let mut picked = tool;
+    // The control's 3 pt inner padding on both sides.
+    let segment = ((ui.available_width() - 6.0) / options.len() as f32).floor();
+    let changed = if segment >= MIN_TOOL_SEGMENT {
+        ui.add(
+            SegmentedControl::new(&mut picked, &options)
+                .segment_width(segment)
+                .id_salt("sprint-controls-tool"),
+        )
+        .on_hover_text(TIP)
+        .changed()
+    } else {
+        egui::ComboBox::from_id_salt("sprint-controls-tool-menu")
+            .selected_text(format!("Tool T{tool}"))
+            .width(ui.available_width() - 8.0)
+            .show_ui(ui, |ui| {
+                for (t, label) in &options {
+                    ui.selectable_value(&mut picked, *t, label);
+                }
+            })
+            .response
+            .on_hover_text(TIP);
+        picked != tool
+    };
+    (changed && picked != tool).then_some(picked)
+}
+
 /// "Heat to PLA · 205 °C" under a cold hotend, or the heating progress.
 fn heat_shortcut(
     ui: &mut Ui,
@@ -447,6 +476,14 @@ mod tests {
         assert_eq!(heat_temperature(f32::NAN, &[]), FALLBACK_HEAT);
         assert_eq!(heat_preset(&presets()), Some(("PETG", 240.0)));
         assert_eq!(heat_preset(&presets()[..1]), None);
+        // Absurd presets and targets are skipped.
+        let absurd = [TempPreset {
+            name: "Lava".into(),
+            hotend: 1e9,
+            bed: 0.0,
+        }];
+        assert_eq!(heat_preset(&absurd), None);
+        assert_eq!(heat_temperature(1e9, &absurd), FALLBACK_HEAT);
     }
 
     #[test]

@@ -407,15 +407,7 @@ fn position_readout(ui: &mut Ui, position: Option<&PositionReport>) {
     let height = 40.0;
     let (rect, response) =
         ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
-    let text = |v: f32| -> String {
-        if !v.is_finite() {
-            "—".to_owned()
-        } else if v.abs() >= 1000.0 {
-            format!("{v:.1}")
-        } else {
-            format!("{v:.2}")
-        }
-    };
+    let text = axis_value;
     let label = match values {
         Some(v) => format!(
             "Position X {} Y {} Z {} E {}",
@@ -472,6 +464,20 @@ fn position_readout(ui: &mut Ui, position: Option<&PositionReport>) {
             value_font.clone(),
             color,
         );
+    }
+}
+
+/// A position for the readout: two decimals, one from 1000 mm, scientific
+/// notation for absurd values (so it fits its cell), "—" when not finite.
+pub(super) fn axis_value(v: f32) -> String {
+    if !v.is_finite() {
+        "—".to_owned()
+    } else if v.abs() >= 100_000.0 {
+        format!("{v:.1e}")
+    } else if v.abs() >= 1000.0 {
+        format!("{v:.1}")
+    } else {
+        format!("{v:.2}")
     }
 }
 
@@ -571,6 +577,17 @@ mod tests {
             Some((HostAxis::X, 1.0))
         );
         assert_eq!(key_jog(Key::A, false, 1.0), None);
+    }
+
+    #[test]
+    fn axis_values_fit_their_cells() {
+        assert_eq!(axis_value(110.0), "110.00");
+        assert_eq!(axis_value(-0.5), "-0.50");
+        assert_eq!(axis_value(1234.56), "1234.6");
+        assert_eq!(axis_value(-1e30), "-1.0e30");
+        assert_eq!(axis_value(f32::MAX).len(), 6);
+        assert_eq!(axis_value(f32::NAN), "—");
+        assert_eq!(axis_value(f32::NEG_INFINITY), "—");
     }
 
     fn key(key: Key, pressed: bool, repeat: bool, modifiers: Modifiers) -> Event {
