@@ -218,3 +218,32 @@ fn printer_tab_queries_the_simulator() {
     step_until_command(&mut h, "M119");
     printer.disconnect();
 }
+
+#[test]
+fn live_endstops_do_not_pile_up_behind_a_long_command() {
+    let printer = sim_printer(sprint_host::sprint_sim::SimConfig {
+        time_scale: 1.0,
+        ..fast_sim()
+    });
+    let mut h = harness_state(
+        Theme::Dark,
+        (1180.0, 1060.0),
+        Host::<PrinterInfoTab>::live(printer.clone()),
+        |ui, host| host.frame(ui),
+    );
+    h.run_ok();
+    // A 5 s dwell holds the queue; ten seconds of UI time pass meanwhile.
+    printer.send("G4 S5");
+    wait_for(&printer, "the dwell", |s| s.link.in_flight > 0);
+    h.get_by_label("Live").click();
+    h.run_ok();
+    let mut most = 0;
+    for _ in 0..40 {
+        h.step();
+        most = most.max(printer.with_state(|s| s.link.queue_len));
+        // Longer than the host's 20 ms stats tick, as between real frames.
+        std::thread::sleep(std::time::Duration::from_millis(30));
+    }
+    assert!(most <= 1, "{most} commands queued behind the dwell");
+    printer.disconnect();
+}
