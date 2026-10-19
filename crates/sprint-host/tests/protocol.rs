@@ -1382,6 +1382,81 @@ fn eta_after_slow_start(start: &'static [&'static str]) {
 }
 
 #[test]
+fn a_wait_for_the_user_does_not_shrink_the_eta() {
+    // An M0 the user takes 3 s to answer: the job is paused by the
+    // firmware meanwhile, so that time is neither printing time nor time
+    // to take off it. Every move then takes exactly its estimated time:
+    // the ETA must not look twice as fast as the estimate.
+    use sprint_host::sprint_gcode::{AnalyzeOptions, analyze_simple};
+    let mut text = String::from("M0 Ready?\n");
+    for i in 0..30 {
+        text.push_str(&format!("G1 X{} F6000\n", if i % 2 == 0 { 15 } else { 10 }));
+    }
+    let file = Arc::new(GcodeFile::from_text("ready.gcode", text));
+    let toolpath = Arc::new(analyze_simple(&file, &AnalyzeOptions::default()));
+    let moves: Vec<f64> = (1..file.len())
+        .map(|i| f64::from(toolpath.time_at_line(i as u32) - toolpath.time_at_line(i as u32 - 1)))
+        .collect();
+    assert!(moves.iter().all(|&t| t > 0.01), "{moves:?}");
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut fw = Mini::new(Arc::clone(&log));
+    let mut done_moves = 0;
+    let (link, _) = fake(
+        |out| out.line("start"),
+        move |line, out| {
+            let Some(cmd) = fw.accept(line, out) else {
+                return;
+            };
+            if cmd.starts_with("M0") {
+                out.line("echo:busy: paused for user");
+                thread::sleep(Duration::from_secs(3));
+            } else if cmd.starts_with("G1") {
+                let t = moves.get(done_moves).copied().unwrap_or(0.0);
+                done_moves += 1;
+                thread::sleep(Duration::from_secs_f64(t));
+            }
+            out.line("ok");
+        },
+    );
+    let printer = connect_fake(
+        link,
+        ConnectOptions {
+            query_on_connect: false,
+            temp_poll_secs: 0.0,
+            ..options()
+        },
+    );
+    wait_for(&printer, "connected", |s| s.is_connected());
+    let options = PrintOptions {
+        toolpath: Some(Arc::clone(&toolpath)),
+        ..PrintOptions::default()
+    };
+    printer.start_print(Arc::clone(&file), options).unwrap();
+    wait_for(&printer, "the wait for the user", |s| {
+        s.job.as_ref().is_some_and(|j| j.paused_by_firmware)
+    });
+    // Half of the moves.
+    let stop = 1 + 15;
+    printer.pause_at_lines(&[stop]);
+    wait_for(&printer, "half of the moves", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Paused && !j.paused_by_firmware)
+    });
+    let job = printer.with_state(|s| s.job.clone()).unwrap();
+    let remaining =
+        f64::from(toolpath.stats.estimated_time - toolpath.time_at_line(stop as u32 - 1));
+    let ratio = job.eta.unwrap().as_secs_f64() / remaining;
+    assert!(
+        ratio > 0.8,
+        "ETA {:?} for {remaining:.2} s of estimated printing (ratio {ratio:.2}), elapsed {:?}",
+        job.eta,
+        job.elapsed
+    );
+    printer.cancel();
+}
+
+#[test]
 fn a_failed_print_records_where_to_recover_from() {
     let printer = connect(fast_sim(50.0), options());
     let status = print_with_an_unsendable_line(&printer);

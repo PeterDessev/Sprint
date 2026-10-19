@@ -1341,7 +1341,8 @@ Every public item is also re-exported at the crate root.
   estimates count as zero: heat waits, homing, probing and leveling (also
   Prusa's G80), user and pin waits and filament changes, autotune, extended
   commands; not G4/M400 /
-  estimated time of the printed part), ratio clamped to 0.5..=3 and
+  estimated time of the printed part; a pause, a firmware-held wait for
+  the user included, is neither), ratio clamped to 0.5..=3 and
   smoothed; raw estimate for the first 2%; without a toolpath a smoothed
   linear extrapolation by bytes after 2%. `JobProgress` at most every 100 ms.
 * `Printer` additions: `with_console_capacity(lines)`,

@@ -49,9 +49,11 @@ pub(super) struct JobRuntime {
     progress: ProgressModel,
     last_acked: Option<usize>,
     acked_any: bool,
-    /// The last acknowledgement of a job command (the job start before
-    /// the first): a wait's time is bounded by the time since then.
-    last_ack_at: Instant,
+    /// Job time ([`JobRuntime::elapsed`]) at the last acknowledgement of
+    /// a job command (0 before the first): a wait's time is bounded by the
+    /// job time since then, which leaves out a pause meanwhile (the
+    /// firmware holding the print at an M0 or M600 pauses the job).
+    last_ack_elapsed: Duration,
     active_since: Option<Instant>,
     accumulated: Duration,
     /// Time spent in commands estimates count as zero (heat waits,
@@ -147,7 +149,7 @@ impl JobRuntime {
             progress,
             last_acked: None,
             acked_any: false,
-            last_ack_at: now,
+            last_ack_elapsed: Duration::ZERO,
             active_since: Some(now),
             accumulated: Duration::ZERO,
             waited: Duration::ZERO,
@@ -878,13 +880,16 @@ impl Engine {
         if !job.is_active() {
             return;
         }
+        // Job time, as `elapsed` counts it: a wait the job was paused for
+        // is not in it, so it must not be taken off it either.
+        let job_time = job.elapsed(now);
         if meta.unestimated() {
             // The first line counts too (start G-code often begins with a
             // heat-up or G28).
-            let since_last = now.saturating_duration_since(job.last_ack_at);
+            let since_last = job_time.saturating_sub(job.last_ack_elapsed);
             job.waited += rtt.map_or(since_last, |r| r.min(since_last));
         }
-        job.last_ack_at = now;
+        job.last_ack_elapsed = job_time;
         let first = !job.acked_any;
         job.acked_any = true;
         if let JobLine::Stream(index) = line {
