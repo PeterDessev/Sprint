@@ -483,42 +483,44 @@ impl ConsolePanel {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
-            let search = ui.add(
-                egui::TextEdit::singleline(&mut self.filter.search)
-                    .id(Id::new("sprint-console-search"))
-                    .hint_text(format!("{}  Filter", icons::FILTER))
-                    .desired_width((ui.available_width() - 150.0).max(60.0)),
-            );
-            if search.changed() {
-                self.apply_filter();
-            }
+            // Chips from the right; the search field takes the rest.
             let mut changed = false;
-            let mut show_auto = !self.prefs.hide_auto;
-            if ui
-                .add(Chip::new("Auto").selected(show_auto))
-                .on_hover_text("Show automatic temperature and position reports")
-                .clicked()
-            {
-                show_auto = !show_auto;
-                self.prefs.hide_auto = !show_auto;
-                changed = true;
-            }
-            let show_ok = !self.prefs.hide_ok;
-            if ui
-                .add(Chip::new("ok").selected(show_ok))
-                .on_hover_text("Show bare \"ok\" replies")
-                .clicked()
-            {
-                self.prefs.hide_ok = show_ok;
-                changed = true;
-            }
-            if ui
-                .add(Chip::new("Time").selected(self.prefs.timestamps))
-                .on_hover_text("Show timestamps")
-                .clicked()
-            {
-                self.prefs.timestamps = !self.prefs.timestamps;
-            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui
+                    .add(Chip::new("Time").selected(self.prefs.timestamps))
+                    .on_hover_text("Show timestamps")
+                    .clicked()
+                {
+                    self.prefs.timestamps = !self.prefs.timestamps;
+                }
+                let show_ok = !self.prefs.hide_ok;
+                if ui
+                    .add(Chip::new("ok").selected(show_ok))
+                    .on_hover_text("Show bare \"ok\" replies")
+                    .clicked()
+                {
+                    self.prefs.hide_ok = show_ok;
+                    changed = true;
+                }
+                let show_auto = !self.prefs.hide_auto;
+                if ui
+                    .add(Chip::new("Auto").selected(show_auto))
+                    .on_hover_text("Show automatic temperature and position reports")
+                    .clicked()
+                {
+                    self.prefs.hide_auto = show_auto;
+                    changed = true;
+                }
+                let search = ui.add(
+                    egui::TextEdit::singleline(&mut self.filter.search)
+                        .id(Id::new("sprint-console-search"))
+                        .hint_text(format!("{}  Filter", icons::FILTER))
+                        .desired_width(f32::INFINITY),
+                );
+                if search.changed() {
+                    changed = true;
+                }
+            });
             if changed {
                 self.apply_filter();
             }
@@ -708,39 +710,40 @@ impl ConsolePanel {
         let mut field_rect = egui::Rect::NOTHING;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
-            let width = ui.available_width() - 38.0;
-            let edit = egui::TextEdit::multiline(&mut self.input)
-                .id(id)
-                .font(egui::TextStyle::Monospace)
-                .desired_rows(1)
-                .desired_width(width.max(60.0))
-                .hint_text("Send G-code…  (Enter sends, Shift+Enter for a new line)")
-                .return_key(Some(egui::KeyboardShortcut::new(
-                    Modifiers::SHIFT,
-                    Key::Enter,
-                )));
-            let response = ui.add(edit);
-            field_rect = response.rect;
-            if self.focus_input {
-                response.request_focus();
-                self.focus_input = false;
-            }
-            if response.changed() {
-                self.history_pos = None;
-                self.completion.navigated = false;
-                if self.completion.hidden_for.as_deref() != Some(self.input.as_str()) {
-                    self.completion.hidden_for = None;
+            ui.with_layout(Layout::right_to_left(Align::Max), |ui| {
+                let send = ui.add_enabled(
+                    !self.input.trim().is_empty(),
+                    IconButton::new(icons::SEND)
+                        .primary()
+                        .tooltip("Send (Enter)"),
+                );
+                if send.clicked() {
+                    submit = true;
                 }
-            }
-            let send = ui.add_enabled(
-                !self.input.trim().is_empty(),
-                IconButton::new(icons::SEND)
-                    .primary()
-                    .tooltip("Send (Enter)"),
-            );
-            if send.clicked() {
-                submit = true;
-            }
+                let edit = egui::TextEdit::multiline(&mut self.input)
+                    .id(id)
+                    .font(egui::TextStyle::Monospace)
+                    .desired_rows(1)
+                    .desired_width(f32::INFINITY)
+                    .hint_text("Send G-code…")
+                    .return_key(Some(egui::KeyboardShortcut::new(
+                        Modifiers::SHIFT,
+                        Key::Enter,
+                    )));
+                let response = ui.add(edit);
+                field_rect = response.rect;
+                if self.focus_input {
+                    response.request_focus();
+                    self.focus_input = false;
+                }
+                if response.changed() {
+                    self.history_pos = None;
+                    self.completion.navigated = false;
+                    if self.completion.hidden_for.as_deref() != Some(self.input.as_str()) {
+                        self.completion.hidden_for = None;
+                    }
+                }
+            });
         });
         if let Some(index) = accept
             && let Some(doc) = suggestions.get(index)
