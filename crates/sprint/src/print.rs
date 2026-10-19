@@ -76,7 +76,7 @@ pub fn run(args: &PrintArgs) -> Result<ExitCode> {
             );
         }
         options.start_line = index;
-        options.preamble = resume_preamble(&loaded.file, index, &ResumeOptions::default());
+        options.preamble = resume_preamble(&loaded.file, index, &resume_options(args));
     }
 
     let printer = Printer::with_console_capacity(config.console_max_lines);
@@ -166,6 +166,19 @@ fn stop_safely(printer: &Printer, outcome: &Outcome, say: &mut dyn FnMut(&str)) 
     }
     say("Turning the heaters off before disconnecting…");
     Some(session::heaters_off(printer, session::HEATERS_OFF_WAIT))
+}
+
+/// How `--start-line` resumes: `--board-reset` declares the nozzle's Z
+/// (the firmware lost it), `--z-clearance` sets the lift and
+/// `--no-wait-temps` skips the heat waits.
+fn resume_options(args: &PrintArgs) -> ResumeOptions {
+    let defaults = ResumeOptions::default();
+    ResumeOptions {
+        restore_z_position: args.board_reset,
+        z_clearance: args.z_clearance.unwrap_or(defaults.z_clearance),
+        wait_for_temps: !args.no_wait_temps,
+        ..defaults
+    }
 }
 
 /// Load and analyze the file (progress on stderr when `progress`).
@@ -710,6 +723,48 @@ mod tests {
             seen.views.last()
         );
         printer.disconnect();
+    }
+
+    fn print_args(extra: &[&str]) -> PrintArgs {
+        use clap::Parser;
+        let mut argv = vec!["sprint", "print", "a.gcode", "-c", "sim"];
+        argv.extend_from_slice(extra);
+        match crate::cli::Cli::try_parse_from(argv).map(crate::cli::Cli::into_command) {
+            Ok(crate::cli::Command::Print(args)) => args,
+            other => panic!("not a print: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_board_reset_resume_declares_the_z_position() {
+        let file = sprint_gcode::GcodeFile::from_text(
+            "part.gcode",
+            "M104 S200\nM140 S60\nG28\nG90\nG1 Z0.2 F600\nG1 X10 Y10 E1\nG1 Z5.4\nG1 X20 Y20 E2\n",
+        );
+        // Resuming at the last line, Z 5.4.
+        let plain = resume_preamble(
+            &file,
+            7,
+            &resume_options(&print_args(&["--start-line", "8"])),
+        );
+        assert!(!plain.iter().any(|l| l.starts_with("G92 Z")), "{plain:?}");
+        assert!(plain.iter().any(|l| l.starts_with("M109")), "{plain:?}");
+        let args = print_args(&[
+            "--start-line",
+            "8",
+            "--board-reset",
+            "--z-clearance",
+            "4",
+            "--no-wait-temps",
+        ]);
+        let options = resume_options(&args);
+        assert!(options.restore_z_position);
+        assert_eq!(options.z_clearance, 4.0);
+        assert!(!options.wait_for_temps);
+        let reset = resume_preamble(&file, 7, &options);
+        assert!(reset.iter().any(|l| l == "G92 Z5.4"), "{reset:?}");
+        assert!(!reset.iter().any(|l| l.starts_with("M109")), "{reset:?}");
+        assert!(reset.iter().any(|l| l.starts_with("M104")), "{reset:?}");
     }
 
     #[test]

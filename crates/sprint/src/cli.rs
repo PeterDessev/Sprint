@@ -162,8 +162,24 @@ pub struct PrintArgs {
     pub profile: Option<String>,
     /// Resume an interrupted print from line N of the file (1 = the first
     /// line): heat, home X and Y, and move back to where line N starts.
+    /// After a power loss or a board reset add --board-reset.
     #[arg(long, value_name = "N", value_parser = clap::value_parser!(u64).range(1..))]
     pub start_line: Option<u64>,
+    /// With --start-line: the board was reset (a power loss, or a
+    /// reconnect that reset an 8-bit board) while the nozzle stayed where
+    /// the print stopped, so its Z is declared with G92 Z before lifting.
+    /// Without it the firmware's Z is trusted, which after a reset is 0
+    /// and would print the rest in the air.
+    #[arg(long, requires = "start_line")]
+    pub board_reset: bool,
+    /// With --start-line: how far to lift the nozzle above the part before
+    /// moving to the resume position, in mm (default 2).
+    #[arg(long, value_name = "MM", requires = "start_line", value_parser = parse_z_clearance)]
+    pub z_clearance: Option<f32>,
+    /// With --start-line: do not wait for the temperatures in effect at
+    /// line N (they are still set); for heaters that are already hot.
+    #[arg(long, requires = "start_line")]
+    pub no_wait_temps: bool,
     /// Do not show the progress line on stderr.
     #[arg(long)]
     pub no_progress: bool,
@@ -305,6 +321,10 @@ fn parse_number(text: &str, what: &str, min: f32, max: f32) -> Result<f32, Strin
 fn parse_filament_diameter(text: &str) -> Result<f32, String> {
     let value = parse_number(text, "the filament diameter", 0.1, 10.0)?;
     Ok(value)
+}
+
+fn parse_z_clearance(text: &str) -> Result<f32, String> {
+    parse_number(text, "the Z clearance", 0.5, 50.0)
 }
 
 fn parse_time_scale(text: &str) -> Result<f32, String> {
@@ -507,6 +527,28 @@ mod tests {
             &["print", "a.gcode", "-c", "sim", "--start-line", "0"],
             &["print", "a.gcode", "-c", "sim", "--start-line", "x"],
             &["print", "a.gcode", "-c", "sim", "--answer-prompts", "maybe"],
+            &["print", "a.gcode", "-c", "sim", "--board-reset"],
+            &["print", "a.gcode", "-c", "sim", "--no-wait-temps"],
+            &[
+                "print",
+                "a.gcode",
+                "-c",
+                "sim",
+                "--start-line",
+                "9",
+                "--z-clearance",
+                "0.1",
+            ],
+            &[
+                "print",
+                "a.gcode",
+                "-c",
+                "sim",
+                "--start-line",
+                "9",
+                "--z-clearance",
+                "x",
+            ],
             &["tui", "--connect", "COM3@fast"],
             &["sim", "--extruders", "0"],
             &["sim", "--extruders", "9"],
