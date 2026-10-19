@@ -264,6 +264,12 @@ impl FileLoader {
         }
     }
 
+    /// Drop the running job without a `Cancelled` report (its result is no
+    /// longer wanted); late messages of its worker are ignored.
+    pub fn abandon(&mut self) {
+        self.stop_current();
+    }
+
     /// True while a job runs.
     pub fn is_busy(&self) -> bool {
         self.job.is_some()

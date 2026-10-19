@@ -661,9 +661,26 @@ impl SprintApp {
     }
 
     fn poll_loader(&mut self, ctx: &egui::Context) {
+        let mut abandoned = false;
         for event in self.loader.poll() {
+            // The rest of an abandoned job's batch (progress, its toolpath)
+            // belongs to the version that was not taken.
+            if abandoned {
+                continue;
+            }
             match event {
-                LoadEvent::Opened { file, path, reload } => self.file_opened(file, path, reload),
+                LoadEvent::Opened { file, path, reload } => {
+                    if self.reload_lands_on_a_print(&file, reload) {
+                        self.loader.abandon();
+                        abandoned = true;
+                        self.core
+                            .toasts
+                            .warning("The file is printing")
+                            .message("Reload it from disk after the print.");
+                    } else {
+                        self.file_opened(file, path, reload);
+                    }
+                }
                 LoadEvent::Progress(p) => {
                     if let Some(f) = &mut self.core.file {
                         f.analysis_progress = Some(p);
@@ -706,6 +723,19 @@ impl SprintApp {
                 }
             }
         }
+    }
+
+    /// A reload (started before the print) brought a new version of the
+    /// file being printed: the print streams the version on screen, which
+    /// stays until the print is over.
+    fn reload_lands_on_a_print(&self, file: &Arc<GcodeFile>, reload: bool) -> bool {
+        reload
+            && self
+                .core
+                .file
+                .as_ref()
+                .is_some_and(|current| !Arc::ptr_eq(&current.file, file))
+            && self.core.printing_loaded_file()
     }
 
     fn file_opened(&mut self, file: Arc<GcodeFile>, path: Option<PathBuf>, reload: bool) {

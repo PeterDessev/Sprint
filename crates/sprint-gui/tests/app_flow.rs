@@ -345,6 +345,37 @@ fn a_changed_file_is_offered_for_reload() {
 }
 
 #[test]
+fn a_reload_that_lands_during_its_print_waits() {
+    let dir = temp_dir("reload-print");
+    let path = dir.join("part.gcode");
+    std::fs::write(&path, "G28\nG1 Z0.2 F600\nG1 X10 Y0 E1 F1200\n").expect("write");
+    let mut h = app(with_file(AppOptions::headless(), path.clone()), WINDOW);
+    expect(&mut h, "the part to load", analyzed);
+    let printed = h.state().file().expect("file").file.clone();
+    std::fs::write(
+        &path,
+        "G28\nG1 Z0.2 F600\nG1 X10 Y0 E1 F1200\nG1 X10 Y10 E2\n",
+    )
+    .expect("rewrite");
+    // F5, then the print of the file starts before the new version is in.
+    h.state_mut().push_action(AppAction::ReloadFile);
+    h.step();
+    let mut state = printing_state(JobStatus::Printing);
+    if let Some(job) = &mut state.job {
+        job.name = "part.gcode".into();
+        job.total_lines = 3;
+        job.current_line = 1;
+    }
+    h.state_mut().set_state_override(Some(state));
+    expect(&mut h, "the reload to end", |app| !app.is_loading());
+    settle(&mut h);
+    let shown = h.state().file().expect("file").file.clone();
+    assert!(Arc::ptr_eq(&shown, &printed), "the printed version stays");
+    assert!(toast_titles(h.state()).contains(&"The file is printing".to_owned()));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn shortcuts_switch_tabs_and_open_dialogs() {
     let options = with_file(AppOptions::headless(), sample("calibration-cube.gcode"));
     let mut h = app(options, WINDOW);
