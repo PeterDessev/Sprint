@@ -17,3 +17,8 @@ crossbeam-channel.workspace = true
 anyhow.workspace = true
 log.workspace = true
 unicode-width = "0.2"
+
+# The demo carries tests that draw every screen with a test backend.
+[[example]]
+name = "widgets_demo"
+test = true
