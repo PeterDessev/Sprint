@@ -138,7 +138,7 @@ pub fn summary_rows(
     let ours = f64::from(stats.estimated_time);
     let note = positive(metadata.estimated_time).map(|theirs| {
         format!(
-            "slicer {} (Sprint {})",
+            "slicer {}, Sprint {}",
             format::duration(theirs),
             format::relative_difference(ours, theirs)
         )
@@ -772,7 +772,7 @@ mod tests {
         assert_eq!(time.value, "1h 02m 03s");
         assert_eq!(
             time.note.as_deref(),
-            Some("slicer 1h 00m 00s (Sprint +3.4%)")
+            Some("slicer 1h 00m 00s, Sprint +3.4%")
         );
         let filament = value(&rows, "Filament");
         assert_eq!(filament.value, "4.32 m, 10.4 cm³, 12.9 g");
@@ -918,7 +918,7 @@ mod tests {
             "{rows:?}"
         );
         assert!(
-            rows[1].starts_with("Print time   1h 02m 03s  slicer 1h 00m 00s (Sprint +3.4%)"),
+            rows[1].starts_with("Print time   1h 02m 03s  slicer 1h 00m 00s, Sprint +3.4%"),
             "{rows:?}"
         );
         let header = rows
