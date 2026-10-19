@@ -405,6 +405,7 @@ impl Engine {
                 } else if !snapshot.absolute_e {
                     lines.push("M83".to_string());
                 }
+                let lines = in_millimetres(lines, &snapshot, true);
                 job.queue_scripts(lines, Some(JobStatus::Printing));
                 self.set_job_status(JobStatus::Resuming, now);
                 self.advance_job(now);
@@ -451,6 +452,7 @@ impl Engine {
                     let profile = self.shared.profile.read();
                     render_script_with(&template, &profile.script_context(&job.machine))
                 };
+                let lines = in_millimetres(lines, &job.machine, false);
                 job.queue_scripts(lines, Some(JobStatus::Cancelled));
                 if waiting {
                     // Break out of a heat wait or user pause first.
@@ -609,6 +611,7 @@ impl Engine {
                 let profile = self.shared.profile.read();
                 render_script_with(&template, &profile.script_context(&snapshot))
             };
+            let lines = in_millimetres(lines, &snapshot, false);
             job.pause_snapshot = Some(snapshot);
             job.queue_scripts(lines, Some(JobStatus::Paused));
         }
@@ -903,6 +906,19 @@ impl Engine {
         let list = if extended { "M20 L" } else { "M20" };
         self.internal.push_back(CmdMeta::new(list, Source::User));
     }
+}
+
+/// Scripts are written in millimetres (and their placeholders are mm): for
+/// a stream in inch mode (G20) run them after a G21 and, with `restore`,
+/// switch back to G20 at the end.
+fn in_millimetres(mut lines: Vec<String>, state: &MachineState, restore: bool) -> Vec<String> {
+    if state.inches && !lines.is_empty() {
+        lines.insert(0, "G21".to_string());
+        if restore {
+            lines.push("G20".to_string());
+        }
+    }
+    lines
 }
 
 /// An SD file name must be one line of printable text.

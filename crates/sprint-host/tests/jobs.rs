@@ -153,6 +153,49 @@ fn pause_and_resume_run_the_scripts_between_stream_lines() {
 }
 
 #[test]
+fn scripts_run_in_millimetres_when_the_file_uses_inches() {
+    // The scripts' "G1 Z10" and the resume position (in mm) would be read
+    // as inches while the stream is in G20.
+    let printer = connect(sim(), options());
+    let mut text = String::from("G28\nM302 P1\nG20\nG90\nM83\nG1 Z0.02 F20\n");
+    for i in 0..300 {
+        let x = 1.0 + (i % 20) as f64 * 0.3;
+        let y = 1.0 + (i / 20) as f64 * 0.3;
+        text.push_str(&format!("G1 X{x:.2} Y{y:.2} E0.02 F100\n"));
+    }
+    let file = Arc::new(GcodeFile::from_text("inches.gcode", text));
+    let want = commands(&file);
+    start(&printer, &file, PrintOptions::default());
+    printer.pause();
+    wait_for(&printer, "paused", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Paused)
+    });
+    let paused_at = printer.with_state(|s| s.job.as_ref().unwrap().current_line);
+    printer.resume();
+    wait_for(&printer, "completed", |s| !s.job_active());
+    let got = printer.sim_control().unwrap().received_commands();
+    let p = got
+        .iter()
+        .position(|c| c == "M400")
+        .expect("pause script ran");
+    assert_eq!(got[p - 1], "G21", "the pause script switches to mm first");
+    assert_eq!(&got[..p - 1], &want[..p - 1]);
+    let state = state_at_line(&file, paused_at);
+    let pause_len = 6;
+    let r = p + pause_len;
+    assert_eq!(got[r], "G21", "{:?}", &got[p..r + 3]);
+    let x = state.position[0];
+    assert!(x > 20.0, "positions are in mm: {x}");
+    assert!(got[r + 1].starts_with(&format!("G1 X{}", sprint_host::format_number(x, 3))));
+    // The resume script ends by restoring the stream's modes.
+    let end = got[r..].iter().position(|c| c == "G20").expect("G20 again") + r;
+    assert_eq!(got[end - 1], "M83");
+    assert_eq!(&got[end + 1..], &want[p - 1..]);
+}
+
+#[test]
 fn elapsed_time_excludes_the_pause() {
     let printer = connect(sim(), options());
     let file = file();
