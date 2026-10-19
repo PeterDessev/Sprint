@@ -1424,6 +1424,37 @@ fn moving_the_layers_pauses_following_for_this_print_only() {
 }
 
 #[test]
+fn a_file_edited_in_the_external_editor_reloads_when_saved() {
+    let dir = temp_dir("edit");
+    let path = dir.join("part.gcode");
+    std::fs::write(&path, "G28\nG1 X10 Y10 F3000\n").expect("write");
+    let mut h = app(with_file(AppOptions::headless(), path.clone()), WINDOW);
+    expect(&mut h, "the file to be analyzed", analyzed);
+    let lines = h.state().file().expect("file").file.len();
+    h.state_mut().push_action(AppAction::EditFile);
+    settle(&mut h);
+    // Headless: no editor is started, the request is counted.
+    assert_eq!(h.state().edit_requests(), 1);
+    // Saved in the editor: reloaded without asking.
+    std::fs::write(&path, "G28\nG1 X10 Y10 F3000\nG1 X20 Y20\n").expect("edit");
+    expect(&mut h, "the edited file", |app| {
+        analyzed(app) && app.file().is_some_and(|f| f.file.len() > lines)
+    });
+    settle(&mut h);
+    assert!(!h.state().file_changed_on_disk());
+    assert!(h.query_by_label_contains("changed on disk").is_none());
+    // The G-code tab offers it too.
+    h.state_mut().push_action(AppAction::ShowTab(Tab::Gcode));
+    settle(&mut h);
+    h.get_by_label("Edit in an external editor (reloads when saved)")
+        .click();
+    settle(&mut h);
+    assert_eq!(h.state().edit_requests(), 2);
+    drop(h);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn the_file_card_opens_collapsed_once_it_was_seen() {
     let options = with_file(AppOptions::headless(), sample("calibration-cube.gcode"));
     let mut h = app(options, egui::vec2(1440.0, 900.0));

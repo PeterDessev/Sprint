@@ -139,6 +139,15 @@ fn file_menu(ui: &mut Ui, info: &MenuInfo<'_>, out: &mut Vec<MenuCommand>) {
     ) {
         out.push(MenuCommand::Action(A::ReloadFile));
     }
+    if item(
+        ui,
+        info.file_on_disk,
+        icons::EDIT,
+        "Edit in external editor…",
+        None,
+    ) {
+        out.push(MenuCommand::Action(A::EditFile));
+    }
     if item(ui, info.has_file, icons::CLOSE, "Close file", None) {
         out.push(MenuCommand::Action(A::CloseFile));
     }

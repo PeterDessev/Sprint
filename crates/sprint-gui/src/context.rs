@@ -152,6 +152,9 @@ pub enum AppAction {
     Reanalyze,
     /// Open the settings dialog on the app preferences.
     OpenPreferences,
+    /// Open the loaded file in an external text editor; Sprint reloads it
+    /// when it is saved there.
+    EditFile,
 }
 
 /// Everything a panel may use during one frame.

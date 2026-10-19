@@ -47,6 +47,55 @@ pub fn pick_gcode_file(directory: Option<&Path>) -> Option<PathBuf> {
     dialog.pick_file()
 }
 
+/// The editor command for [`open_in_editor`]: `SPRINT_EDITOR`, `VISUAL` or
+/// `EDITOR` (a program and its arguments, split at spaces), else the
+/// platform's text editor.
+pub fn editor_command() -> Vec<String> {
+    let configured = ["SPRINT_EDITOR", "VISUAL", "EDITOR"]
+        .iter()
+        .filter_map(|name| std::env::var(name).ok())
+        .map(|value| {
+            value
+                .split_whitespace()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .find(|words| !words.is_empty());
+    configured.unwrap_or_else(|| {
+        let default: &[&str] = if cfg!(windows) {
+            &["notepad.exe"]
+        } else if cfg!(target_os = "macos") {
+            &["open", "-t"]
+        } else {
+            &["xdg-open"]
+        };
+        default.iter().map(|s| (*s).to_owned()).collect()
+    })
+}
+
+/// Open `path` in the external text editor (see [`editor_command`])
+/// without waiting for it: a worker thread waits for the editor to exit.
+pub fn open_in_editor(path: &Path) -> std::io::Result<()> {
+    let command = editor_command();
+    let Some((program, args)) = command.split_first() else {
+        return Err(std::io::Error::other("no editor configured"));
+    };
+    let mut child = std::process::Command::new(program)
+        .args(args)
+        .arg(path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+    // Reap it when it exits (a dropped child is never waited for).
+    let _ = std::thread::Builder::new()
+        .name("sprint-gui-editor".to_owned())
+        .spawn(move || {
+            let _ = child.wait();
+        });
+    Ok(())
+}
+
 /// A "Save as" dialog for a text file.
 pub fn save_text_file(title: &str, file_name: &str) -> Option<PathBuf> {
     rfd::FileDialog::new()

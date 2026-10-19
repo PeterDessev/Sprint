@@ -288,6 +288,9 @@ pub struct SprintApp {
     quitting: bool,
     file_dialog: Option<Receiver<Option<PathBuf>>>,
     file_dialog_requests: usize,
+    /// The file handed to the external editor: reloaded when it changes.
+    editing: Option<PathBuf>,
+    edit_requests: usize,
     native_dialogs: bool,
     state_override: Option<PrinterState>,
     toast_top: f32,
@@ -383,6 +386,8 @@ impl SprintApp {
             quitting: false,
             file_dialog: None,
             file_dialog_requests: 0,
+            editing: None,
+            edit_requests: 0,
             native_dialogs: options.native_dialogs,
             state_override: None,
             toast_top: crate::widgets::TOAST_OFFSET.y,
@@ -534,6 +539,12 @@ impl SprintApp {
         self.file_dialog_requests
     }
 
+    /// How often "Edit in external editor" was asked for while native
+    /// dialogs are off (no editor is started then).
+    pub fn edit_requests(&self) -> usize {
+        self.edit_requests
+    }
+
     /// Where the configuration is saved (`None`: kept in memory).
     pub fn config_path(&self) -> Option<&std::path::Path> {
         self.saver.path()
@@ -630,7 +641,13 @@ impl SprintApp {
             let c = self.core.ctx();
             self.panels.connection.tick(&c, secs);
         }
-        self.watch.poll(secs);
+        // Saved in the external editor: reloaded right away (a print of it
+        // keeps the version on screen; the notice then offers the reload).
+        if self.watch.poll(secs) && self.editing_loaded_file() && !self.core.printing_loaded_file()
+        {
+            self.watch.dismiss();
+            self.core.actions.push(AppAction::ReloadFile);
+        }
         match (&self.core.state.prompt, &self.prompt) {
             (None, _) => self.prompt = None,
             (Some(current), Some((seen, _))) if current != seen => self.prompt = None,
@@ -958,6 +975,7 @@ impl SprintApp {
             AppAction::SetTheme(theme) => self.set_theme(ctx, theme),
             AppAction::CancelLoading => self.loader.cancel(),
             AppAction::Reanalyze => self.reanalyze(),
+            AppAction::EditFile => self.edit_file(),
         }
     }
 
@@ -1055,6 +1073,56 @@ impl SprintApp {
         let options = request.options.clone();
         self.requested_analysis = Some(request);
         self.loader.load(path, options, same);
+    }
+
+    /// Open the loaded file in the external editor (see
+    /// [`native_dialog::open_in_editor`]); it reloads once saved there.
+    fn edit_file(&mut self) {
+        let Some(path) = self.core.file.as_ref().and_then(|f| f.path.clone()) else {
+            if self.core.file.is_some() {
+                self.core
+                    .toasts
+                    .info("Nothing to edit")
+                    .message("This file was not opened from disk.");
+            }
+            return;
+        };
+        self.editing = Some(path.clone());
+        if !self.native_dialogs {
+            self.edit_requests += 1;
+            return;
+        }
+        let name = format::sanitize(&loader::display_name(&path), 60);
+        match native_dialog::open_in_editor(&path) {
+            Ok(()) => {
+                self.core
+                    .toasts
+                    .info(format!("Editing {name}"))
+                    .message("Sprint reloads it when you save it.");
+            }
+            Err(e) => {
+                self.editing = None;
+                self.core
+                    .toasts
+                    .error("Could not start the editor")
+                    .message(format!(
+                        "{}: {} (set SPRINT_EDITOR to choose one)",
+                        native_dialog::editor_command().join(" "),
+                        format::sanitize(&e.to_string(), 200)
+                    ));
+            }
+        }
+    }
+
+    /// The loaded file is the one handed to the external editor.
+    fn editing_loaded_file(&self) -> bool {
+        match (
+            &self.editing,
+            self.core.file.as_ref().and_then(|f| f.path.as_ref()),
+        ) {
+            (Some(editing), Some(loaded)) => loader::same_path(editing, loaded),
+            _ => false,
+        }
     }
 
     fn reload_file(&mut self) {

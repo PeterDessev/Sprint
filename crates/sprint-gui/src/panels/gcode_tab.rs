@@ -1,7 +1,8 @@
 //! The G-code tab: a virtualized, syntax-colored view of the whole file
 //! with line numbers, print progress, the selection shared with the 3D
-//! view, reference tooltips, find (Ctrl+F), go to line (Ctrl+G) and a
-//! context menu (copy, start print from here, send to the printer).
+//! view, reference tooltips, find (Ctrl+F), go to line (Ctrl+G), a
+//! context menu (copy, start print from here, send to the printer) and
+//! editing in an external editor (the file reloads when saved there).
 //!
 //! Only the visible rows are laid out each frame
 //! ([`egui::ScrollArea::show_rows`]), so multi-million-line files scroll as
@@ -790,6 +791,17 @@ impl GcodeTab {
                     self.open_goto();
                 }
             }
+        }
+        if ctx.file.is_some_and(|f| f.path.is_some())
+            && ui
+                .add(
+                    IconButton::new(icons::EDIT)
+                        .ghost()
+                        .tooltip("Edit in an external editor (reloads when saved)"),
+                )
+                .clicked()
+        {
+            ctx.actions.push(AppAction::EditFile);
         }
         if printing && compact {
             ui.add(crate::widgets::Toggle::new(&mut self.follow_print).label("Follow print"))
