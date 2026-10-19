@@ -271,6 +271,26 @@ pub(crate) fn bar(ui: &mut Ui, fraction: f32, color: Color32, width: f32, height
     response
 }
 
+/// A row label styled like [`crate::widgets::NumericField`]'s, `width`
+/// wide, so other controls line up with a column of numeric fields.
+pub(crate) fn field_label(ui: &mut Ui, text: &str, width: f32) -> Response {
+    let p = theme::ui_palette(ui);
+    let galley =
+        ui.painter()
+            .layout_no_wrap(text.to_owned(), FontId::proportional(13.0), p.text_dim);
+    let width = width.max(12.0 + galley.size().x);
+    let (rect, response) = ui.allocate_exact_size(vec2(width, 26.0), Sense::hover());
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, text));
+    if ui.is_rect_visible(rect) {
+        ui.painter().galley(
+            pos2(rect.min.x + 12.0, rect.center().y - galley.size().y / 2.0),
+            galley,
+            p.text_dim,
+        );
+    }
+    response
+}
+
 /// A dim caption line.
 pub(crate) fn caption(ui: &mut Ui, text: &str) -> Response {
     let p = theme::ui_palette(ui);

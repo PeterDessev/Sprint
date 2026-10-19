@@ -5,6 +5,8 @@
 mod cards;
 mod thermal;
 
+pub(crate) use thermal::{heater_color, heater_name};
+
 use std::collections::VecDeque;
 
 use crate::context::AppCtx;
