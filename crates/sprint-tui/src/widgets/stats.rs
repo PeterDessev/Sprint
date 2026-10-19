@@ -11,6 +11,7 @@ use sprint_gcode::{Bounds, Feature, SlicerMetadata, Stats, ThumbnailFormat, Tool
 
 use crate::format::{self, MISSING};
 use crate::theme::{Theme, default_theme};
+use crate::widgets::layer_canvas::object_bounds;
 use crate::widgets::util::{self, sanitize};
 
 /// Most object names listed in the summary.
@@ -85,9 +86,11 @@ fn thumbnail_format(format: ThumbnailFormat) -> &'static str {
 }
 
 /// The summary rows for a toolpath's statistics and slicer metadata, in
-/// display order. `bounds` (the extrusion bounds) adds size and bounds
-/// rows. Text from the file is sanitized; missing data gives short
-/// placeholders or leaves rows out.
+/// display order. `bounds` adds size and bounds rows: pass the object
+/// bounds ([`object_bounds`](crate::widgets::layer_canvas::object_bounds),
+/// which leaves out purge lines) for the size of the part. The height is
+/// the top Z for parts that start on the bed. Text from the file is
+/// sanitized; missing data gives short placeholders or leaves rows out.
 pub fn summary_rows(
     stats: &Stats,
     metadata: &SlicerMetadata,
@@ -161,7 +164,12 @@ pub fn summary_rows(
     if let Some(b) =
         bounds.filter(|b| !b.is_empty() && b.min.iter().chain(&b.max).all(|v| v.is_finite()))
     {
-        let size = b.size().map(f64::from);
+        let mut size = b.size().map(f64::from);
+        // A part printed on the bed is as tall as its top layer, not the
+        // distance from the first layer's Z to the top.
+        if b.min[2] >= 0.0 {
+            size[2] = f64::from(b.max[2]);
+        }
         rows.push(row(
             "Size",
             format!(
@@ -473,13 +481,13 @@ impl<'a> StatsPanel<'a> {
         }
     }
 
-    /// A panel for a toolpath (its statistics, metadata and extrusion
-    /// bounds).
+    /// A panel for a toolpath: its statistics, metadata and
+    /// [`object_bounds`] (computed here, a pass over the segments).
     pub fn from_toolpath(toolpath: &'a Toolpath) -> StatsPanel<'a> {
-        StatsPanel::new(&toolpath.stats, &toolpath.metadata).bounds(Some(toolpath.bounds))
+        StatsPanel::new(&toolpath.stats, &toolpath.metadata).bounds(Some(object_bounds(toolpath)))
     }
 
-    /// Extrusion bounds for the size and bounds rows.
+    /// Bounds for the size and bounds rows (see [`summary_rows`]).
     #[must_use]
     pub fn bounds(mut self, bounds: Option<Bounds>) -> Self {
         self.bounds = bounds;
@@ -750,7 +758,7 @@ mod tests {
             value(&rows, "Material").value,
             "PLA, 1.75 mm filament, 0.4 mm nozzle"
         );
-        assert_eq!(value(&rows, "Size").value, "20.0 x 20.0 x 19.8 mm");
+        assert_eq!(value(&rows, "Size").value, "20.0 x 20.0 x 20.0 mm");
         assert_eq!(
             value(&rows, "Bounds").value,
             "X 115.0..135.0, Y 95.0..115.0, Z 0.2..20.0"
@@ -954,7 +962,7 @@ G1 X30 Y10 E1 F1200\nG1 X30 Y30 E1\nG1 Z0.4\nG1 X10 Y30 E1\n";
         let panel = StatsPanel::from_toolpath(&tp);
         let buf = render(panel, 80, 30);
         let text = lines(&buf).join("\n");
-        assert!(text.contains("Size         20.0 x 20.0 x 0.2 mm"), "{text}");
+        assert!(text.contains("Size         20.0 x 20.0 x 0.4 mm"), "{text}");
         assert!(text.contains("Hotend       205 °C"), "{text}");
         assert!(text.contains("■ Perimeter"), "{text}");
     }
