@@ -43,10 +43,13 @@ pub(super) struct JobRuntime {
     progress: ProgressModel,
     last_acked: Option<usize>,
     acked_any: bool,
-    last_ack_at: Option<Instant>,
+    /// The last acknowledgement of a job command (the job start before
+    /// the first): a wait's time is bounded by the time since then.
+    last_ack_at: Instant,
     active_since: Option<Instant>,
     accumulated: Duration,
-    /// Time spent in heat waits (estimates count them as zero).
+    /// Time spent in commands estimates count as zero (heat waits,
+    /// homing, probing, user waits; see `CmdMeta::unestimated`).
     waited: Duration,
     pending_m73: Option<String>,
     last_m73: Option<u32>,
@@ -132,7 +135,7 @@ impl JobRuntime {
             progress,
             last_acked: None,
             acked_any: false,
-            last_ack_at: None,
+            last_ack_at: now,
             active_since: Some(now),
             accumulated: Duration::ZERO,
             waited: Duration::ZERO,
@@ -683,13 +686,13 @@ impl Engine {
         if !job.is_active() {
             return;
         }
-        if meta.is_heat_wait() {
-            let since_last = job
-                .last_ack_at
-                .map_or(Duration::ZERO, |t| now.saturating_duration_since(t));
+        if meta.unestimated() {
+            // The first line counts too (start G-code often begins with a
+            // heat-up or G28).
+            let since_last = now.saturating_duration_since(job.last_ack_at);
             job.waited += rtt.map_or(since_last, |r| r.min(since_last));
         }
-        job.last_ack_at = Some(now);
+        job.last_ack_at = now;
         let first = !job.acked_any;
         job.acked_any = true;
         if let JobLine::Stream(index) = line {

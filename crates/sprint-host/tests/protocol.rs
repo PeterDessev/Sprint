@@ -966,3 +966,73 @@ fn sd_status_is_polled_without_auto_reports() {
             .all(|e| e.auto)
     );
 }
+
+#[test]
+fn homing_and_probing_do_not_inflate_the_eta() {
+    // Estimates count G28 and G29 as zero; their real time must not make
+    // the print look three times slower than estimated. The firmware takes
+    // 2 s for each and exactly the estimated time for every move.
+    use sprint_host::sprint_gcode::{AnalyzeOptions, analyze_simple};
+    let mut text = String::from("G28\nG29\n");
+    for i in 0..30 {
+        text.push_str(&format!("G1 X{} F6000\n", if i % 2 == 0 { 15 } else { 10 }));
+    }
+    let file = Arc::new(GcodeFile::from_text("probe-first.gcode", text));
+    let toolpath = Arc::new(analyze_simple(&file, &AnalyzeOptions::default()));
+    let moves: Vec<f64> = (2..file.len())
+        .map(|i| f64::from(toolpath.time_at_line(i as u32) - toolpath.time_at_line(i as u32 - 1)))
+        .collect();
+    assert!(moves.iter().all(|&t| t > 0.01), "{moves:?}");
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut fw = Mini::new(Arc::clone(&log));
+    let mut done_moves = 0;
+    let (link, _) = fake(
+        |out| out.line("start"),
+        move |line, out| {
+            let Some(cmd) = fw.accept(line, out) else {
+                return;
+            };
+            if cmd == "G28" || cmd == "G29" {
+                thread::sleep(Duration::from_secs(2));
+            } else if cmd.starts_with("G1") {
+                let t = moves.get(done_moves).copied().unwrap_or(0.0);
+                done_moves += 1;
+                thread::sleep(Duration::from_secs_f64(t));
+            }
+            out.line("ok");
+        },
+    );
+    let printer = connect_fake(
+        link,
+        ConnectOptions {
+            query_on_connect: false,
+            temp_poll_secs: 0.0,
+            ..options()
+        },
+    );
+    wait_for(&printer, "connected", |s| s.is_connected());
+    let options = PrintOptions {
+        toolpath: Some(Arc::clone(&toolpath)),
+        ..PrintOptions::default()
+    };
+    printer.start_print(Arc::clone(&file), options).unwrap();
+    // Half of the moves.
+    let stop = 2 + 15;
+    printer.pause_at_lines(&[stop]);
+    wait_for(&printer, "half of the moves", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Paused)
+    });
+    let job = printer.with_state(|s| s.job.clone()).unwrap();
+    let remaining =
+        f64::from(toolpath.stats.estimated_time - toolpath.time_at_line(stop as u32 - 1));
+    let ratio = job.eta.unwrap().as_secs_f64() / remaining;
+    assert!(
+        ratio < 1.8,
+        "ETA {:?} for {remaining:.2} s of estimated printing (ratio {ratio:.2}), elapsed {:?}",
+        job.eta,
+        job.elapsed
+    );
+    printer.cancel();
+}

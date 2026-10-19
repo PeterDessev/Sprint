@@ -100,6 +100,14 @@ impl CmdMeta {
         self.is_heat_wait() || self.is('M', 303)
     }
 
+    /// Commands print-time estimates count as (nearly) zero although they
+    /// take real time: heat waits, homing, probing and leveling, waits for
+    /// the user, filament changes, autotune, extended (Klipper) commands.
+    /// Dwells (`G4`) and `M400` are estimated, so they do not count.
+    pub(crate) fn unestimated(&self) -> bool {
+        self.long && !self.is('G', 4) && !self.is('M', 400)
+    }
+
     /// Commands that wait for the user or a temperature, which `M108`
     /// releases.
     pub(crate) fn is_wait(&self) -> bool {
@@ -144,5 +152,25 @@ mod tests {
         let m = CmdMeta::new("BED_MESH_CALIBRATE", Source::User);
         assert!(m.code.is_none() && m.long);
         assert!(CmdMeta::new("M600", Source::User).is_wait());
+        for unestimated in [
+            "G28",
+            "G29",
+            "M109 S200",
+            "M190 S60",
+            "M0",
+            "M600",
+            "START_PRINT",
+        ] {
+            assert!(
+                CmdMeta::new(unestimated, Source::User).unestimated(),
+                "{unestimated}"
+            );
+        }
+        for estimated in ["G4 P500", "M400", "G1 X10", "M104 S200"] {
+            assert!(
+                !CmdMeta::new(estimated, Source::User).unestimated(),
+                "{estimated}"
+            );
+        }
     }
 }

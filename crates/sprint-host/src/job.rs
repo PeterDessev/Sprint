@@ -216,9 +216,9 @@ pub struct Progress {
 /// With a toolpath, progress is the estimated print time of the
 /// acknowledged lines over the total estimate. The ETA is the remaining
 /// estimate times the measured speed ratio (actual running time without
-/// heat waits over the estimated time of what was printed), clamped to
-/// 0.5..=3 and smoothed; during the first 2% of the job the raw estimate
-/// is used. Without a toolpath, progress is by bytes and the ETA is a
+/// the waits estimates count as zero, over the estimated time of what was
+/// printed), clamped to 0.5..=3 and smoothed; during the first 2% of the
+/// job the raw estimate is used. Without a toolpath, progress is by bytes and the ETA is a
 /// smoothed linear extrapolation once 2% are done.
 pub struct ProgressModel {
     toolpath: Option<Arc<Toolpath>>,
@@ -308,7 +308,8 @@ impl ProgressModel {
 
     /// Recompute. `done_line` is the 0-based last acknowledged file line,
     /// `elapsed` the running time excluding pauses and `waiting` the part
-    /// of it spent in heat waits (which estimates count as zero).
+    /// of it spent in commands estimates count as zero (heat waits,
+    /// homing, probing, waits for the user).
     pub fn update(
         &mut self,
         done_line: Option<usize>,
