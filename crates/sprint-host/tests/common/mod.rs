@@ -136,3 +136,11 @@ pub fn format_entry(e: &ConsoleEntry) -> String {
 pub fn console(printer: &Printer) -> Vec<ConsoleEntry> {
     printer.console_since(0, usize::MAX)
 }
+
+/// Sequence number of the newest console entry.
+pub fn last_seq(printer: &Printer) -> u64 {
+    printer
+        .console_since(0, usize::MAX)
+        .last()
+        .map_or(0, |e| e.seq)
+}
