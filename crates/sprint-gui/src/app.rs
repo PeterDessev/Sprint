@@ -884,7 +884,10 @@ impl SprintApp {
             AppAction::ShowTab(tab) => self.prefs.tab = tab,
             AppAction::SelectLine(line) => self.select_line(line),
             AppAction::StartPrintDialog { start_line } => self.open_start_print(start_line),
-            AppAction::OpenSettings => self.open_settings(),
+            AppAction::OpenSettings => self.open_settings(None),
+            AppAction::OpenPreferences => {
+                self.open_settings(Some(crate::settings::Page::Preferences));
+            }
             AppAction::ReloadFile => self.reload_file(),
             AppAction::CloseFile => self.close_file(),
             AppAction::Connect => self.connect(),
@@ -1094,7 +1097,8 @@ impl SprintApp {
         self.open_modal(Modal::StartPrint(Box::new(dialog)));
     }
 
-    fn open_settings(&mut self) {
+    /// Open the settings dialog on `page` (`None`: the active profile).
+    fn open_settings(&mut self, page: Option<crate::settings::Page>) {
         let ports = self
             .panels
             .connection
@@ -1103,8 +1107,11 @@ impl SprintApp {
             .iter()
             .map(|p| p.name.clone())
             .collect();
-        let dialog = SettingsDialog::new(&self.core.config, self.prefs.theme, ports)
+        let mut dialog = SettingsDialog::new(&self.core.config, self.prefs.theme, ports)
             .with_config_path(self.saver.path().map(std::path::Path::to_path_buf));
+        if let Some(page) = page {
+            dialog.set_page(page);
+        }
         self.open_modal(Modal::Settings(Box::new(dialog)));
     }
 
@@ -1245,7 +1252,7 @@ impl SprintApp {
                 (Key::P, AppAction::StartPrintDialog { start_line: 0 }),
                 (Key::F, AppAction::FindInGcode),
                 (Key::G, AppAction::GotoLine),
-                (Key::Comma, AppAction::OpenSettings),
+                (Key::Comma, AppAction::OpenPreferences),
             ] {
                 if i.consume_shortcut(&command(key)) {
                     actions.push(action);

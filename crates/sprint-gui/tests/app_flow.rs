@@ -396,9 +396,20 @@ fn shortcuts_switch_tabs_and_open_dialogs() {
     assert_eq!(h.state().tab(), Tab::Gcode);
     assert!(h.state().gcode_tab().find().open);
 
+    // Ctrl+, ("Settings…") opens the preferences, "Printer profiles…" the
+    // active profile.
     h.key_press_modifiers(Modifiers::COMMAND, Key::Comma);
     settle(&mut h);
     assert_eq!(h.state().dialog(), Some(DialogKind::Settings));
+    let page =
+        |h: &mut Harness<'_, SprintApp>| h.state_mut().settings_dialog_mut().map(|d| d.page());
+    assert_eq!(page(&mut h), Some(sprint_gui::settings::Page::Preferences));
+    h.key_press(Key::Escape);
+    settle(&mut h);
+    assert_eq!(h.state().dialog(), None);
+    h.state_mut().push_action(AppAction::OpenSettings);
+    settle(&mut h);
+    assert_eq!(page(&mut h), Some(sprint_gui::settings::Page::Profile(0)));
     h.key_press(Key::Escape);
     settle(&mut h);
     assert_eq!(h.state().dialog(), None);
@@ -1345,6 +1356,21 @@ fn the_menu_bar_runs_commands() {
     h.get_by_label("Console").click();
     settle(&mut h);
     assert!(!h.state().ui_prefs().show_console);
+
+    // Two items, two pages of the settings.
+    for (item, page) in [
+        ("Settings…", sprint_gui::settings::Page::Preferences),
+        ("Printer profiles…", sprint_gui::settings::Page::Profile(0)),
+    ] {
+        h.get_by_label("Tools").click();
+        settle(&mut h);
+        h.get_by_label_contains(item).click();
+        settle(&mut h);
+        let shown = h.state_mut().settings_dialog_mut().map(|d| d.page());
+        assert_eq!(shown, Some(page), "{item}");
+        h.key_press(Key::Escape);
+        settle(&mut h);
+    }
 }
 
 /// Open the Printer menu (the menu bar's, not the tab of that name).

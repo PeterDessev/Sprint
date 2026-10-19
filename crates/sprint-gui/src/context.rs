@@ -118,7 +118,7 @@ pub enum AppAction {
         /// First line to stream (0 = beginning).
         start_line: usize,
     },
-    /// Open the settings / printer profiles dialog.
+    /// Open the settings dialog on the active printer profile.
     OpenSettings,
     /// Load the current file again from disk (refused while it prints).
     ReloadFile,
@@ -150,6 +150,8 @@ pub enum AppAction {
     CancelLoading,
     /// Analyze the loaded file again (current profile and printer limits).
     Reanalyze,
+    /// Open the settings dialog on the app preferences.
+    OpenPreferences,
 }
 
 /// Everything a panel may use during one frame.

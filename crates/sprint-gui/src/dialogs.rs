@@ -694,7 +694,7 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("Space", "Pause / resume the print"),
     ("Ctrl+F", "Find in the G-code"),
     ("Ctrl+G", "Go to line"),
-    ("Ctrl+,", "Settings and printer profiles"),
+    ("Ctrl+,", "Settings (app preferences)"),
     (
         "1 – 7",
         "View presets: iso, top, bottom, front, back, left, right",

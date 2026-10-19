@@ -300,8 +300,9 @@ fn view_menu(ui: &mut Ui, info: &MenuInfo<'_>, out: &mut Vec<MenuCommand>) {
 
 fn tools_menu(ui: &mut Ui, info: &MenuInfo<'_>, out: &mut Vec<MenuCommand>) {
     use AppAction as A;
+    // The same dialog, on its preferences or on the active profile.
     if item(ui, true, icons::SETTINGS, "Settings…", Some("Ctrl+,")) {
-        out.push(MenuCommand::Action(A::OpenSettings));
+        out.push(MenuCommand::Action(A::OpenPreferences));
     }
     if item(ui, true, icons::PRINTER, "Printer profiles…", None) {
         out.push(MenuCommand::Action(A::OpenSettings));
