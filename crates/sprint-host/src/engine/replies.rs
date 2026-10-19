@@ -674,6 +674,20 @@ impl Engine {
                 let axes = if listed.is_empty() { Axes::ALL } else { listed };
                 let homed = self.homed.unwrap_or(Axes::NONE).union(axes);
                 self.set_homed(Some(homed));
+                if axes.z {
+                    self.shared.update(|s| s.babystep_z = 0.0);
+                }
+            }
+            (b'M', 290) => {
+                let z = parsed
+                    .get('Z')
+                    .or_else(|| parsed.get('S'))
+                    .filter(|v| v.is_finite());
+                if let Some(z) = z {
+                    self.shared.update(|s| {
+                        s.babystep_z = ((f64::from(s.babystep_z) + z).clamp(-100.0, 100.0)) as f32;
+                    });
+                }
             }
             // Steppers off: the head can be moved by hand. `S` only sets
             // the idle timeout; `E` alone leaves the axes alone.

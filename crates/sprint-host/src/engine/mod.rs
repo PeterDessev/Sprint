@@ -826,6 +826,7 @@ impl Engine {
         // lost its position and soft endstops.
         self.drop_queued_commands("the printer reset");
         self.settings_refresh_at = None;
+        self.shared.update(|s| s.babystep_z = 0.0);
         self.halted = false;
         self.restarting = false;
         self.renumber_pending = false;
@@ -1311,6 +1312,7 @@ impl Engine {
             self.drop_queued_commands("the printer halted");
             // Steppers off (kill) or position untrusted: home again.
             self.set_homed(Some(Axes::NONE));
+            self.shared.update(|s| s.babystep_z = 0.0);
         }
         self.halted = true;
         self.restarting = false;

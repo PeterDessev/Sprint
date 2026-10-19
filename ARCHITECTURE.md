@@ -866,6 +866,7 @@ pub struct PrinterState {
     pub mesh: Option<BedMesh>,
     pub stats: Option<StatsReport>,
     pub homed: Option<Axes>,                    // None = unknown (since connecting); Some(axes homed by acked G28s; others count as not homed)
+    pub babystep_z: f32,                        // M290 Z/S acked since Z was homed (G28 of Z), a reset/halt or connecting (mm)
     pub active_tool: u8,
     pub feedrate_pct: f32,                      // last set via M220 (100 default)
     pub flow_pct: Vec<f32>,                     // per tool (100 default)

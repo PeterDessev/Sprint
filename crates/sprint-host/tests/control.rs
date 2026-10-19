@@ -562,3 +562,33 @@ fn blocking_commands_stay_out_of_the_round_trip_statistics() {
     assert!(link.rtt_avg_ms < 400.0, "{link:?}");
     assert!(link.rtt_last_ms > 0.0, "{link:?}");
 }
+
+#[test]
+fn the_babystep_tally_resets_when_z_is_homed() {
+    // Marlin forgets babysteps when it homes Z, so must the tally (also
+    // when the homing comes from a print).
+    let printer = connect(fast_sim(50.0), options());
+    let tally = |p: &Printer| p.with_state(|s| s.babystep_z);
+    printer.babystep_z(0.05);
+    printer.babystep_z(0.05);
+    wait_idle(&printer);
+    assert!((tally(&printer) - 0.1).abs() < 1e-6);
+    printer.send("G28 X Y");
+    wait_idle(&printer);
+    assert!((tally(&printer) - 0.1).abs() < 1e-6, "Z was not homed");
+    printer.send("G28");
+    wait_idle(&printer);
+    assert_eq!(tally(&printer), 0.0);
+    let file = std::sync::Arc::new(sprint_host::sprint_gcode::GcodeFile::from_text(
+        "babystep.gcode",
+        "M290 Z0.02\nG28\nM290 Z-0.01\nG1 X5 F3000\n",
+    ));
+    printer
+        .start_print(file, sprint_host::PrintOptions::default())
+        .unwrap();
+    wait_for(&printer, "the print", |s| !s.job_active());
+    assert!((tally(&printer) + 0.01).abs() < 1e-6, "{}", tally(&printer));
+    printer.emergency_stop();
+    wait_for(&printer, "halted", |s| s.halted);
+    assert_eq!(tally(&printer), 0.0);
+}

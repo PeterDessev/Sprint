@@ -65,6 +65,11 @@ pub struct PrinterState {
     /// disconnect to `None`. The pause and cancel scripts never move an
     /// axis that is not known to be homed.
     pub homed: Option<Axes>,
+    /// Z babystepping (`M290 Z`/`S`, from any source, the job stream
+    /// included) acknowledged since Z was last homed (Marlin forgets
+    /// babysteps when it homes), the printer reset or halted, or the
+    /// connection opened; mm, negative = closer to the bed.
+    pub babystep_z: f32,
     /// Active tool (`T<n>` / "Active Extruder").
     pub active_tool: u8,
     /// Feedrate override, last set via M220 (100 default).
@@ -118,6 +123,7 @@ impl Default for PrinterState {
             mesh: None,
             stats: None,
             homed: None,
+            babystep_z: 0.0,
             active_tool: 0,
             feedrate_pct: 100.0,
             flow_pct: vec![100.0],
