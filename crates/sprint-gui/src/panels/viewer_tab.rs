@@ -164,9 +164,10 @@ impl ViewerTab {
         self.prefs.layer_view = false;
     }
 
-    /// Widen the shown layer range so the layer holding source `line` is
-    /// visible (a selection made outside the view), and drop a scrub that
-    /// would hide it. The view stops following the print.
+    /// Make the layer holding source `line` the top layer (a selection made
+    /// outside the view: lower layers would hide its highlight otherwise),
+    /// keeping the bottom of the range, and drop a scrub. The view stops
+    /// following the print.
     pub fn reveal_line(&mut self, toolpath: &Toolpath, line: u32) {
         let Some(layer) = layer_of_line(toolpath, line) else {
             return;
@@ -178,9 +179,8 @@ impl ViewerTab {
         let Some((lo, hi)) = v.options().clamped_layer_range(count) else {
             return;
         };
-        let range = (lo.min(layer), hi.max(layer));
-        let scrubbed_away = layer == range.1 && v.options().line_limit.is_some_and(|l| l < line);
-        if range != (lo, hi) || scrubbed_away {
+        let range = (lo.min(layer), layer);
+        if range != (lo, hi) || v.options().line_limit.is_some() {
             v.options_mut().layer_range = range;
             v.options_mut().line_limit = None;
             self.ov.user_moved_layers(&mut self.prefs);

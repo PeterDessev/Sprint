@@ -380,7 +380,7 @@ fn selecting_a_line_syncs_the_views() {
     settle(&mut h);
     assert_eq!(h.state().selected_line(), Some(line));
     if let Some((lo, hi)) = h.state().viewer_tab().layer_range() {
-        assert!(lo <= 60 && hi >= 60, "range {lo}..={hi}");
+        assert_eq!((lo, hi), (0, 60), "the line's layer is on top");
     }
     // Out-of-range selections are clamped to the file.
     h.state_mut().push_action(AppAction::SelectLine(u32::MAX));
