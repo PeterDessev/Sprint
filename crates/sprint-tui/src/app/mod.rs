@@ -750,7 +750,7 @@ impl App {
             return;
         };
         match crate::config::save_recent(path, file.clone(), &self.config) {
-            Ok(saved) => self.config = saved,
+            Ok(saved) => self.keep_profile(saved),
             Err(e) => {
                 log::warn!("could not save the configuration: {e}");
                 self.config.push_recent(file);

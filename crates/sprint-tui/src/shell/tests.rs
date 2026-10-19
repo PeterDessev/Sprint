@@ -1141,3 +1141,30 @@ fn a_script_does_not_cancel_an_upload_after_a_refused_pause() {
         "{text}"
     );
 }
+
+#[test]
+fn a_session_profile_stays_active_after_loading_a_file() {
+    let scratch = Scratch::new("session-profile");
+    let path = scratch.0.join("config.toml");
+    let mut config = AppConfig::default();
+    config.profiles.push(sprint_host::PrinterProfile {
+        name: "Bench".into(),
+        connection: ConnectTarget::parse("tcp://127.0.0.1:1").expect("target"),
+        ..sprint_host::PrinterProfile::default()
+    });
+    config.save_to(&path).expect("save");
+    // `sprint shell --profile bench`: this session only.
+    crate::config::select_profile(&mut config, Some("bench")).expect("bench");
+    let (mut shell, buffer) = shell_with(config, Some(path.clone()));
+    let cube = sample("calibration-cube.gcode");
+    script(
+        &mut shell,
+        &[&format!("load {}", cube.display()), "profile"],
+    );
+    let text = buffer.text();
+    assert!(text.contains("*  2  Bench"), "{text}");
+    assert!(text.contains("   1  Virtual printer"), "{text}");
+    assert_eq!(shell.profile.name, "Bench");
+    // The file keeps its own active profile.
+    assert_eq!(AppConfig::load_from(&path).expect("load").active_profile, 0);
+}

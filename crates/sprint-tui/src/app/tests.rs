@@ -2083,3 +2083,35 @@ fn sd_deletes_are_reported_when_the_printer_answers() {
             .is_some_and(|t| t.text == "Deleted first layer test.gcode from the SD card")
     });
 }
+
+#[test]
+fn a_session_profile_stays_active_after_loading_a_file() {
+    let dir =
+        std::env::temp_dir().join(format!("sprint-tui-session-profile-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let path = dir.join("config.toml");
+    let mut config = AppConfig::default();
+    config.profiles.push(sprint_host::PrinterProfile {
+        name: "Bench".into(),
+        connection: ConnectTarget::parse("tcp://127.0.0.1:1").expect("target"),
+        ..sprint_host::PrinterProfile::default()
+    });
+    config.save_to(&path).expect("save");
+    // `sprint tui --profile bench`: this session only.
+    crate::config::select_profile(&mut config, Some("bench")).expect("bench");
+    let mut app = App::new(Printer::new(), config, Some(path.clone()), Theme::dark());
+    // A file was loaded: it joins the recent files in the file.
+    app.remember_recent(sample("calibration-cube.gcode"));
+    app.run_line("profile");
+    let Some(Modal::Report(report)) = &app.modal else {
+        panic!("no list: {:?}", app.toast);
+    };
+    let text: Vec<String> = report.lines.iter().map(ReportLine::text).collect();
+    assert!(text[1].starts_with("*  2  Bench"), "{text:?}");
+    assert!(text[0].starts_with("   1"), "{text:?}");
+    assert_eq!(app.profile.name, "Bench");
+    // The file keeps its own active profile.
+    assert_eq!(AppConfig::load_from(&path).expect("load").active_profile, 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
