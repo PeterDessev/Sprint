@@ -9,6 +9,10 @@
 //! turned off before the link closes. Exit status: 0 when the print
 //! completed, 1 when it failed or was cancelled by the printer, 130 after
 //! Ctrl+C.
+//!
+//! The printer's questions (a filament change, M0 "insert magnets") and
+//! messages are printed as they come; see [`crate::prompts`] for how they
+//! are answered.
 
 use std::io::{self, IsTerminal, Write};
 use std::path::Path;
@@ -17,7 +21,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use sprint_gcode::{ResumeOptions, resume_preamble};
-use sprint_host::{JobStatus, Printer, PrinterProfile};
+use sprint_host::{Event, JobStatus, Printer, PrinterProfile};
 use sprint_tui::format;
 use sprint_tui::interrupt::{self, Interrupt};
 use sprint_tui::loader::LoadedFile;
@@ -27,6 +31,7 @@ use sprint_tui::session;
 use crate::analyze;
 use crate::cli::PrintArgs;
 use crate::headless::{self, Connected, EXIT_INTERRUPTED};
+use crate::prompts::{self, Effect, PromptWatch, Question};
 
 /// How often the job is looked at.
 const POLL: Duration = Duration::from_millis(100);
@@ -34,6 +39,9 @@ const POLL: Duration = Duration::from_millis(100);
 const REDRAW: Duration = Duration::from_millis(250);
 /// How long a cancel may take before Sprint stops waiting.
 const CANCEL_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long the printer may keep a print paused, idle and without a
+/// question before Sprint offers to resume it.
+const PAUSE_GRACE: Duration = Duration::from_secs(3);
 
 /// Run `sprint print`.
 pub fn run(args: &PrintArgs) -> Result<ExitCode> {
@@ -101,7 +109,8 @@ pub fn run(args: &PrintArgs) -> Result<ExitCode> {
     }
 
     let mut progress = Progress::new(show_progress, stderr_tty);
-    let outcome = follow(&printer, &interrupt, &mut |view| progress.show(view));
+    let mut prompts = PromptWatch::new(args.answer_prompts);
+    let outcome = follow(&printer, &interrupt, &mut prompts, &mut progress);
     progress.finish();
     let heaters = stop_safely(&printer, &outcome, &mut |text| eprintln!("{text}"));
     printer.disconnect();
@@ -212,13 +221,33 @@ pub struct Outcome {
     pub abandoned: bool,
 }
 
+/// Where [`follow`] reports.
+pub trait Report {
+    /// The job now (called on every look at it).
+    fn show(&mut self, view: &JobView);
+    /// Something to tell the user: a question, a message from the printer.
+    fn say(&mut self, text: &str);
+}
+
 /// Follow the job until it ends. The first Ctrl+C cancels it, however
 /// quickly a second one follows; a second one (or a cancel that takes too
-/// long) then stops waiting for the cancel to finish.
-pub fn follow(printer: &Printer, interrupt: &Interrupt, show: &mut dyn FnMut(&JobView)) -> Outcome {
+/// long) then stops waiting for the cancel to finish. The printer's
+/// messages and questions are reported as they come, and the questions
+/// are answered as `prompts` says.
+pub fn follow(
+    printer: &Printer,
+    interrupt: &Interrupt,
+    prompts: &mut PromptWatch,
+    report: &mut dyn Report,
+) -> Outcome {
+    let events = printer.subscribe();
+    let mut last_message: Option<String> = None;
     let mut cancelled_at: Option<Instant> = None;
+    // Since when the printer has paused the print without asking anything
+    // and without working on something (parking, unloading filament).
+    let mut quiet_pause: Option<Instant> = None;
     loop {
-        let (view, elapsed) = printer.with_state(|s| {
+        let (view, elapsed, prompt, waiting, busy) = printer.with_state(|s| {
             let job = s.job.as_ref();
             (
                 JobView {
@@ -227,9 +256,21 @@ pub fn follow(printer: &Printer, interrupt: &Interrupt, show: &mut dyn FnMut(&Jo
                     text: report::monitor_text(s),
                 },
                 job.map(|j| j.elapsed).unwrap_or_default(),
+                s.prompt.clone(),
+                sprint_tui::actions::waiting_for_user(s),
+                s.busy.is_some(),
             )
         });
-        show(&view);
+        for event in events.try_iter() {
+            // The same message again and again (a runout warning) once.
+            if let Event::FirmwareMessage(text) = event
+                && last_message.as_ref() != Some(&text)
+            {
+                report.say(&format!("Printer: {}", prompts::printable(&text)));
+                last_message = Some(text);
+            }
+        }
+        report.show(&view);
         let percent = format::percent(f64::from(view.progress));
         if view.status.is_finished() {
             return Outcome {
@@ -244,7 +285,7 @@ pub fn follow(printer: &Printer, interrupt: &Interrupt, show: &mut dyn FnMut(&Jo
         if presses >= 1 && cancelled_at.is_none() {
             printer.cancel();
             cancelled_at = Some(Instant::now());
-            eprintln!("\nCancelling: the cancel script runs (Ctrl+C again stops waiting for it)…");
+            report.say("Cancelling: the cancel script runs (Ctrl+C again stops waiting for it)…");
         }
         let gave_up = cancelled_at.is_some_and(|t| t.elapsed() >= CANCEL_TIMEOUT);
         if presses >= 2 || gave_up {
@@ -253,6 +294,29 @@ pub fn follow(printer: &Printer, interrupt: &Interrupt, show: &mut dyn FnMut(&Jo
                 cancel_sent: true,
                 abandoned: true,
             };
+        }
+        let quiet = view.status == JobStatus::Paused && prompt.is_none() && !busy;
+        quiet_pause = quiet.then(|| quiet_pause.unwrap_or_else(Instant::now));
+        if cancelled_at.is_none() {
+            let question = match &prompt {
+                Some(prompt) => Some(Question::Prompt(prompt)),
+                None if waiting => Some(Question::WaitingForUser),
+                // A filament change pauses first and asks once parked.
+                None if quiet_pause.is_some_and(|t| t.elapsed() >= PAUSE_GRACE) => {
+                    Some(Question::Paused)
+                }
+                None => None,
+            };
+            for effect in prompts.update(question) {
+                match effect {
+                    Effect::Say(text) => report.say(&text),
+                    Effect::Answer(button) => printer.answer_prompt(button),
+                    // Resuming a print the printer paused also releases a
+                    // firmware waiting for the user.
+                    Effect::Continue if view.status == JobStatus::Paused => printer.resume(),
+                    Effect::Continue => printer.send("M108"),
+                }
+            }
         }
         std::thread::sleep(POLL);
     }
@@ -282,6 +346,25 @@ impl Progress {
         }
     }
 
+    /// Take the line drawn in place off the screen; it is drawn again
+    /// at once on the next look at the job.
+    fn clear(&mut self, err: &mut impl Write) {
+        if self.terminal && self.drawn > 0 {
+            let _ = write!(err, "\r{}\r", " ".repeat(self.drawn));
+            self.drawn = 0;
+            self.last_draw = None;
+        }
+    }
+
+    fn finish(&mut self) {
+        if self.enabled && self.terminal && self.drawn > 0 {
+            let _ = writeln!(io::stderr());
+            self.drawn = 0;
+        }
+    }
+}
+
+impl Report for Progress {
     fn show(&mut self, view: &JobView) {
         if !self.enabled {
             return;
@@ -310,11 +393,12 @@ impl Progress {
         }
     }
 
-    fn finish(&mut self) {
-        if self.enabled && self.terminal && self.drawn > 0 {
-            let _ = writeln!(io::stderr());
-            self.drawn = 0;
-        }
+    /// Questions and messages are printed even with `--no-progress`: the
+    /// user may have to answer them.
+    fn say(&mut self, text: &str) {
+        let mut err = io::stderr().lock();
+        self.clear(&mut err);
+        let _ = writeln!(err, "{text}");
     }
 }
 
@@ -341,6 +425,7 @@ fn fit(text: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::AnswerPrompts;
     use sprint_host::sprint_sim::SimConfig;
     use sprint_host::{ConnectOptions, ConnectTarget};
     use sprint_tui::session;
@@ -358,6 +443,55 @@ mod tests {
         .expect("connect to the simulator");
         session::wait_setup(&printer, Duration::from_secs(30), &interrupt).expect("setup");
         printer
+    }
+
+    /// What [`follow`] reported.
+    #[derive(Default)]
+    struct Seen {
+        views: Vec<JobView>,
+        said: Vec<String>,
+    }
+
+    impl Report for Seen {
+        fn show(&mut self, view: &JobView) {
+            self.views.push(view.clone());
+        }
+
+        fn say(&mut self, text: &str) {
+            self.said.push(text.to_string());
+        }
+    }
+
+    /// Follow the job, answering the printer's questions as `policy`
+    /// says (nothing is typed).
+    fn watch(printer: &Printer, interrupt: &Interrupt, policy: AnswerPrompts) -> (Outcome, Seen) {
+        let (_typing, typed) = crossbeam_channel::unbounded();
+        let mut prompts = PromptWatch::with_answers(policy, typed, true);
+        follow_at_most(printer, interrupt, &mut prompts)
+    }
+
+    /// [`follow`], with a double Ctrl+C after a minute so that a job
+    /// that never ends fails the test instead of hanging it.
+    fn follow_at_most(
+        printer: &Printer,
+        interrupt: &Interrupt,
+        prompts: &mut PromptWatch,
+    ) -> (Outcome, Seen) {
+        let (done, finished) = crossbeam_channel::bounded::<()>(0);
+        let watchdog = interrupt.clone();
+        let thread = std::thread::spawn(move || {
+            if finished.recv_timeout(Duration::from_secs(60))
+                == Err(crossbeam_channel::RecvTimeoutError::Timeout)
+            {
+                watchdog.raise();
+                watchdog.raise();
+            }
+        });
+        let mut seen = Seen::default();
+        let outcome = follow(printer, interrupt, prompts, &mut seen);
+        drop(done);
+        let _ = thread.join();
+        (outcome, seen)
     }
 
     /// Many short real-time moves: still printing while Ctrl+C arrives.
@@ -380,15 +514,14 @@ mod tests {
         printer
             .start_print(slow_job(), Default::default())
             .expect("start");
-        let mut views = Vec::new();
-        let outcome = follow(&printer, &Interrupt::new(), &mut |v| views.push(v.clone()));
+        let (outcome, seen) = watch(&printer, &Interrupt::new(), AnswerPrompts::Ask);
         assert_eq!(outcome.last.0, JobStatus::Completed);
         assert_eq!(outcome.last.2, "100.0%");
         assert!(!outcome.cancel_sent && !outcome.abandoned);
         // Nothing to make safe after a completed print.
         assert_eq!(stop_safely(&printer, &outcome, &mut |_| {}), None);
         assert!(
-            views
+            seen.views
                 .last()
                 .is_some_and(|v| v.text.starts_with("Completed 100.0%"))
         );
@@ -412,7 +545,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(500));
             raiser.raise();
         });
-        let outcome = follow(&printer, &interrupt, &mut |_| {});
+        let (outcome, _) = watch(&printer, &interrupt, AnswerPrompts::Ask);
         let _ = thread.join();
         assert!(outcome.cancel_sent);
         assert!(!outcome.abandoned);
@@ -451,7 +584,7 @@ mod tests {
         let interrupt = Interrupt::new();
         interrupt.raise();
         interrupt.raise();
-        let outcome = follow(&printer, &interrupt, &mut |_| {});
+        let (outcome, _) = watch(&printer, &interrupt, AnswerPrompts::Ask);
         assert!(outcome.cancel_sent && outcome.abandoned, "{outcome:?}");
         // The cancel reached the printer all the same.
         session::wait_for(&printer, patience, &Interrupt::new(), true, |s| {
@@ -495,7 +628,7 @@ mod tests {
         printer
             .start_print(file, Default::default())
             .expect("start");
-        let outcome = follow(&printer, &Interrupt::new(), &mut |_| {});
+        let (outcome, _) = watch(&printer, &Interrupt::new(), AnswerPrompts::Ask);
         assert!(
             matches!(outcome.last.0, JobStatus::Failed(_)),
             "{outcome:?}"
@@ -511,6 +644,77 @@ mod tests {
         printer.disconnect();
         // Once the link is gone there is nothing left to do.
         assert_eq!(stop_safely(&printer, &outcome, &mut |_| {}), None);
+    }
+
+    /// Heats, then changes the filament (M600) halfway.
+    fn filament_change() -> Arc<sprint_gcode::GcodeFile> {
+        let text = "G28\nM109 S200\nG90\nG1 X20 Y20 F3000\nG1 X30 Y20 F3000\nM600\n\
+                    G1 X40 Y20 F3000\nM104 S0\n";
+        Arc::new(sprint_gcode::GcodeFile::from_text("m600.gcode", text))
+    }
+
+    fn fast_sim() -> SimConfig {
+        SimConfig {
+            boot_delay_ms: 20,
+            time_scale: 100.0,
+            instant_moves: true,
+            ..SimConfig::default()
+        }
+    }
+
+    #[test]
+    fn a_filament_change_is_answered_with_continue() {
+        let printer = connect(fast_sim());
+        printer
+            .start_print(filament_change(), Default::default())
+            .expect("start");
+        let (outcome, seen) = watch(&printer, &Interrupt::new(), AnswerPrompts::Continue);
+        assert_eq!(outcome.last.0, JobStatus::Completed, "{:?}", seen.said);
+        let said = seen.said.join("\n");
+        assert!(said.contains("The printer asks:"), "{said}");
+        assert!(said.contains("Answered Continue"), "{said}");
+        printer.disconnect();
+    }
+
+    #[test]
+    fn a_filament_change_is_shown_and_answered_from_the_input() {
+        let printer = connect(fast_sim());
+        printer
+            .start_print(filament_change(), Default::default())
+            .expect("start");
+        let (typing, typed) = crossbeam_channel::unbounded();
+        let mut prompts = PromptWatch::with_answers(AnswerPrompts::Ask, typed, true);
+        let asked = printer.clone();
+        // Enter, once the question is up (and has been seen by follow).
+        let user = std::thread::spawn(move || {
+            let shown = session::wait_for(
+                &asked,
+                Duration::from_secs(30),
+                &Interrupt::new(),
+                true,
+                |s| s.prompt.is_some(),
+            );
+            std::thread::sleep(POLL * 5);
+            let _ = typing.send(String::new());
+            shown.is_ok()
+        });
+        let (outcome, seen) = follow_at_most(&printer, &Interrupt::new(), &mut prompts);
+        assert!(user.join().unwrap_or(false), "no prompt");
+        assert_eq!(outcome.last.0, JobStatus::Completed, "{:?}", seen.said);
+        let said = seen.said.join("\n");
+        assert!(said.contains("The printer asks:"), "{said}");
+        assert!(said.contains("[1] "), "{said}");
+        assert!(said.contains("answer at the printer"), "{said}");
+        assert!(said.contains("Answered "), "{said}");
+        // The progress line said what the printer waited for.
+        assert!(
+            seen.views
+                .iter()
+                .any(|v| v.text.contains("waiting for the user")),
+            "{:?}",
+            seen.views.last()
+        );
+        printer.disconnect();
     }
 
     #[test]

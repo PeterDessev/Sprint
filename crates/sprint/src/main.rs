@@ -15,6 +15,7 @@ mod console;
 mod headless;
 mod ports;
 mod print;
+mod prompts;
 mod send;
 mod sim;
 

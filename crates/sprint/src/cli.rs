@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use sprint_host::ConnectTarget;
 
 /// Sprint: a fast, modern 3D printer host.
@@ -111,6 +111,24 @@ pub struct PrintArgs {
     /// Do not show the progress line on stderr.
     #[arg(long)]
     pub no_progress: bool,
+    /// What to do when the printer asks the user something during the
+    /// print (a filament change, M0 "insert magnets"): ask shows the
+    /// question and reads the answer from standard input (or it is
+    /// answered at the printer), continue answers Continue at once.
+    #[arg(long, value_enum, value_name = "HOW", default_value_t = AnswerPrompts::Ask)]
+    pub answer_prompts: AnswerPrompts,
+}
+
+/// How `sprint print` answers the printer's questions.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+pub enum AnswerPrompts {
+    /// Show the question and read the answer (a button number, Enter for
+    /// the first) from standard input.
+    #[default]
+    Ask,
+    /// Press the button that lets the print go on (Continue, Resume) and
+    /// release a firmware waiting for the user (M108) at once.
+    Continue,
 }
 
 /// Options of `analyze`.
@@ -291,6 +309,7 @@ mod tests {
         );
         assert_eq!(p.start_line, None);
         assert!(!p.no_progress);
+        assert_eq!(p.answer_prompts, AnswerPrompts::Ask);
         let Ok(Command::Print(p)) = parse(&[
             "print",
             "a.gcode",
@@ -299,12 +318,15 @@ mod tests {
             "--start-line",
             "120",
             "--no-progress",
+            "--answer-prompts",
+            "continue",
         ]) else {
             panic!("print");
         };
         assert!(p.connect.is_simulator());
         assert_eq!(p.start_line, Some(120));
         assert!(p.no_progress);
+        assert_eq!(p.answer_prompts, AnswerPrompts::Continue);
         let Ok(Command::Send(s)) = parse(&["send", "--connect", "sim", "G28", "M105"]) else {
             panic!("send");
         };
@@ -377,6 +399,7 @@ mod tests {
             &["send", "--connect", "sim", "--timeout", "0", "G28"],
             &["print", "a.gcode", "-c", "sim", "--start-line", "0"],
             &["print", "a.gcode", "-c", "sim", "--start-line", "x"],
+            &["print", "a.gcode", "-c", "sim", "--answer-prompts", "maybe"],
             &["tui", "--connect", "COM3@fast"],
             &["sim", "--extruders", "0"],
             &["sim", "--extruders", "9"],
