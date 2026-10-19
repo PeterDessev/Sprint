@@ -32,6 +32,8 @@ const SLIDER_W: f32 = 78.0;
 const SCRUB_H: f32 = 44.0;
 /// Margin of the overlays from the view's edges.
 const EDGE: f32 = 12.0;
+/// Outer width of the file information card.
+const INFO_W: f32 = 282.0;
 
 /// Things the shell lends the viewer tab besides the [`AppCtx`].
 #[derive(Clone, Copy, Default)]
@@ -148,6 +150,29 @@ impl ViewerTab {
             v.set_view(preset);
         }
         self.prefs.layer_view = false;
+    }
+
+    /// Widen the shown layer range so the layer holding source `line` is
+    /// visible (a selection made outside the view), and drop a scrub that
+    /// would hide it. The view stops following the print.
+    pub fn reveal_line(&mut self, toolpath: &Toolpath, line: u32) {
+        let Some(layer) = layer_of_line(toolpath, line) else {
+            return;
+        };
+        let count = toolpath.layers.len();
+        let Some(v) = &mut self.viewer else {
+            return;
+        };
+        let Some((lo, hi)) = v.options().clamped_layer_range(count) else {
+            return;
+        };
+        let range = (lo.min(layer), hi.max(layer));
+        let scrubbed_away = layer == range.1 && v.options().line_limit.is_some_and(|l| l < line);
+        if range != (lo, hi) || scrubbed_away {
+            v.options_mut().layer_range = range;
+            v.options_mut().line_limit = None;
+            self.ov.user_moved_layers(&mut self.prefs);
+        }
     }
 
     /// Fit the camera to the toolpath.
@@ -338,14 +363,16 @@ impl ViewerTab {
         }
         if self.prefs.show_file_info {
             let right = slider_rect.left() - EDGE * 0.5;
+            // Right-aligned by position: a right-aligned layout would let
+            // the grid inside stretch the card to the left edge.
             let info_rect = Rect::from_min_max(
-                Pos2::new((right - 284.0).max(view.left() + EDGE), view.top() + EDGE),
+                Pos2::new((right - INFO_W).max(view.left() + EDGE), view.top() + EDGE),
                 Pos2::new(right, scrub_rect.top() - EDGE),
             );
             let mut info_ui = ui.new_child(
                 UiBuilder::new()
                     .max_rect(info_rect)
-                    .layout(Layout::top_down(Align::Max)),
+                    .layout(Layout::top_down(Align::Min)),
             );
             file_info_card(&mut info_ui, file, &toolpath, extras.thumbnail, &p);
         }
