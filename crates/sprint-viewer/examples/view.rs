@@ -10,9 +10,9 @@
 //!
 //! Left panel: data set, color mode, style, view mode and presets, layer
 //! range, scrubbing, progress (with solid or translucent ghosts), highlight,
-//! overlays, level of detail and the legend. Drag with the left button to orbit, right/middle (or Shift+left)
-//! to pan, wheel to zoom towards the cursor, double-click to focus, keys
-//! 0-6 for presets and Z to fit.
+//! overlays, level of detail and the legend. Drag with the left button to
+//! orbit, right/middle (or Shift+left) to pan, wheel to zoom towards the
+//! cursor, double-click to focus, keys 0-6 for presets and Z to fit.
 //!
 //! Set `SPRINT_VIEW_FRAMES=<n>` to close the window automatically after `n`
 //! frames (smoke test); with `SPRINT_VIEW_SCREENSHOT=<file.png>` a
