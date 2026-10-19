@@ -102,6 +102,17 @@ impl<A> ActionResponse<A> {
     }
 }
 
+/// An id for a widget's state or interaction, derived from `salt` and the
+/// *unique* id of the parent `Ui`.
+///
+/// `Ui::make_persistent_id` uses the parent's *stable* id, which sibling
+/// `Ui`s can share (e.g. the columns of `ui.columns`), so two copies of a
+/// widget in neighbouring columns would clash. The unique id is stable as
+/// long as the widget hierarchy is.
+pub(crate) fn widget_id(ui: &Ui, salt: impl std::hash::Hash + std::fmt::Debug) -> egui::Id {
+    ui.unique_id().with(salt)
+}
+
 /// Font for an icon glyph: the Phosphor-only family when Sprint's fonts are
 /// installed (best vertical centering), else the proportional family (so a
 /// missing family can never panic).

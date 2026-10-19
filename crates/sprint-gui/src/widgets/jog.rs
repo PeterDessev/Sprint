@@ -491,7 +491,7 @@ impl JogPad {
         self
     }
 
-    /// Id salt, when several pads share a parent.
+    /// A stable id salt (by default the id follows the position in the parent).
     pub fn id_salt(mut self, salt: impl std::hash::Hash + std::fmt::Debug) -> Self {
         self.id_salt = Some(Id::new(salt));
         self
@@ -526,7 +526,7 @@ impl JogPad {
         let (rect, response) = match self.id_salt {
             Some(salt) => {
                 let (rect, _) = ui.allocate_exact_size(Vec2::splat(self.size), Sense::hover());
-                let id = ui.make_persistent_id(salt);
+                let id = super::widget_id(ui, salt);
                 (rect, ui.interact(rect, id, Sense::click()))
             }
             None => ui.allocate_exact_size(Vec2::splat(self.size), Sense::click()),
@@ -793,7 +793,7 @@ impl ZJog {
         self
     }
 
-    /// Id salt, when several strips share a parent.
+    /// A stable id salt (by default the id follows the position in the parent).
     pub fn id_salt(mut self, salt: impl std::hash::Hash + std::fmt::Debug) -> Self {
         self.id_salt = Some(Id::new(salt));
         self
@@ -812,10 +812,10 @@ impl ZJog {
     pub fn show(self, ui: &mut Ui) -> ActionResponse<JogAction> {
         let cells = self.cells();
         let gap = 3.0;
-        let (rect, _) = ui.allocate_exact_size(vec2(self.width, self.height), Sense::hover());
+        let (rect, alloc) = ui.allocate_exact_size(vec2(self.width, self.height), Sense::hover());
         let base = match self.id_salt {
-            Some(salt) => ui.make_persistent_id(salt),
-            None => ui.make_persistent_id(("sprint-zjog", self.axis.letter())),
+            Some(salt) => super::widget_id(ui, salt),
+            None => alloc.id,
         };
         // The home cell is a little taller.
         let weights: Vec<f32> = cells

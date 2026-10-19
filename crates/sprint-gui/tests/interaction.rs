@@ -521,3 +521,70 @@ fn heatmap_reports_clicked_cell_with_row_zero_at_bottom() {
     assert_eq!((clicks[2].0, clicks[2].1), (1, 1));
     assert!(clicks[2].2.is_nan());
 }
+
+#[test]
+fn widgets_in_sibling_columns_do_not_share_ids() {
+    // `ui.columns` children share a stable id; widgets must still be
+    // independent (a clash would make one click hit both copies).
+    let mut h = harness_state(
+        Theme::Dark,
+        (720.0, 420.0),
+        (Vec::new(), Vec::new()),
+        |ui, (jogs, temps)| {
+            ui.columns(2, |cols| {
+                for (i, col) in cols.iter_mut().enumerate() {
+                    if let Some(a) = ZJog::new().height(200.0).show(col).action {
+                        jogs.push((i, a));
+                    }
+                    let r = TemperatureCard::new("Hotend", sprint_gui::theme::HeaterKind::Hotend)
+                        .current(20.0)
+                        .target(0.0)
+                        .show(col);
+                    if let Some(a) = r.action {
+                        temps.push((i, a));
+                    }
+                }
+            });
+        },
+    );
+    let nodes: Vec<egui::Rect> = h
+        .get_all_by_label("Move Z +10 mm")
+        .map(|n| n.rect())
+        .collect();
+    assert_eq!(nodes.len(), 2);
+    let right = nodes
+        .iter()
+        .copied()
+        .max_by(|a, b| a.min.x.total_cmp(&b.min.x));
+    if let Some(right) = right {
+        click_at(&mut h, right.center());
+    }
+    assert_eq!(
+        h.state().0,
+        vec![(
+            1,
+            JogAction::Move {
+                axis: Axis::Z,
+                distance: 10.0
+            }
+        )]
+    );
+    // Typing into the left card's target only affects the left card.
+    let edits: Vec<egui::Rect> = h
+        .get_all_by_role(egui::accesskit::Role::TextInput)
+        .map(|n| n.rect())
+        .collect();
+    assert_eq!(edits.len(), 2);
+    let left = edits
+        .iter()
+        .copied()
+        .min_by(|a, b| a.min.x.total_cmp(&b.min.x));
+    if let Some(left) = left {
+        click_at(&mut h, left.center());
+    }
+    h.event(egui::Event::Text("200".to_owned()));
+    h.run_ok();
+    h.key_press(egui::Key::Enter);
+    h.run_ok();
+    assert_eq!(h.state().1, vec![(0, TemperatureAction::SetTarget(200.0))]);
+}

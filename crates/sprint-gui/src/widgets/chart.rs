@@ -735,7 +735,7 @@ fn hover_readout(
         egui::Tooltip::always_open(
             ui.ctx().clone(),
             ui.layer_id(),
-            ui.id().with("chart-readout"),
+            super::widget_id(ui, "chart-readout"),
             egui::PopupAnchor::Pointer,
         )
         .gap(12.0)

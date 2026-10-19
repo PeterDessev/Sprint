@@ -233,7 +233,8 @@ impl<'a> TemperatureCard<'a> {
         self
     }
 
-    /// Id salt (defaults to the name; set it when two heaters share one).
+    /// Id salt (defaults to the name; set it when two cards in the same
+    /// parent share a name).
     pub fn id_salt(mut self, salt: impl std::hash::Hash + std::fmt::Debug) -> Self {
         self.id_salt = Some(Id::new(salt));
         self
@@ -247,7 +248,8 @@ impl<'a> TemperatureCard<'a> {
     /// Show the card.
     pub fn show(self, ui: &mut Ui) -> ActionResponse<TemperatureAction> {
         let p = theme::ui_palette(ui);
-        let id = ui.make_persistent_id(
+        let id = super::widget_id(
+            ui,
             self.id_salt
                 .unwrap_or_else(|| Id::new(("sprint-temperature", self.name))),
         );

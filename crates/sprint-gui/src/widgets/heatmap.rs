@@ -224,7 +224,7 @@ impl<'a> Heatmap<'a> {
         self
     }
 
-    /// Id salt, when several heatmaps share a parent.
+    /// A stable id salt (by default the id follows the position in the parent).
     pub fn id_salt(mut self, salt: impl std::hash::Hash + std::fmt::Debug) -> Self {
         self.id_salt = Some(Id::new(salt));
         self
@@ -298,15 +298,15 @@ impl<'a> Heatmap<'a> {
         let avail = (ui.available_width() - gutter_left).max(cols as f32 * 4.0);
         let cell = (avail / cols as f32).clamp(4.0, self.max_cell);
         let grid_size = vec2(cell * cols as f32, cell * rows as f32);
-        let (outer, _) = ui.allocate_exact_size(
+        let (outer, alloc) = ui.allocate_exact_size(
             vec2(gutter_left + grid_size.x, grid_size.y + gutter_bottom),
             Sense::hover(),
         );
         let grid_rect =
             Rect::from_min_size(pos2(outer.min.x + gutter_left, outer.min.y), grid_size);
         let id = match self.id_salt {
-            Some(salt) => ui.make_persistent_id(salt),
-            None => ui.make_persistent_id(("sprint-heatmap", rows, cols)),
+            Some(salt) => super::widget_id(ui, salt),
+            None => alloc.id.with("cells"),
         };
         let response = ui.interact(grid_rect, id, Sense::click());
         response.widget_info(|| WidgetInfo::labeled(WidgetType::Other, true, "heatmap"));

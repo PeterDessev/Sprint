@@ -165,7 +165,7 @@ impl<'a, T: PartialEq + Clone, S: AsRef<str>> SegmentedControl<'a, T, S> {
         self
     }
 
-    /// Id salt (needed when two controls share options).
+    /// A stable id salt (by default the id follows the position in the parent).
     pub fn id_salt(mut self, salt: impl std::hash::Hash + std::fmt::Debug) -> Self {
         self.id_salt = Some(Id::new(salt));
         self
@@ -200,7 +200,7 @@ impl<T: PartialEq + Clone, S: AsRef<str>> Widget for SegmentedControl<'_, T, S> 
         let width = seg_w * n as f32 + 2.0 * pad;
         let id = self
             .id_salt
-            .map_or_else(|| ui.next_auto_id(), |salt| ui.make_persistent_id(salt));
+            .map_or_else(|| ui.next_auto_id(), |salt| super::widget_id(ui, salt));
         let (rect, mut response) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
         let p = theme::ui_palette(ui);
         let selected = self.options.iter().position(|(v, _)| *v == *self.value);

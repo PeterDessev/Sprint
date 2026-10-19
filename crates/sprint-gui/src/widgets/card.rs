@@ -112,7 +112,8 @@ impl<'a> Card<'a> {
         self
     }
 
-    /// Id salt for the collapsed state (defaults to the title).
+    /// Id salt for the collapsed state (defaults to the title; set it when
+    /// two collapsible cards in the same parent share a title).
     pub fn id_salt(mut self, salt: impl std::hash::Hash + std::fmt::Debug) -> Self {
         self.id_salt = Some(Id::new(salt));
         self
@@ -161,7 +162,7 @@ impl<'a> Card<'a> {
             };
         };
         let p = theme::ui_palette(ui);
-        let id = ui.make_persistent_id(self.id_salt.unwrap_or_else(|| Id::new(self.title)));
+        let id = super::widget_id(ui, self.id_salt.unwrap_or_else(|| Id::new(self.title)));
         self.frame(&p).show(ui, |ui| {
             if self.fill_width {
                 ui.set_min_width(ui.available_width());
@@ -290,7 +291,11 @@ fn header_row(
             rect.max.y,
         ),
     );
-    let response = ui.interact(click_rect, ui.id().with(("card-header", card.title)), sense);
+    let response = ui.interact(
+        click_rect,
+        super::widget_id(ui, ("card-header", card.title)),
+        sense,
+    );
     if openness.is_some() {
         response.widget_info(|| {
             WidgetInfo::labeled(WidgetType::CollapsingHeader, ui.is_enabled(), card.title)
