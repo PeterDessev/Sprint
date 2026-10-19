@@ -85,10 +85,17 @@ pub fn run(args: &SimArgs) -> Result<()> {
     }
     let _ = out.flush();
     drop(out);
-    // The server runs on its own thread until the process ends.
-    loop {
-        std::thread::park();
-    }
+    serve(&server)
+}
+
+/// Wait while `server` serves: until the process is stopped, or until its
+/// accept loop ends. A listener that failed is an error (the process
+/// would otherwise sit there serving nothing); a server that was stopped
+/// ends quietly.
+fn serve(server: &SimServer) -> Result<()> {
+    server
+        .wait()
+        .with_context(|| format!("the virtual printer on {} stopped", server.local_addr()))
 }
 
 #[cfg(test)]
@@ -141,6 +148,22 @@ mod tests {
         // A blank name keeps the default.
         let c = config(&args(&["--name", "  "]));
         assert_eq!(c.machine_name, SimConfig::default().machine_name);
+    }
+
+    #[test]
+    fn serving_ends_when_the_server_stops() {
+        let server = SimServer::bind("127.0.0.1:0", SimConfig::default()).expect("bind");
+        assert!(!server.is_finished());
+        let server = std::sync::Arc::new(server);
+        let stopper = std::sync::Arc::clone(&server);
+        let thread = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            stopper.stop();
+        });
+        // Stopped on purpose: not an error, and the wait returns.
+        serve(&server).expect("stopped");
+        assert!(server.is_finished());
+        let _ = thread.join();
     }
 
     #[test]
