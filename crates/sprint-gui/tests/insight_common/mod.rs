@@ -472,6 +472,16 @@ pub fn demo_state() -> PrinterState {
     }
 }
 
+/// `state` from firmware built without EEPROM (`Cap:EEPROM:0`).
+pub fn without_eeprom(mut state: PrinterState) -> PrinterState {
+    for (name, on) in &mut state.capabilities {
+        if name == "EEPROM" {
+            *on = false;
+        }
+    }
+    state
+}
+
 /// Labelled widgets that reach past `width` (the right edge of the
 /// window), as "label (right edge)": content wider than the tab is cut off.
 pub fn overflowing<S>(h: &Harness<'_, S>, width: f32) -> Vec<String> {

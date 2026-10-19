@@ -250,6 +250,22 @@ fn leveling_stays_put_during_a_job() {
 }
 
 #[test]
+fn saving_needs_an_eeprom() {
+    let h = tab(Theme::Dark, (1180.0, 1060.0), without_eeprom(demo_state()));
+    assert!(
+        h.get_by_label("Save to EEPROM")
+            .accesskit_node()
+            .is_disabled()
+    );
+    let h = tab(Theme::Dark, (1180.0, 1060.0), demo_state());
+    assert!(
+        !h.get_by_label("Save to EEPROM")
+            .accesskit_node()
+            .is_disabled()
+    );
+}
+
+#[test]
 fn odd_meshes_never_panic() {
     let meshes = vec![
         BedMesh::from_rows(vec![vec![0.1]], "bilinear"),

@@ -218,6 +218,39 @@ fn reverting_a_staged_setting_drops_it() {
 }
 
 #[test]
+fn firmware_without_eeprom_offers_no_saving() {
+    let mut h = harness_state(
+        Theme::Dark,
+        (1180.0, 900.0),
+        Host::<TuningTab>::synthetic(without_eeprom(demo_state())),
+        |ui, host| host.frame(ui),
+    );
+    h.run_ok();
+    // M500 and M501 do nothing there: no "saved" toast that is not true.
+    for label in ["Save to EEPROM", "Load from EEPROM"] {
+        assert!(
+            h.get_by_label(label).accesskit_node().is_disabled(),
+            "{label}"
+        );
+    }
+    assert!(
+        !h.get_by_label("Factory reset")
+            .accesskit_node()
+            .is_disabled()
+    );
+    assert!(h.query_by_label("No EEPROM").is_some());
+    // Firmware with EEPROM keeps the buttons.
+    h.state_mut().state = Some(demo_state());
+    h.run_ok();
+    assert!(
+        !h.get_by_label("Save to EEPROM")
+            .accesskit_node()
+            .is_disabled()
+    );
+    assert!(h.query_by_label("No EEPROM").is_none());
+}
+
+#[test]
 fn tuning_tab_warns_during_a_job() {
     let mut state = demo_state();
     let mut job =

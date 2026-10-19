@@ -435,6 +435,21 @@ pub(crate) fn dot_label(ui: &mut Ui, color: Color32, text: &str, strong: bool) -
     response
 }
 
+/// Why the EEPROM buttons are disabled on firmware without one.
+pub(crate) const NO_EEPROM: &str = concat!(
+    "The firmware reports no EEPROM (Cap:EEPROM:0): settings cannot be saved and ",
+    "last until the printer restarts.",
+);
+
+/// The firmware said it has no EEPROM (`Cap:EEPROM:0`); M500 and M501 do
+/// nothing there. Firmware that does not report it counts as having one.
+pub(crate) fn lacks_eeprom(state: &sprint_host::PrinterState) -> bool {
+    state
+        .capabilities
+        .iter()
+        .any(|(name, on)| name.eq_ignore_ascii_case("EEPROM") && !on)
+}
+
 /// Tells connections apart, for work done once per connection (loading
 /// the settings, the mesh, the file list). A tab only runs while it is
 /// shown, so it may never see the printer disconnected between two

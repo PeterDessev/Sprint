@@ -28,6 +28,10 @@ use crate::widgets::{
 /// Shown for firmware without M503 (Klipper).
 const NO_M503_HELP: &str = "This firmware keeps its configuration in a file (Klipper: \
      printer.cfg) and does not report settings with M503.";
+/// Shown for firmware without EEPROM.
+const NO_EEPROM_HELP: &str = "The firmware was built without EEPROM support: applied \
+     settings last until the printer restarts. To keep them, put them in the firmware's \
+     configuration or the slicer's start G-code.";
 /// Width of the category list.
 const LIST_WIDTH: f32 = 196.0;
 /// Below this width the category list is hidden.
@@ -118,6 +122,17 @@ impl TuningTab {
                 icons::WARNING,
                 "A job is running",
                 Some("Applied changes take effect immediately and affect the print in progress."),
+                None,
+            );
+            ui.add_space(theme::GAP);
+        }
+        if kit::lacks_eeprom(ctx.state) {
+            kit::notice(
+                ui,
+                Tone::Info,
+                icons::INFO,
+                "No EEPROM",
+                Some(NO_EEPROM_HELP),
                 None,
             );
             ui.add_space(theme::GAP);
@@ -264,6 +279,7 @@ impl TuningTab {
             format!("{n} settings reported by the firmware")
         };
         let mut confirm = None;
+        let no_eeprom = kit::lacks_eeprom(ctx.state);
         // Narrow tabs get icon buttons so the title keeps its room.
         let compact = ui.available_width() < 780.0;
         kit::page_header(ui, icons::TUNING, "Tuning", Some(&subtitle), |ui| {
@@ -289,14 +305,16 @@ impl TuningTab {
                     ),
                 ];
                 for (which, label, icon, tip) in actions {
-                    let clicked = if compact {
+                    // M502 works without EEPROM; M500 and M501 do not.
+                    let enabled = which == Confirm::FactoryReset || !no_eeprom;
+                    let response = if compact {
                         let button = IconButton::new(icon).tooltip(format!("{label} ({tip})"));
                         let button = match which {
                             Confirm::Save => button.primary(),
                             Confirm::FactoryReset => button.ghost(),
                             Confirm::Load => button,
                         };
-                        ui.add(button).clicked()
+                        ui.add_enabled(enabled, button)
                     } else {
                         let button = ActionButton::new(label).icon(icon).tooltip(tip);
                         let button = match which {
@@ -304,9 +322,9 @@ impl TuningTab {
                             Confirm::FactoryReset => button.ghost(),
                             Confirm::Load => button,
                         };
-                        ui.add(button).clicked()
+                        ui.add_enabled(enabled, button)
                     };
-                    if clicked {
+                    if response.on_disabled_hover_text(kit::NO_EEPROM).clicked() {
                         confirm = Some(which);
                     }
                 }
@@ -652,7 +670,11 @@ impl TuningTab {
                     changes.len(),
                     if changes.len() == 1 { "" } else { "s" }
                 ))
-                .message("Active until the next restart. Save to EEPROM to keep them.");
+                .message(if kit::lacks_eeprom(ctx.state) {
+                    "Active until the printer restarts (it has no EEPROM)."
+                } else {
+                    "Active until the next restart. Save to EEPROM to keep them."
+                });
             self.show_changes = false;
         }
     }
@@ -723,7 +745,11 @@ impl TuningTab {
                         Confirm::FactoryReset => {
                             ctx.printer.factory_reset_settings();
                             ctx.toasts.warning("Factory defaults active").message(
-                                "Save to EEPROM to keep them, or load from EEPROM to undo.",
+                                if kit::lacks_eeprom(ctx.state) {
+                                    "They last until the printer restarts."
+                                } else {
+                                    "Save to EEPROM to keep them, or load from EEPROM to undo."
+                                },
                             );
                         }
                     }

@@ -207,11 +207,12 @@ impl ZOffsetWizard {
                     }
                     if ui
                         .add_enabled(
-                            connected,
+                            connected && !kit::lacks_eeprom(state),
                             ActionButton::new("Save to EEPROM")
                                 .icon(icons::SAVE)
                                 .tooltip("M500: keep the offset after a restart"),
                         )
+                        .on_disabled_hover_text(kit::NO_EEPROM)
                         .clicked()
                     {
                         ctx.printer.save_settings();

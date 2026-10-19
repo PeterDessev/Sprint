@@ -410,7 +410,16 @@ impl EstepsWizard {
                         .icon(icons::SAVE)
                         .tooltip("M500: keep the new steps/mm after a restart");
                     let save = if applied { save.primary() } else { save };
-                    if ui.add_enabled(connected && applied, save).clicked() {
+                    let no_eeprom = kit::lacks_eeprom(ctx.state);
+                    if ui
+                        .add_enabled(connected && applied && !no_eeprom, save)
+                        .on_disabled_hover_text(if no_eeprom {
+                            kit::NO_EEPROM
+                        } else {
+                            "Apply the new steps/mm first"
+                        })
+                        .clicked()
+                    {
                         ctx.printer.save_settings();
                         ctx.toasts.success("E-steps saved to EEPROM");
                     }

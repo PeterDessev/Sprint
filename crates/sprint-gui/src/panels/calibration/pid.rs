@@ -405,7 +405,16 @@ impl PidWizard {
                         } else {
                             save_button
                         };
-                        if ui.add_enabled(connected && applied, save_button).clicked() {
+                        let no_eeprom = kit::lacks_eeprom(state);
+                        if ui
+                            .add_enabled(connected && applied && !no_eeprom, save_button)
+                            .on_disabled_hover_text(if no_eeprom {
+                                kit::NO_EEPROM
+                            } else {
+                                "Apply the gains first"
+                            })
+                            .clicked()
+                        {
                             save = true;
                         }
                     });

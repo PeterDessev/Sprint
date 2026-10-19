@@ -372,6 +372,34 @@ fn applying_the_home_offset_takes_the_babystep_back() {
 }
 
 #[test]
+fn wizards_do_not_save_without_eeprom() {
+    let save_disabled = |h: &H<'_>| {
+        h.get_by_label("Save to EEPROM")
+            .accesskit_node()
+            .is_disabled()
+    };
+    for (state, disabled) in [(without_eeprom(demo_state()), true), (demo_state(), false)] {
+        let mut h = tab(Theme::Dark, (1100.0, 900.0), Some(state.clone()), None);
+        h.get_by_label("Z offset").click();
+        h.run_ok();
+        assert_eq!(save_disabled(&h), disabled, "Z offset");
+        // A finished autotune whose gains are in use.
+        let mut tuned = state;
+        tuned.autotune = Some(AutotuneState {
+            heater: Heater::Hotend(0),
+            target: 210.0,
+            cycles: 8,
+            running: false,
+            result: Some((22.2, 1.08, 114.0)),
+            error: None,
+        });
+        let h = tab(Theme::Dark, (1100.0, 900.0), Some(tuned), None);
+        assert!(h.query_by_label("ACTIVE").is_some());
+        assert_eq!(save_disabled(&h), disabled, "PID");
+    }
+}
+
+#[test]
 fn every_wizard_fits_a_narrow_tab() {
     let width = 420.0;
     let mut h = tab(Theme::Dark, (width, 1100.0), Some(demo_state()), None);
