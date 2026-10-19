@@ -210,6 +210,8 @@ fn start_print_dialog() {
     let dialog = h.state_mut().start_print_dialog_mut().expect("dialog");
     dialog.set_mode(sprint_gui::dialogs::StartMode::Layer);
     dialog.set_layer(12);
+    // A pause to swap the filament further up.
+    dialog.set_pause_layer(Some(40));
     settle(&mut h);
     snapshot(&mut h, "app_start_print");
 }

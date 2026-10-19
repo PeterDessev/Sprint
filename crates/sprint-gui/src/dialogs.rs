@@ -1,6 +1,7 @@
 //! The shell's dialogs: start print (from the beginning, a layer or a
-//! line, with an editable resume preamble), the firmware's host prompts,
-//! the halted banner, about and keyboard shortcuts.
+//! line, with an editable resume preamble, a pause before a layer and M73
+//! progress), the firmware's host prompts, the halted banner, about and
+//! keyboard shortcuts.
 
 use std::sync::Arc;
 
@@ -102,6 +103,8 @@ pub struct StartPrintDialog {
     pending: Option<PendingPreamble>,
     edited: bool,
     emit_m73: bool,
+    /// Pause (with the pause script) before this layer.
+    pause_layer: Option<usize>,
     error: Option<String>,
 }
 
@@ -132,8 +135,63 @@ impl StartPrintDialog {
             pending: None,
             edited: false,
             emit_m73: false,
+            pause_layer: None,
             error: None,
         }
+    }
+
+    /// Send M73 progress or not to start with: the profile's
+    /// `emit_progress` (the user can still change it here).
+    #[must_use]
+    pub fn with_emit_progress(mut self, on: bool) -> StartPrintDialog {
+        self.emit_m73 = on;
+        self
+    }
+
+    /// Whether M73 progress will be sent.
+    pub fn emit_progress(&self) -> bool {
+        self.emit_m73
+    }
+
+    /// Pause before `layer` (`None`: do not pause).
+    pub fn set_pause_layer(&mut self, layer: Option<usize>) {
+        self.pause_layer = layer;
+    }
+
+    /// The layers a pause can come before when the print starts at
+    /// `start_line`: every layer that starts after it.
+    pub fn pausable_layers(toolpath: &Toolpath, start_line: usize) -> std::ops::Range<usize> {
+        let first = toolpath
+            .layers
+            .partition_point(|l| (l.lines.start as usize) <= start_line);
+        first..toolpath.layers.len()
+    }
+
+    /// The 0-based file line the print pauses before (the first line of
+    /// the chosen layer), when that layer comes after the start.
+    pub fn pause_line(&self, toolpath: Option<&Toolpath>) -> Option<usize> {
+        let tp = toolpath?;
+        let layer = self.pause_layer?;
+        let start = self.start_line(Some(tp));
+        Self::pausable_layers(tp, start)
+            .contains(&layer)
+            .then(|| tp.layers.get(layer).map(|l| l.lines.start as usize))
+            .flatten()
+    }
+
+    /// Why the chosen start point cannot be used, if it cannot: a layer
+    /// that does not start on a line of its own (a command climbing
+    /// through several layers, see [`Toolpath::layer_starts_cleanly`]).
+    pub fn start_blocker(&self, toolpath: Option<&Toolpath>) -> Option<String> {
+        let tp = toolpath?;
+        if self.mode != StartMode::Layer || self.layer == 0 || tp.layer_starts_cleanly(self.layer) {
+            return None;
+        }
+        Some(format!(
+            "Layer {} does not start on a line of its own: a command that climbs through \
+             several layers would print again from its bottom.",
+            self.layer + 1
+        ))
     }
 
     /// Whether the dialog was opened for `file` (and not for a file that
@@ -247,6 +305,11 @@ impl StartPrintDialog {
             self.error = Some(reason.to_owned());
             return false;
         }
+        if let Some(reason) = self.start_blocker(file.toolpath.as_deref()) {
+            self.error = Some(reason);
+            return false;
+        }
+        let pause_line = self.pause_line(file.toolpath.as_deref());
         self.refresh_preamble(file);
         let start_line = self.start_line(file.toolpath.as_deref());
         let profile = ctx.config.active();
@@ -265,16 +328,19 @@ impl StartPrintDialog {
         };
         match ctx.printer.start_print(Arc::clone(&file.file), options) {
             Ok(()) => {
-                let name = format::sanitize(file.file.name(), 60);
-                let toast = ctx.toasts.success("Print started");
-                if start_line > 0 {
-                    toast.message(format!(
-                        "{name} from line {}",
-                        format::count(start_line as u64 + 1)
-                    ));
-                } else {
-                    toast.message(name);
+                if let Some(line) = pause_line {
+                    ctx.printer.pause_at_lines(&[line]);
                 }
+                let name = format::sanitize(file.file.name(), 60);
+                let mut text = if start_line > 0 {
+                    format!("{name} from line {}", format::count(start_line as u64 + 1))
+                } else {
+                    name
+                };
+                if let Some(layer) = self.pause_layer.filter(|_| pause_line.is_some()) {
+                    text.push_str(&format!(", pausing before layer {}", layer + 1));
+                }
+                ctx.toasts.success("Print started").message(text);
                 true
             }
             Err(e) => {
@@ -313,10 +379,15 @@ impl StartPrintDialog {
                     .max_height(body_max)
                     .auto_shrink([false, true])
                     .show(ui, |ui| self.body(ui, file, toolpath.as_deref(), &p));
-                let blocker = print_blocker(ctx.state, Some(&file.file)).or_else(|| {
-                    (self.is_preparing() && self.start_line(toolpath.as_deref()) > 0)
-                        .then_some("Preparing the resume preamble…")
-                });
+                let layer_blocker = self.start_blocker(toolpath.as_deref());
+                let blocker = print_blocker(ctx.state, Some(&file.file))
+                    .or(layer_blocker
+                        .as_ref()
+                        .map(|_| "Pick a layer that starts cleanly"))
+                    .or_else(|| {
+                        (self.is_preparing() && self.start_line(toolpath.as_deref()) > 0)
+                            .then_some("Preparing the resume preamble…")
+                    });
                 ui.add_space(4.0);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let start = ui
@@ -381,8 +452,14 @@ impl StartPrintDialog {
         if self.start_line(toolpath) > 0 {
             self.preamble_editor(ui, file, p);
         }
+        if let Some(tp) = toolpath {
+            self.pause_point(ui, tp, p);
+        }
         ui.add(
             Toggle::new(&mut self.emit_m73).label("Show progress on the printer's display (M73)"),
+        )
+        .on_hover_text(
+            "M73 P<percent> R<minutes> as the print goes on (the profile sets the default)",
         );
         if let Some(error) = &self.error {
             ui.label(RichText::new(icons::with_text(icons::ERROR, error)).color(p.danger));
@@ -426,6 +503,36 @@ impl StartPrintDialog {
                         .color(p.text_dim),
                     );
                 }
+                if let Some(reason) = self.start_blocker(Some(tp)) {
+                    ui.label(
+                        RichText::new(icons::with_text(icons::WARNING, &reason))
+                            .size(12.5)
+                            .color(p.warning),
+                    );
+                    match tp.next_clean_layer(self.layer) {
+                        Some(next) => {
+                            if ui
+                                .add(
+                                    ActionButton::new(&format!(
+                                        "Start at layer {} instead",
+                                        next + 1
+                                    ))
+                                    .small(),
+                                )
+                                .clicked()
+                            {
+                                self.layer = next;
+                            }
+                        }
+                        None => {
+                            ui.label(
+                                RichText::new("No later layer starts cleanly: start from a line.")
+                                    .size(12.5)
+                                    .color(p.text_dim),
+                            );
+                        }
+                    }
+                }
             }
             StartMode::Line => {
                 ui.horizontal(|ui| {
@@ -460,6 +567,48 @@ impl StartPrintDialog {
                 }
                 ui.label(RichText::new(info).size(12.5).monospace().color(p.text_dim));
             }
+        }
+    }
+
+    /// "Pause before layer N": the pause script runs there (to swap the
+    /// filament or drop in a nut), the print goes on with Resume.
+    fn pause_point(&mut self, ui: &mut Ui, tp: &Toolpath, p: &Palette) {
+        let start = self.start_line(Some(tp));
+        let layers = Self::pausable_layers(tp, start);
+        if layers.is_empty() {
+            self.pause_layer = None;
+            return;
+        }
+        let mut on = self.pause_layer.is_some();
+        ui.horizontal(|ui| {
+            ui.add(Toggle::new(&mut on).label("Pause before a layer"))
+                .on_hover_text(
+                    "Runs the pause script before the layer's first line (to change the \
+                     filament or insert a part); Resume goes on",
+                );
+        });
+        if !on {
+            self.pause_layer = None;
+            return;
+        }
+        let (first, last) = (layers.start, layers.end - 1);
+        let mut shown = self.pause_layer.unwrap_or(first).clamp(first, last) + 1;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().slider_width = 300.0;
+            ui.add(egui::Slider::new(&mut shown, first + 1..=last + 1).text("layer"));
+        });
+        self.pause_layer = Some(shown - 1);
+        if let Some(layer) = tp.layers.get(shown - 1) {
+            ui.label(
+                RichText::new(format!(
+                    "Pauses at Z {} mm, before line {}, about {} into the print",
+                    format::mm(layer.z, 2),
+                    format::count(u64::from(layer.lines.start) + 1),
+                    format::duration(f64::from(layer.time_start))
+                ))
+                .size(12.5)
+                .color(p.text_dim),
+            );
         }
     }
 
@@ -932,6 +1081,56 @@ mod tests {
         d.refresh_preamble_in_background(&small, &ctx);
         assert!(!d.is_preparing());
         assert!(d.preamble().contains("G28"));
+    }
+
+    #[test]
+    fn m73_follows_the_profile_and_pauses_come_after_the_start() {
+        let file = loaded(TWO_LAYERS);
+        let tp = file.toolpath.as_deref();
+        let d = StartPrintDialog::new(0, &file);
+        assert!(!d.emit_progress());
+        let mut d = StartPrintDialog::new(0, &file).with_emit_progress(true);
+        assert!(d.emit_progress());
+        // Pausing before the second layer: its first line.
+        let second = tp
+            .and_then(|t| t.layers.get(1))
+            .map(|l| l.lines.start as usize);
+        assert_eq!(d.pause_line(tp), None);
+        d.set_pause_layer(Some(1));
+        assert_eq!(d.pause_line(tp), second);
+        // Not before the layer the print starts in, nor out of range.
+        d.set_mode(StartMode::Layer);
+        d.set_layer(1);
+        assert_eq!(d.pause_line(tp), None);
+        d.set_mode(StartMode::Beginning);
+        d.set_pause_layer(Some(7));
+        assert_eq!(d.pause_line(tp), None);
+        if let Some(t) = tp {
+            assert_eq!(StartPrintDialog::pausable_layers(t, 0), 1..t.layers.len());
+        }
+    }
+
+    #[test]
+    fn layers_that_do_not_start_cleanly_are_refused() {
+        let file = loaded(TWO_LAYERS);
+        let mut tp = file.toolpath.as_deref().cloned().expect("analyzed");
+        // A command climbing into layer 2: its segment before the layer
+        // has the layer's first line.
+        let start = tp.layers[1].segments.start;
+        let line = tp.layers[1].lines.start;
+        tp.segments[start - 1].line = line;
+        assert!(!tp.layer_starts_cleanly(1));
+        let mut d = StartPrintDialog::new(0, &file);
+        d.set_mode(StartMode::Layer);
+        d.set_layer(1);
+        let reason = d.start_blocker(Some(&tp)).expect("refused");
+        assert!(reason.starts_with("Layer 2 does not start"), "{reason}");
+        // Layer 1 always starts cleanly, and other modes are not checked.
+        d.set_layer(0);
+        assert_eq!(d.start_blocker(Some(&tp)), None);
+        d.set_layer(1);
+        d.set_mode(StartMode::Line);
+        assert_eq!(d.start_blocker(Some(&tp)), None);
     }
 
     #[test]

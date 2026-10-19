@@ -1291,7 +1291,8 @@ impl SprintApp {
                 .message(reason);
             return;
         }
-        let dialog = StartPrintDialog::new(start_line, file);
+        let dialog = StartPrintDialog::new(start_line, file)
+            .with_emit_progress(self.core.config.active().emit_progress);
         self.open_modal(Modal::StartPrint(Box::new(dialog)));
     }
 

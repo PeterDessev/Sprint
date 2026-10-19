@@ -370,3 +370,47 @@ fn no_prompt_is_shown_while_the_printer_is_halted() {
     settle(&mut h);
     assert!(h.query_by_label("The printer is asking").is_some());
 }
+
+#[test]
+fn a_print_pauses_before_the_layer_picked_in_the_start_dialog() {
+    let mut options = sim_options();
+    options.file = Some(app_support::sample("calibration-cube.gcode"));
+    // The profile asks for M73 progress on the printer's display.
+    options.config.profiles[0].emit_progress = true;
+    let mut h = app(options, WINDOW);
+    expect(&mut h, "the cube to be analyzed", analyzed);
+    connect(&mut h);
+    let layer_start = h
+        .state()
+        .file()
+        .and_then(|f| f.toolpath.as_ref())
+        .and_then(|tp| tp.layers.get(2))
+        .map(|l| l.lines.start as usize)
+        .expect("a third layer");
+    h.state_mut()
+        .push_action(AppAction::StartPrintDialog { start_line: 0 });
+    settle(&mut h);
+    let dialog = h.state_mut().start_print_dialog_mut().expect("dialog");
+    assert!(dialog.emit_progress(), "the profile's default");
+    dialog.set_pause_layer(Some(2));
+    settle(&mut h);
+    assert!(h.query_by_label("Pause before a layer").is_some());
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Start print")
+        .click();
+    expect(&mut h, "the pause before layer 3", |app| {
+        app.state()
+            .job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Paused)
+    });
+    let job = h.state().state().job.clone().expect("job");
+    assert!(
+        (layer_start.saturating_sub(1)..=layer_start).contains(&job.current_line),
+        "paused at line {} for a layer starting at {layer_start}",
+        job.current_line
+    );
+    assert!(
+        received(h.state()).iter().any(|c| c.starts_with("M73 P")),
+        "no M73 progress"
+    );
+}
