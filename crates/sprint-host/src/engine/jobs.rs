@@ -765,10 +765,54 @@ impl Engine {
         }
     }
 
-    /// Stop the job with an error.
+    /// Stop the job with an error. For failures where the printer stopped
+    /// on its own or cannot be reached (halt, reset, lost link); see
+    /// [`Engine::abandon_job`] when it keeps running.
     pub(super) fn fail_job(&mut self, reason: &str) {
         if self.job.as_ref().is_some_and(JobRuntime::is_active) {
             self.set_job_status(JobStatus::Failed(reason.to_string()), Instant::now());
+        }
+    }
+
+    /// The engine gives up on the job while the printer keeps running (a
+    /// line it keeps rejecting, a lost line counter, a quick stop): fail it
+    /// and leave the printer safe. A host print gets every heater and the
+    /// part fan switched off (unless the profile keeps them on); an SD
+    /// upload gets its file closed (M29). These commands go out after the
+    /// line counter reset, before anything else, and are written at once
+    /// if the connection is closed first.
+    pub(super) fn abandon_job(&mut self, reason: &str) {
+        let Some(job) = self.job.as_ref().filter(|j| j.is_active()) else {
+            return;
+        };
+        let kind = job.kind();
+        let machine = job.machine.clone();
+        self.fail_job(reason);
+        if self.halted || self.exit.is_some() {
+            return;
+        }
+        let lines = match kind {
+            JobKind::HostPrint => {
+                let profile = self.shared.profile.read().clone();
+                if profile.keep_heaters_on_failure {
+                    self.warn("The heaters stay on (the profile keeps them on after a failure)");
+                    return;
+                }
+                let temps = self.shared.state.read().temps.clone();
+                let mut lines = profile
+                    .script_context(&machine)
+                    .covering(&temps)
+                    .heaters_off();
+                lines.push("M107".to_string());
+                self.warn("Switching the heaters and the part fan off after the failed print");
+                lines
+            }
+            JobKind::SdUpload => vec!["M29".to_string()],
+            JobKind::SdPrint => Vec::new(),
+        };
+        for line in lines {
+            self.internal
+                .push_back(CmdMeta::new(line, Source::SafeStop));
         }
     }
 

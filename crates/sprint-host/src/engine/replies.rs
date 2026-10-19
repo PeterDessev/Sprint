@@ -243,9 +243,9 @@ impl Engine {
         self.shared
             .log(ConsoleKind::Error, message.clone(), false, None);
         self.shared.emit(Event::Error(message.clone()));
-        if self.job.is_some() {
-            self.fail_job(&message);
-        }
+        // The printer still runs: leave it safe (heaters off) after the
+        // counter reset.
+        self.abandon_job(&message);
         self.renumber_pending = true;
         let polls = |kind: PollKind, flow: &super::flow::Flow<Meta>| {
             flow.in_flight()

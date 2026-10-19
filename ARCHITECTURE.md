@@ -965,6 +965,7 @@ pub struct PrinterProfile {
     pub pause_script: String,            // templated, see script module
     pub resume_script: String,
     pub cancel_script: String,
+    pub keep_heaters_on_failure: bool,   // default false: a host print the engine gives up on gets every heater and the fan switched off
     pub kinematics: Option<KinematicLimits>, // None = defaults / from M503
 }
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -1122,7 +1123,10 @@ Every public item is also re-exported at the crate root.
   A request beyond the last line sent or for an acknowledged line (the
   firmware's counter changed) and a line rejected 16 times in a row drop the
   numbered lines in flight, fail the job and reset the counter (resending
-  could execute lines twice). `ok N<n>` acknowledges line n and every older
+  could execute lines twice). The printer still runs then, so a failed host
+  print gets `{heaters_off}` and `M107` right after the counter reset
+  (unless `PrinterProfile::keep_heaters_on_failure`), a failed upload `M29`;
+  a disconnect before they were sent writes them at once, unnumbered. `ok N<n>` acknowledges line n and every older
   in-flight command. Timeouts (no `ok`/`busy`/heat-wait report; homing,
   probing, heat waits, dwells and M600 get 6x `ok_timeout_secs`) and Marlin's
   `wait` with commands in flight release every in-flight command and send a

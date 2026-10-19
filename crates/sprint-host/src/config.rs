@@ -226,6 +226,12 @@ pub struct PrinterProfile {
     pub resume_script: String,
     /// Run when a host print is cancelled.
     pub cancel_script: String,
+    /// Leave the heaters on when a host print fails while the printer
+    /// still answers (a line it keeps rejecting, a lost line counter, a
+    /// quick stop). Default false: every heater and the part fan are
+    /// switched off, so an unattended print that fails does not keep the
+    /// hotend and bed hot.
+    pub keep_heaters_on_failure: bool,
     /// Motion limits for print-time estimation; `None` = defaults or the
     /// values reported by M503.
     #[serde(
@@ -263,6 +269,7 @@ impl Default for PrinterProfile {
             pause_script: DEFAULT_PAUSE_SCRIPT.to_string(),
             resume_script: DEFAULT_RESUME_SCRIPT.to_string(),
             cancel_script: DEFAULT_CANCEL_SCRIPT.to_string(),
+            keep_heaters_on_failure: false,
             kinematics: None,
         }
     }

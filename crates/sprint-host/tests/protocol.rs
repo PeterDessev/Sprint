@@ -479,6 +479,119 @@ fn advanced_ok_line_numbers_heal_lost_oks() {
     assert!(printer.with_state(|s| s.link.timeouts) <= 2);
 }
 
+/// A print the engine has to give up on: one M117 longer than the
+/// simulator's line buffer is rejected again and again.
+fn print_with_an_unsendable_line(printer: &Printer) -> JobStatus {
+    let mut text = String::from("M104 S200\nM140 S60\nG28\n");
+    for i in 0..50 {
+        text.push_str(&format!("G1 X{} F3000\n", i % 100));
+    }
+    text.push_str(&format!("M117 {}\n", "x".repeat(600)));
+    for i in 0..50 {
+        text.push_str(&format!("G1 Y{} F3000\n", i % 100));
+    }
+    printer
+        .start_print(
+            Arc::new(GcodeFile::from_text("unsendable.gcode", text)),
+            PrintOptions::default(),
+        )
+        .unwrap();
+    wait_for(printer, "the job to fail", |s| !s.job_active());
+    wait_idle(printer);
+    printer.with_state(|s| s.job.as_ref().unwrap().status.clone())
+}
+
+#[test]
+fn a_print_given_up_on_switches_the_heaters_off() {
+    // The printer keeps running after the host gives up on a print: it
+    // must not be left holding print temperatures.
+    let printer = connect(fast_sim(50.0), options());
+    let status = print_with_an_unsendable_line(&printer);
+    assert!(
+        matches!(&status, JobStatus::Failed(m) if m.contains("rejected")),
+        "{status:?}"
+    );
+    let snap = printer.sim_control().unwrap().snapshot();
+    assert_eq!(snap.hotend_targets, [0.0]);
+    assert_eq!(snap.bed_target, 0.0);
+    let got = printer.sim_control().unwrap().received_commands();
+    assert_eq!(&got[got.len() - 3..], ["M104 S0", "M140 S0", "M107"]);
+    // The link stays usable.
+    printer.send("M105");
+    wait_idle(&printer);
+}
+
+#[test]
+fn a_profile_can_keep_the_heaters_on_after_a_failure() {
+    let printer = connect(fast_sim(50.0), options());
+    printer.set_profile(sprint_host::PrinterProfile {
+        keep_heaters_on_failure: true,
+        ..sprint_host::PrinterProfile::default()
+    });
+    let status = print_with_an_unsendable_line(&printer);
+    assert!(matches!(status, JobStatus::Failed(_)), "{status:?}");
+    let snap = printer.sim_control().unwrap().snapshot();
+    assert_eq!(snap.hotend_targets, [200.0]);
+    assert_eq!(snap.bed_target, 60.0);
+}
+
+#[test]
+fn heaters_off_after_a_failure_survive_a_disconnect() {
+    // `sprint print` disconnects as soon as the job fails: the heaters-off
+    // commands still waiting for the line counter reset must go out.
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut fw = Mini::new(Arc::clone(&log));
+    let mut desynced = false;
+    let (link, _) = fake(
+        |out| out.line("start"),
+        move |line, out| {
+            if desynced {
+                // After the desync it only records what arrives.
+                fw.log.lock().unwrap().push(line.to_string());
+                return;
+            }
+            if command(line) == "G1 X3" {
+                desynced = true;
+                out.line("Resend: 999");
+                out.line("ok");
+                return;
+            }
+            if fw.accept(line, out).is_some() {
+                out.line("ok");
+            }
+        },
+    );
+    let printer = connect_fake(
+        link,
+        ConnectOptions {
+            query_on_connect: false,
+            temp_poll_secs: 0.0,
+            ..options()
+        },
+    );
+    wait_for(&printer, "connected", |s| s.is_connected());
+    let file = GcodeFile::from_text("f.gcode", "M104 S210\nG1 X1\nG1 X2\nG1 X3\nG1 X4\n");
+    printer
+        .start_print(Arc::new(file), PrintOptions::default())
+        .unwrap();
+    wait_for(&printer, "the job to fail", |s| !s.job_active());
+    // The counter reset is never acknowledged, so the heaters-off commands
+    // are still queued when the connection closes.
+    std::thread::sleep(Duration::from_millis(100));
+    printer.disconnect();
+    let deadline = Instant::now() + PATIENCE;
+    loop {
+        let got = log.lock().unwrap().clone();
+        if got.iter().any(|l| l == "M107") {
+            let tail: Vec<&str> = got.iter().rev().take(3).rev().map(String::as_str).collect();
+            assert_eq!(tail, ["M104 S0", "M140 S0", "M107"], "{got:?}");
+            break;
+        }
+        assert!(Instant::now() < deadline, "{got:?}");
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
 #[test]
 fn injected_fatal_errors_fail_the_job() {
     let sim = SimConfig {

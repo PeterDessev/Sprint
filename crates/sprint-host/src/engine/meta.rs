@@ -15,6 +15,10 @@ pub(crate) enum Source {
     Poll(PollKind),
     /// The `M105` sent after a timeout.
     Recovery,
+    /// Heaters off (or the SD file closed) after the engine gave up on a
+    /// job; written at once if the connection is closed before they were
+    /// sent.
+    SafeStop,
     /// Part of the current job.
     Job(JobLine),
 }

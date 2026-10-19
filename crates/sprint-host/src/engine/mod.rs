@@ -577,9 +577,26 @@ impl Engine {
                     .update(|s| s.last_error = Some(message.to_string()));
                 self.shared.emit(Event::Error(message.to_string()));
             }
-            _ => self.info(message),
+            _ => {
+                // The link still works: heaters-off commands queued after a
+                // failed print must not be lost to the disconnect.
+                self.flush_safe_stop();
+                self.info(message);
+            }
         }
         self.exit = Some(status);
+    }
+
+    /// Write the queued [`Source::SafeStop`] commands now, unnumbered and
+    /// without waiting for their `ok`s.
+    fn flush_safe_stop(&mut self) {
+        let (safe, rest): (VecDeque<Meta>, VecDeque<Meta>) = std::mem::take(&mut self.internal)
+            .into_iter()
+            .partition(|m| m.source == Source::SafeStop);
+        self.internal = rest;
+        for m in safe {
+            self.send_immediate(&m.text, Source::SafeStop);
+        }
     }
 
     fn link_lost(&mut self, reason: &str) {
