@@ -350,6 +350,109 @@ fn welcome_screens() {
     crate::snapshot::save(&buf, "tui-welcome-80x24");
 }
 
+/// Every dialog and the jog overlay, at sizes down to a single cell.
+#[test]
+fn dialogs_draw_at_any_size() {
+    use sprint_host::{HostPrompt, PortInfo, PrinterProfile, TempPreset};
+
+    let profile = PrinterProfile::default();
+    let port = PortInfo {
+        name: "COM7".into(),
+        description: "A rather long USB serial adapter description".into(),
+        vid: Some(0x1A86),
+        pid: Some(0x7523),
+        manufacturer: None,
+        serial_number: None,
+        likely_printer: true,
+    };
+    let modals: Vec<Box<dyn Fn() -> Modal>> = vec![
+        Box::new(|| Modal::Help { scroll: 3 }),
+        Box::new(move || {
+            Modal::Connect(dialogs::ConnectDialog::new(
+                vec![port.clone()],
+                true,
+                &profile,
+            ))
+        }),
+        Box::new(|| {
+            Modal::Open(dialogs::OpenDialog::new(
+                sample(""),
+                vec![sample("calibration-cube.gcode")],
+            ))
+        }),
+        Box::new(|| {
+            Modal::Temps(dialogs::TempDialog::new(
+                vec![
+                    (Heater::Hotend(0), 21.0, 215.0),
+                    (Heater::Hotend(1), f32::NAN, 0.0),
+                    (Heater::Bed, 60.0, 60.0),
+                ],
+                vec![TempPreset {
+                    name: "A very long preset name".into(),
+                    hotend: 999.0,
+                    bed: f32::INFINITY,
+                }],
+            ))
+        }),
+        Box::new(|| {
+            Modal::Confirm(dialogs::Confirm::new(
+                "Cancel the print?",
+                vec!["x".repeat(200), String::new()],
+                "Cancel print",
+                "Keep printing",
+                true,
+                dialogs::Action::CancelJob,
+            ))
+        }),
+        Box::new(|| {
+            let lines = (0..300)
+                .map(|i| ReportLine::plain(format!("line {i} {}", "w".repeat(i % 150))))
+                .collect();
+            let mut report = dialogs::ReportView::new("Report", lines);
+            report.scroll = usize::MAX;
+            report.pending = Some(dialogs::Pending::new(REPORT_TIMEOUT, false));
+            Modal::Report(report)
+        }),
+        Box::new(|| {
+            Modal::Prompt(dialogs::PromptDialog {
+                prompt: HostPrompt {
+                    message: "m".repeat(300),
+                    buttons: (0..9).map(|i| format!("Button {i}")).collect(),
+                },
+                selected: 8,
+            })
+        }),
+    ];
+    let mut app = printing_app();
+    let sizes = [
+        (1, 1),
+        (2, 2),
+        (10, 3),
+        (24, 8),
+        (36, 10),
+        (38, 12),
+        (40, 12),
+        (64, 15),
+        (80, 24),
+        (120, 40),
+    ];
+    for make in &modals {
+        for (w, h) in sizes {
+            app.modal = Some(make());
+            let _ = render(&mut app, w, h);
+        }
+    }
+    app.modal = None;
+    app.jog = Some(JOG_STEPS.len() - 1);
+    for (w, h) in sizes {
+        let _ = render(&mut app, w, h);
+    }
+    // Narrow terminals have no left column: the layer view starts at x 0.
+    for w in 30..=45 {
+        let _ = render(&mut app, w, 20);
+    }
+}
+
 #[test]
 fn any_size_draws_without_panicking() {
     let mut app = printing_app();

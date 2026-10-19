@@ -855,7 +855,8 @@ impl App {
         let step = JOG_STEPS[self.jog.unwrap_or(0).min(JOG_STEPS.len() - 1)];
         let canvas = self.canvas_area;
         let (w, h) = (36u16, 8u16);
-        if canvas.width < w || canvas.height < h {
+        // Inside the layer view's border.
+        if canvas.width < w + 2 || canvas.height < h + 2 {
             return;
         }
         let area = Rect::new(canvas.right() - w - 1, canvas.bottom() - h - 1, w, h);
