@@ -85,12 +85,35 @@ fn thumbnail_format(format: ThumbnailFormat) -> &'static str {
     }
 }
 
+/// Bounds of the printed part itself: extrusions except start/end G-code
+/// (purge lines), skirt/brim and wipe tower. Falls back to
+/// [`object_bounds`] when that leaves nothing.
+pub fn part_bounds(toolpath: &Toolpath) -> Bounds {
+    let mut bounds = Bounds::empty();
+    let excluded = [Feature::Custom, Feature::Skirt, Feature::WipeTower];
+    for s in toolpath
+        .segments
+        .iter()
+        .filter(|s| s.is_extrusion() && !excluded.contains(&s.feature))
+    {
+        if s.start.iter().chain(&s.end).all(|v| v.is_finite()) {
+            bounds.include(s.start);
+            bounds.include(s.end);
+        }
+    }
+    if bounds.is_empty() {
+        object_bounds(toolpath)
+    } else {
+        bounds
+    }
+}
+
 /// The summary rows for a toolpath's statistics and slicer metadata, in
-/// display order. `bounds` adds size and bounds rows: pass the object
-/// bounds ([`object_bounds`](crate::widgets::layer_canvas::object_bounds),
-/// which leaves out purge lines) for the size of the part. The height is
-/// the top Z for parts that start on the bed. Text from the file is
-/// sanitized; missing data gives short placeholders or leaves rows out.
+/// display order. `bounds` adds size and bounds rows: pass
+/// [`part_bounds`] for the size of the part (the extrusion bounds
+/// include purge lines and skirts). The height is the top Z for parts
+/// that start on the bed. Text from the file is sanitized; missing data
+/// gives short placeholders or leaves rows out.
 pub fn summary_rows(
     stats: &Stats,
     metadata: &SlicerMetadata,
@@ -482,9 +505,9 @@ impl<'a> StatsPanel<'a> {
     }
 
     /// A panel for a toolpath: its statistics, metadata and
-    /// [`object_bounds`] (computed here, a pass over the segments).
+    /// [`part_bounds`] (computed here, a pass over the segments).
     pub fn from_toolpath(toolpath: &'a Toolpath) -> StatsPanel<'a> {
-        StatsPanel::new(&toolpath.stats, &toolpath.metadata).bounds(Some(object_bounds(toolpath)))
+        StatsPanel::new(&toolpath.stats, &toolpath.metadata).bounds(Some(part_bounds(toolpath)))
     }
 
     /// Bounds for the size and bounds rows (see [`summary_rows`]).
@@ -965,6 +988,31 @@ G1 X30 Y10 E1 F1200\nG1 X30 Y30 E1\nG1 Z0.4\nG1 X10 Y30 E1\n";
         assert!(text.contains("Size         20.0 x 20.0 x 0.4 mm"), "{text}");
         assert!(text.contains("Hotend       205 °C"), "{text}");
         assert!(text.contains("■ Perimeter"), "{text}");
+    }
+
+    #[test]
+    fn part_bounds_leave_out_skirt_and_purge() {
+        let text = "\
+M83\n;TYPE:Custom\nG1 Z0.2 F600\nG1 X0 Y-3\nG1 X60 Y-3 E9 F1000\n\
+;TYPE:Skirt\nG1 X90 Y90\nG1 X140 Y90 E2\n\
+;TYPE:External perimeter\nG1 X100 Y100\nG1 X120 Y100 E1\nG1 X120 Y120 E1\n";
+        let tp = analyze_simple(
+            &GcodeFile::from_text("p.gcode", text),
+            &AnalyzeOptions::default(),
+        );
+        let part = part_bounds(&tp);
+        assert_eq!((part.min[0], part.max[0]), (100.0, 120.0));
+        assert_eq!((part.min[1], part.max[1]), (100.0, 120.0));
+        // The skirt still counts for the view fit.
+        assert_eq!(object_bounds(&tp).max[0], 140.0);
+        // Only a skirt: fall back to the object bounds.
+        let text = ";TYPE:Skirt\nM83\nG1 Z0.2\nG1 X10 Y10 E1 F600\n";
+        let tp = analyze_simple(
+            &GcodeFile::from_text("s.gcode", text),
+            &AnalyzeOptions::default(),
+        );
+        assert_eq!(part_bounds(&tp), object_bounds(&tp));
+        assert!(part_bounds(&Toolpath::default()).is_empty());
     }
 
     #[test]

@@ -24,5 +24,5 @@ pub use input::{
 };
 pub use job::{JobProgress, JobTone};
 pub use layer_canvas::{FeatureLegend, LayerCanvas, LayerFit, object_bounds};
-pub use stats::{FeatureRow, StatRow, StatsPanel, feature_rows, summary_rows};
+pub use stats::{FeatureRow, StatRow, StatsPanel, feature_rows, part_bounds, summary_rows};
 pub use temp_chart::{TempChart, TempPoint};
