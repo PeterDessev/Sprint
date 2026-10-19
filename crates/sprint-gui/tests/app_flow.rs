@@ -980,13 +980,15 @@ fn an_upload_of_the_file_is_not_shown_as_a_print() {
 fn the_empty_console_does_not_ask_to_connect_when_connected() {
     let mut h = app(AppOptions::headless(), WINDOW);
     settle(&mut h);
-    assert!(h.query_by_label_contains("Connect to a printer").is_some());
+    // The controls sidebar also mentions connecting, so match the console's
+    // own empty-state text.
+    assert!(h.query_by_label_contains("to see its traffic").is_some());
     h.state_mut().set_state_override(Some(PrinterState {
         status: ConnectionStatus::Connected,
         ..PrinterState::default()
     }));
     settle(&mut h);
-    assert!(h.query_by_label_contains("Connect to a printer").is_none());
+    assert!(h.query_by_label_contains("to see its traffic").is_none());
     assert!(h.query_by_label_contains("replies show up here").is_some());
 }
 
