@@ -88,8 +88,11 @@ pub struct GuiArgs {
     #[arg(value_name = "FILE")]
     pub file: Option<PathBuf>,
     /// Connect to the built-in virtual printer at startup.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "connect")]
     pub sim: bool,
+    /// Printer to connect to at startup.
+    #[arg(long, short = 'c', value_name = "T", value_parser = parse_target)]
+    pub connect: Option<ConnectTarget>,
 }
 
 /// Options of the terminal UI.
@@ -371,6 +374,29 @@ mod tests {
             panic!("no gui");
         };
         assert_eq!(args.file, Some(PathBuf::from("x.gcode")));
+        assert_eq!(args.connect, None);
+        // --connect T, with or without the subcommand.
+        let Ok(Command::Gui(args)) = parse(&["gui", "--connect", "tcp://h:23", "x.gcode"]) else {
+            panic!("no gui");
+        };
+        assert_eq!(
+            args.connect,
+            Some(ConnectTarget::Tcp {
+                host: "h".into(),
+                port: 23
+            })
+        );
+        let Ok(Command::Gui(args)) = parse(&["-c", "sim"]) else {
+            panic!("no gui");
+        };
+        assert!(
+            args.connect
+                .as_ref()
+                .is_some_and(ConnectTarget::is_simulator)
+        );
+        // A target or the virtual printer, not both; nothing blank.
+        assert!(parse(&["gui", "--sim", "--connect", "sim"]).is_err());
+        assert!(parse(&["gui", "--connect", "  "]).is_err());
     }
 
     #[test]

@@ -7,6 +7,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use sprint_host::ConnectTarget;
+
 pub mod app;
 pub mod app_icon;
 pub mod config_store;
@@ -36,6 +38,9 @@ pub struct GuiOptions {
     pub file: Option<PathBuf>,
     /// Connect to the built-in virtual printer at startup.
     pub simulator: bool,
+    /// Connect to this printer at startup (`sprint gui --connect T`); it
+    /// wins over `simulator` and the active profile's `auto_connect`.
+    pub connect: Option<ConnectTarget>,
 }
 
 /// Initial window size in points.
@@ -61,10 +66,12 @@ pub fn native_options(app_id: &str) -> eframe::NativeOptions {
 
 /// Launch the GUI and block until the window closes.
 ///
-/// The configuration is read from [`sprint_host::AppConfig::path`] and
-/// saved back there. The app never opens a serial port by itself unless
-/// the active profile enables `auto_connect`; `options.simulator` connects
-/// to the built-in virtual printer instead.
+/// The configuration is read from [`sprint_host::AppConfig::path`] (the
+/// file `SPRINT_CONFIG` names, when set) and saved back there. At startup
+/// the app connects only to `options.connect`, else to the built-in
+/// virtual printer with `options.simulator`, else to the active profile's
+/// printer when the profile enables `auto_connect`; it never opens a port
+/// otherwise.
 pub fn run(options: GuiOptions) -> anyhow::Result<()> {
     run_app(app::AppOptions::desktop(options))
 }

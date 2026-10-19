@@ -94,6 +94,7 @@ fn run_gui(args: GuiArgs) -> Result<ExitCode> {
     sprint_gui::run(sprint_gui::GuiOptions {
         file: args.file,
         simulator: args.sim,
+        connect: args.connect,
     })?;
     Ok(ExitCode::SUCCESS)
 }

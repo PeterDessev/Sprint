@@ -107,7 +107,7 @@ impl AppOptions {
         AppOptions {
             file: gui.file,
             simulator: gui.simulator.then(SimConfig::default),
-            connect: None,
+            connect: gui.connect,
             config: AppConfig::load(),
             config_path: Some(AppConfig::path()),
             scan_ports: true,
