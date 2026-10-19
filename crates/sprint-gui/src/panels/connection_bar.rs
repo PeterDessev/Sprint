@@ -83,6 +83,9 @@ pub struct ConnectionBar {
     pub quality: LinkQuality,
     tcp_text: String,
     tcp_valid: bool,
+    /// The profile and address the TCP field shows (an address set
+    /// elsewhere, or another profile, replaces what was typed).
+    tcp_for: Option<(usize, ConnectTarget)>,
 }
 
 impl ConnectionBar {
@@ -93,6 +96,7 @@ impl ConnectionBar {
             quality: LinkQuality::default(),
             tcp_text: String::new(),
             tcp_valid: true,
+            tcp_for: None,
         }
     }
 
@@ -422,8 +426,12 @@ impl ConnectionBar {
             }
             ConnectTarget::Tcp { .. } => {
                 let target = ctx.config.active().connection.clone();
-                if self.tcp_valid && parse_host_port(&self.tcp_text) != Some(target.clone()) {
-                    self.tcp_text = host_port_text(&target);
+                let shown = (ctx.config.active_profile, target);
+                if self.tcp_for.as_ref() != Some(&shown) {
+                    // Another profile, or an address set in the settings: an
+                    // unfinished entry for the previous one does not apply.
+                    self.tcp_text = host_port_text(&shown.1);
+                    self.tcp_valid = true;
                 }
                 let p = theme::ui_palette(ui);
                 let edit = ui.add_enabled(
@@ -448,6 +456,10 @@ impl ConnectionBar {
                 } else {
                     "Enter host:port, for example 192.168.1.20:23"
                 });
+                self.tcp_for = Some((
+                    ctx.config.active_profile,
+                    ctx.config.active().connection.clone(),
+                ));
             }
             ConnectTarget::Simulator(_) => {}
         }

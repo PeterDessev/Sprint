@@ -950,6 +950,49 @@ fn switching_profiles_analyzes_the_file_again() {
 }
 
 #[test]
+fn an_unfinished_address_does_not_stick_to_another_profile() {
+    let mut options = AppOptions::headless();
+    let bridge = |name: &str, host: &str| sprint_host::PrinterProfile {
+        name: name.into(),
+        connection: ConnectTarget::Tcp {
+            host: host.into(),
+            port: 23,
+        },
+        ..sprint_host::PrinterProfile::default()
+    };
+    options.config.profiles = vec![bridge("Bridge A", "a.local"), bridge("Bridge B", "b.local")];
+    let mut h = app(options, WINDOW);
+    let address = |h: &Harness<'_, SprintApp>| {
+        h.query_all_by_role(Role::TextInput)
+            .filter_map(|n| n.value())
+            .find(|v| v.ends_with(":23") || v.contains("nonsense"))
+    };
+    assert_eq!(address(&h).as_deref(), Some("a.local:23"));
+    // Half-typed garbage: Connect is off.
+    h.query_all_by_role(Role::TextInput)
+        .find(|n| n.value().as_deref() == Some("a.local:23"))
+        .expect("the address field")
+        .click();
+    settle(&mut h);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+    h.event(egui::Event::Text("nonsense".into()));
+    settle(&mut h);
+    assert_eq!(address(&h).as_deref(), Some("nonsense"));
+    assert!(h.get_by_label("Connect").accesskit_node().is_disabled());
+    // Another profile shows its own address, and can connect.
+    h.query_all_by_role(Role::ComboBox)
+        .find(|n| n.value().is_some_and(|v| v.contains("Bridge A")))
+        .expect("the profile combo")
+        .click();
+    settle(&mut h);
+    h.get_by_label("Bridge B").click();
+    settle(&mut h);
+    assert_eq!(h.state().config().active_profile, 1);
+    assert_eq!(address(&h).as_deref(), Some("b.local:23"));
+    assert!(!h.get_by_label("Connect").accesskit_node().is_disabled());
+}
+
+#[test]
 fn firmware_limits_analysis_survives_a_disconnect() {
     let options = with_file(sim_options(), sample("calibration-cube.gcode"));
     let mut h = app(options, WINDOW);
