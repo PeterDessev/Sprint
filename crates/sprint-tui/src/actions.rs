@@ -986,8 +986,8 @@ impl HomingRequests {
 }
 
 /// The warning for something that needs `axes` homed when some are not
-/// (counting the `homing` ones as homed): "X Z not homed: <consequence>
-/// (home x z first)".
+/// (counting the `homing` ones as homed), such as "X Z not homed: the
+/// move starts from where the printer believes it is (home x z first)".
 pub fn homing_warning(
     state: &PrinterState,
     axes: Axes,

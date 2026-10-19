@@ -1216,7 +1216,7 @@ pub fn object_lines(job: Option<&JobInfo>, file_objects: &[String]) -> Vec<Repor
     lines
 }
 
-/// "Configuration file: <path>", under the lists of what is saved in it
+/// `Configuration file: <path>`, under the lists of what is saved in it
 /// (profiles, macros), so the user knows which file the edits go to
 /// (`SPRINT_CONFIG` may name another one).
 pub fn config_file_line(path: &std::path::Path) -> ReportLine {
