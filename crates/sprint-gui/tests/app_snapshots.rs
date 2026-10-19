@@ -357,3 +357,83 @@ fn settings_print_events() {
     settle(&mut h);
     snapshot(&mut h, "app_settings_print_events");
 }
+
+/// A plate of four labelled objects (M486), `layers` layers high.
+fn plate(layers: usize) -> String {
+    let mut text = String::from("M486 T4\nM83\nG28\nG1 Z0.2 F600\n");
+    for layer in 0..layers {
+        let z = 0.2 + layer as f32 * 0.2;
+        text.push_str(&format!("G1 Z{z:.2} F600\n"));
+        for (id, name, x0, y0) in [
+            (0, "Bracket", 70.0, 70.0),
+            (1, "Clip A", 130.0, 70.0),
+            (2, "Clip B", 70.0, 130.0),
+            (3, "Knob", 130.0, 130.0),
+        ] {
+            text.push_str(&format!("M486 S{id} A\"{name}\"\n"));
+            for i in 0..12 {
+                let y = y0 + i as f32 * 1.6;
+                text.push_str(&format!(
+                    "G1 X{x0} Y{y} F6000\nG1 X{} Y{y} E0.6 F1800\n",
+                    x0 + 20.0
+                ));
+            }
+            text.push_str("M486 S-1\n");
+        }
+    }
+    text
+}
+
+#[test]
+fn objects_while_printing() {
+    // A plate of four objects printing: "Clip A" is skipped, the print is
+    // in "Knob", the pointer is on "Clip B" (highlighted in the view).
+    let dir = std::env::temp_dir().join(format!("sprint-gui-snap-objects-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("plate.gcode");
+    std::fs::write(&path, plate(40)).expect("write");
+    let options = AppOptions {
+        file: Some(path.clone()),
+        ..AppOptions::headless()
+    };
+    let mut h = app(options, WINDOW);
+    h.state_mut().set_side_panels(false, true);
+    expect(&mut h, "the plate to be analyzed", |app| {
+        app.file().is_some_and(|f| f.toolpath.is_some()) && !app.is_loading()
+    });
+    expect(&mut h, "the 3D view to be ready", |app| {
+        app.viewer_tab().viewer().is_none_or(|v| !v.is_loading())
+    });
+    let file = h.state().file().expect("file");
+    let lines = file.file.len();
+    let mut job = JobInfo::new(JobKind::HostPrint, file.file.name(), lines, 0);
+    job.path = file.file.path().map(|p| p.to_path_buf());
+    job.status = JobStatus::Printing;
+    job.current_line = lines * 3 / 5;
+    job.progress = 0.6;
+    job.elapsed = Duration::from_secs(25 * 60);
+    job.eta = Some(Duration::from_secs(17 * 60));
+    job.objects = vec![
+        "Bracket".into(),
+        "Clip A".into(),
+        "Clip B".into(),
+        "Knob".into(),
+    ];
+    job.excluded_objects = vec!["Clip A".into()];
+    job.current_object = Some("Knob".into());
+    let mut state = connected_state();
+    state.job = Some(job);
+    h.state_mut().set_state_override(Some(state));
+    settle(&mut h);
+    h.state_mut().toasts_mut().clear();
+    // Let the camera settle where the cards leave room.
+    for _ in 0..4 {
+        settle(&mut h);
+    }
+    let row = h.get_by_label("Clip B").rect().center();
+    h.hover_at(row);
+    settle(&mut h);
+    snapshot(&mut h, "app_objects");
+    drop(h);
+    let _ = std::fs::remove_dir_all(dir);
+}

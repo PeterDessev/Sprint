@@ -649,3 +649,86 @@ fn the_3d_view_frames_the_part_clear_of_its_cards() {
         }
     }
 }
+
+/// A plate of two labelled objects (M486), `layers` layers high.
+fn objects_file(layers: usize) -> String {
+    let mut text = String::from("M486 T2\nM83\nG28\nG1 Z0.2 F600\n");
+    for layer in 0..layers {
+        let z = 0.2 + layer as f32 * 0.2;
+        text.push_str(&format!("G1 Z{z:.2} F600\n"));
+        for (id, name, x0) in [(0, "left", 60.0), (1, "right", 140.0)] {
+            text.push_str(&format!("M486 S{id} A\"{name}\"\n"));
+            for i in 0..10 {
+                let y = 90.0 + i as f32 * 2.0;
+                text.push_str(&format!(
+                    "G1 X{x0} Y{y} F3000\nG1 X{} Y{y} E0.8 F1200\n",
+                    x0 + 20.0
+                ));
+            }
+            text.push_str("M486 S-1\n");
+        }
+    }
+    text
+}
+
+#[test]
+fn objects_are_listed_highlighted_and_skipped_while_printing() {
+    let dir = temp_dir("objects");
+    let path = dir.join("plate.gcode");
+    std::fs::write(&path, objects_file(30)).expect("write");
+    let mut options = slow_print_options(20.0);
+    options.file = Some(path);
+    let mut h = app(options, WINDOW);
+    // Room for the cards beside each other.
+    h.state_mut().set_side_panels(false, true);
+    expect(&mut h, "the plate to be analyzed", analyzed);
+    settle(&mut h);
+    let viewer = h.state().viewer_tab().viewer().is_some();
+    if !viewer {
+        eprintln!("no GPU viewer on this machine: the 3D view's cards are not tested");
+        return;
+    }
+    assert!(h.query_by_label("Objects · 2").is_some());
+    // Hovering a row highlights its object in the view.
+    let right = h.get_by_label("right").rect().center();
+    h.hover_at(right);
+    settle(&mut h);
+    assert_eq!(
+        h.state()
+            .viewer_tab()
+            .viewer()
+            .and_then(|v| v.options().highlight_object),
+        Some(1)
+    );
+    // No skipping before the print.
+    assert!(
+        h.query_by_label("Skip “right” for the rest of the print")
+            .is_none()
+    );
+    connect(&mut h);
+    start_print(&mut h);
+    expect(&mut h, "the print to know its objects", |app| {
+        app.state()
+            .job
+            .as_ref()
+            .is_some_and(|j| j.objects == ["left", "right"])
+    });
+    settle(&mut h);
+    h.get_by_label("Skip “right” for the rest of the print")
+        .click();
+    settle(&mut h);
+    assert!(h.query_by_label("Skip “right”?").is_some());
+    h.get_by_label("Skip object").click();
+    expect(&mut h, "right to be skipped", |app| {
+        app.state()
+            .job
+            .as_ref()
+            .is_some_and(|j| j.excluded_objects == ["right"])
+    });
+    settle(&mut h);
+    // The card and the job bar say so; the object can be printed again.
+    assert!(h.query_all_by_label("1 SKIPPED").count() >= 2);
+    assert!(h.query_by_label("Print “right” again").is_some());
+    drop(h);
+    let _ = std::fs::remove_dir_all(dir);
+}

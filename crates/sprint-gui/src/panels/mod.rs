@@ -11,6 +11,7 @@ pub mod console;
 pub mod controls;
 pub mod gcode_tab;
 pub mod job_bar;
+pub mod objects;
 pub mod printer_info;
 pub mod sd_card;
 pub mod temp_graph;

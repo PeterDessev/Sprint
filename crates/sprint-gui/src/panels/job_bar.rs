@@ -234,7 +234,7 @@ impl JobBar {
                 let (text, tone) = job_badge(job);
                 ui.add(Badge::new(&text).tone(tone));
                 // Names are cut to the room left of the statistics.
-                ui.add(
+                let name = ui.add(
                     egui::Label::new(
                         RichText::new(format::sanitize(&job.name, 120))
                             .font(title.clone())
@@ -242,6 +242,16 @@ impl JobBar {
                     )
                     .truncate(),
                 );
+                if let Some(objects) = super::objects::job_objects_tooltip(job) {
+                    if !job.excluded_objects.is_empty() {
+                        ui.add(
+                            Badge::new(&format!("{} SKIPPED", job.excluded_objects.len()))
+                                .tone(Tone::Warning),
+                        )
+                        .on_hover_text(&objects);
+                    }
+                    name.on_hover_text(objects);
+                }
             });
             let fraction = job.progress.clamp(0.0, 1.0);
             let tone = if job.status.is_paused() {

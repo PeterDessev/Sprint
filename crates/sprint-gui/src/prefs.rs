@@ -110,6 +110,8 @@ pub struct ViewerPrefs {
     pub show_legend: bool,
     /// The floating file information card is open.
     pub show_file_info: bool,
+    /// The floating objects card is open (for files with objects).
+    pub show_objects: bool,
     /// The top layer follows the print.
     pub follow_print: bool,
     /// The file information card was shown open once: from then on it
@@ -133,6 +135,7 @@ impl Default for ViewerPrefs {
             show_tool_head: o.show_tool_head,
             show_legend: true,
             show_file_info: true,
+            show_objects: true,
             follow_print: true,
             file_info_seen: false,
         }

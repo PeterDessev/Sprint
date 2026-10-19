@@ -22,7 +22,8 @@ use crate::loader::{LoadStatus, Stage};
 use crate::prefs::ViewerPrefs;
 use crate::theme::{self, Palette, TextRole};
 use crate::widgets::{
-    ActionButton, Chip, EmptyState, IconButton, KeyValueGrid, LinearProgress, SegmentedControl,
+    ActionButton, Chip, ConfirmDialog, DialogResult, EmptyState, IconButton, KeyValueGrid,
+    LinearProgress, SegmentedControl,
 };
 use crate::{format, icons};
 
@@ -49,7 +50,12 @@ const TAG_H: f32 = 30.0;
 enum OverlayCard {
     Legend,
     Info,
+    Objects,
 }
+
+/// Room the objects card needs below the file card (else it is not shown
+/// there).
+const OBJECTS_MIN_H: f32 = 90.0;
 
 /// Things the shell lends the viewer tab besides the [`AppCtx`].
 #[derive(Clone, Copy, Default)]
@@ -122,6 +128,11 @@ struct Overlay {
     cards: Vec<Rect>,
     /// The view's rectangle last frame.
     view: Option<Rect>,
+    /// The objects card's row under the pointer last frame (highlighted in
+    /// the view).
+    hovered_object: Option<usize>,
+    /// Skip (true) or print again (false) this object? (asked first)
+    object_question: Option<(String, bool)>,
     /// Open (or collapse) the file card once, for a file just shown.
     info_open: Option<bool>,
     bed: Option<BedSpec>,
@@ -319,6 +330,17 @@ impl ViewerTab {
         };
         viewer.options_mut().background = bg;
         viewer.options_mut().highlight_line = ctx.selected_line;
+        let hovered = self
+            .ov
+            .hovered_object
+            .filter(|&i| viewer.can_highlight_object(i));
+        viewer.options_mut().highlight_object = hovered;
+        let printing_job = ctx
+            .state
+            .job
+            .as_ref()
+            .filter(|j| j.status.is_active() && format::job_prints_file(j, &file.file))
+            .cloned();
         let progress = ctx
             .state
             .job
@@ -443,13 +465,29 @@ impl ViewerTab {
         let loading = viewer.is_loading();
         let mut cards = Vec::new();
         let room = view.width() >= LEGEND_W + INFO_W + SLIDER_W + 3.0 * EDGE;
-        let (show_legend, show_info) = match (self.prefs.show_legend, self.prefs.show_file_info) {
-            (true, true) if !room => match self.ov.last_overlay {
-                Some(OverlayCard::Info) => (false, true),
-                _ => (true, false),
-            },
-            both => both,
+        let has_objects = !toolpath.objects.is_empty();
+        let wanted = [
+            (OverlayCard::Legend, self.prefs.show_legend),
+            (OverlayCard::Info, self.prefs.show_file_info),
+            (OverlayCard::Objects, self.prefs.show_objects && has_objects),
+        ];
+        let (show_legend, show_info, show_objects) = if room {
+            (wanted[0].1, wanted[1].1, wanted[2].1)
+        } else {
+            // One card at a time: the one switched on last, else the first.
+            let shown = self
+                .ov
+                .last_overlay
+                .filter(|card| wanted.iter().any(|(c, on)| c == card && *on))
+                .or_else(|| wanted.iter().find(|(_, on)| *on).map(|(c, _)| *c));
+            (
+                shown == Some(OverlayCard::Legend),
+                shown == Some(OverlayCard::Info),
+                shown == Some(OverlayCard::Objects),
+            )
         };
+        let right = slider_rect.left() - EDGE * 0.5;
+        let mut column_top = view.top() + EDGE;
         if show_legend {
             let legend_rect = Rect::from_min_max(
                 view.min + vec2(EDGE, EDGE),
@@ -477,24 +515,55 @@ impl ViewerTab {
             ));
         }
         if show_info {
-            let right = slider_rect.left() - EDGE * 0.5;
             // Right-aligned by position: a right-aligned layout would let
             // the grid inside stretch the card to the left edge.
             let info_rect = Rect::from_min_max(
-                Pos2::new((right - INFO_W).max(view.left() + EDGE), view.top() + EDGE),
+                Pos2::new((right - INFO_W).max(view.left() + EDGE), column_top),
                 Pos2::new(right, scrub_rect.top() - EDGE),
             );
             let open = self.ov.info_open.take();
+            let drawn = overlay_layer(ui, "sprint-viewer-file-info", info_rect, |ui| {
+                file_info_card(ui, file, &toolpath, extras.thumbnail, open, &p);
+            });
+            column_top = drawn.bottom() + EDGE * 0.75;
+            cards.push(drawn);
+        }
+        let mut hovered_object = None;
+        if show_objects && scrub_rect.top() - EDGE - column_top >= OBJECTS_MIN_H {
+            let objects_rect = Rect::from_min_max(
+                Pos2::new((right - INFO_W).max(view.left() + EDGE), column_top),
+                Pos2::new(right, scrub_rect.top() - EDGE),
+            );
+            let mut outcome = super::objects::CardOutcome::default();
             cards.push(overlay_layer(
                 ui,
-                "sprint-viewer-file-info",
-                info_rect,
+                "sprint-viewer-objects",
+                objects_rect,
                 |ui| {
-                    file_info_card(ui, file, &toolpath, extras.thumbnail, open, &p);
+                    outcome = super::objects::objects_card(
+                        ui,
+                        &toolpath,
+                        printing_job.as_ref(),
+                        None,
+                        &p,
+                    );
                 },
             ));
+            hovered_object = outcome.hovered;
+            if let Some(line) = outcome.select {
+                ctx.actions.push(AppAction::SelectLine(line));
+            }
+            if outcome.toggle.is_some() {
+                self.ov.object_question = outcome.toggle;
+            }
+        }
+        if hovered_object != self.ov.hovered_object {
+            // Draw the highlight (or take it away) right away.
+            self.ov.hovered_object = hovered_object;
+            ui.ctx().request_repaint();
         }
         self.ov.cards = cards;
+        Self::object_question(&mut self.ov, ui, ctx, printing_job.as_ref());
         if loading {
             loading_pill(ui, view, &p);
         }
@@ -644,6 +713,23 @@ impl ViewerTab {
                     self.prefs.show_file_info = !self.prefs.show_file_info;
                     self.ov.last_overlay = Some(OverlayCard::Info);
                 }
+                let has_objects = file
+                    .toolpath
+                    .as_ref()
+                    .is_some_and(|tp| !tp.objects.is_empty());
+                if has_objects
+                    && ui
+                        .add(
+                            IconButton::new(icons::phosphor::SQUARES_FOUR)
+                                .ghost()
+                                .selected(self.prefs.show_objects)
+                                .tooltip("Objects (skip one while printing)"),
+                        )
+                        .clicked()
+                {
+                    self.prefs.show_objects = !self.prefs.show_objects;
+                    self.ov.last_overlay = Some(OverlayCard::Objects);
+                }
                 if ui
                     .add(
                         IconButton::new(icons::phosphor::LIST_BULLETS)
@@ -689,6 +775,66 @@ impl ViewerTab {
                 }
             });
         });
+    }
+
+    /// "Skip this object?" (or "print it again?"), asked before the print
+    /// is changed: a skipped object's layers are lost for good.
+    fn object_question(
+        ov: &mut Overlay,
+        ui: &Ui,
+        ctx: &mut AppCtx<'_>,
+        job: Option<&sprint_host::JobInfo>,
+    ) {
+        let Some((name, skip)) = ov.object_question.clone() else {
+            return;
+        };
+        let Some(job) = job else {
+            // The print ended meanwhile: nothing to change.
+            ov.object_question = None;
+            return;
+        };
+        let shown = format::sanitize(&name, 60);
+        let (title, message, confirm) = if skip {
+            (
+                format!("Skip “{shown}”?"),
+                "Sprint stops sending its moves and extrusions for the rest of the print; \
+                 the other objects go on. It can be printed again until the print ends, but \
+                 the layers skipped meanwhile stay missing."
+                    .to_owned(),
+                "Skip object",
+            )
+        } else {
+            (
+                format!("Print “{shown}” again?"),
+                "Its moves are sent again from here on. The layers skipped meanwhile are \
+                 missing, so it goes on in the air above what was printed of it."
+                    .to_owned(),
+                "Print it again",
+            )
+        };
+        let answer = ConfirmDialog::new("sprint-viewer-object-question", &title)
+            .message(&message)
+            .confirm_label(confirm)
+            .danger(true)
+            .show(ui.ctx());
+        match answer {
+            Some(DialogResult::Confirmed) => {
+                ov.object_question = None;
+                if let Some(reason) = super::objects::skip_blocker(job, &name) {
+                    ctx.toasts.warning("Not changed").message(reason);
+                } else if skip {
+                    ctx.printer.exclude_object(&name);
+                    ctx.toasts
+                        .info(format!("Skipping {shown}"))
+                        .message("The rest of the print leaves it out.");
+                } else {
+                    ctx.printer.include_object(&name);
+                    ctx.toasts.info(format!("Printing {shown} again"));
+                }
+            }
+            Some(DialogResult::Cancelled) => ov.object_question = None,
+            None => {}
+        }
     }
 
     /// The View menu: camera presets, style and what is drawn.
@@ -1199,7 +1345,7 @@ pub fn fit_insets(view: Rect, cards: &[Rect]) -> ViewInsets {
 }
 
 /// The translucent card frame of the overlays.
-fn overlay_frame(p: &Palette) -> egui::Frame {
+pub(super) fn overlay_frame(p: &Palette) -> egui::Frame {
     egui::Frame::new()
         .fill(theme::with_alpha(p.surface, 0.94))
         .stroke(Stroke::new(1.0, p.border))
