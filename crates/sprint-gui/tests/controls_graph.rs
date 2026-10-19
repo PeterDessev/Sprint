@@ -154,6 +154,39 @@ fn dragging_stops_following_and_follow_returns() {
     assert!(h.query_by_label("23.9").is_none());
 }
 
+/// A reconnect starts a new history (from 0 s): the chart follows it again
+/// instead of staying on the old connection's zoomed-in times, where the
+/// new readings are out of view.
+#[test]
+fn a_new_history_is_followed_again() {
+    let mut h = synthetic_graph();
+    h.get_by_label("2 min").click();
+    settle(&mut h);
+    drag(&mut h, egui::pos2(500.0, 250.0), egui::vec2(300.0, 0.0));
+    assert_eq!(follow_toggled(&h), Some(Toggled::False));
+    // Reconnected: twenty seconds of fresh readings.
+    let mut fresh = graph_state(false, false);
+    fresh.temp_history.retain(|s| s.t <= 20.0);
+    h.state_mut().state = Some(fresh);
+    settle(&mut h);
+    assert_eq!(follow_toggled(&h), Some(Toggled::True));
+    // The statistics cover the new readings: the only empty cell is the
+    // target of the hotend, which is still off.
+    assert_eq!(h.query_all_by_label("\u{2014}").count(), 1);
+    // The same after the history was empty for a while (connecting).
+    drag(&mut h, egui::pos2(500.0, 250.0), egui::vec2(300.0, 0.0));
+    assert_eq!(follow_toggled(&h), Some(Toggled::False));
+    let mut empty = graph_state(false, false);
+    empty.temp_history.clear();
+    h.state_mut().state = Some(empty);
+    settle(&mut h);
+    let mut fresh = graph_state(false, false);
+    fresh.temp_history.retain(|s| s.t <= 30.0);
+    h.state_mut().state = Some(fresh);
+    settle(&mut h);
+    assert_eq!(follow_toggled(&h), Some(Toggled::True));
+}
+
 #[test]
 fn hovering_reads_out_every_heater() {
     let mut h = synthetic_graph();

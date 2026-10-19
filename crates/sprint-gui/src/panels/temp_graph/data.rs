@@ -47,6 +47,17 @@ pub(crate) fn usable(history: &VecDeque<TempSample>) -> Vec<&TempSample> {
     out
 }
 
+/// Whether the history started over between two frames, given the time of
+/// its newest sample then and now: it emptied (a new connection clears it)
+/// or its newest time went back (a new connection counts from 0 s).
+pub(crate) fn restarted(before: Option<f64>, now: Option<f64>) -> bool {
+    match (before, now) {
+        (Some(before), Some(now)) => now < before,
+        (Some(_), None) => true,
+        (None, _) => false,
+    }
+}
+
 /// A reading as plotted: an implausible temperature becomes NaN (missing)
 /// and an implausible target 0 (off).
 fn plausible((current, target): (f32, f32)) -> (f32, f32) {
@@ -577,6 +588,16 @@ mod tests {
             .collect();
         assert_eq!(times(&h), [1.0, 1.0, 2.0]);
         assert!(usable(&VecDeque::new()).is_empty());
+    }
+
+    #[test]
+    fn restarts_are_detected() {
+        assert!(!restarted(None, None));
+        assert!(!restarted(None, Some(5.0)));
+        assert!(!restarted(Some(5.0), Some(5.0)));
+        assert!(!restarted(Some(5.0), Some(6.0)));
+        assert!(restarted(Some(600.0), Some(2.0)));
+        assert!(restarted(Some(600.0), None));
     }
 
     #[test]

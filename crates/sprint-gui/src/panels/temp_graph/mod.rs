@@ -83,6 +83,9 @@ pub struct TemperatureGraphTab {
     follow: bool,
     show_power: bool,
     export: Option<Export>,
+    /// Time of the newest sample last frame: a history that restarts (a
+    /// new connection counts from 0 s) is followed again.
+    newest: Option<f64>,
 }
 
 impl Default for TemperatureGraphTab {
@@ -92,6 +95,7 @@ impl Default for TemperatureGraphTab {
             follow: true,
             show_power: true,
             export: None,
+            newest: None,
         }
     }
 }
@@ -131,6 +135,13 @@ impl TemperatureGraphTab {
         self.poll_export(ctx);
         let history = data::usable(&ctx.state.temp_history);
         let history = history.as_slice();
+        let newest = history.last().map(|s| s.t);
+        if data::restarted(self.newest, newest) {
+            // The old view (zoomed into the previous connection's times)
+            // would show none of the new readings.
+            self.follow = true;
+        }
+        self.newest = newest;
         if history.is_empty() {
             empty(ui, ctx.connected());
             return;
