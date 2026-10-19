@@ -98,14 +98,18 @@ impl TuningTab {
             .as_ref()
             .is_some_and(|f| !f.flavor.supports_m503());
         if no_m503 && self.draft.entries().is_empty() {
-            ui.add_space(48.0);
+            self.header(ui, ctx);
+            ui.add_space(40.0);
             let _ = EmptyState::new(icons::TUNING, "No EEPROM settings")
                 .message(NO_M503_HELP)
                 .show(ui);
             return;
         }
         if !connected && self.draft.entries().is_empty() {
-            ui.add_space(48.0);
+            // The page header (its actions disabled) as on every page tab,
+            // then why it is empty.
+            self.header(ui, ctx);
+            ui.add_space(40.0);
             let _ = EmptyState::new(icons::TUNING, "Not connected")
                 .message("Connect to a printer to load, edit and save its firmware settings.")
                 .show(ui);

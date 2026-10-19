@@ -1208,6 +1208,31 @@ fn a_click_below_a_single_layer_lowers_the_bottom_handle() {
 }
 
 #[test]
+fn offline_page_tabs_all_show_their_header() {
+    let mut h = app(AppOptions::headless(), WINDOW);
+    for (tab, title) in [
+        (Tab::Printer, "Printer"),
+        (Tab::Tuning, "Tuning"),
+        (Tab::Calibration, "Calibration"),
+        (Tab::BedMesh, "Bed mesh"),
+        (Tab::SdCard, "SD card"),
+    ] {
+        // The title elsewhere (the tab strip, a menu)...
+        h.state_mut().push_action(AppAction::ShowTab(Tab::View3D));
+        settle(&mut h);
+        let elsewhere = h.query_all_by_label(title).count();
+        // ...and once more as the page's own header.
+        h.state_mut().push_action(AppAction::ShowTab(tab));
+        settle(&mut h);
+        assert_eq!(
+            h.query_all_by_label(title).count(),
+            elsewhere + 1,
+            "{tab:?}"
+        );
+    }
+}
+
+#[test]
 fn the_page_tabs_keep_off_the_side_panels() {
     let mut h = app(sim_options(), WINDOW);
     connect(&mut h);

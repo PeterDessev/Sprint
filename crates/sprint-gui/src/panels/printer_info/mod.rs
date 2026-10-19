@@ -71,7 +71,15 @@ impl PrinterInfoTab {
     pub fn ui(&mut self, ui: &mut egui::Ui, ctx: &mut AppCtx<'_>) {
         self.sample_link(ctx);
         if !ctx.connected() {
-            ui.add_space(48.0);
+            // The page header as on every page tab, then why it is empty.
+            kit::page_header(
+                ui,
+                icons::PRINTER,
+                "Printer",
+                Some("Firmware, capabilities, statistics and link health"),
+                |_| {},
+            );
+            ui.add_space(40.0);
             let message = match &ctx.state.status {
                 sprint_host::ConnectionStatus::Failed(reason) => {
                     format!("The last connection failed: {reason}")
