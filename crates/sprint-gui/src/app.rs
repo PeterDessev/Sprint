@@ -562,10 +562,19 @@ impl SprintApp {
         self.route_keys(&ctx, ui.layer_id());
         self.draw(ui);
         self.show_dialogs(&ctx);
-        // Below the top bars (and the halted banner) so toasts never cover
-        // their buttons.
+        // Below the top bars (and the halted banner) and left of the
+        // console, at the tabs' right edge: toasts never cover the bars'
+        // buttons nor the console's filter and newest lines.
+        let screen_right = ctx.content_rect().right();
+        let right = self
+            .center_rect
+            .map_or(screen_right, |r| r.right())
+            .min(screen_right);
         let toasts = std::mem::take(&mut self.core.toasts);
-        self.core.toasts = toasts.anchor(Align2::RIGHT_TOP, vec2(-16.0, self.toast_top));
+        self.core.toasts = toasts.anchor(
+            Align2::RIGHT_TOP,
+            vec2(right - screen_right - 16.0, self.toast_top),
+        );
         self.core.toasts.show(&ctx);
         self.drop_overlay(&ctx);
         self.run_actions(&ctx);

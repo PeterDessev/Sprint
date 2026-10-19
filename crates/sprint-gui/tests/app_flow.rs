@@ -1207,6 +1207,40 @@ fn a_click_below_a_single_layer_lowers_the_bottom_handle() {
     assert!(lo < 50, "the bottom moved down: {lo}");
 }
 
+/// The rectangle of the toast "Something happened" (the whole card, not
+/// its title).
+fn toast_rect(h: &Harness<'_, SprintApp>) -> egui::Rect {
+    h.get_all_by_label("Something happened")
+        .map(|n| n.rect())
+        .max_by(|a, b| a.width().total_cmp(&b.width()))
+        .expect("the toast")
+}
+
+#[test]
+fn toasts_stay_off_the_console() {
+    let mut h = app(AppOptions::headless(), WINDOW);
+    settle(&mut h);
+    // The console's left edge: its text fields (filter, command line).
+    let console_left = h
+        .get_all_by_role(Role::TextInput)
+        .map(|n| n.rect().left())
+        .filter(|left| *left > WINDOW.x / 2.0)
+        .fold(f32::INFINITY, f32::min);
+    assert!(console_left > WINDOW.x / 2.0, "{console_left}");
+    h.state_mut().toasts_mut().info("Something happened");
+    settle(&mut h);
+    let toast = toast_rect(&h);
+    assert!(
+        toast.right() <= console_left,
+        "{toast:?} covers the console at {console_left}"
+    );
+    // Without the console, at the window's right.
+    h.state_mut().set_side_panels(true, false);
+    settle(&mut h);
+    let toast = toast_rect(&h);
+    assert!(toast.right() > WINDOW.x - 40.0, "{toast:?}");
+}
+
 #[test]
 fn the_3d_toolbar_buttons_never_overlap_while_printing() {
     let options = with_file(AppOptions::headless(), sample("calibration-cube.gcode"));
