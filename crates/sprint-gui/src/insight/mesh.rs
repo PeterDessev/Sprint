@@ -221,7 +221,7 @@ fn nearest(mesh: &BedMesh, geom: &MeshGeometry, x: f32, y: f32) -> Option<f32> {
 }
 
 /// A bed leveling screw.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Screw {
     /// Display name ("Front left").
     pub name: String,

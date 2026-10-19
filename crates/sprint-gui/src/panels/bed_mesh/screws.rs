@@ -39,8 +39,11 @@ pub const MAX_SCREWS: usize = 9;
 /// Fewest screws (a bed needs three points).
 const MIN_SCREWS: usize = 3;
 
-/// State of the screw helper.
-#[derive(Clone, Debug, PartialEq)]
+/// State of the screw helper. Everything but the editor's open state is
+/// remembered across restarts (per printer profile, see
+/// [`super::BedMeshTab`]).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct ScrewHelper {
     screws: Vec<Screw>,
     /// The bed size the corner screws were placed for; `None` once the user
@@ -50,6 +53,7 @@ pub struct ScrewHelper {
     thread: usize,
     reference: usize,
     clockwise_lowers: bool,
+    #[serde(skip)]
     editing: bool,
 }
 
@@ -135,6 +139,28 @@ impl ScrewHelper {
     /// The thread pitch in use (mm per turn).
     pub fn pitch(&self) -> f32 {
         THREADS.get(self.thread).map_or(0.5, |t| t.pitch)
+    }
+
+    /// `self` with values from storage made usable: a known thread, at
+    /// most [`MAX_SCREWS`] screws at finite positions, a sane inset.
+    pub fn sanitized(mut self) -> ScrewHelper {
+        self.thread = self.thread.min(THREADS.len() - 1);
+        self.screws
+            .retain(|s| s.x.is_finite() && s.y.is_finite() && s.x.abs() < 1e5 && s.y.abs() < 1e5);
+        self.screws.truncate(MAX_SCREWS);
+        if self.screws.len() < MIN_SCREWS {
+            // Too few to level a bed: back to the corners.
+            self.screws.clear();
+            self.placed_for = None;
+        }
+        if !(self.inset.is_finite() && (0.0..=100.0).contains(&self.inset)) {
+            self.inset = DEFAULT_SCREW_INSET;
+        }
+        if self.reference >= self.screws.len() {
+            self.reference = 0;
+        }
+        self.editing = false;
+        self
     }
 
     /// Place the corner screws for `bed_size` unless the user edited them.
@@ -713,6 +739,33 @@ mod tests {
         // M5: 0.8 mm per turn.
         h.thread = 2;
         assert_eq!(h.pitch(), 0.8);
+    }
+
+    #[test]
+    fn stored_setups_are_sanitized() {
+        let mut h = ScrewHelper::default();
+        h.sync([220.0, 220.0]);
+        h.thread = 7;
+        h.reference = 3;
+        h.inset = f32::NAN;
+        h.editing = true;
+        h.screws[0].x = f32::INFINITY;
+        h.placed_for = None;
+        let h = h.sanitized();
+        assert_eq!(h.thread, THREADS.len() - 1);
+        assert_eq!(h.inset, DEFAULT_SCREW_INSET);
+        assert!(!h.editing);
+        // The bad screw went; three are enough, and the reference moved.
+        assert_eq!(h.screws().len(), 3);
+        assert_eq!(h.reference(), 0);
+        // Too few screws: the corners come back.
+        let mut few = ScrewHelper {
+            screws: vec![Screw::new("A", 1.0, 1.0)],
+            ..ScrewHelper::default()
+        }
+        .sanitized();
+        few.sync([200.0, 200.0]);
+        assert_eq!(few.screws().len(), 4);
     }
 
     #[test]

@@ -94,6 +94,8 @@ pub struct BedMeshTab {
     /// Fade height being edited (mm); `None` = the reported one.
     fade: Option<f32>,
     connection: kit::ConnectionWatch,
+    /// The printer profile whose remembered screw setup `screws` holds.
+    screws_profile: Option<String>,
 }
 
 impl Default for BedMeshTab {
@@ -106,8 +108,15 @@ impl Default for BedMeshTab {
             auto_requested: false,
             fade: None,
             connection: kit::ConnectionWatch::default(),
+            screws_profile: None,
         }
     }
+}
+
+/// Where the screw setup of a printer profile is remembered (egui's
+/// persisted memory, which the app saves with its window state).
+fn screws_memory(profile: &str) -> egui::Id {
+    egui::Id::new(("insight-bed-screws", profile))
 }
 
 /// Leveling state from the settings (M420 S), else the last "Bed Leveling
@@ -146,6 +155,26 @@ impl BedMeshTab {
     /// Draw the panel.
     pub fn ui(&mut self, ui: &mut Ui, ctx: &mut AppCtx<'_>) {
         self.track(ui, ctx);
+        // The screw setup (positions, thread, direction, reference) of this
+        // printer, as left the last time.
+        let profile = ctx.config.active().name.clone();
+        let memory = screws_memory(&profile);
+        if self.screws_profile.as_deref() != Some(profile.as_str()) {
+            self.screws = ui
+                .data_mut(|d| d.get_persisted::<ScrewHelper>(memory))
+                .map(ScrewHelper::sanitized)
+                .unwrap_or_default();
+            self.screws_profile = Some(profile);
+        }
+        let screws_before = self.screws.clone();
+        self.draw(ui, ctx);
+        if self.screws != screws_before {
+            let screws = self.screws.clone();
+            ui.data_mut(|d| d.insert_persisted(memory, screws));
+        }
+    }
+
+    fn draw(&mut self, ui: &mut Ui, ctx: &mut AppCtx<'_>) {
         let state = ctx.state;
         let bed_size = ctx.config.active().bed_size;
         let mesh = state.mesh.as_ref().filter(|m| m.count() > 0);

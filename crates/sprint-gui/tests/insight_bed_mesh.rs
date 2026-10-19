@@ -140,6 +140,34 @@ fn screw_helper_follows_the_reference_and_thread() {
 }
 
 #[test]
+fn the_screw_setup_is_remembered_per_printer() {
+    let mut h = tab(Theme::Light, (1180.0, 1700.0), demo_state());
+    h.get_by_label("M5 · 0.8").click();
+    h.run_ok();
+    h.get_by_label("Clockwise raises it").click();
+    h.run_ok();
+    h.get_by_label_contains("Back right:").click();
+    h.run_ok();
+    // The app restarts: a fresh tab finds the setup in egui's persisted
+    // memory (saved with the window state).
+    h.state_mut().tab = BedMeshTab::default();
+    h.run_ok();
+    let screws = h.state().tab.screws();
+    assert_eq!(screws.pitch(), 0.8);
+    assert_eq!(screws.reference(), 2);
+    assert!(
+        h.query_by_label_contains("Front left: Turn clockwise")
+            .is_some(),
+        "clockwise raises the bed"
+    );
+    // Another printer profile has its own setup.
+    h.state_mut().config.active_mut().name = "Second printer".into();
+    h.run_ok();
+    assert_eq!(h.state().tab.screws().pitch(), 0.5);
+    assert_eq!(h.state().tab.screws().reference(), 0);
+}
+
+#[test]
 fn surface_turns_when_dragged() {
     let mut h = tab(Theme::Dark, (1180.0, 1060.0), demo_state());
     let before = h.state().tab.azimuth();
