@@ -1,0 +1,269 @@
+//! The Bed mesh tab: snapshots, the screw helper, odd meshes, and probing,
+//! leveling and fade height against the simulator.
+
+mod common;
+mod insight_common;
+
+use common::{harness_state, snapshot};
+use egui_kittest::Harness;
+use egui_kittest::kittest::Queryable as _;
+use insight_common::*;
+use sprint_gui::panels::BedMeshTab;
+use sprint_gui::theme::Theme;
+use sprint_host::PrinterState;
+use sprint_host::sprint_proto::BedMesh;
+
+type H<'a> = Harness<'a, Host<BedMeshTab>>;
+
+fn tab(theme: Theme, size: (f32, f32), state: PrinterState) -> H<'static> {
+    let mut h = harness_state(
+        theme,
+        size,
+        Host::<BedMeshTab>::synthetic(state),
+        |ui, host| host.frame(ui),
+    );
+    h.run_ok();
+    h
+}
+
+fn pointer_away(h: &mut H<'_>) {
+    h.event(egui::Event::PointerGone);
+    h.run_ok();
+}
+
+#[test]
+fn bed_mesh_snapshots() {
+    for theme in Theme::ALL {
+        let mut h = tab(theme, (1180.0, 1240.0), demo_state());
+        assert!(h.query_by_label("heatmap").is_some());
+        assert!(h.query_by_label("Surface preview").is_some());
+        assert!(h.query_by_label("Bed plan").is_some());
+        assert!(h.query_by_label("Leveling on").is_some());
+        snapshot(&mut h, &themed("insight_bed_mesh", theme));
+    }
+}
+
+#[test]
+fn bed_mesh_narrow_layout() {
+    let mut h = tab(Theme::Dark, (600.0, 2080.0), demo_state());
+    assert!(h.query_by_label("Bed plan").is_some());
+    assert!(h.query_by_label("Surface preview").is_some());
+    snapshot(&mut h, "insight_bed_mesh_narrow_dark");
+}
+
+#[test]
+fn screw_helper_follows_the_reference_and_thread() {
+    // Tall enough for the screw editor.
+    let mut h = tab(Theme::Light, (1180.0, 1700.0), demo_state());
+    // The demo bed is tilted up towards the right and the front.
+    assert!(h.query_by_label_contains("Front left: Reference").is_some());
+    assert!(
+        h.query_by_label_contains("Front right: Turn clockwise")
+            .is_some(),
+        "front right is high"
+    );
+    // Choosing the front right as the reference flips the advice.
+    h.get_by_label_contains("Front right:").click();
+    h.run_ok();
+    assert_eq!(h.state().tab.screws().reference(), 1);
+    assert!(
+        h.query_by_label_contains("Front right: Reference")
+            .is_some()
+    );
+    assert!(
+        h.query_by_label_contains("Front left: Turn counter-clockwise")
+            .is_some()
+    );
+    // A coarser thread needs fewer turns for the same height.
+    h.get_by_label("M5 · 0.8").click();
+    h.run_ok();
+    assert_eq!(h.state().tab.screws().pitch(), 0.8);
+    // Clockwise raising the bed swaps every direction.
+    h.get_by_label("Clockwise raises it").click();
+    h.run_ok();
+    assert!(
+        h.query_by_label_contains("Front left: Turn clockwise")
+            .is_some()
+    );
+    // The editor adds and removes screws, down to three.
+    h.get_by_label("Edit screw positions").click();
+    h.run_ok();
+    h.get_by_label("Add screw").click();
+    h.run_ok();
+    assert_eq!(h.state().tab.screws().screws().len(), 5);
+    for _ in 0..3 {
+        if let Some(remove) = h.get_all_by_label("Remove this screw").last() {
+            remove.click();
+        }
+        h.run_ok();
+    }
+    assert_eq!(h.state().tab.screws().screws().len(), 3);
+    h.get_by_label("Four corners").click();
+    h.run_ok();
+    assert_eq!(h.state().tab.screws().screws().len(), 4);
+    pointer_away(&mut h);
+}
+
+#[test]
+fn surface_turns_when_dragged() {
+    let mut h = tab(Theme::Dark, (1180.0, 1060.0), demo_state());
+    let before = h.state().tab.azimuth();
+    let rect = h.get_by_label("Surface preview").rect();
+    let start = rect.center();
+    h.drag_at(start);
+    h.run_ok();
+    for step in 1..=5 {
+        h.hover_at(start + egui::vec2(12.0 * step as f32, 0.0));
+        h.run_ok();
+    }
+    h.drop_at(start + egui::vec2(60.0, 0.0));
+    h.run_ok();
+    assert!(
+        (h.state().tab.azimuth() - before).abs() > 5.0,
+        "{} -> {}",
+        before,
+        h.state().tab.azimuth()
+    );
+}
+
+#[test]
+fn bed_mesh_empty_states() {
+    let h = tab(Theme::Dark, (900.0, 600.0), PrinterState::default());
+    assert!(h.query_by_label("Not connected").is_some());
+    let mut connected = demo_state();
+    connected.mesh = None;
+    let mut h = tab(Theme::Dark, (900.0, 600.0), connected);
+    assert!(h.query_by_label("No bed mesh").is_some());
+    // Probing asks first.
+    h.get_all_by_label("Probe bed")
+        .last()
+        .expect("button")
+        .click();
+    h.run_ok();
+    assert!(h.query_by_label("Probe the bed?").is_some());
+    h.get_by_label("Cancel").click();
+    h.run_ok();
+    assert!(h.query_by_label("Probe the bed?").is_none());
+    assert!(!h.state().tab.is_probing());
+}
+
+#[test]
+fn odd_meshes_never_panic() {
+    let meshes = vec![
+        BedMesh::from_rows(vec![vec![0.1]], "bilinear"),
+        BedMesh::from_rows(vec![vec![f32::NAN; 4]; 4], "bilinear"),
+        BedMesh::from_rows(
+            vec![
+                vec![0.1, -0.2, 0.3],
+                vec![0.05],
+                vec![],
+                vec![0.0, f32::NAN, 0.2],
+            ],
+            "mbl",
+        ),
+        BedMesh::from_rows(vec![vec![1e30, -1e30], vec![f32::INFINITY, 0.0]], "ubl"),
+        BedMesh::from_rows(vec![vec![0.0; 2]; 2], ""),
+        BedMesh::from_rows(
+            (0..30)
+                .map(|r| (0..30).map(|c| ((r * c) as f32).sin() * 0.2).collect())
+                .collect(),
+            "klipper_mesh",
+        ),
+        {
+            let mut m = BedMesh::from_rows(vec![vec![0.0, 0.1], vec![0.2, 0.3]], "bilinear");
+            m.x_positions = Some(vec![200.0, 10.0]);
+            m.y_positions = Some(vec![f32::NAN, 5.0]);
+            m
+        },
+    ];
+    for mesh in meshes {
+        let mut state = demo_state();
+        state.mesh = Some(mesh);
+        let mut h = tab(Theme::Dark, (1000.0, 900.0), state);
+        h.run_ok();
+    }
+    // A zero-sized bed in the profile falls back to sane screws.
+    let mut h = tab(Theme::Light, (700.0, 900.0), demo_state());
+    h.state_mut().config.active_mut().bed_size = [0.0, f32::NAN];
+    h.run_ok();
+    assert_eq!(h.state().tab.screws().screws().len(), 4);
+}
+
+#[test]
+fn probing_and_leveling_on_the_simulator() {
+    let printer = sim_printer(fast_sim());
+    clear_received(&printer);
+    let mut h = harness_state(
+        Theme::Dark,
+        (1180.0, 1060.0),
+        Host::<BedMeshTab>::live(printer.clone()),
+        |ui, host| host.frame(ui),
+    );
+    h.run_ok();
+    // The stored mesh is requested once; the simulator has none yet.
+    wait_for_command(&printer, "M420 V");
+    h.run_ok();
+    assert!(h.query_by_label("No bed mesh").is_some());
+
+    // Probe, after confirming.
+    h.get_all_by_label("Probe bed")
+        .last()
+        .expect("button")
+        .click();
+    h.run_ok();
+    clear_received(&printer);
+    h.get_by_label("Home and probe").click();
+    h.run_ok();
+    wait_for_command(&printer, "G29");
+    run_until(&mut h, "the probed mesh", |s| s.mesh.is_some());
+    h.run_ok();
+    assert!(!h.state().tab.is_probing());
+    assert!(h.state().toasts.iter().any(|t| t.title() == "Bed probed"));
+    assert!(h.query_by_label("heatmap").is_some());
+    assert!(h.query_by_label_contains("Front left: Reference").is_some());
+
+    // Leveling is on after G29; switch it off.
+    run_until(&mut h, "the leveling state", |s| {
+        s.settings.value("M420", 'S') == Some(1.0)
+    });
+    clear_received(&printer);
+    h.get_by_label("Apply the mesh while printing").click();
+    h.run_ok();
+    assert_eq!(wait_for_command(&printer, "M420 S"), "M420 S0 Z10");
+    run_until(&mut h, "leveling off", |s| {
+        s.settings.value("M420", 'S') == Some(0.0)
+    });
+
+    // A new fade height.
+    clear_received(&printer);
+    // The fade height is the only number field while the screw editor is
+    // closed.
+    h.get_by_role(egui::accesskit::Role::SpinButton).click();
+    h.run_ok();
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.run_ok();
+    h.key_press(egui::Key::Backspace);
+    h.run_ok();
+    h.get_by_role(egui::accesskit::Role::SpinButton)
+        .type_text("5");
+    h.run_ok();
+    h.key_press(egui::Key::Enter);
+    h.run_ok();
+    h.get_by_label("Set").click();
+    h.run_ok();
+    assert_eq!(wait_for_command(&printer, "M420 S"), "M420 S0 Z5");
+    run_until(&mut h, "the new fade height", |s| {
+        s.settings.value("M420", 'Z') == Some(5.0)
+    });
+
+    // Save and reload.
+    clear_received(&printer);
+    h.get_by_label("Save to EEPROM").click();
+    h.run_ok();
+    wait_for_command(&printer, "M500");
+    clear_received(&printer);
+    h.get_by_label("Load").click();
+    h.run_ok();
+    wait_for_command(&printer, "M420 V");
+    printer.disconnect();
+}

@@ -242,17 +242,18 @@ pub fn demo_settings() -> sprint_host::sprint_proto::PrinterSettings {
         .collect()
 }
 
-/// A 5x5 bilinear mesh of a slightly warped, tilted bed.
+/// A 5x5 bilinear mesh of a slightly domed bed, tilted up towards the
+/// front right, with a little probing noise.
 pub fn demo_mesh() -> BedMesh {
     let mut rows = Vec::new();
     for r in 0..5 {
         let mut row = Vec::new();
         for c in 0..5 {
             let (x, y) = (c as f32 / 4.0, r as f32 / 4.0);
-            let tilt = 0.09 * x - 0.05 * y;
-            let bowl = -0.12 * ((x - 0.5).powi(2) + (y - 0.5).powi(2)) * 4.0 * 0.5;
-            let wobble = 0.015 * ((x * 7.0).sin() + (y * 5.0).cos());
-            row.push(((tilt + bowl + wobble + 0.02) * 1000.0).round() / 1000.0);
+            let tilt = 0.10 * x - 0.06 * y;
+            let dome = 0.07 * (1.0 - 4.0 * ((x - 0.55).powi(2) + (y - 0.45).powi(2)));
+            let noise = 0.006 * (13.0 * x + 7.0 * y).sin();
+            row.push(((tilt + dome + noise - 0.05) * 1000.0).round() / 1000.0);
         }
         rows.push(row);
     }
