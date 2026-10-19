@@ -1505,7 +1505,8 @@ impl SprintApp {
                 }
             }
             Modal::Settings(mut dialog) => {
-                match dialog.show(ctx, self.core.state.status.is_connected()) {
+                let open = self.core.state.status.is_open() || self.connector.is_connecting();
+                match dialog.show(ctx, open) {
                     Some(SettingsOutcome::Saved) => {
                         self.apply_settings(ctx, *dialog);
                         None

@@ -216,8 +216,9 @@ impl SettingsDialog {
         self.draft.console_max_lines = self.draft.console_max_lines.clamp(100, 1_000_000);
     }
 
-    /// Show the dialog; `Some` once saved or cancelled. `connected` notes
-    /// that connection changes apply on the next connect.
+    /// Show the dialog; `Some` once saved or cancelled. While `connected`
+    /// (a connection is open) the active profile cannot be switched or
+    /// deleted, and connection changes apply on the next connect.
     pub fn show(&mut self, egui_ctx: &egui::Context, connected: bool) -> Option<SettingsOutcome> {
         let p = theme::palette(egui_ctx);
         let mut outcome = None;
@@ -451,22 +452,32 @@ impl SettingsDialog {
             if active {
                 ui.add(Badge::new("ACTIVE").tone(Tone::Success));
             }
+            // The open connection keeps its profile: its bed and parking
+            // position drive the scripts of the printer that is attached.
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let (can_delete, why) = if count <= 1 {
+                    (false, "The last profile cannot be deleted")
+                } else if active && connected {
+                    (false, "Disconnect to delete the printer in use")
+                } else {
+                    (true, "")
+                };
                 if ui
                     .add_enabled(
-                        count > 1,
+                        can_delete,
                         IconButton::new(icons::DELETE)
                             .danger()
                             .tooltip("Delete this profile"),
                     )
-                    .on_disabled_hover_text("The last profile cannot be deleted")
+                    .on_disabled_hover_text(why)
                     .clicked()
                 {
                     self.confirm_delete = Some(i);
                 }
                 if !active
                     && ui
-                        .add(ActionButton::new("Use this printer").small())
+                        .add_enabled(!connected, ActionButton::new("Use this printer").small())
+                        .on_disabled_hover_text("Disconnect to switch printers")
                         .clicked()
                 {
                     self.draft.active_profile = i;

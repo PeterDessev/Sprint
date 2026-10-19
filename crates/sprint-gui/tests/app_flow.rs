@@ -1001,3 +1001,41 @@ fn the_3d_view_ignores_keys_and_wheel_behind_a_dialog() {
     }
     assert_eq!(h.state().dialog(), Some(DialogKind::Settings));
 }
+
+#[test]
+fn the_printer_cannot_be_switched_while_connected() {
+    let mut options = sim_options();
+    let other = sprint_host::PrinterProfile {
+        name: "Other printer".into(),
+        bed_size: [400.0, 400.0],
+        ..options.config.profiles[0].clone()
+    };
+    options.config.profiles.push(other);
+    let mut h = app(options, WINDOW);
+    connect(&mut h);
+    h.state_mut().push_action(AppAction::OpenSettings);
+    settle(&mut h);
+    // The profile of the open connection stays active: its bed size and
+    // parking position drive the scripts of the printer that is attached.
+    let dialog = h.state_mut().settings_dialog_mut().expect("settings");
+    dialog.set_page(sprint_gui::settings::Page::Profile(1));
+    settle(&mut h);
+    let switch = h.get_by_label("Use this printer");
+    assert!(switch.accesskit_node().is_disabled());
+    switch.click();
+    settle(&mut h);
+    h.state_mut()
+        .settings_dialog_mut()
+        .expect("settings")
+        .set_page(sprint_gui::settings::Page::Profile(0));
+    settle(&mut h);
+    assert!(
+        h.get_by_label("Delete this profile")
+            .accesskit_node()
+            .is_disabled()
+    );
+    h.get_by_label("Save").click();
+    settle(&mut h);
+    assert_eq!(h.state().config().active_profile, 0);
+    assert_eq!(h.state().printer().profile().bed_size, [220.0, 220.0]);
+}
