@@ -663,9 +663,9 @@ impl Shell {
         let tool = printer.with_state(|s| s.active_tool);
         match cmd {
             Command::Temp { celsius, tool: t } => {
-                self.set_temps(&[(Heater::Hotend(t.unwrap_or(tool)), celsius)]);
+                self.set_temps(&[(Heater::Hotend(t.unwrap_or(tool)), celsius)], input);
             }
-            Command::BedTemp(celsius) => self.set_temps(&[(Heater::Bed, celsius)]),
+            Command::BedTemp(celsius) => self.set_temps(&[(Heater::Bed, celsius)], input),
             Command::Preheat(Some(name)) => {
                 match actions::find_preset(&self.profile.temp_presets, &name) {
                     Ok(preset) => {
@@ -674,7 +674,7 @@ impl Shell {
                             (Heater::Bed, preset.bed),
                         ];
                         self.out.dim(format!("Preheating for {}", preset.name));
-                        self.set_temps(&targets);
+                        self.set_temps(&targets, input);
                     }
                     Err(why) => self.out.error(why),
                 }
@@ -682,7 +682,7 @@ impl Shell {
             Command::Cooldown => {
                 let heaters = printer.with_state(|s| actions::heaters(s, &self.profile));
                 let targets: Vec<(Heater, f32)> = heaters.into_iter().map(|h| (h, 0.0)).collect();
-                self.set_temps(&targets);
+                self.set_temps(&targets, input);
             }
             Command::Home(axes) => {
                 let allowed = if axes.z {
@@ -932,8 +932,35 @@ impl Shell {
         }
     }
 
-    fn set_temps(&self, targets: &[(Heater, f32)]) {
+    /// Send heater targets; turning a heating heater off while a job runs
+    /// asks first on a terminal.
+    fn set_temps(&self, targets: &[(Heater, f32)], input: &mut dyn LineSource) {
         let targets = actions::safe_targets(targets);
+        let (off, job) = self.printer.with_state(|s| {
+            let off: Vec<String> = targets
+                .iter()
+                .filter(|&&(heater, celsius)| celsius <= 0.0 && heating(s, heater))
+                .map(|&(heater, _)| actions::heater_label(heater))
+                .collect();
+            let job = s
+                .job
+                .as_ref()
+                .filter(|j| j.status.is_active())
+                .map(|j| j.name.clone());
+            (off, job)
+        });
+        if let Some(name) = job
+            && !off.is_empty()
+        {
+            let question = format!(
+                "{} off while {name} prints? The print will most likely fail.",
+                off.join(" and ")
+            );
+            if !self.confirm(input, &question, true) {
+                self.out.dim("Temperatures kept");
+                return;
+            }
+        }
         for &(heater, celsius) in &targets {
             self.printer.set_temperature(heater, celsius);
         }
@@ -1021,4 +1048,16 @@ impl Shell {
         });
         self.echo.settle();
     }
+}
+
+/// Whether `heater` has a target above 0 °C.
+fn heating(state: &sprint_host::PrinterState, heater: Heater) -> bool {
+    let reading = match heater {
+        Heater::Hotend(t) => state.temps.hotends.get(usize::from(t)),
+        Heater::Bed => state.temps.bed.as_ref(),
+        Heater::Chamber => state.temps.chamber.as_ref(),
+    };
+    reading
+        .and_then(|r| r.target)
+        .is_some_and(|t| t.is_finite() && t > 0.0)
 }

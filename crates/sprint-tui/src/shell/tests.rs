@@ -500,6 +500,39 @@ fn exit_asks_while_printing_on_a_terminal() {
 }
 
 #[test]
+fn turning_heaters_off_during_a_job_asks_on_a_terminal() {
+    let scratch = Scratch::new("cool");
+    let (mut shell, buffer) = connected_timed();
+    shell.load(&scratch.slow_file());
+    let mut input = Script::new(["bedtemp 50", "print"], false);
+    shell.run_lines_until_eof_without_leaving(&mut input);
+    wait_for(&shell, "the bed target and the print", |s| {
+        s.temps.bed.as_ref().and_then(|b| b.target) == Some(50.0)
+            && s.job
+                .as_ref()
+                .is_some_and(|j| j.status == JobStatus::Printing)
+    });
+    received(&shell);
+    let mut input = Script::new(["cooldown", "n", "bedtemp off", "no", "temp 0"], true);
+    shell.run_lines_until_eof_without_leaving(&mut input);
+    let text = buffer.text();
+    assert_eq!(text.matches("Temperatures kept").count(), 2, "{text}");
+    // The hotend was not heating: nothing to ask.
+    assert!(text.contains("Hotend T0 off"), "{text}");
+    // Wait until the M104 went out: the M140s would have gone before it.
+    let deadline = Instant::now() + PATIENCE;
+    let mut got = Vec::new();
+    while !got.iter().any(|c: &String| c.starts_with("M104")) {
+        assert!(Instant::now() < deadline, "no M104 in {got:?}");
+        std::thread::sleep(Duration::from_millis(5));
+        got.extend(received(&shell));
+    }
+    assert!(!got.iter().any(|c| c.starts_with("M140 S0")), "{got:?}");
+    shell.printer.cancel();
+    wait_for(&shell, "the cancel", |s| !s.job_active());
+}
+
+#[test]
 fn pause_resume_cancel_and_the_prompt() {
     let scratch = Scratch::new("pause");
     let (mut shell, buffer) = connected_timed();

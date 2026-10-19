@@ -34,7 +34,11 @@ pub(crate) enum Action {
     /// Disconnect, stopping a running job (already confirmed).
     DisconnectAnyway,
     Open(PathBuf),
+    /// Set heater targets (asking first when that turns a heater off
+    /// while a job runs).
     SetTemps(Vec<(Heater, f32)>),
+    /// Set heater targets (already confirmed).
+    SetTempsAnyway(Vec<(Heater, f32)>),
     StartPrint,
     CancelJob,
     Quit,

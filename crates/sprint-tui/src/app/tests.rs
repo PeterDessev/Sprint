@@ -307,6 +307,44 @@ fn macros_ask_first_while_a_job_runs() {
 }
 
 #[test]
+fn turning_heaters_off_while_printing_asks_first() {
+    let mut app = printing_app();
+    // :cooldown during the print.
+    app.run_line("cooldown");
+    let Some(Modal::Confirm(confirm)) = &app.modal else {
+        panic!("no question: {:?}", app.toast);
+    };
+    assert!(confirm.danger && !confirm.on_yes);
+    assert!(
+        confirm.message[0].starts_with("Hotend T0 and Bed off while calibration-cube.gcode"),
+        "{:?}",
+        confirm.message
+    );
+    assert!(matches!(&confirm.action, dialogs::Action::SetTempsAnyway(t) if t.len() == 2));
+    press(&mut app, KeyCode::Enter);
+    assert!(app.modal.is_none());
+    // The temperature dialog: Up from the first row is "All off".
+    press(&mut app, KeyCode::Char('t'));
+    press(&mut app, KeyCode::Up);
+    press(&mut app, KeyCode::Enter);
+    assert!(
+        matches!(&app.modal, Some(Modal::Confirm(c)) if c.title == "Turn heaters off while printing?")
+    );
+    press(&mut app, KeyCode::Esc);
+    // Raising a target or setting one that is already off does not ask.
+    app.run_line("temp 220");
+    assert!(app.modal.is_none());
+    assert!(
+        app.toast
+            .as_ref()
+            .is_some_and(|t| t.text == "Hotend T0 220 °C")
+    );
+    app.view.temps.bed = None;
+    app.run_line("bedtemp off");
+    assert!(app.modal.is_none(), "the bed was not heating");
+}
+
+#[test]
 fn printing_screen_at_120x40() {
     let mut app = printing_app();
     let buf = render(&mut app, 120, 40);

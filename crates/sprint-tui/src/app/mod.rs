@@ -898,6 +898,34 @@ impl App {
         true
     }
 
+    /// Send heater targets.
+    fn set_temps(&mut self, targets: &[(Heater, f32)]) {
+        for &(heater, celsius) in targets {
+            self.printer.set_temperature(heater, celsius);
+        }
+        self.info(actions::targets_text(targets));
+    }
+
+    /// The heaters that `targets` turn off while they are heating.
+    fn heaters_turned_off(&self, targets: &[(Heater, f32)]) -> Vec<Heater> {
+        let temps = &self.view.temps;
+        targets
+            .iter()
+            .filter(|&&(_, celsius)| celsius <= 0.0)
+            .filter(|&&(heater, _)| {
+                let reading = match heater {
+                    Heater::Hotend(t) => temps.hotends.get(usize::from(t)),
+                    Heater::Bed => temps.bed.as_ref(),
+                    Heater::Chamber => temps.chamber.as_ref(),
+                };
+                reading
+                    .and_then(|r| r.target)
+                    .is_some_and(|t| t.is_finite() && t > 0.0)
+            })
+            .map(|&(heater, _)| heater)
+            .collect()
+    }
+
     /// Run what a dialog asked for.
     fn run_action(&mut self, action: Action) {
         match action {
@@ -917,10 +945,32 @@ impl App {
             Action::Open(path) => self.open_file(path),
             Action::SetTemps(targets) => {
                 let targets = actions::safe_targets(&targets);
-                for &(heater, celsius) in &targets {
-                    self.printer.set_temperature(heater, celsius);
+                let off = self.heaters_turned_off(&targets);
+                if self.view.job_active() && !off.is_empty() {
+                    let name = self
+                        .view
+                        .job
+                        .as_ref()
+                        .map(|j| j.name.clone())
+                        .unwrap_or_default();
+                    let names: Vec<String> = off.into_iter().map(actions::heater_label).collect();
+                    self.modal = Some(Modal::Confirm(Confirm::new(
+                        "Turn heaters off while printing?",
+                        vec![
+                            format!("{} off while {name} prints.", names.join(" and ")),
+                            "The print will most likely fail.".to_string(),
+                        ],
+                        "Turn off",
+                        "Keep heating",
+                        true,
+                        Action::SetTempsAnyway(targets),
+                    )));
+                    return;
                 }
-                self.info(actions::targets_text(&targets));
+                self.set_temps(&targets);
+            }
+            Action::SetTempsAnyway(targets) => {
+                self.set_temps(&actions::safe_targets(&targets));
             }
             Action::StartPrint => self.start_print(),
             Action::CancelJob => {
@@ -1492,7 +1542,9 @@ impl App {
                         ];
                         let name = preset.name.clone();
                         self.run_action(Action::SetTemps(targets));
-                        self.info(format!("Preheating for {name}"));
+                        if self.modal.is_none() {
+                            self.info(format!("Preheating for {name}"));
+                        }
                     }
                     Err(why) => self.error(why),
                 }
@@ -1502,7 +1554,6 @@ impl App {
                 self.run_action(Action::SetTemps(
                     heaters.into_iter().map(|h| (h, 0.0)).collect(),
                 ));
-                self.info("Every heater off");
             }
             Command::Home(axes) => {
                 if self.motion_allowed() {
