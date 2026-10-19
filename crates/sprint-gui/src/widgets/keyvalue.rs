@@ -76,7 +76,9 @@ impl KeyValueGrid {
         add_rows: impl FnOnce(&mut KeyValueRows<'_>) -> R,
     ) -> InnerResponse<R> {
         let p = theme::ui_palette(ui);
-        let mut grid = Grid::new(self.id)
+        // Grid ids derive from the parent's stable id, which sibling Uis
+        // share; salt with the unique id so side-by-side grids differ.
+        let mut grid = Grid::new(super::widget_id(ui, self.id))
             .num_columns(2)
             .spacing(vec2(16.0, self.row_spacing));
         if let Some(w) = self.key_width {
