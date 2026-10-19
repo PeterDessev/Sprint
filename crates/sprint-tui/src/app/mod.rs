@@ -184,8 +184,9 @@ pub(crate) struct App {
     last_load_progress: u32,
     /// The target of the last connect (for `reset`).
     last_target: Option<ConnectTarget>,
-    /// An SD file being deleted: its name, until the printer answers.
-    pending_sd_delete: Option<String>,
+    /// An SD file being deleted: its name and when M30 was sent, until
+    /// the printer answers (or [`REPORT_TIMEOUT`] passes).
+    pending_sd_delete: Option<(String, Instant)>,
     /// A `source` file being read: its name and lines.
     sourcing: Option<Receiver<SourceRead>>,
 }
@@ -373,7 +374,7 @@ impl App {
             Event::Stats(_) => self.report_arrived(|w| *w == ReportSource::Stats),
             Event::SdFiles(_) => {
                 // The host takes a deleted file off the listing.
-                if let Some(name) = self.pending_sd_delete.take() {
+                if let Some((name, _)) = self.pending_sd_delete.take() {
                     self.good(format!("Deleted {name} from the SD card"));
                 }
                 self.report_arrived(|w| *w == ReportSource::SdFiles);
@@ -496,6 +497,23 @@ impl App {
         self.poll_source();
         self.tick_resume(now);
         self.tick_report(now);
+        self.tick_sd_delete(now);
+    }
+
+    /// Stop waiting for the answer to an SD delete after
+    /// [`REPORT_TIMEOUT`]: a later listing must not be taken for it.
+    fn tick_sd_delete(&mut self, now: Instant) {
+        let Some((name, since)) = &self.pending_sd_delete else {
+            return;
+        };
+        if now.saturating_duration_since(*since) < REPORT_TIMEOUT {
+            return;
+        }
+        let name = name.clone();
+        self.pending_sd_delete = None;
+        self.warn(format!(
+            "No answer about deleting {name} (sd ls shows the card)"
+        ));
     }
 
     /// Whether the job is paused, and whether nothing is queued or
@@ -1294,7 +1312,7 @@ impl App {
                 }
                 self.printer.delete_sd_file(&name);
                 self.info(format!("Deleting {name} from the SD card (M30)…"));
-                self.pending_sd_delete = Some(name);
+                self.pending_sd_delete = Some((name, Instant::now()));
             }
             Action::AnswerPrompt(button) => self.printer.answer_prompt(button),
             Action::EverythingOff => {

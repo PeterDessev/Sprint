@@ -2115,3 +2115,31 @@ fn a_session_profile_stays_active_after_loading_a_file() {
     assert_eq!(AppConfig::load_from(&path).expect("load").active_profile, 0);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn an_sd_delete_without_an_answer_is_not_reported_as_done_later() {
+    // A firmware that acknowledges M30 without saying what happened.
+    let fake = crate::fake_printer::FakePrinter::start();
+    let printer = Printer::new();
+    printer
+        .connect(fake.target(), ConnectOptions::default())
+        .expect("connect to the fake printer");
+    let mut app = App::new(printer, AppConfig::default(), None, Theme::dark());
+    wait(&mut app, "the connection", PrinterState::is_connected);
+    wait_idle(&mut app);
+    app.run_action(dialogs::Action::SdDelete("CUBE.GCO".into()));
+    wait_idle(&mut app);
+    assert!(fake.received().iter().any(|c| c == "M30 CUBE.GCO"));
+    // Long after: the user is told there was no answer, and a listing
+    // that comes later does not claim the file was deleted.
+    app.tick(Instant::now() + Duration::from_secs(30));
+    assert!(
+        app.toast
+            .as_ref()
+            .is_some_and(|t| t.text.contains("No answer about deleting CUBE.GCO")),
+        "{:?}",
+        app.toast
+    );
+    assert_eq!(app.pending_sd_delete, None);
+    app.printer.disconnect();
+}
