@@ -203,13 +203,16 @@ fn start_line_and_preamble() {
     let mut want = vec!["M104 S0".to_string(), "G92 E0".into(), "G1 F1200".into()];
     want.extend((start..file.len()).filter_map(|i| file.command(i).map(|c| c.into_owned())));
     assert_same_commands(&control.received_commands(), &want);
-    let statuses: Vec<JobStatus> = events
-        .try_iter()
-        .filter_map(|e| match e {
-            Event::Job(s) => Some(s),
-            _ => None,
-        })
-        .collect();
+    // (The event follows the state change: read up to it.)
+    let statuses: Vec<JobStatus> = events_until(&events, "Completed", |e| {
+        matches!(e, Event::Job(JobStatus::Completed))
+    })
+    .into_iter()
+    .filter_map(|e| match e {
+        Event::Job(s) => Some(s),
+        _ => None,
+    })
+    .collect();
     assert_eq!(
         statuses,
         [

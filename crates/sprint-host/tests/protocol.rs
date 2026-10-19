@@ -1097,11 +1097,10 @@ fn an_autotune_the_firmware_does_not_run_does_not_stay_running() {
     );
     let at = printer.with_state(|s| s.autotune.clone()).unwrap();
     assert!(at.result.is_none() && at.error.is_some(), "{at:?}");
-    assert!(
-        events
-            .try_iter()
-            .any(|e| matches!(e, Event::AutotuneFailed(_)))
-    );
+    // (The event follows the state change: wait for it rather than look.)
+    wait_for_event(&events, "AutotuneFailed", |e| {
+        matches!(e, Event::AutotuneFailed(_)).then_some(())
+    });
 }
 
 /// An SD print on firmware that reports `polls` progress lines and then
