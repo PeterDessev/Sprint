@@ -19,6 +19,7 @@
 
 pub mod commands;
 pub mod format;
+pub mod loader;
 pub mod theme;
 pub mod widgets;
 
