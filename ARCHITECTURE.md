@@ -1321,3 +1321,27 @@ sprint sim [--tcp ADDR]              run the virtual printer over TCP
 ```
 `T` is a `ConnectTarget::parse` string (`COM3@115200`, `tcp://host:port`,
 `sim`).
+
+Implementation notes (current state):
+* Exit codes: 0 success, 1 failure (`sprint: error: <anyhow chain>` on
+  stderr), 2 usage errors and the commands not implemented yet (`tui`,
+  `shell`, `print`, `send`, `ports` print `sprint <cmd>: not implemented
+  yet`). `--connect` values are only checked to be non-blank so far.
+  Logging: env_logger on stderr, `RUST_LOG` (default `warn`; `sim` adds
+  `sprint_sim=info`).
+* `analyze FILE [--json] [--filament-diameter MM]` (the diameter applies
+  when the file's metadata has none, like `AnalyzeOptions`). A progress
+  line is drawn on stderr only when it is a terminal. `--json` prints
+  `{file: {name, path, bytes, lines, commands}, stats, metadata,
+  bounds, travel_bounds, part_bounds, layers: [{z, height, time_start,
+  duration, filament_mm, first_line}]}` with thumbnails without their
+  bytes; empty bounds and non-finite numbers are `null`.
+* `sim [--tcp ADDR] [--time-scale X] [--extruders N]
+  [--checksum-error-rate R] [--drop-ok-rate R] [--no-heated-bed]
+  [--heated-chamber] [--instant-moves] [--advanced-ok] [--boot-delay-ms MS]
+  [--seed N] [--name NAME]`: the first stdout line is `Virtual printer
+  listening on <addr>` (the address is its last word; port 0 picks one),
+  then connection hints; it serves until the process is stopped.
+* GUI mode on Windows: when `GetConsoleProcessList` reports the console is
+  this process's alone (started from Explorer), `FreeConsole()` closes it
+  and errors are shown in a message box instead.
