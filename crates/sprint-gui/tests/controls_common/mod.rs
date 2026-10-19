@@ -208,6 +208,18 @@ pub fn by_label(label: &str) -> By<'_> {
     })
 }
 
+/// Like [`by_label`], matching names that contain `text`.
+pub fn by_label_contains(text: &str) -> By<'_> {
+    By::new().predicate(move |n| {
+        let name = match n.role() {
+            Role::TextInput | Role::MultilineTextInput => return false,
+            Role::Label => n.value(),
+            _ => n.label(),
+        };
+        name.is_some_and(|name| name.contains(text))
+    })
+}
+
 /// Take the pointer off the window (no hover highlight or cursor in a
 /// snapshot) and let the UI settle.
 pub fn pointer_away(h: &mut Harness<'_, Rig>) {
