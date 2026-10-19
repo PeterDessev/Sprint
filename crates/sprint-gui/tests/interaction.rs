@@ -638,3 +638,49 @@ fn jog_pad_moves_by_the_ring_that_was_pressed() {
         }]
     );
 }
+
+#[test]
+fn widget_state_survives_layout_changes_above() {
+    // A banner appearing above the parent `Ui` must not reset a collapsed
+    // card or throw away a target that is being typed.
+    let mut h = harness_state(
+        Theme::Dark,
+        (420.0, 420.0),
+        (false, Vec::new()),
+        |ui, (banner, actions)| {
+            if *banner {
+                ui.label("Banner");
+            }
+            ui.vertical(|ui| {
+                Card::new("Macros").collapsible(true).show(ui, |ui| {
+                    ui.label("Body text");
+                });
+                let r = TemperatureCard::new("Bed", sprint_gui::theme::HeaterKind::Bed)
+                    .current(25.0)
+                    .show(ui);
+                if let Some(a) = r.action {
+                    actions.push(a);
+                }
+            });
+        },
+    );
+    assert!(h.query_by_label("Body text").is_some());
+    h.get_by_label("Macros").click();
+    h.run_ok();
+    assert!(h.query_by_label("Body text").is_none(), "card collapsed");
+    h.get_by_role(egui::accesskit::Role::TextInput).click();
+    h.run_ok();
+    h.get_by_role(egui::accesskit::Role::TextInput)
+        .type_text("60");
+    h.run_ok();
+    h.state_mut().0 = true;
+    h.run_ok();
+    assert!(h.query_by_label("Banner").is_some());
+    assert!(
+        h.query_by_label("Body text").is_none(),
+        "card stays collapsed"
+    );
+    h.key_press(egui::Key::Enter);
+    h.run_ok();
+    assert_eq!(h.state().1, vec![TemperatureAction::SetTarget(60.0)]);
+}

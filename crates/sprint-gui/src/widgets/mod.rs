@@ -38,9 +38,12 @@
 //!   inverted ranges, ...) are ignored instead of panicking.
 //! * NaN and out-of-range data from files or printers are shown as "—",
 //!   hatched or clamped; nothing panics on them.
-//! * Internal ids derive from the parent `Ui`'s unique id, so copies of a
-//!   widget in sibling `ui.columns` stay independent. Set `id_salt` when two
-//!   identical widgets share one parent `Ui`.
+//! * Stored state (a collapsed card, a target being typed, ...) is keyed by
+//!   the parent `Ui`'s stable id and a salt (the title or name by default),
+//!   so it survives layout changes around the widget. Identical copies
+//!   (e.g. the same card in two `ui.columns`) stay independent: they are
+//!   numbered in drawing order. Give them an `id_salt` when copies can
+//!   appear, disappear or swap places.
 //! * Everything exposes AccessKit labels, so `egui_kittest` can drive it.
 //!
 //! # Catalog
@@ -192,15 +195,46 @@ impl<A> ActionResponse<A> {
     }
 }
 
-/// An id for a widget's state or interaction, derived from `salt` and the
-/// *unique* id of the parent `Ui`.
+/// An id for a widget's state or interaction: the parent's *stable* id
+/// with `salt`, plus an occurrence number when that id was already handed
+/// out in this pass.
 ///
-/// `Ui::make_persistent_id` uses the parent's *stable* id, which sibling
-/// `Ui`s can share (e.g. the columns of `ui.columns`), so two copies of a
-/// widget in neighbouring columns would clash. The unique id is stable as
-/// long as the widget hierarchy is.
+/// The stable id (`Ui::make_persistent_id`) survives layout changes, but
+/// sibling `Ui`s can share it (e.g. the columns of `ui.columns`), so two
+/// copies of a widget in neighbouring columns would clash. `Ui::unique_id`
+/// tells them apart but changes whenever anything is added before the
+/// parent, which would reset stored state (a collapsed card, a target being
+/// typed). Numbering repeated ids within a pass gives both: the first copy
+/// keeps the plain stable id, the second gets `#1`, and so on, regardless
+/// of what else changes in the layout.
 pub(crate) fn widget_id(ui: &Ui, salt: impl std::hash::Hash + std::fmt::Debug) -> egui::Id {
-    ui.unique_id().with(salt)
+    /// How often each id was handed out in the current pass.
+    #[derive(Clone, Default)]
+    struct Claims {
+        pass: u64,
+        counts: egui::IdMap<u32>,
+    }
+
+    let base = ui.id().with(salt);
+    let ctx = ui.ctx();
+    let pass = ctx.cumulative_pass_nr();
+    let key = egui::Id::new("sprint-gui::widget-id-claims").with(ctx.viewport_id());
+    let occurrence = ctx.data_mut(|d| {
+        let claims = d.get_temp_mut_or_default::<Claims>(key);
+        if claims.pass != pass {
+            claims.pass = pass;
+            claims.counts.clear();
+        }
+        let count = claims.counts.entry(base).or_insert(0);
+        let occurrence = *count;
+        *count = count.saturating_add(1);
+        occurrence
+    });
+    if occurrence == 0 {
+        base
+    } else {
+        base.with(("sprint-gui::occurrence", occurrence))
+    }
 }
 
 /// The largest width or height (points) any widget accepts from a builder.
@@ -240,5 +274,37 @@ pub(crate) fn paint_focus_ring(ui: &Ui, response: &Response, rect: Rect, radius:
             Stroke::new(2.0, theme::with_alpha(p.accent, 0.8)),
             StrokeKind::Outside,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Run one pass of `ui` on `ctx` (no renderer: drop the texture uploads).
+    fn pass(ctx: &egui::Context, ui: impl FnMut(&mut Ui)) {
+        let mut output = ctx.run_ui(egui::RawInput::default(), ui);
+        output.textures_delta.clear();
+    }
+
+    #[test]
+    fn widget_ids_are_numbered_per_pass_and_stable_across_passes() {
+        let ctx = egui::Context::default();
+        let mut passes = Vec::new();
+        for _ in 0..3 {
+            pass(&ctx, |ui| {
+                let plain = ui.id().with("card");
+                let first = widget_id(ui, "card");
+                let second = widget_id(ui, "card");
+                let other = widget_id(ui, "other");
+                passes.push((plain, first, second, other));
+            });
+        }
+        let (plain, first, second, other) = passes[0];
+        // The first copy keeps the plain stable id; repeats are numbered.
+        assert_eq!(first, plain);
+        assert_ne!(first, second);
+        assert_ne!(first, other);
+        assert!(passes.windows(2).all(|w| w[0] == w[1]));
     }
 }
