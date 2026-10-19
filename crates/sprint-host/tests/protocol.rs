@@ -515,6 +515,120 @@ fn a_lost_line_counter_does_not_fail_an_sd_print() {
 }
 
 #[test]
+fn an_sd_command_lost_with_the_line_counter_is_sent_again() {
+    // The counter moves behind the host's back just as the SD print's
+    // pause (M25) or cancel (M524) arrives: the firmware rejects it, and
+    // the card goes on printing. The print goes on for the host too, so
+    // the command must reach the printer after the counter reset before
+    // the job is Paused or Cancelled.
+    for (sd_command, want) in [("M25", JobStatus::Paused), ("M524", JobStatus::Cancelled)] {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut fw = Mini::new(Arc::clone(&log));
+        let mut rejected = false;
+        let (link, _out) = fake(
+            |out| out.line("start"),
+            move |line, out| {
+                if command(line) == sd_command && !rejected {
+                    rejected = true;
+                    fw.last = 9998;
+                    out.line("Error:Line Number is not Last Line Number+1, Last Line: 9998");
+                    out.line("Resend: 9999");
+                    out.line("ok");
+                    return;
+                }
+                let Some(cmd) = fw.accept(line, out) else {
+                    return;
+                };
+                if cmd == "M23 part.gco" {
+                    out.line("File opened: PART.GCO Size: 1000");
+                    out.line("File selected");
+                }
+                out.line("ok");
+            },
+        );
+        let printer = connect_fake(
+            link,
+            ConnectOptions {
+                query_on_connect: false,
+                temp_poll_secs: 0.0,
+                ..options()
+            },
+        );
+        wait_for(&printer, "connected", |s| s.is_connected());
+        printer.start_sd_print("part.gco").unwrap();
+        wait_for(&printer, "printing", |s| {
+            s.job
+                .as_ref()
+                .is_some_and(|j| j.status == JobStatus::Printing)
+        });
+        if want == JobStatus::Paused {
+            printer.pause();
+        } else {
+            printer.cancel();
+        }
+        wait_for(&printer, "the job to change", |s| {
+            s.job.as_ref().is_some_and(|j| j.status == want)
+        });
+        let log = log.lock().unwrap().clone();
+        let reset = log.iter().rposition(|c| c == "M110 N0");
+        assert!(
+            reset.is_some_and(|r| log[r..].iter().any(|c| c == sd_command)),
+            "{sd_command} after the counter reset: {log:?}"
+        );
+    }
+}
+
+#[test]
+fn an_sd_command_the_printer_keeps_rejecting_fails_the_print() {
+    // An M524 garbled on the way every time: sending it again after the
+    // host gave up on it would go on forever, and the print is not
+    // cancelled, so the job fails.
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut fw = Mini::new(Arc::clone(&log));
+    let (link, _out) = fake(
+        |out| out.line("start"),
+        move |line, out| {
+            if command(line) == "M524" {
+                out.line(&format!("Error:checksum mismatch, Last Line: {}", fw.last));
+                out.line(&format!("Resend: {}", fw.last + 1));
+                out.line("ok");
+                return;
+            }
+            let Some(cmd) = fw.accept(line, out) else {
+                return;
+            };
+            if cmd == "M23 part.gco" {
+                out.line("File opened: PART.GCO Size: 1000");
+                out.line("File selected");
+            }
+            out.line("ok");
+        },
+    );
+    let printer = connect_fake(
+        link,
+        ConnectOptions {
+            query_on_connect: false,
+            temp_poll_secs: 0.0,
+            ..options()
+        },
+    );
+    wait_for(&printer, "connected", |s| s.is_connected());
+    printer.start_sd_print("part.gco").unwrap();
+    wait_for(&printer, "printing", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Printing)
+    });
+    printer.cancel();
+    wait_for(&printer, "the job to end", |s| !s.job_active());
+    let status = printer.with_state(|s| s.job.as_ref().map(|j| j.status.clone()));
+    assert!(
+        matches!(&status, Some(JobStatus::Failed(m)) if m.contains("rejected again and again")),
+        "{status:?}"
+    );
+}
+
+#[test]
 fn wait_with_commands_in_flight_recovers_without_the_timeout() {
     let log = Arc::new(Mutex::new(Vec::new()));
     let mut fw = Mini::new(Arc::clone(&log));

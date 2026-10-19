@@ -192,6 +192,14 @@ impl JobRuntime {
         self.scripts.pop_front()
     }
 
+    /// Script lines the link dropped unacknowledged (a lost line counter)
+    /// go again, before the ones not sent yet.
+    pub(super) fn resend_scripts(&mut self, lines: impl DoubleEndedIterator<Item = Meta>) {
+        for line in lines.rev() {
+            self.scripts.push_front(line);
+        }
+    }
+
     fn queue_scripts(&mut self, lines: Vec<String>, then: Option<JobStatus>) {
         self.scripts.extend(
             lines

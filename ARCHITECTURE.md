@@ -1387,7 +1387,11 @@ Every public item is also re-exported at the crate root.
   firmware's counter changed) and a line rejected 16 times in a row drop the
   numbered lines in flight, fail a host print or an upload (an SD print
   goes on: the printer reads it from its card, whatever the host's line
-  numbers) and reset the counter (resending
+  numbers; its own commands among those dropped, a pause, resume or
+  cancel under way, were rejected for their numbers and go again after
+  the reset, so the job changes only once the printer acknowledged them;
+  if the line given up on is one of them, the SD print fails) and reset
+  the counter (resending
   could execute lines twice). The printer still runs then, so a failed host
   print gets `{heaters_off}` and `M107` right after the counter reset
   (unless `PrinterProfile::keep_heaters_on_failure`), a failed upload `M29`;

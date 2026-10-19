@@ -242,29 +242,80 @@ impl Engine {
         if self.halted {
             return;
         }
+        // What a lost line counter drops of an SD print's own commands.
+        let sd_commands = self.sd_commands_numbered_in_flight();
         match self.flow.on_resend(n, now) {
             ResendAction::Rewind { from, stale } => {
                 log::debug!("resend from line {from} ({stale} stale lines)");
             }
             ResendAction::Duplicate | ResendAction::Barrier | ResendAction::NothingToResend => {}
-            ResendAction::Desync { expected } => self.line_counter_lost(format!(
-                "The printer expects line {expected}, which was never sent: its line counter changed"
-            )),
-            ResendAction::Unavailable { line } => self.line_counter_lost(format!(
-                "The printer asked for line {line}, which cannot be resent safely"
-            )),
-            ResendAction::GiveUp { line } => self.line_counter_lost(format!(
-                "Line {line} was rejected again and again (too long for the firmware, or a bad link); giving up on it"
-            )),
+            ResendAction::Desync { expected } => self.line_counter_lost(
+                format!(
+                    "The printer expects line {expected}, which was never sent: its line counter changed"
+                ),
+                sd_commands,
+                None,
+            ),
+            ResendAction::Unavailable { line } => self.line_counter_lost(
+                format!("The printer asked for line {line}, which cannot be resent safely"),
+                sd_commands,
+                None,
+            ),
+            ResendAction::GiveUp { line } => self.line_counter_lost(
+                format!(
+                    "Line {line} was rejected again and again (too long for the firmware, or a bad link); giving up on it"
+                ),
+                sd_commands,
+                Some(line),
+            ),
         }
+    }
+
+    /// The SD print's control commands (M23, M24, M25, M524, ...) sent
+    /// with a line number and not acknowledged yet, with their numbers, in
+    /// the order they were sent. Empty without an active SD print.
+    fn sd_commands_numbered_in_flight(&self) -> Vec<(Option<u32>, Meta)> {
+        let sd_print = self
+            .job
+            .as_ref()
+            .is_some_and(|j| j.kind() == JobKind::SdPrint && j.is_active());
+        if !sd_print {
+            return Vec::new();
+        }
+        let script = |m: &Meta| m.job_line() == Some(JobLine::Script);
+        let mut sent: Vec<(Option<u32>, Meta)> = self
+            .flow
+            .in_flight()
+            .filter(|e| e.number.is_some() && script(&e.meta))
+            .map(|e| (e.number, e.meta.clone()))
+            .collect();
+        sent.sort_by_key(|(n, _)| *n);
+        // Lines waiting for retransmission come after those in flight.
+        sent.extend(
+            self.flow
+                .backlog()
+                .filter(|m| script(m))
+                .map(|m| (None, m.clone())),
+        );
+        sent
     }
 
     /// The firmware lost track of the line numbers: the numbered commands in
     /// flight were dropped (resending could execute some twice), so a host
     /// print or an upload cannot continue; the counter is reset before
     /// anything else is sent. An SD print goes on: the printer reads it
-    /// from its card, whatever the host's line numbers.
-    fn line_counter_lost(&mut self, message: String) {
+    /// from its card, whatever the host's line numbers. Its own commands
+    /// among the dropped ones (`sd_commands`: a pause, resume or cancel
+    /// under way) were rejected for their line numbers, so they go again
+    /// after the counter reset and the job changes once they are
+    /// acknowledged; when the line given up on (`given_up`) is one of them,
+    /// it cannot get through and the SD print fails instead.
+    fn line_counter_lost(
+        &mut self,
+        message: String,
+        sd_commands: Vec<(Option<u32>, Meta)>,
+        given_up: Option<u32>,
+    ) {
         self.shared
             .log(ConsoleKind::Error, message.clone(), false, None);
         self.shared.emit(Event::Error(message.clone()));
@@ -272,8 +323,21 @@ impl Engine {
             .job
             .as_ref()
             .is_some_and(|j| j.kind() == JobKind::SdPrint && j.is_active());
-        if sd_print {
-            self.warn("The SD print goes on: it does not depend on the host's line numbers");
+        let hopeless =
+            given_up.is_some_and(|line| sd_commands.iter().any(|(n, _)| *n == Some(line)));
+        if sd_print && !hopeless {
+            if sd_commands.is_empty() {
+                self.warn("The SD print goes on: it does not depend on the host's line numbers");
+            } else {
+                let names: Vec<String> = sd_commands.iter().map(|(_, m)| m.text.clone()).collect();
+                self.warn(format!(
+                    "The SD print goes on; {} sent again after the line counter reset",
+                    names.join(", ")
+                ));
+                if let Some(job) = &mut self.job {
+                    job.resend_scripts(sd_commands.into_iter().map(|(_, m)| m));
+                }
+            }
         } else {
             // The printer still runs: leave it safe (heaters off) after
             // the counter reset.
