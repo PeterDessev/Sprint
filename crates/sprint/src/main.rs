@@ -6,6 +6,7 @@
 
 mod analyze;
 mod cli;
+mod sim;
 
 use std::process::ExitCode;
 
@@ -45,6 +46,7 @@ fn run(command: Command) -> Result<ExitCode> {
     match command {
         Command::Gui(args) => run_gui(args),
         Command::Analyze(args) => analyze::run(&args).map(|()| ExitCode::SUCCESS),
+        Command::Sim(args) => sim::run(&args).map(|()| ExitCode::SUCCESS),
         other => Ok(not_implemented(other.name())),
     }
 }
