@@ -25,8 +25,14 @@ use crate::widgets::{CommandInput, CommandLine, InputEvent, KeyHints};
 /// What a dialog asks the app to do.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Action {
+    /// Connect (asking first while a job runs).
     Connect(ConnectTarget),
+    /// Disconnect (asking first while a job runs).
     Disconnect,
+    /// Connect, stopping a running job (already confirmed).
+    ConnectAnyway(ConnectTarget),
+    /// Disconnect, stopping a running job (already confirmed).
+    DisconnectAnyway,
     Open(PathBuf),
     SetTemps(Vec<(Heater, f32)>),
     StartPrint,

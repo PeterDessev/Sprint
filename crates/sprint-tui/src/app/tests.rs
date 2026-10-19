@@ -636,6 +636,25 @@ fn f6_pauses_and_resumes_and_f7_cancels_after_asking() {
             .as_ref()
             .is_some_and(|j| j.status == JobStatus::Cancelled)
     });
+    // Connecting elsewhere or disconnecting stops a job: asked first.
+    press(&mut app, KeyCode::F(5));
+    press(&mut app, KeyCode::Char('y'));
+    wait(&mut app, "printing again", |s| s.job_active());
+    app.sync();
+    app.run_line("disconnect");
+    assert!(
+        matches!(&app.modal, Some(Modal::Confirm(c)) if c.action == dialogs::Action::DisconnectAnyway)
+    );
+    press(&mut app, KeyCode::Enter);
+    app.run_line("connect sim");
+    assert!(
+        matches!(&app.modal, Some(Modal::Confirm(c)) if matches!(c.action, dialogs::Action::ConnectAnyway(_)))
+    );
+    press(&mut app, KeyCode::Esc);
+    app.sync();
+    assert!(app.view.job_active(), "the job kept running");
+    app.printer.cancel();
+    wait(&mut app, "the second cancel", |s| !s.job_active());
     // Jogging is refused during a job.
     press(&mut app, KeyCode::F(5));
     press(&mut app, KeyCode::Char('y'));

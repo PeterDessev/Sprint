@@ -809,13 +809,48 @@ impl App {
         }
     }
 
+    /// While a job runs, ask before `action` (which stops it) and return
+    /// true; otherwise return false.
+    fn job_stops_ask(&mut self, title: &str, action: Action) -> bool {
+        if !self.view.job_active() {
+            return false;
+        }
+        let name = self
+            .view
+            .job
+            .as_ref()
+            .map(|j| j.name.clone())
+            .unwrap_or_default();
+        self.modal = Some(Modal::Confirm(Confirm::new(
+            title,
+            vec![
+                format!("{name} is printing and Sprint streams it."),
+                "Closing the connection stops the print.".to_string(),
+            ],
+            "Stop the print",
+            "Keep printing",
+            true,
+            action,
+        )));
+        true
+    }
+
     /// Run what a dialog asked for.
     fn run_action(&mut self, action: Action) {
         match action {
-            Action::Connect(target) => self.connect(target),
-            Action::Disconnect => {
-                self.printer.disconnect();
+            Action::Connect(target) => {
+                if !self.job_stops_ask("Connect elsewhere?", Action::ConnectAnyway(target.clone()))
+                {
+                    self.connect(target);
+                }
             }
+            Action::ConnectAnyway(target) => self.connect(target),
+            Action::Disconnect => {
+                if !self.job_stops_ask("Disconnect?", Action::DisconnectAnyway) {
+                    self.printer.disconnect();
+                }
+            }
+            Action::DisconnectAnyway => self.printer.disconnect(),
             Action::Open(path) => self.open_file(path),
             Action::SetTemps(targets) => {
                 for &(heater, celsius) in &targets {
@@ -1304,11 +1339,11 @@ impl App {
             }
             Command::Connect { target, baud } => {
                 match actions::resolve_target(target.as_deref(), baud, &self.profile) {
-                    Ok(target) => self.connect(target),
+                    Ok(target) => self.run_action(Action::Connect(target)),
                     Err(why) => self.error(why),
                 }
             }
-            Command::Disconnect => self.printer.disconnect(),
+            Command::Disconnect => self.run_action(Action::Disconnect),
             Command::Ports => self.show_report("Serial ports", report::ports_lines(&list_ports())),
             Command::Load(path) => {
                 let path = crate::paths::resolve(&path.to_string_lossy(), &self.base_dir);
