@@ -554,14 +554,22 @@ impl Engine {
                     self.shared.emit(Event::Stats(stats));
                 }
             }
+            // Firmware without the capability answers "Unknown command" (and
+            // ok): only count on reports it can send, or polling stops.
             (b'M', 155) => {
                 if let Some(s) = int('S') {
-                    self.temp_autoreport = s > 0;
+                    self.temp_autoreport =
+                        s > 0 && self.shared.state.read().has_capability("AUTOREPORT_TEMP");
                 }
             }
             (b'M', 27) => {
                 if let Some(s) = int('S') {
-                    self.sd_autoreport = s > 0;
+                    self.sd_autoreport = s > 0
+                        && self
+                            .shared
+                            .state
+                            .read()
+                            .has_capability("AUTOREPORT_SD_STATUS");
                 }
             }
             (b'M', 220) => {

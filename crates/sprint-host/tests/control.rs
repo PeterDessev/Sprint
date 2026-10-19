@@ -236,6 +236,39 @@ fn without_auto_reports_temperatures_are_polled() {
 }
 
 #[test]
+fn an_auto_report_request_the_firmware_cannot_honour_keeps_polling() {
+    let sim = SimConfig {
+        auto_report_temps: false,
+        ..fast_sim(20.0)
+    };
+    let printer = connect(
+        sim,
+        ConnectOptions {
+            temp_poll_secs: 0.05,
+            ..options()
+        },
+    );
+    assert!(!printer.with_state(|s| s.has_capability("AUTOREPORT_TEMP")));
+    // The firmware answers "Unknown command" (and ok): it will not report.
+    printer.send("M155 S1");
+    wait_idle(&printer);
+    let seq = last_seq(&printer);
+    wait_for_within(
+        &printer,
+        "polls after the M155",
+        Duration::from_secs(5),
+        |_| {
+            printer
+                .console_since(seq, usize::MAX)
+                .iter()
+                .filter(|e| e.kind == ConsoleKind::Sent && e.text == "M105" && e.auto)
+                .count()
+                >= 3
+        },
+    );
+}
+
+#[test]
 fn heat_wait_with_busy_messages_does_not_time_out_or_poll() {
     let sim = SimConfig {
         auto_report_temps: false,
