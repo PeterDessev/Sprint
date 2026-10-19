@@ -3,8 +3,9 @@
 
 use std::io::{self, IsTerminal, Stdout};
 use std::panic::{self, PanicHookInfo};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::thread::{self, ThreadId};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
@@ -47,6 +48,52 @@ fn restore_terminal() {
 /// The panic hook in force before the TUI started.
 type Hook = Box<dyn Fn(&PanicHookInfo<'_>) + Sync + Send + 'static>;
 
+/// Panics of other threads while the UI runs, for the status line.
+static BACKGROUND_PANICS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// The messages of panics on other threads since the last call.
+fn take_background_panics() -> Vec<String> {
+    std::mem::take(
+        &mut *BACKGROUND_PANICS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner),
+    )
+}
+
+/// Install a panic hook for a UI running on `ui`; returns the previous
+/// hook.
+///
+/// A panic on the UI thread ends the UI: `restore` puts the terminal back
+/// before the previous hook reports the panic. A panic on another thread
+/// (a file load, the printer engine, which survive their own panics)
+/// leaves the UI running: the terminal stays as it is, nothing is written
+/// over the screen, and the message waits for the status line.
+fn install_panic_hook(ui: ThreadId, restore: fn()) -> Arc<Hook> {
+    let previous: Arc<Hook> = Arc::new(panic::take_hook());
+    let chained = Arc::clone(&previous);
+    panic::set_hook(Box::new(move |info| {
+        let current = thread::current();
+        if current.id() == ui {
+            restore();
+            chained(info);
+            return;
+        }
+        let name = current.name().unwrap_or("a background thread");
+        let what = info.payload_as_str().unwrap_or("panic");
+        log::error!("{name} panicked: {info}");
+        BACKGROUND_PANICS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(format!("Internal error in {name}: {what}"));
+    }));
+    previous
+}
+
+/// Put `previous` (from [`install_panic_hook`]) back.
+fn restore_panic_hook(previous: Arc<Hook>) {
+    panic::set_hook(Box::new(move |info| previous(info)));
+}
+
 /// Restores the terminal (and the previous panic hook) when dropped, so
 /// every way out of the TUI leaves a usable shell behind.
 struct TerminalGuard {
@@ -55,12 +102,7 @@ struct TerminalGuard {
 
 impl TerminalGuard {
     fn enter() -> Result<(TerminalGuard, Terminal<Backend>)> {
-        let previous: Arc<Hook> = Arc::new(panic::take_hook());
-        let chained = Arc::clone(&previous);
-        panic::set_hook(Box::new(move |info| {
-            restore_terminal();
-            chained(info);
-        }));
+        let previous = install_panic_hook(thread::current().id(), restore_terminal);
         let guard = TerminalGuard {
             previous: Some(previous),
         };
@@ -82,7 +124,7 @@ impl Drop for TerminalGuard {
     fn drop(&mut self) {
         restore_terminal();
         if let Some(previous) = self.previous.take() {
-            panic::set_hook(Box::new(move |info| previous(info)));
+            restore_panic_hook(previous);
         }
     }
 }
@@ -150,6 +192,9 @@ fn event_loop(terminal: &mut Terminal<Backend>, app: &mut App, wake: &AtomicBool
         if wake.swap(false, Ordering::AcqRel) {
             app.sync();
         }
+        for message in take_background_panics() {
+            app.error(message);
+        }
         app.tick(Instant::now());
         let due = last_draw.is_none_or(|t| t.elapsed() >= FRAME);
         if app.dirty && due && !app.quit {
@@ -161,4 +206,42 @@ fn event_loop(terminal: &mut Terminal<Backend>, app: &mut App, wake: &AtomicBool
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    static RESTORES: AtomicUsize = AtomicUsize::new(0);
+
+    fn count_restore() {
+        RESTORES.fetch_add(1, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn only_a_panic_on_the_ui_thread_restores_the_terminal() {
+        let previous = install_panic_hook(thread::current().id(), count_restore);
+        // A background thread panics: the UI keeps its terminal and gets
+        // the message.
+        let worker = thread::Builder::new()
+            .name("sprint-test-worker".into())
+            .spawn(|| panic!("worker gave up"))
+            .expect("spawn");
+        assert!(worker.join().is_err());
+        let restored_by_worker = RESTORES.load(Ordering::SeqCst);
+        // The UI thread panics: the terminal is restored.
+        let ui = panic::catch_unwind(|| panic!("the UI gave up"));
+        let restored_by_ui = RESTORES.load(Ordering::SeqCst);
+        restore_panic_hook(previous);
+        assert!(ui.is_err());
+        assert_eq!(restored_by_worker, 0);
+        assert_eq!(restored_by_ui, 1);
+        let messages = take_background_panics();
+        assert!(
+            messages.contains(&"Internal error in sprint-test-worker: worker gave up".to_string()),
+            "{messages:?}"
+        );
+        assert!(take_background_panics().is_empty());
+    }
 }
