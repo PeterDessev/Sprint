@@ -296,10 +296,12 @@ pub(crate) fn complete_line(line: &str, pos: usize, helper: &ShellHelper) -> (us
     let args_start =
         first_end + (before[first_end..].len() - before[first_end..].trim_start().len());
     let args = &before[args_start..];
-    // The word under the cursor and how many words precede it.
+    // The word under the cursor and how many words precede it (a space may
+    // be several bytes long, such as a no-break space).
     let word_start = args
-        .rfind(char::is_whitespace)
-        .map_or(args_start, |i| args_start + i + 1);
+        .char_indices()
+        .rfind(|(_, c)| c.is_whitespace())
+        .map_or(args_start, |(i, c)| args_start + i + c.len_utf8());
     let word = &before[word_start..];
     let index = args[..word_start - args_start].split_whitespace().count();
     let candidates = match (spec.name, index) {
@@ -424,5 +426,29 @@ mod tests {
         let _ = complete_line("préheat", 3, &helper());
         let _ = complete_line("load x", 99, &helper());
         let _ = complete_line("", 0, &helper());
+    }
+
+    #[test]
+    fn wide_spaces_between_arguments_are_safe() {
+        // A no-break space (2 bytes) or an ideographic space (3 bytes),
+        // as pasted from a web page, separates words like a space.
+        assert_eq!(complete("home x\u{a0}y"), (8, vec!["y".into()]));
+        assert_eq!(
+            complete("home x\u{3000}"),
+            (9, vec!["x".into(), "y".into(), "z".into()])
+        );
+        assert_eq!(
+            complete("sd\u{a0}upload\u{3000}calib").1,
+            ["calibration-cube.gcode"]
+        );
+        for line in [
+            "connect sim\u{a0}2",
+            "log\u{3000}o\u{a0}",
+            "eeprom \u{2003}\u{2003}",
+        ] {
+            for pos in 0..=line.len() {
+                let _ = complete_line(line, pos, &helper());
+            }
+        }
     }
 }
