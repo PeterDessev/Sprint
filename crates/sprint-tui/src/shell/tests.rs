@@ -1810,3 +1810,32 @@ fn moves_and_babysteps_warn_while_axes_are_not_homed() {
     let text = buffer.text();
     assert!(!text.contains("not homed"), "{text}");
 }
+
+#[test]
+fn a_macro_that_asks_shows_its_lines_with_the_placeholders_filled_in() {
+    let (mut shell, buffer) = connected();
+    shell.config.macros.push(sprint_host::Macro {
+        name: "Park and cool".into(),
+        gcode: "{heaters_off}\nM107\nG1 Z{max_z}".into(),
+        color: None,
+        confirm: true,
+    });
+    let mut input = Script::new(["macro park and cool", "n"], true);
+    shell.run_lines_until_eof_without_leaving(&mut input);
+    let text = buffer.text();
+    for line in ["  M104 S0", "  M140 S0", "  M107", "  G1 Z250"] {
+        assert!(
+            text.lines().any(|l| l == line),
+            "missing {line:?} in\n{text}"
+        );
+    }
+    assert!(!text.contains('{'), "{text}");
+    assert!(text.contains("Not run"), "{text}");
+    // A macro that does not ask runs without the listing.
+    buffer.clear();
+    let mut input = Script::new(["macro home"], true);
+    shell.run_lines_until_eof_without_leaving(&mut input);
+    let text = buffer.text();
+    assert!(!text.contains("  G28"), "{text}");
+    assert!(text.contains("Macro Home"), "{text}");
+}

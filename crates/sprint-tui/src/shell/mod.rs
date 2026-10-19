@@ -1685,6 +1685,15 @@ impl Shell {
                     // classifier, like typed ones; a macro marked to ask
                     // first asks anyway.
                     let gcode = actions::rendered_gcode(&m.gcode, &self.profile);
+                    // Asked on a terminal: what it sends, placeholders
+                    // filled in, comes first.
+                    let ctx = printer.with_state(actions::job_context);
+                    let asks = m.confirm || actions::check_gcode(&gcode, ctx).needs_confirmation();
+                    if asks && input.interactive() {
+                        for line in gcode.lines() {
+                            self.out.dim(format!("  {line}"));
+                        }
+                    }
                     let question = format!("Run {}?", m.name);
                     let refused = format!("Macro {} not run", m.name);
                     let check = SendCheck {
