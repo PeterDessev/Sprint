@@ -8,8 +8,12 @@
 //! * [`widgets`]: ratatui widgets for the layer view, temperatures, job
 //!   progress, the console, the command line with G-code completion, key
 //!   hints, help and toolpath statistics;
-//! * [`format`]: number, length and duration formatting shared with the
-//!   command-line reports.
+//! * [`format`](mod@format): number, length and duration formatting shared
+//!   with the command-line reports.
+//!
+//! Widgets take their own small input types, never host types, and draw
+//! with a [`Theme`]. `cargo run -p sprint-tui --example widgets_demo` shows
+//! them all with synthetic data.
 
 #![warn(missing_docs)]
 
