@@ -20,6 +20,7 @@
 //! [`sprint_host::Printer`] calls, which never block the UI thread.
 
 mod extruder;
+mod macros;
 mod motion;
 mod temperatures;
 mod tuning;
@@ -42,6 +43,7 @@ pub struct ControlsSidebar {
     motion: motion::Motion,
     extruder: extruder::Extruder,
     tuning: tuning::Tuning,
+    macros: macros::Macros,
 }
 
 impl ControlsSidebar {
@@ -59,7 +61,10 @@ impl ControlsSidebar {
                 self.motion.show(ui, ctx);
                 self.extruder.show(ui, ctx);
                 self.tuning.show(ui, ctx);
+                self.macros.show(ui, ctx);
             });
+        // Dialogs are modal windows of their own, outside the scroll area.
+        self.macros.dialogs(ui, ctx);
     }
 }
 
