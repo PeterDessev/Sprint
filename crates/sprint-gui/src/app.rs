@@ -340,7 +340,7 @@ impl SprintApp {
             notifier: Notifier::default(),
             connector: Connector::new(Some(ctx.clone())),
             loader: FileLoader::new(Some(ctx.clone())),
-            watch: FileWatch::default(),
+            watch: FileWatch::new(Some(ctx.clone())),
             saver: ConfigSaver::new(options.config_path),
             modal: None,
             prompt: None,

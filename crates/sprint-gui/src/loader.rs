@@ -599,34 +599,81 @@ pub fn limits_from_firmware(m: &MotionLimits) -> KinematicLimits {
     k
 }
 
+/// The state of a file on disk: modification time and size.
+type Stamp = (SystemTime, u64);
+
+/// What a [`FileWatch`] look at the disk is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Look {
+    /// The state changes are measured against.
+    Baseline,
+    /// A check for changes.
+    Check,
+}
+
+/// A look at the disk running on a worker thread.
+#[derive(Debug)]
+struct PendingLook {
+    look: Look,
+    rx: Receiver<Option<Stamp>>,
+}
+
 /// Watches the loaded file for changes on disk (modification time and
-/// size, polled every [`FileWatch::INTERVAL`] seconds).
+/// size, checked every [`FileWatch::INTERVAL`] seconds).
+///
+/// The disk is read on a worker thread: on a network share that went away
+/// a metadata call can hang for many seconds, which must not freeze the
+/// window.
 #[derive(Debug, Default)]
 pub struct FileWatch {
     path: Option<PathBuf>,
-    stamp: Option<(SystemTime, u64)>,
+    /// `Some` once the baseline is known (the inner `None`: no file).
+    stamp: Option<Option<Stamp>>,
+    pending: Option<PendingLook>,
     last_check: Option<f64>,
     changed: bool,
+    repaint: Option<egui::Context>,
 }
 
 impl FileWatch {
     /// Seconds between checks.
     pub const INTERVAL: f64 = 2.0;
 
-    /// Watch `path` (None stops watching); its current state is the
-    /// baseline.
+    /// A watch that asks `repaint` for a frame when a look at the disk is
+    /// done.
+    pub fn new(repaint: Option<egui::Context>) -> FileWatch {
+        FileWatch {
+            repaint,
+            ..FileWatch::default()
+        }
+    }
+
+    /// Watch `path` (None stops watching); its state at the next
+    /// [`FileWatch::poll`] is the baseline.
     pub fn watch(&mut self, path: Option<PathBuf>) {
-        self.stamp = path.as_deref().and_then(stamp);
         self.path = path;
+        self.stamp = None;
+        self.pending = None;
         self.changed = false;
         self.last_check = None;
     }
 
-    /// Check the file if the interval has passed (`now` in seconds, any
-    /// monotonic clock). Returns true when it has changed since the
-    /// baseline; stays true until [`FileWatch::watch`] or
-    /// [`FileWatch::dismiss`].
+    /// Collect a finished look at the disk and start the next one when the
+    /// interval has passed (`now` in seconds, any monotonic clock). Returns
+    /// true when the file has changed since the baseline; stays true until
+    /// [`FileWatch::watch`] or [`FileWatch::dismiss`].
     pub fn poll(&mut self, now: f64) -> bool {
+        if let Some(pending) = &self.pending {
+            match pending.rx.try_recv() {
+                Ok(current) => {
+                    let look = pending.look;
+                    self.pending = None;
+                    self.take(look, current);
+                }
+                Err(crossbeam_channel::TryRecvError::Empty) => return self.changed,
+                Err(crossbeam_channel::TryRecvError::Disconnected) => self.pending = None,
+            }
+        }
         let Some(path) = &self.path else {
             return false;
         };
@@ -638,14 +685,54 @@ impl FileWatch {
             .is_none_or(|t| now - t >= Self::INTERVAL || now < t);
         if due {
             self.last_check = Some(now);
-            let current = stamp(path);
-            // A file that disappeared is not "changed" (nothing to reload);
-            // it counts once it is back with other contents.
-            if current.is_some() && current != self.stamp {
-                self.changed = true;
+            let look = if self.stamp.is_some() {
+                Look::Check
+            } else {
+                Look::Baseline
+            };
+            let (tx, rx) = crossbeam_channel::bounded(1);
+            let path = path.clone();
+            let repaint = self.repaint.clone();
+            let spawned = std::thread::Builder::new()
+                .name("sprint-gui-file-watch".to_owned())
+                .spawn(move || {
+                    let _ = tx.send(stamp(&path));
+                    if let Some(ctx) = repaint {
+                        ctx.request_repaint();
+                    }
+                });
+            if spawned.is_ok() {
+                self.pending = Some(PendingLook { look, rx });
             }
         }
         self.changed
+    }
+
+    /// Apply the result of a look at the disk.
+    fn take(&mut self, look: Look, current: Option<Stamp>) {
+        match look {
+            Look::Baseline => self.stamp = Some(current),
+            // A file that disappeared is not "changed" (nothing to
+            // reload); it counts once it is back with other contents.
+            Look::Check => {
+                if let Some(baseline) = self.stamp
+                    && current.is_some()
+                    && current != baseline
+                {
+                    self.changed = true;
+                }
+            }
+        }
+    }
+
+    /// Wait (at most `timeout`) for the look at the disk in progress and
+    /// apply it (tests).
+    pub fn finish_pending(&mut self, timeout: std::time::Duration) {
+        if let Some(pending) = self.pending.take()
+            && let Ok(current) = pending.rx.recv_timeout(timeout)
+        {
+            self.take(pending.look, current);
+        }
     }
 
     /// Whether a change was detected.
@@ -653,11 +740,13 @@ impl FileWatch {
         self.changed
     }
 
-    /// Accept the current file state as the new baseline (the user chose
+    /// Accept the file as it is now as the new baseline (the user chose
     /// not to reload).
     pub fn dismiss(&mut self) {
-        self.stamp = self.path.as_deref().and_then(stamp);
+        self.stamp = None;
+        self.pending = None;
         self.changed = false;
+        self.last_check = None;
     }
 }
 
@@ -928,25 +1017,57 @@ mod tests {
     fn file_watch_detects_changes() {
         let dir = temp_dir("watch");
         let path = dir.join("watched.gcode");
-        std::fs::write(&path, "G28\n").expect("write");
+        std::fs::write(
+            &path, "G28
+",
+        )
+        .expect("write");
+        let wait = Duration::from_secs(10);
         let mut watch = FileWatch::default();
         assert!(!watch.poll(0.0));
         watch.watch(Some(path.clone()));
+        // The first look takes the baseline (on a worker thread).
         assert!(!watch.poll(0.0));
-        std::fs::write(&path, "G28\nG1 X10\n").expect("rewrite");
+        watch.finish_pending(wait);
+        std::fs::write(
+            &path,
+            "G28
+G1 X10
+",
+        )
+        .expect("rewrite");
         // Not due yet.
         assert!(!watch.poll(1.0));
-        assert!(watch.poll(2.5));
+        assert!(!watch.poll(2.5), "the check runs in the background");
+        watch.finish_pending(wait);
+        assert!(watch.poll(2.6));
         assert!(watch.is_changed());
         // Sticky until dismissed.
-        assert!(watch.poll(2.6));
+        assert!(watch.poll(2.7));
         watch.dismiss();
         assert!(!watch.poll(10.0));
+        watch.finish_pending(wait);
+        assert!(!watch.poll(12.5));
+        watch.finish_pending(wait);
+        assert!(!watch.poll(12.6), "the dismissed state is the new baseline");
         // A deleted file is not a change.
         std::fs::remove_file(&path).expect("remove");
         assert!(!watch.poll(20.0));
-        watch.watch(None);
+        watch.finish_pending(wait);
+        assert!(!watch.poll(20.1));
+        // Results for a file no longer watched are dropped.
+        std::fs::write(
+            &path,
+            "G28
+G1 X20
+",
+        )
+        .expect("rewrite");
         assert!(!watch.poll(30.0));
+        watch.watch(None);
+        watch.finish_pending(wait);
+        assert!(!watch.poll(40.0));
+        assert!(!watch.is_changed());
         let _ = std::fs::remove_dir_all(dir);
     }
 }
