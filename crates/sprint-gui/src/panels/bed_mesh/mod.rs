@@ -515,15 +515,20 @@ impl BedMeshTab {
                     {
                         self.fade = Some(fade);
                     }
-                    if ui
-                        .add_enabled(
-                            connected && self.fade.is_some() && changed_from_reported,
-                            ActionButton::new("Set")
-                                .small()
-                                .tooltip(format!("M420 Z{}", format::trimmed(f64::from(fade), 1))),
-                        )
-                        .clicked()
-                    {
+                    // Marlin switches leveling off and on again to change
+                    // the fade height, which shifts Z under a running print.
+                    let set = ui.add_enabled(
+                        connected && !job && self.fade.is_some() && changed_from_reported,
+                        ActionButton::new("Set")
+                            .small()
+                            .tooltip(format!("M420 Z{}", format::trimmed(f64::from(fade), 1))),
+                    );
+                    let set = if job {
+                        set.on_disabled_hover_text("Not while a job runs")
+                    } else {
+                        set
+                    };
+                    if set.clicked() {
                         let mut params = Vec::new();
                         if let Some(on) = enabled {
                             params.push(('S', if on { 1.0 } else { 0.0 }));

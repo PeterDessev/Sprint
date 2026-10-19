@@ -186,6 +186,31 @@ fn a_probe_without_a_new_mesh_ends() {
 }
 
 #[test]
+fn leveling_stays_put_during_a_job() {
+    let mut state = demo_state();
+    let mut job = sprint_host::JobInfo::new(sprint_host::JobKind::HostPrint, "cube.gcode", 10, 100);
+    job.status = sprint_host::JobStatus::Printing;
+    state.job = Some(job);
+    let mut h = tab(Theme::Dark, (1180.0, 1060.0), state);
+    let disabled = |h: &H<'_>, label: &str| h.get_by_label(label).accesskit_node().is_disabled();
+    assert!(disabled(&h, "Apply the mesh while printing"));
+    assert!(disabled(&h, "Probe bed"));
+    // A new fade height would toggle leveling under the print too.
+    h.get_by_role(egui::accesskit::Role::SpinButton).click();
+    h.run_ok();
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.run_ok();
+    h.key_press(egui::Key::Backspace);
+    h.run_ok();
+    h.get_by_role(egui::accesskit::Role::SpinButton)
+        .type_text("5");
+    h.run_ok();
+    h.key_press(egui::Key::Enter);
+    h.run_ok();
+    assert!(disabled(&h, "Set"));
+}
+
+#[test]
 fn odd_meshes_never_panic() {
     let meshes = vec![
         BedMesh::from_rows(vec![vec![0.1]], "bilinear"),
