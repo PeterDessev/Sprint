@@ -1039,9 +1039,12 @@ Every public item is also re-exported at the crate root.
 * `config`: `ConnectOptions` is `#[serde(default)]`; `sanitized()` clamps
   every value (`max_in_flight` 1..=32, `MAX_IN_FLIGHT_LIMIT`).
   `AppConfig::load_or_default(path)` (what `load()` uses: a corrupt file is
-  renamed to `<name>.bak`); `MAX_RECENT_FILES` (12), `DEFAULT_CONSOLE_LINES`.
+  renamed to `<name>.bak`, also when it is not UTF-8); `MAX_RECENT_FILES`
+  (12), `DEFAULT_CONSOLE_LINES`.
   `PrinterProfile::{build_volume, park_position, script_context}`: parking is
   the back left corner 10 mm in (X10 Y210 by default, honouring `origin`).
+  In the file, `kinematics.junction_deviation = false` stands for `None`
+  (classic jerk), which TOML cannot write as a missing key.
 * `script`: `DEFAULT_PAUSE_SCRIPT`, `DEFAULT_RESUME_SCRIPT`,
   `DEFAULT_CANCEL_SCRIPT`, `format_number`. `render_script` uses
   `ScriptContext::new` (the default 220 x 220 x 250 profile). Unknown
@@ -1054,12 +1057,16 @@ Every public item is also re-exported at the crate root.
 * `state`: `PrinterState::{is_connected, has_capability, job_active,
   push_message}`, `ConnectionStatus::{is_connected, is_open, label}`,
   `Heater::{name, autotune_index, from_autotune_index}`, `Axis::letter`,
-  `Axes::home_command`, `TEMP_HISTORY_LEN`, `FIRMWARE_MESSAGES_LEN`.
-  Temperature reports are merged (readings missing from a report keep their
-  value); `Event::Temperatures` carries the merged report.
+  `Axes::home_command`, `TEMP_HISTORY_LEN`, `TEMP_HISTORY_SECS` (the
+  history spans at most 30 minutes, whatever the report rate),
+  `FIRMWARE_MESSAGES_LEN`. Temperature reports are merged (readings missing
+  from a report keep their value); `Event::Temperatures` carries the merged
+  report. Echo lines that arrive while an M503/M501 report is in flight
+  belong to the report (console only, not `firmware_messages`).
 * `event`: `EventBus` (public fan-out), `EVENT_QUEUE_LIMIT`: a subscriber
   that stops reading keeps at most 65536 events; newer ones are dropped for
-  it (the state stays authoritative).
+  it (the state stays authoritative). Queues grow with the events queued
+  (nothing is allocated up front).
 * `job`: `JobStatus::{is_finished, is_paused, label}`, `JobInfo::new`,
   `ProgressModel` / `Progress` (the progress math, usable on its own).
   `current_line` counts processed file lines (1-based number of the last
@@ -1108,8 +1115,9 @@ Every public item is also re-exported at the crate root.
   numbers while any job is active; SD uploads are always numbered.
 * Polling: M105 every `temp_poll_secs` without auto-reports, never while a
   poll is outstanding, during M109/M190/M191/M303, during uploads, while
-  halted or before M115 was answered. Nothing but the upload reaches the
-  printer while it writes to the card.
+  halted or before M115 was answered. An `M155 S<n>` (or `M27 S<n>`) stops
+  polling only when the firmware has AUTOREPORT_TEMP (AUTOREPORT_SD_STATUS).
+  Nothing but the upload reaches the printer while it writes to the card.
 * Halt: a fatal error or `emergency_stop` sets `halted`, fails the job and
   frees the window (E-stop also drops the queues); the link stays open and
   commands are sent unnumbered meanwhile. `firmware_restart` sends M999;
@@ -1122,19 +1130,23 @@ Every public item is also re-exported at the crate root.
   acknowledged, then `Paused` (manual commands work meanwhile); resume:
   `Resuming` while the resume script (followed by `G91` or `M83` when the
   stream used relative modes) is acknowledged, streaming continues right
-  behind it. `//action:pause|paused` pause without scripts and
-  `//action:resume|resumed` continue; `resume()` after such a pause sends
+  behind it. The scripts start with `G21` while the stream is in inches
+  (the resume script ends with `G20`). `//action:pause|paused` pause
+  without scripts and `//action:resume|resumed` continue; `resume()` after
+  such a pause sends
   M108 when the firmware waits for the user. `cancel` sends M108 first when
   a heat or user wait is in flight. SD prints: M23/M24 (`Starting` until
   M24 is acknowledged), `M27 S<n>` with AUTOREPORT_SD_STATUS (switched off
-  with M27 S0 afterwards) else M27 polling; "open failed" fails the job;
-  cancel = M108 + M524. Uploads stream only after "Writing to file"
+  with M27 S0 afterwards) else M27 polling; "open failed" or a missing card
+  fails the job; "Not SD printing" while printing ends it (Completed when
+  the whole file was reported read, else Failed); cancel = M108 + M524. Uploads stream only after "Writing to file"
   (M28's `ok` without it fails the job), skip the file's own M28/M29, end
   with M29; cancel = M29 + M30 <name>.
 * Threads: `disconnect()` and dropping the last handle join each thread for
   at most 2 s, then detach it. A panic in the engine leaves status (and any
   job) `Failed`. The waker is called without the rate limit when the engine
-  stops and after changes made by a handle.
+  stops and after changes made by a handle; the link clock
+  (`connected_secs`) alone wakes it once per second.
 * Throughput against the simulator with instant moves (`cargo test -p
   sprint-host --test print -- --ignored --nocapture`): about 28k lines/s
   ping-pong, 45k with 2, 79k with 4 and 117k with 8 commands in flight.
