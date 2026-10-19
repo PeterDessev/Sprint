@@ -32,6 +32,11 @@ use crate::cli::AnswerPrompts;
 /// answer; still there after this, the answer did not take.
 const REASK: Duration = Duration::from_secs(5);
 
+/// A line read this soon after standard input is first read was typed
+/// before the question (it waited in the terminal): reading a question and
+/// answering it takes a person longer.
+const TYPED_BEFORE: Duration = Duration::from_millis(250);
+
 /// What the printer waits for, if anything.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Question<'a> {
@@ -75,16 +80,11 @@ impl Shown {
     }
 }
 
-/// Opens the lines of standard input (see [`stdin_lines`]).
-type OpenInput = Box<dyn FnOnce() -> Receiver<String>>;
-
 /// Follows the printer's questions; see the module docs.
 pub struct PromptWatch {
     policy: AnswerPrompts,
-    /// Lines typed on standard input, once they are read.
+    /// Lines typed on standard input, once the first question came.
     answers: Option<Receiver<String>>,
-    /// Starts reading them (once).
-    open_input: Option<OpenInput>,
     /// Standard input has ended (nothing more can be typed).
     input_closed: bool,
     /// The question shown last (until it goes away).
@@ -102,36 +102,17 @@ pub struct PromptWatch {
 
 impl PromptWatch {
     /// A watch answering as `policy` says; answers are read from standard
-    /// input.
+    /// input when the first question comes.
     pub fn new(policy: AnswerPrompts) -> PromptWatch {
-        PromptWatch::with_input(
-            policy,
-            Box::new(stdin_lines),
-            std::io::stdin().is_terminal(),
-        )
-    }
-
-    /// A watch reading its answers from what `open` returns, typed at a
-    /// terminal (`terminal`) or piped.
-    fn with_input(policy: AnswerPrompts, open: OpenInput, terminal: bool) -> PromptWatch {
-        let mut watch = PromptWatch {
+        PromptWatch {
             policy,
             answers: None,
-            open_input: Some(open),
             input_closed: false,
             shown: None,
-            forget_early_lines: terminal,
+            forget_early_lines: std::io::stdin().is_terminal(),
             answered: None,
             reask: REASK,
-        };
-        // On a terminal, read from the start: a line typed before a
-        // question is then seen, and forgotten, instead of waiting in the
-        // terminal to answer the first question. Piped answers are read
-        // when the first question comes.
-        if policy == AnswerPrompts::Ask && terminal {
-            watch.start_input();
         }
-        watch
     }
 
     /// A watch reading its answers from `answers` (tests), typed at a
@@ -142,9 +123,11 @@ impl PromptWatch {
         answers: Receiver<String>,
         terminal: bool,
     ) -> PromptWatch {
-        let mut watch = PromptWatch::with_input(policy, Box::new(move || answers), terminal);
-        watch.start_input();
-        watch
+        PromptWatch {
+            answers: Some(answers),
+            forget_early_lines: terminal,
+            ..PromptWatch::new(policy)
+        }
     }
 
     /// Look at what the printer waits for now (`None`: nothing).
@@ -263,11 +246,8 @@ impl PromptWatch {
 
     /// Read lines from standard input from now on.
     fn start_input(&mut self) {
-        if self.answers.is_none()
-            && !self.input_closed
-            && let Some(open) = self.open_input.take()
-        {
-            self.answers = Some(open());
+        if self.answers.is_none() && !self.input_closed {
+            self.answers = Some(stdin_lines(self.forget_early_lines));
         }
     }
 
@@ -380,18 +360,25 @@ pub fn printable(text: &str) -> String {
         .collect()
 }
 
-/// Lines of standard input, read on a helper thread; the channel closes
-/// at the end of the input.
-fn stdin_lines() -> Receiver<String> {
+/// Lines of standard input, read on a helper thread from the first
+/// question on (reading a terminal at once would stop a print started in
+/// the background of a Unix shell); the channel closes at the end of the
+/// input. On a `terminal`, lines typed before the first question (a stray
+/// Enter) are left out: they would answer it at once.
+fn stdin_lines(terminal: bool) -> Receiver<String> {
     let (tx, rx) = crossbeam_channel::unbounded();
     let spawned = std::thread::Builder::new()
         .name("sprint-print-input".into())
         .spawn(move || {
+            let started = Instant::now();
             let stdin = std::io::stdin();
             for line in stdin.lock().lines() {
                 let Ok(line) = line else {
                     break;
                 };
+                if typed_before(started.elapsed(), terminal) {
+                    continue;
+                }
                 if tx.send(line).is_err() {
                     break;
                 }
@@ -401,6 +388,12 @@ fn stdin_lines() -> Receiver<String> {
         log::warn!("cannot read answers from standard input: {e}");
     }
     rx
+}
+
+/// Whether a line read `read_after` the first read of standard input was
+/// typed before the question: on a terminal, when it came at once.
+fn typed_before(read_after: Duration, terminal: bool) -> bool {
+    terminal && read_after < TYPED_BEFORE
 }
 
 #[cfg(test)]
@@ -462,19 +455,12 @@ mod tests {
 
     #[test]
     fn a_line_typed_before_the_first_question_does_not_answer_it() {
-        let (tx, rx) = crossbeam_channel::unbounded();
-        // Typed at the terminal long before anything was asked.
-        tx.send(String::new()).expect("send");
-        let mut watch = PromptWatch::with_input(AnswerPrompts::Ask, Box::new(move || rx), true);
-        assert_eq!(watch.update(None), []);
-        let magnets = prompt("Insert magnets", &["Continue"]);
-        let ask = || Some(Question::Prompt(&magnets));
-        assert!(!watch.update(ask()).is_empty());
-        let effects = watch.update(ask());
-        assert!(!effects.contains(&Effect::Answer(0)), "{effects:?}");
-        // What is typed now answers it.
-        tx.send(String::new()).expect("send");
-        assert!(watch.update(ask()).contains(&Effect::Answer(0)));
+        // Waiting in the terminal, it is read at once.
+        assert!(typed_before(Duration::from_millis(2), true));
+        // Typed after the question was shown.
+        assert!(!typed_before(Duration::from_secs(2), true));
+        // Piped answers are all meant for the questions.
+        assert!(!typed_before(Duration::ZERO, false));
     }
 
     #[test]
