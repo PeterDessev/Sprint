@@ -404,13 +404,20 @@ impl StartPrintDialog {
                 .color(p.warning),
             );
         }
-        let edit = ui.add(
-            egui::TextEdit::multiline(&mut self.preamble)
-                .font(egui::TextStyle::Monospace)
-                .desired_rows(7)
-                .desired_width(f32::INFINITY),
-        );
-        if edit.changed() {
+        let edited = egui::ScrollArea::vertical()
+            .id_salt("sprint-preamble-scroll")
+            .max_height(170.0)
+            .show(ui, |ui| {
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.preamble)
+                        .font(egui::TextStyle::Monospace)
+                        .desired_rows(7)
+                        .desired_width(f32::INFINITY),
+                )
+                .changed()
+            })
+            .inner;
+        if edited {
             self.edited = true;
         }
         ui.horizontal(|ui| {

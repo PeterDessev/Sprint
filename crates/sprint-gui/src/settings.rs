@@ -117,6 +117,7 @@ pub struct SettingsDialog {
     confirm_delete: Option<usize>,
     tcp_text: String,
     ports: Vec<String>,
+    config_path: Option<std::path::PathBuf>,
 }
 
 impl SettingsDialog {
@@ -134,6 +135,21 @@ impl SettingsDialog {
             confirm_delete: None,
             tcp_text: String::new(),
             ports,
+            config_path: Some(AppConfig::path()),
+        }
+    }
+
+    /// Where the configuration is saved (`None`: kept in memory only).
+    #[must_use]
+    pub fn with_config_path(mut self, path: Option<std::path::PathBuf>) -> SettingsDialog {
+        self.config_path = path;
+        self
+    }
+
+    fn location_text(&self) -> String {
+        match &self.config_path {
+            Some(path) => format!("Saved to {}", path.display()),
+            None => "Kept in memory for this session (not saved to disk)".to_owned(),
         }
     }
 
@@ -275,7 +291,7 @@ impl SettingsDialog {
                                 outcome = Some(SettingsOutcome::Cancelled);
                             }
                             ui.label(
-                                RichText::new(format!("Saved to {}", AppConfig::path().display()))
+                                RichText::new(self.location_text())
                                     .size(11.5)
                                     .color(p.text_faint),
                             );
@@ -330,10 +346,7 @@ impl SettingsDialog {
             if i == active {
                 text = format!("{text}  {}", icons::CHECK);
             }
-            let r = ui.add_sized(
-                vec2(ui.available_width(), 28.0),
-                egui::Button::selectable(selected, text),
-            );
+            let r = nav_button(ui, selected, text);
             if r.clicked() {
                 self.page = Page::Profile(i);
             }
@@ -361,12 +374,10 @@ impl SettingsDialog {
                 .color(p.text_dim),
         );
         ui.add_space(4.0);
-        let r = ui.add_sized(
-            vec2(ui.available_width(), 28.0),
-            egui::Button::selectable(
-                self.page == Page::Preferences,
-                icons::with_text(icons::SUN, "Preferences"),
-            ),
+        let r = nav_button(
+            ui,
+            self.page == Page::Preferences,
+            icons::with_text(icons::SUN, "Preferences"),
         );
         if r.clicked() {
             self.page = Page::Preferences;
@@ -394,7 +405,7 @@ impl SettingsDialog {
                 .label_width(140.0),
         );
         section(ui, "Configuration file", p);
-        let path = AppConfig::path().display().to_string();
+        let path = self.location_text();
         ui.label(
             RichText::new(&path)
                 .monospace()
@@ -729,6 +740,14 @@ impl SettingsDialog {
             Some(k) => kinematics_editor(ui, k, w, p),
         }
     }
+}
+
+/// A full-width, left-aligned navigation entry.
+fn nav_button(ui: &mut Ui, selected: bool, text: String) -> egui::Response {
+    ui.with_layout(Layout::top_down_justified(Align::Min), |ui| {
+        ui.add(egui::Button::selectable(selected, text).min_size(vec2(0.0, 28.0)))
+    })
+    .inner
 }
 
 fn section(ui: &mut Ui, title: &str, p: &Palette) {
