@@ -15,6 +15,7 @@ pub mod printer_info;
 pub mod sd_card;
 pub mod temp_graph;
 pub mod tuning;
+pub mod viewer_tab;
 
 pub use bed_mesh::BedMeshTab;
 pub use calibration::CalibrationTab;
@@ -27,3 +28,4 @@ pub use printer_info::PrinterInfoTab;
 pub use sd_card::SdCardTab;
 pub use temp_graph::TemperatureGraphTab;
 pub use tuning::TuningTab;
+pub use viewer_tab::ViewerTab;
