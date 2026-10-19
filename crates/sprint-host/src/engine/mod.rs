@@ -582,14 +582,16 @@ impl Engine {
         if self.exit.is_some() {
             return;
         }
+        let reason = match &status {
+            ConnectionStatus::Disconnected => "disconnected".to_string(),
+            ConnectionStatus::Failed(r) => r.clone(),
+            _ => "connection closed".to_string(),
+        };
         if self.job.is_some() {
-            let reason = match &status {
-                ConnectionStatus::Disconnected => "disconnected".to_string(),
-                ConnectionStatus::Failed(r) => r.clone(),
-                _ => "connection closed".to_string(),
-            };
             self.fail_job(&reason);
         }
+        // Its result could never arrive.
+        self.end_autotune(&reason);
         match &status {
             ConnectionStatus::Failed(_) => {
                 self.shared.log(ConsoleKind::Error, message, false, None);
@@ -840,18 +842,13 @@ impl Engine {
         self.pending_endstops.clear();
         self.pending_stats = None;
         self.prompt = None;
+        self.end_autotune("the printer reset");
         let had_prompt = self.shared.update(|s| {
             s.halted = false;
             s.restartable = false;
             s.busy = None;
             s.sd.printing = None;
             s.sd.listing = false;
-            if let Some(a) = &mut s.autotune
-                && a.running
-            {
-                a.running = false;
-                a.error = Some("printer reset".to_string());
-            }
             s.prompt.take().is_some()
         });
         if had_prompt {
@@ -1071,20 +1068,54 @@ impl Engine {
                 .unwrap_or(Heater::Hotend(0));
             let target = parsed.get('S').unwrap_or(150.0) as f32;
             let cycles = parsed.get('C').map_or(5, |c| c.clamp(0.0, 1000.0) as u32);
+            let tune = AutotuneState {
+                heater,
+                target,
+                cycles,
+                running: true,
+                result: None,
+                error: None,
+            };
+            if self.halted {
+                // Typed while halted: the firmware ignores it.
+                self.autotune_refused(tune, "the printer is halted");
+                return;
+            }
             self.shared.update(|s| {
                 let fresh = s.autotune.as_ref().is_none_or(|a| !a.running);
                 if fresh {
-                    s.autotune = Some(AutotuneState {
-                        heater,
-                        target,
-                        cycles,
-                        running: true,
-                        result: None,
-                        error: None,
-                    });
+                    s.autotune = Some(tune);
                 }
             });
         }
+    }
+
+    /// A running PID autotune can no longer finish (`why`: the printer
+    /// halted or reset, the connection closed): it ends with that error
+    /// and [`Event::AutotuneFailed`].
+    pub(super) fn end_autotune(&mut self, why: &str) {
+        let ended = self.shared.update(|s| match &mut s.autotune {
+            Some(a) if a.running => {
+                a.running = false;
+                a.error = Some(why.to_string());
+                true
+            }
+            _ => false,
+        });
+        if ended {
+            self.warn(format!("PID autotune failed: {why}"));
+            self.shared.emit(Event::AutotuneFailed(why.to_string()));
+        }
+    }
+
+    /// An autotune that cannot start (`why`): recorded as failed, never
+    /// running, with [`Event::AutotuneFailed`].
+    fn autotune_refused(&mut self, mut tune: AutotuneState, why: &str) {
+        tune.running = false;
+        tune.error = Some(why.to_string());
+        self.shared.update(|s| s.autotune = Some(tune));
+        self.warn(format!("PID autotune not started: {why}"));
+        self.shared.emit(Event::AutotuneFailed(why.to_string()));
     }
 
     /// Queue a wire line for writing and log it.
@@ -1192,16 +1223,20 @@ impl Engine {
                 target,
                 cycles,
             } => {
-                self.shared.update(|s| {
-                    s.autotune = Some(AutotuneState {
-                        heater,
-                        target,
-                        cycles,
-                        running: true,
-                        result: None,
-                        error: None,
-                    });
-                });
+                let tune = AutotuneState {
+                    heater,
+                    target,
+                    cycles,
+                    running: true,
+                    result: None,
+                    error: None,
+                };
+                if self.halted {
+                    // A halted firmware would ignore the M303.
+                    self.autotune_refused(tune, "the printer is halted");
+                    return;
+                }
+                self.shared.update(|s| s.autotune = Some(tune));
                 self.queue_user(format!(
                     "M303 E{} S{} C{cycles} U1",
                     heater.autotune_index(),
@@ -1313,6 +1348,9 @@ impl Engine {
             self.set_homed(Some(Axes::NONE));
             self.shared.update(|s| s.babystep_z = 0.0);
         }
+        // Before the M303 is released below: it did not finish, the halt
+        // cut it short.
+        self.end_autotune("the printer halted");
         self.halted = true;
         self.restarting = false;
         self.renumber_pending = true;

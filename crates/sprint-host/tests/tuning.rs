@@ -91,3 +91,95 @@ fn probing_reports_a_bed_mesh() {
     wait_idle(&printer);
     assert_eq!(control.received_commands(), ["G29", "M420 V", "M420 V"]);
 }
+
+/// Start an autotune on a real-time printer (it heats for minutes) and
+/// wait until the printer runs it.
+fn autotune_running(printer: &sprint_host::Printer) {
+    printer.start_pid_autotune(Heater::Hotend(0), 200.0, 5);
+    let control = printer.sim_control().unwrap();
+    wait_for(printer, "the M303", |s| {
+        s.autotune.as_ref().is_some_and(|a| a.running)
+            && control
+                .received_commands()
+                .iter()
+                .any(|c| c.starts_with("M303"))
+    });
+}
+
+/// The autotune ended with an error mentioning `why`, announced with an
+/// event.
+fn ended_with(
+    printer: &sprint_host::Printer,
+    events: &crossbeam_channel::Receiver<Event>,
+    why: &str,
+) {
+    let message = wait_for_event(events, "AutotuneFailed", |e| match e {
+        Event::AutotuneFailed(m) => Some(m.clone()),
+        _ => None,
+    });
+    assert!(message.contains(why), "{message}");
+    let tune = printer.with_state(|s| s.autotune.clone()).unwrap();
+    assert!(!tune.running, "{tune:?}");
+    assert_eq!(tune.error.as_deref(), Some(message.as_str()));
+    assert_eq!(tune.result, None);
+}
+
+#[test]
+fn an_autotune_cut_short_by_a_halt_ends() {
+    let printer = connect(fast_sim(1.0), options());
+    autotune_running(&printer);
+    let events = printer.subscribe();
+    printer.emergency_stop();
+    ended_with(&printer, &events, "halted");
+    // Only once: releasing the M303 does not report it again.
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert!(
+        !events
+            .try_iter()
+            .any(|e| matches!(e, Event::AutotuneFailed(_)))
+    );
+}
+
+#[test]
+fn an_autotune_cut_short_by_a_board_reset_ends() {
+    let printer = connect(fast_sim(1.0), options());
+    autotune_running(&printer);
+    let events = printer.subscribe();
+    printer.reset_board().unwrap();
+    ended_with(&printer, &events, "reset");
+}
+
+#[test]
+fn an_autotune_cut_short_by_a_disconnect_ends() {
+    let printer = connect(fast_sim(1.0), options());
+    autotune_running(&printer);
+    let events = printer.subscribe();
+    printer.disconnect();
+    ended_with(&printer, &events, "disconnected");
+}
+
+#[test]
+fn an_autotune_is_not_started_while_halted() {
+    let printer = connect(fast_sim(20.0), options());
+    printer.emergency_stop();
+    wait_for(&printer, "halted", |s| s.halted);
+    let events = printer.subscribe();
+    printer.start_pid_autotune(Heater::Bed, 60.0, 3);
+    ended_with(&printer, &events, "halted");
+    let tune = printer.with_state(|s| s.autotune.clone()).unwrap();
+    assert_eq!(
+        (tune.heater, tune.target, tune.cycles),
+        (Heater::Bed, 60.0, 3)
+    );
+    wait_idle(&printer);
+    let sent_m303 = || {
+        console(&printer)
+            .iter()
+            .any(|e| e.kind == sprint_host::ConsoleKind::Sent && e.text.starts_with("M303"))
+    };
+    assert!(!sent_m303(), "no M303 for a halted printer");
+    // Typed by hand it goes out, but fails the same way at once.
+    printer.send("M303 E0 S200 C3");
+    ended_with(&printer, &events, "halted");
+    assert!(sent_m303());
+}

@@ -1459,6 +1459,11 @@ Every public item is also re-exported at the crate root.
   the job), skip the file's own M28/M29, end with M29 (complete on "Done
   saving file." or on M29's `ok`); cancel = M29 + M30 <name>. An M303
   acknowledged without a result or failure message fails the autotune.
+  A halt, a board reset or the connection closing ends a running
+  autotune: `running` false, `error` "the printer halted" / "the printer
+  reset" / the disconnect reason, and `Event::AutotuneFailed` (once).
+  `start_pid_autotune` while halted fails the same way at once without
+  sending M303 (an M303 typed while halted is sent but fails at once).
 * Threads: `disconnect()` and dropping the last handle join each thread for
   at most 2 s, then detach it. A panic in the engine leaves status (and any
   job) `Failed`. The waker is called without the rate limit when the engine
