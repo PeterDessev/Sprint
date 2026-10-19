@@ -7,6 +7,7 @@
 pub mod bed_mesh;
 pub mod calibration;
 pub mod connection_bar;
+pub mod console;
 pub mod controls;
 pub mod gcode_tab;
 pub mod job_bar;
@@ -18,6 +19,7 @@ pub mod tuning;
 pub use bed_mesh::BedMeshTab;
 pub use calibration::CalibrationTab;
 pub use connection_bar::ConnectionBar;
+pub use console::ConsolePanel;
 pub use controls::ControlsSidebar;
 pub use gcode_tab::GcodeTab;
 pub use job_bar::JobBar;
