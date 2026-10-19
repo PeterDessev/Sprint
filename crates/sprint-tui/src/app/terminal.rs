@@ -1,7 +1,7 @@
 //! Running the TUI on the real terminal: raw mode and the alternate
 //! screen (restored on exit, on errors and on panics) and the event loop.
 
-use std::io::{self, Stdout};
+use std::io::{self, IsTerminal, Stdout};
 use std::panic::{self, PanicHookInfo};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -95,6 +95,14 @@ impl Drop for TerminalGuard {
 /// the active profile's printer only when the profile enables
 /// `auto_connect`.
 pub fn run_tui(options: TuiOptions) -> Result<()> {
+    // Before anything else (and before any connection): without a
+    // terminal there is nothing to draw on.
+    if !io::stdout().is_terminal() || !io::stdin().is_terminal() {
+        anyhow::bail!(
+            "the terminal UI needs an interactive terminal \
+             (sprint shell reads commands from a pipe, sprint print prints without a UI)"
+        );
+    }
     let (config, config_path) = crate::config::load_config();
     let profile = config.active().clone();
     let printer = Printer::with_console_capacity(config.console_max_lines);
