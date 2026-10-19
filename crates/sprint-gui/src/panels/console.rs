@@ -1,9 +1,12 @@
 //! The console: everything sent to and received from the printer, colored
 //! by kind, with filters, search, timestamps, autoscroll, copy / clear /
 //! export, and a command line with history, G-code autocomplete,
-//! multi-line paste, quick commands and confirmation for dangerous
-//! commands (and for what would ruin a running job: moves while it prints,
-//! homing Z, probing and motors off even while it is paused).
+//! multi-line paste and quick commands. What is typed or pasted goes
+//! through the shared command-safety classifier ([`crate::safety`]): a
+//! dangerous command, or one that would ruin the running job (moves while
+//! it prints; homing Z, probing and motors off even while it is paused),
+//! asks first, what must not be sent (an SD write during a print) is
+//! refused, and M112 goes out at once.
 //!
 //! The panel keeps its own bounded copy of the log, fetched incrementally
 //! with [`Printer::console_since`] (see [`ConsolePanel::sync`]), and an
@@ -17,10 +20,11 @@ use crossbeam_channel::Receiver;
 use egui::text::{CCursor, CCursorRange};
 use egui::{Align, Align2, Color32, Id, Key, Layout, Margin, Modifiers, RichText, Sense, Ui, vec2};
 use sprint_host::{ConsoleEntry, ConsoleKind, Printer};
-use sprint_proto::GcodeDoc;
+use sprint_proto::{GcodeDoc, JobContext};
 
 use crate::context::AppCtx;
 use crate::prefs::{ConsolePrefs, HISTORY_LEN};
+use crate::safety::{self, Assessment};
 use crate::theme::{self, Palette, TextRole};
 use crate::widgets::{Chip, ConfirmDialog, DialogResult, IconButton};
 use crate::{format, icons, native_dialog};
@@ -113,98 +117,17 @@ pub fn suggestions(input: &str) -> Vec<&'static GcodeDoc> {
         .collect()
 }
 
-/// Emergency commands: the reference marks M112 dangerous, but a typed
-/// emergency stop (or M108 / M410 / M876, which the host sends past the
-/// queue) must never wait for a confirmation.
-const EMERGENCY: &[&str] = &["M112", "M108", "M410", "M876"];
-
-/// The dangerous commands among `lines` (with their reference entries),
-/// emergency commands excepted.
-pub fn dangerous_commands(lines: &[String]) -> Vec<&'static GcodeDoc> {
-    lines
-        .iter()
-        .filter_map(|l| sprint_proto::gcode_doc(l.trim()))
-        .filter(|d| d.dangerous && !EMERGENCY.contains(&d.code))
-        .collect()
-}
-
-/// Codes that home Z or probe: the nozzle goes down onto the part.
-const PROBING: &[&str] = &[
-    "G29", "G30", "G32", "G33", "G34", "G35", "G38.2", "G38.3", "G38.4", "G38.5", "G76", "M48",
-];
-/// Codes that switch the motors off: the printer loses its position.
-const MOTORS_OFF: &[&str] = &["M18", "M84"];
-
-/// Why typed `line` would ruin the running job, if it would, with its
-/// reference entry: homing Z, probing and switching the motors off even
-/// while the job is `paused`; while it prints, also anything that
-/// [interferes](interferes_with_job) with its moves. The same rules as the
-/// TUI's and the shell's.
-pub fn job_conflict(line: &str, paused: bool) -> Option<(&'static GcodeDoc, &'static str)> {
-    let doc = sprint_proto::gcode_doc(line.trim())?;
-    let code = doc.code;
-    let why = if PROBING.contains(&code) || (code == "G28" && homes_z(line)) {
-        "homing Z and probing lower the nozzle onto the part"
-    } else if MOTORS_OFF.contains(&code) {
-        "with the motors off the printer loses the position the print goes on from"
-    } else if !paused && interferes_with_job(doc) {
-        "it runs between the print's own moves and can ruin the part"
-    } else {
-        return None;
-    };
-    Some((doc, why))
-}
-
-/// Whether a G28 line homes Z: when it names Z, or no axis at all.
-fn homes_z(line: &str) -> bool {
-    let command = line.split(';').next().unwrap_or_default().trim();
-    // The parameters follow the code ("G28 X Y", "G28X").
-    let params = command.get(1..).map_or("", |rest| {
-        rest.trim_start_matches(|c: char| c.is_ascii_digit())
-    });
-    let axes: Vec<char> = params
-        .chars()
-        .map(|c| c.to_ascii_uppercase())
-        .filter(|c| matches!(c, 'X' | 'Y' | 'Z'))
-        .collect();
-    axes.is_empty() || axes.contains(&'Z')
-}
-
-/// Whether a command moves the axes (moves, homing, probing, leveling),
-/// changes how positions or extrusion are read, or switches the motors
-/// off: sent while a job streams, it runs between the job's own moves.
-pub fn interferes_with_job(doc: &GcodeDoc) -> bool {
-    use sprint_proto::GcodeCategory as C;
-    if doc.code.starts_with('G') {
-        matches!(doc.category, C::Motion | C::Leveling | C::Calibration)
-    } else {
-        matches!(
-            doc.code,
-            "M18" | "M84" | "M82" | "M83" | "M48" | "M303" | "M306" | "M420"
-        )
-    }
-}
-
-/// What among `lines` would ruin the job `state` runs, or a print from the
-/// card (see [`job_conflict`]), as "code: why" sentences; empty while the
-/// printer is idle.
-pub fn job_conflicts(lines: &[String], state: &sprint_host::PrinterState) -> Vec<String> {
-    // A print the printer runs from its card counts as printing.
-    let paused = match state.job.as_ref().filter(|j| j.status.is_active()) {
-        Some(job) => job.status.is_paused(),
-        None if crate::context::printer_busy(state) => false,
-        None => return Vec::new(),
-    };
-    let mut out: Vec<String> = Vec::new();
-    for line in lines {
-        if let Some((doc, why)) = job_conflict(line, paused) {
-            let text = format!("{}: {why}.", doc.code);
-            if !out.contains(&text) {
-                out.push(text);
-            }
-        }
-    }
-    out
+/// Why a quick command's chip is off in the job context `job`: what the
+/// classifier blocks, and, while a print runs, anything it would ask
+/// about (homing interleaves with the print; while paused the chip asks
+/// like a typed command).
+pub fn chip_blocker(command: &str, job: JobContext) -> Option<String> {
+    let verdict = sprint_proto::classify(command, job);
+    let off = verdict.is_blocked() || (job == JobContext::Printing && !verdict.is_allowed());
+    off.then(|| match verdict.reason() {
+        Some(reason) => format!("Not while a print runs: {reason}"),
+        None => "Not while a print runs".to_owned(),
+    })
 }
 
 /// The commands in a submitted text: trimmed non-empty lines.
@@ -219,10 +142,10 @@ pub fn command_lines(text: &str) -> Vec<String> {
 /// Commands waiting for the user's confirmation.
 struct PendingSend {
     lines: Vec<String>,
-    /// What they would do to the running job (see [`job_conflicts`]).
-    conflicts: Vec<String>,
-    /// The job was paused when they were typed.
-    paused: bool,
+    /// Why they ask (see [`safety::assess`]).
+    check: Assessment,
+    /// What the job was doing when they were typed.
+    job: JobContext,
 }
 
 #[derive(Default)]
@@ -433,10 +356,12 @@ impl ConsolePanel {
         self.unseen = 0;
     }
 
-    /// Send `text` (one or more lines) as typed by the user: dangerous
-    /// commands, and what would ruin a running job (homing Z and probing
-    /// even while it is paused, see [`job_conflict`]), ask first. Emergency
-    /// commands never wait. Returns true when it was sent right away.
+    /// Send `text` (one or more lines) as typed by the user, through the
+    /// command-safety classifier ([`safety::assess`]): dangerous commands,
+    /// and what would ruin a running job (homing Z and probing even while
+    /// it is paused), ask first; what must not be sent is refused with a
+    /// toast. An M112 goes out at once, without the other lines (the
+    /// firmware halts). Returns true when it was sent right away.
     pub fn submit(&mut self, ctx: &mut AppCtx<'_>, text: &str) -> bool {
         let lines = command_lines(text);
         if lines.is_empty() {
@@ -449,14 +374,29 @@ impl ConsolePanel {
                 .message("Connect to a printer to send commands.");
             return false;
         }
-        let conflicts = job_conflicts(&lines, ctx.state);
-        if !conflicts.is_empty() || !dangerous_commands(&lines).is_empty() {
-            let paused = ctx.state.job.as_ref().is_some_and(|j| j.status.is_paused());
-            self.pending = Some(PendingSend {
-                lines,
-                conflicts,
-                paused,
-            });
+        let job = safety::job_context(ctx.state);
+        let check = safety::assess(&lines, job);
+        if check.emergency_stop {
+            ctx.printer.emergency_stop();
+            let toast = ctx.toasts.warning("Emergency stop sent");
+            if check.commands > 1 {
+                toast.message(
+                    "M112 went out at once; the other lines were not sent (the firmware halts).",
+                );
+            } else {
+                toast.message(crate::job_text::ESTOP_MESSAGE);
+            }
+            self.jump = true;
+            return true;
+        }
+        if !check.blocked.is_empty() {
+            ctx.toasts
+                .warning("Not sent")
+                .message(check.blocked.join("\n"));
+            return false;
+        }
+        if !check.confirm.is_empty() {
+            self.pending = Some(PendingSend { lines, check, job });
             return false;
         }
         ctx.printer.send(&lines.join("\n"));
@@ -755,7 +695,7 @@ impl ConsolePanel {
         ui.painter()
             .hline(rect.x_range(), rect.top(), egui::Stroke::new(1.0, p.border));
         let open = ctx.state.status.is_open();
-        let job = ctx.printer_busy();
+        let job = safety::job_context(ctx.state);
         egui::Frame::new()
             .inner_margin(Margin {
                 left: 10,
@@ -770,14 +710,14 @@ impl ConsolePanel {
                         let doc = sprint_proto::gcode_doc(cmd);
                         let tip = doc.map_or("", |d| d.name);
                         // Like the jog controls: no homing while a job runs.
-                        let moves = doc.is_some_and(interferes_with_job);
+                        let blocker = chip_blocker(cmd, job);
                         let chip = ui
-                            .add_enabled(open && !(moves && job), Chip::new(cmd))
+                            .add_enabled(open && blocker.is_none(), Chip::new(cmd))
                             .on_hover_text(tip)
                             .on_disabled_hover_text(if open {
-                                "Not while a print runs"
+                                blocker.unwrap_or_default()
                             } else {
-                                "Connect to a printer first"
+                                "Connect to a printer first".to_owned()
                             });
                         if chip.clicked() {
                             self.submit(ctx, cmd);
@@ -924,8 +864,9 @@ impl ConsolePanel {
             self.completion = Completion::default();
             if self.submit(ctx, &text) || self.pending.is_some() {
                 // Sent (or waiting for confirmation): keep the field empty.
-            } else if !ctx.state.status.is_open() {
-                // Not sent: give the text back so nothing typed is lost.
+            } else {
+                // Not sent (offline, or refused): give the text back so
+                // nothing typed is lost.
                 self.input = text;
             }
             ui.memory_mut(|m| m.request_focus(id));
@@ -954,29 +895,11 @@ impl ConsolePanel {
         let Some(pending) = &self.pending else {
             return;
         };
-        let dangerous = dangerous_commands(&pending.lines);
-        let mut message: Vec<String> = dangerous
-            .iter()
-            .map(|d| format!("{} — {}: {}", d.code, d.name, d.description))
-            .collect();
-        if !pending.conflicts.is_empty() {
-            message.push(if pending.paused {
-                "A job is paused, to go on from where it stopped:".to_owned()
-            } else {
-                "A job is printing:".to_owned()
-            });
-            message.extend(pending.conflicts.iter().cloned());
-        }
-        let title = if !dangerous.is_empty() {
-            "Send a dangerous command?"
-        } else if pending.paused {
-            "Send this while the print is paused?"
-        } else {
-            "Send this during the print?"
-        };
+        let title = pending.check.title(pending.job);
+        let message = pending.check.message(pending.job);
         let details = pending.lines.join("\n");
         let answer = ConfirmDialog::new("sprint-console-dangerous", title)
-            .message(&message.join("\n"))
+            .message(&message)
             .details(&details)
             .confirm_label("Send anyway")
             .danger(true)
@@ -984,7 +907,28 @@ impl ConsolePanel {
             .show(egui_ctx);
         match answer {
             Some(DialogResult::Confirmed) => {
-                if let Some(pending) = self.pending.take() {
+                let Some(pending) = self.pending.take() else {
+                    return;
+                };
+                // The job may have moved on while the question was open:
+                // what the user agreed to must still be all there is.
+                let job = safety::job_context(ctx.state);
+                let check = safety::assess(&pending.lines, job);
+                if !check.blocked.is_empty() {
+                    ctx.toasts
+                        .warning("Not sent")
+                        .message(check.blocked.join("\n"));
+                } else if job != pending.job && !check.is_clear() {
+                    self.pending = Some(PendingSend {
+                        lines: pending.lines,
+                        check,
+                        job,
+                    });
+                } else if !ctx.state.status.is_open() {
+                    ctx.toasts
+                        .warning("Not sent")
+                        .message("The printer is not connected any more.");
+                } else {
                     ctx.printer.send(&pending.lines.join("\n"));
                     self.jump = true;
                 }
@@ -1353,80 +1297,24 @@ mod tests {
         assert!(s.iter().all(|d| d.code.starts_with("M10")));
         assert!(suggestions("").is_empty());
         assert!(suggestions("G1 X").is_empty());
-        let danger = dangerous_commands(&["G28".into(), "M502".into(), "m112".into()]);
-        let codes: Vec<_> = danger.iter().map(|d| d.code).collect();
-        // A typed emergency stop never waits for a confirmation.
-        assert_eq!(codes, vec!["M502"]);
-        for code in ["M112", "M108", "M410", "M876 S0"] {
-            assert!(dangerous_commands(&[code.into()]).is_empty(), "{code}");
-        }
     }
 
     #[test]
-    fn commands_that_disturb_a_running_job() {
-        let disturbing = |c: &str| sprint_proto::gcode_doc(c).is_some_and(interferes_with_job);
-        for code in [
-            "G0 X1",
-            "G1 E5",
-            "g28",
-            "G29",
-            "G30",
-            "G90",
-            "G91",
-            "G92 E0",
-            "M84",
-            "M18",
-            "M83",
-            "M82",
-            "M303 S200",
-            "M420 S0",
-        ] {
-            assert!(disturbing(code), "{code}");
-        }
-        // Tuning stays available during a print (like the sidebar's).
-        for code in [
-            "M105",
-            "M104 S200",
-            "M106 S255",
-            "M220 S120",
-            "M221 S95",
-            "M290 Z0.05",
-            "M117 hi",
-            "M600",
-            "M114",
-            "M503",
-        ] {
-            assert!(!disturbing(code), "{code}");
-        }
-        let printing = |paused: bool| {
-            let mut job = sprint_host::JobInfo::new(sprint_host::JobKind::HostPrint, "x", 10, 10);
-            job.status = if paused {
-                sprint_host::JobStatus::Paused
-            } else {
-                sprint_host::JobStatus::Printing
-            };
-            sprint_host::PrinterState {
-                job: Some(job),
-                ..sprint_host::PrinterState::default()
+    fn quick_commands_follow_the_classifier() {
+        // Queries go out whatever the job does.
+        for cmd in ["M105", "M114", "M115", "M503", "M119"] {
+            for job in [JobContext::Idle, JobContext::Printing, JobContext::Paused] {
+                assert_eq!(chip_blocker(cmd, job), None, "{cmd} {job:?}");
             }
-        };
-        let lines = command_lines("M105\nG28 X\nM106");
-        assert_eq!(
-            job_conflicts(&lines, &printing(false)),
-            ["G28: it runs between the print's own moves and can ruin the part."]
+        }
+        // Homing interleaves with a print; while paused it asks instead.
+        assert_eq!(chip_blocker("G28", JobContext::Idle), None);
+        assert!(
+            chip_blocker("G28", JobContext::Printing)
+                .is_some_and(|why| why.starts_with("Not while a print runs:"))
         );
-        // Paused: homing X and Y only is how a print is parked.
-        assert!(job_conflicts(&lines, &printing(true)).is_empty());
-        assert!(job_conflicts(&lines, &sprint_host::PrinterState::default()).is_empty());
-        // Homing Z, probing and the motors off never, paused or not.
-        for line in ["G28", "g28 z", "G28 X Z", "G29", "G30", "M48", "M84", "M18"] {
-            let lines = command_lines(line);
-            assert_eq!(job_conflicts(&lines, &printing(true)).len(), 1, "{line}");
-            assert_eq!(job_conflicts(&lines, &printing(false)).len(), 1, "{line}");
-        }
-        for line in ["G1 X10", "G91", "M83"] {
-            assert!(job_conflicts(&command_lines(line), &printing(true)).is_empty());
-            assert!(!job_conflicts(&command_lines(line), &printing(false)).is_empty());
-        }
+        assert_eq!(chip_blocker("G28", JobContext::Paused), None);
+        // What the classifier refuses is off even while paused.
+        assert!(chip_blocker("M28 x.gco", JobContext::Paused).is_some());
     }
 }

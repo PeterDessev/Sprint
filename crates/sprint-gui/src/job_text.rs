@@ -6,6 +6,9 @@ use sprint_host::JobKind;
 
 use crate::format;
 
+/// What the toast after an emergency stop says: how to go on.
+pub const ESTOP_MESSAGE: &str = "M112: the firmware halted. Restart it (M999) or reconnect.";
+
 /// A yes / no question about a job.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct JobQuestion {

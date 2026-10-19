@@ -137,3 +137,72 @@ fn a_partly_broken_configuration_loads_and_says_what_it_left_out() {
     drop(h);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// A printer state printing a host job (for the console's classifier).
+fn printing_state(status: sprint_host::JobStatus) -> sprint_host::PrinterState {
+    let mut job = sprint_host::JobInfo::new(sprint_host::JobKind::HostPrint, "x.gcode", 100, 1000);
+    job.status = status;
+    sprint_host::PrinterState {
+        status: sprint_host::ConnectionStatus::Connected,
+        job: Some(job),
+        ..sprint_host::PrinterState::default()
+    }
+}
+
+fn type_command(h: &mut Harness<'_, SprintApp>, text: &str) {
+    h.state_mut().console_mut().set_input(text);
+    h.state_mut().console_mut().focus_input();
+    settle(h);
+    h.key_press(egui::Key::Enter);
+    settle(h);
+}
+
+#[test]
+fn the_console_refuses_what_the_classifier_blocks_and_keeps_the_text() {
+    let mut h = app(AppOptions::headless(), WINDOW);
+    h.state_mut()
+        .set_state_override(Some(printing_state(sprint_host::JobStatus::Printing)));
+    settle(&mut h);
+    // Writing to the card would swallow the print's next lines.
+    type_command(&mut h, "M28 notes.gco");
+    assert!(!h.state().console().is_confirming());
+    assert!(toast_titles(h.state()).contains(&"Not sent".to_owned()));
+    assert_eq!(h.state().console().input(), "M28 notes.gco");
+    // A pasted block asks once, with each reason.
+    h.state_mut().console_mut().set_input("");
+    type_command(&mut h, "M105");
+    assert!(!h.state().console().is_confirming());
+    type_command(&mut h, "G91\nG1 Z5\nM84\nM105");
+    assert!(h.state().console().is_confirming());
+    assert!(h.query_by_label("Send this during the print?").is_some());
+    assert!(h.query_by_label_contains("M84 (").is_some());
+    h.get_by_label("Cancel").click();
+    settle(&mut h);
+    // A dangerous command asks even without a job.
+    h.state_mut()
+        .set_state_override(Some(sprint_host::PrinterState {
+            job: None,
+            ..printing_state(sprint_host::JobStatus::Printing)
+        }));
+    settle(&mut h);
+    type_command(&mut h, "M502");
+    assert!(h.query_by_label("Send a dangerous command?").is_some());
+    h.get_by_label("Cancel").click();
+    settle(&mut h);
+}
+
+#[test]
+fn an_emergency_stop_in_a_pasted_block_goes_out_alone_at_once() {
+    let mut h = app(sim_options(), WINDOW);
+    connect(&mut h);
+    let control = h.state().printer().sim_control().expect("simulator");
+    control.clear_received();
+    type_command(&mut h, "G1 X10\nM112\nG28");
+    assert!(!h.state().console().is_confirming());
+    expect(&mut h, "the firmware to halt", |app| app.state().halted);
+    let got = control.received_commands();
+    assert!(got.iter().any(|c| c == "M112"), "{got:?}");
+    assert!(!got.iter().any(|c| c.starts_with("G28")), "{got:?}");
+    assert!(!got.iter().any(|c| c.starts_with("G1 ")), "{got:?}");
+    assert!(toast_titles(h.state()).contains(&"Emergency stop sent".to_owned()));
+}

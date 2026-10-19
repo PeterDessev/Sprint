@@ -1946,16 +1946,28 @@ M105
     settle(&mut h);
     assert_eq!(h.state().dialog(), None);
     assert!(toast_titles(h.state()).contains(&"Cannot print right now".to_owned()));
-    // Nor does a line of the file go out between the card's.
+    // A line of the file goes out between the card's only as the command
+    // classifier says: a query at once, a move after a question.
     h.state_mut().push_action(AppAction::ShowTab(Tab::Gcode));
     settle(&mut h);
     h.get_by_label("Line 3: M105").click_secondary();
     settle(&mut h);
     assert!(
-        h.get_by_label_contains("Send line to printer")
+        !h.get_by_label_contains("Send line to printer")
             .accesskit_node()
             .is_disabled()
     );
+    h.key_press(Key::Escape);
+    settle(&mut h);
+    h.get_by_label("Line 2: G1 X10 Y10 F3000").click_secondary();
+    settle(&mut h);
+    h.get_by_label_contains("Send line to printer").click();
+    settle(&mut h);
+    assert!(h.state().gcode_tab().is_confirming());
+    assert!(h.query_by_label("Send this during the print?").is_some());
+    h.get_by_label("Cancel").click();
+    settle(&mut h);
+    assert!(!h.state().gcode_tab().is_confirming());
     drop(h);
     let _ = std::fs::remove_dir_all(dir);
 }

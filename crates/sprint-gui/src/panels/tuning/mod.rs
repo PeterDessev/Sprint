@@ -82,6 +82,9 @@ pub struct TuningTab {
     connection: kit::ConnectionWatch,
     show_changes: bool,
     confirm: Option<Confirm>,
+    /// Applying the changes asks first (what the job was doing then, and
+    /// why).
+    confirm_apply: Option<(crate::safety::Assessment, sprint_proto::JobContext)>,
     import: Option<ImportPreview>,
     file: Option<FileJob>,
 }
@@ -689,28 +692,45 @@ impl TuningTab {
             self.draft.revert_all();
         }
         if apply {
-            for change in &changes {
-                ctx.printer.apply_setting(&change.command);
-                // Sent as plain G-code: as a setting it would replace the
-                // command above in the host's optimistic state.
-                for also in &change.also {
-                    ctx.printer.send(&also.to_gcode());
-                }
+            // The shared classifier reads the settings like any other
+            // command: during a print some ask first or are refused.
+            let job = crate::safety::job_context(ctx.state);
+            let check = crate::safety::assess(&change_gcode(&changes), job);
+            if !check.blocked.is_empty() {
+                ctx.toasts
+                    .warning("Not applied")
+                    .message(check.blocked.join("\n"));
+            } else if check.is_clear() {
+                self.apply_changes(ctx, &changes);
+            } else {
+                self.confirm_apply = Some((check, job));
             }
-            ctx.printer.request_settings();
-            ctx.toasts
-                .success(format!(
-                    "Applied {} setting{}",
-                    changes.len(),
-                    if changes.len() == 1 { "" } else { "s" }
-                ))
-                .message(if kit::lacks_eeprom(ctx.state) {
-                    "Active until the printer restarts (it has no EEPROM)."
-                } else {
-                    "Active until the next restart. Save to EEPROM to keep them."
-                });
-            self.show_changes = false;
         }
+    }
+
+    /// Send `changes` and reload the settings.
+    fn apply_changes(&mut self, ctx: &mut AppCtx<'_>, changes: &[model::Change]) {
+        for change in changes {
+            ctx.printer.apply_setting(&change.command);
+            // Sent as plain G-code: as a setting it would replace the
+            // command above in the host's optimistic state.
+            for also in &change.also {
+                ctx.printer.send(&also.to_gcode());
+            }
+        }
+        ctx.printer.request_settings();
+        ctx.toasts
+            .success(format!(
+                "Applied {} setting{}",
+                changes.len(),
+                if changes.len() == 1 { "" } else { "s" }
+            ))
+            .message(if kit::lacks_eeprom(ctx.state) {
+                "Active until the printer restarts (it has no EEPROM)."
+            } else {
+                "Active until the next restart. Save to EEPROM to keep them."
+            });
+        self.show_changes = false;
     }
 
     fn dialogs(&mut self, ui: &mut Ui, ctx: &mut AppCtx<'_>) {
@@ -789,6 +809,25 @@ impl TuningTab {
                     }
                 }
                 Some(DialogResult::Cancelled) => self.confirm = None,
+                None => {}
+            }
+        }
+        if let Some((check, job)) = &self.confirm_apply {
+            let changes = self.draft.changes();
+            let answer = ConfirmDialog::new("tuning-apply", check.title(*job))
+                .message(&check.message(*job))
+                .details(&change_gcode(&changes).join("\n"))
+                .confirm_label("Apply anyway")
+                .danger(true)
+                .show(ui.ctx());
+            match answer {
+                Some(DialogResult::Confirmed) => {
+                    self.confirm_apply = None;
+                    if ctx.command_blocker().is_none() {
+                        self.apply_changes(ctx, &changes);
+                    }
+                }
+                Some(DialogResult::Cancelled) => self.confirm_apply = None,
                 None => {}
             }
         }
@@ -929,6 +968,15 @@ impl TuningTab {
 }
 
 /// One row of the pending-changes list.
+/// The G-code applying `changes` sends.
+fn change_gcode(changes: &[model::Change]) -> Vec<String> {
+    changes
+        .iter()
+        .flat_map(|c| std::iter::once(&c.command).chain(&c.also))
+        .map(sprint_proto::SettingCommand::to_gcode)
+        .collect()
+}
+
 fn change_row(ui: &mut Ui, change: &model::Change) {
     let p = theme::ui_palette(ui);
     ui.horizontal_top(|ui| {

@@ -21,6 +21,7 @@ use egui::{
 use sprint_gcode::GcodeFile;
 
 use crate::context::{AppAction, AppCtx, Tab};
+use crate::safety::{self, Assessment};
 use crate::theme::{self, Palette};
 use crate::widgets::{Badge, ConfirmDialog, DialogResult, IconButton};
 use crate::{format, icons};
@@ -564,8 +565,9 @@ pub struct GcodeTab {
     follow_print: bool,
     last_followed: Option<usize>,
     hovered_line: Option<u32>,
-    /// A dangerous line waiting for "Send anyway".
-    confirm_send: Option<String>,
+    /// A line waiting for "Send anyway", with why it asks and what the
+    /// job was doing.
+    confirm_send: Option<(String, Assessment, sprint_proto::JobContext)>,
 }
 
 impl Default for GcodeTab {
@@ -1121,47 +1123,54 @@ impl GcodeTab {
             ui.close();
         }
         let command = file.command(index).map(|c| c.into_owned());
+        // Like the console: the shared classifier decides, in what the job
+        // does (also a print from the card: the line would come between
+        // its own).
+        let job = safety::job_context(ctx.state);
+        let check = command
+            .as_ref()
+            .map(|c| safety::assess(std::slice::from_ref(c), job));
         let send_blocker = if command.is_none() {
-            Some("This line has no command")
-        } else if !ctx.connected() {
-            Some("Connect to a printer first")
-        } else if ctx.printer_busy() {
-            // Also a print from the card: the line would come between its own.
-            Some("Not while a print runs")
+            Some("This line has no command".to_owned())
+        } else if let Some(reason) = ctx.command_blocker() {
+            Some(reason.to_owned())
         } else {
-            None
+            check
+                .as_ref()
+                .filter(|c| !c.blocked.is_empty())
+                .map(|c| format!("Not now: {}", c.blocked.join(" ")))
         };
         if ui
             .add_enabled(
                 send_blocker.is_none(),
                 egui::Button::new(icons::with_text(icons::SEND, "Send line to printer")),
             )
-            .on_disabled_hover_text(send_blocker.unwrap_or(""))
+            .on_disabled_hover_text(send_blocker.unwrap_or_default())
             .clicked()
         {
-            if let Some(command) = command {
-                // Like the console: dangerous commands ask first.
-                if sprint_proto::gcode_doc(&command).is_some_and(|d| d.dangerous) {
-                    self.confirm_send = Some(command);
-                } else {
+            if let (Some(command), Some(check)) = (command, check) {
+                if check.emergency_stop {
+                    ctx.printer.emergency_stop();
+                    ctx.toasts
+                        .warning("Emergency stop sent")
+                        .message(crate::job_text::ESTOP_MESSAGE);
+                } else if check.is_clear() {
                     send_line(ctx, &command);
+                } else {
+                    self.confirm_send = Some((command, check, job));
                 }
             }
             ui.close();
         }
     }
 
-    /// The "send a dangerous line?" question, while one waits.
+    /// The "send this line?" question, while one waits.
     fn confirm_dangerous(&mut self, egui_ctx: &egui::Context, ctx: &mut AppCtx<'_>) {
-        let Some(command) = &self.confirm_send else {
+        let Some((command, check, job)) = &self.confirm_send else {
             return;
         };
-        let message = match sprint_proto::gcode_doc(command) {
-            Some(doc) => format!("{} — {}: {}", doc.code, doc.name, doc.description),
-            None => String::new(),
-        };
-        let answer = ConfirmDialog::new("sprint-gcode-dangerous", "Send a dangerous command?")
-            .message(&message)
+        let answer = ConfirmDialog::new("sprint-gcode-dangerous", check.title(*job))
+            .message(&check.message(*job))
             .details(command)
             .confirm_label("Send anyway")
             .danger(true)
@@ -1169,8 +1178,12 @@ impl GcodeTab {
             .show(egui_ctx);
         match answer {
             Some(DialogResult::Confirmed) => {
-                if let Some(command) = self.confirm_send.take() {
-                    if ctx.connected() && !ctx.printer_busy() {
+                if let Some((command, _, asked_in)) = self.confirm_send.take() {
+                    // What the user agreed to must still be all there is.
+                    let job = safety::job_context(ctx.state);
+                    let check = safety::assess(std::slice::from_ref(&command), job);
+                    let ready = ctx.command_blocker().is_none() && check.blocked.is_empty();
+                    if ready && (job == asked_in || check.is_clear()) {
                         send_line(ctx, &command);
                     } else {
                         ctx.toasts
@@ -1184,7 +1197,7 @@ impl GcodeTab {
         }
     }
 
-    /// True while a dangerous line waits for confirmation.
+    /// True while a line waits for confirmation.
     pub fn is_confirming(&self) -> bool {
         self.confirm_send.is_some()
     }
