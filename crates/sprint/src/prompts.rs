@@ -13,10 +13,12 @@
 //! `--answer-prompts continue` the answer that lets the print go on is
 //! given at once, except to a pause made at the printer (its menu's
 //! pause, which offers only Resume, or a pause without a question): that
-//! is left to the person there. Each question is answered once: while it still shows
-//! after its answer (a wait for the user ends with the printer's next busy
-//! message) no further line is spent on it, and one that is still there
-//! after a few seconds is asked again.
+//! is left to the person there.
+//!
+//! Each question is answered once: while it still shows after its answer
+//! (a wait for the user ends with the printer's next busy message) no
+//! further line is spent on it, and one that is still there after a few
+//! seconds is asked again.
 
 use std::io::{BufRead, IsTerminal};
 use std::time::{Duration, Instant};
