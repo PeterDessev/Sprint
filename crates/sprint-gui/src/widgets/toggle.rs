@@ -159,7 +159,7 @@ impl<'a, T: PartialEq + Clone, S: AsRef<str>> SegmentedControl<'a, T, S> {
 
     /// Fixed width of every segment.
     pub fn segment_width(mut self, width: f32) -> Self {
-        if width.is_finite() && width > 0.0 {
+        if let Some(width) = super::finite_clamped(width, 16.0, super::MAX_EXTENT) {
             self.segment_width = Some(width);
         }
         self

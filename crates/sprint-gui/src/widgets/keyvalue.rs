@@ -49,7 +49,7 @@ impl KeyValueGrid {
 
     /// Minimum width of the label column.
     pub fn key_width(mut self, width: f32) -> Self {
-        if width.is_finite() && width >= 0.0 {
+        if let Some(width) = super::finite_clamped(width, 0.0, super::MAX_EXTENT) {
             self.key_width = Some(width);
         }
         self
@@ -63,7 +63,7 @@ impl KeyValueGrid {
 
     /// Vertical gap between rows (default 6).
     pub fn row_spacing(mut self, spacing: f32) -> Self {
-        if spacing.is_finite() && spacing >= 0.0 {
+        if let Some(spacing) = super::finite_clamped(spacing, 0.0, 64.0) {
             self.row_spacing = spacing;
         }
         self

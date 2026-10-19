@@ -202,6 +202,15 @@ pub(crate) fn widget_id(ui: &Ui, salt: impl std::hash::Hash + std::fmt::Debug) -
     ui.unique_id().with(salt)
 }
 
+/// The largest width or height (points) any widget accepts from a builder.
+pub(crate) const MAX_EXTENT: f32 = 8192.0;
+
+/// `value` clamped to `min..=max`, or `None` when it is NaN or infinite
+/// (so builders keep their default).
+pub(crate) fn finite_clamped(value: f32, min: f32, max: f32) -> Option<f32> {
+    value.is_finite().then(|| value.clamp(min, max))
+}
+
 /// Font for an icon glyph: the Phosphor-only family when Sprint's fonts are
 /// installed (best vertical centering), else the proportional family (so a
 /// missing family can never panic).

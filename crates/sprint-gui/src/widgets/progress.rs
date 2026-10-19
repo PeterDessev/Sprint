@@ -254,7 +254,7 @@ impl<'a> LinearProgress<'a> {
 
     /// Fixed width (default: the available width).
     pub fn width(mut self, width: f32) -> Self {
-        if width.is_finite() && width > 0.0 {
+        if let Some(width) = super::finite_clamped(width, 8.0, super::MAX_EXTENT) {
             self.width = Some(width);
         }
         self

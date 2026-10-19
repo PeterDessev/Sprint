@@ -239,7 +239,7 @@ impl<'a> Sparkline<'a> {
 
     /// Fixed width in points (default: the available width).
     pub fn width(mut self, width: f32) -> Self {
-        if width.is_finite() && width > 0.0 {
+        if let Some(width) = super::finite_clamped(width, 1.0, super::MAX_EXTENT) {
             self.width = Some(width);
         }
         self
@@ -247,7 +247,7 @@ impl<'a> Sparkline<'a> {
 
     /// Height in points.
     pub fn height(mut self, height: f32) -> Self {
-        if height.is_finite() && height > 0.0 {
+        if let Some(height) = super::finite_clamped(height, 4.0, super::MAX_EXTENT) {
             self.height = height;
         }
         self
@@ -470,7 +470,7 @@ impl<'a> MiniChart<'a> {
 
     /// Plot height in points (legend excluded).
     pub fn height(mut self, height: f32) -> Self {
-        if height.is_finite() && height > 0.0 {
+        if let Some(height) = super::finite_clamped(height, 4.0, super::MAX_EXTENT) {
             self.height = height;
         }
         self

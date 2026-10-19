@@ -391,7 +391,7 @@ impl<'a> ActionButton<'a> {
 
     /// Minimum width in points.
     pub fn min_width(mut self, width: f32) -> Self {
-        self.min_width = width.max(0.0);
+        self.min_width = super::finite_clamped(width, 0.0, super::MAX_EXTENT).unwrap_or(0.0);
         self
     }
 }

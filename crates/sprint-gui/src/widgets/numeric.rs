@@ -154,7 +154,7 @@ impl<'a, N: Numeric> NumericField<'a, N> {
 
     /// Fixed label column width, to align a stack of fields.
     pub fn label_width(mut self, width: f32) -> Self {
-        if width.is_finite() && width >= 0.0 {
+        if let Some(width) = super::finite_clamped(width, 0.0, super::MAX_EXTENT) {
             self.label_width = Some(width);
         }
         self
@@ -162,7 +162,7 @@ impl<'a, N: Numeric> NumericField<'a, N> {
 
     /// Width of the value box (default 110).
     pub fn field_width(mut self, width: f32) -> Self {
-        if width.is_finite() && width > 24.0 {
+        if let Some(width) = super::finite_clamped(width, 24.0, super::MAX_EXTENT) {
             self.field_width = width;
         }
         self
