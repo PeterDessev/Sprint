@@ -123,13 +123,16 @@ turned off before the link closes.
 
 **Failures** exit with 1 and say why. When a print fails while the printer
 still answers, Sprint turns the heaters off before disconnecting. When a
-host print fails or is cancelled, Sprint prints the line to resume from:
+host print fails or is cancelled, Sprint prints the command that resumes
+it from the first line the printer did not confirm, on the same printer
+(and profile):
 
 ```text
-resume with: sprint print cube.gcode --start-line 4721
+resume with: sprint print cube.gcode --start-line 4721 --connect COM3@250000
 ```
 
-Add `--board-reset` when the board was reset or lost power in between.
+`--board-reset` belongs in it when the board was reset or lost power while
+the nozzle stayed where the print stopped (see the table above).
 
 **The printer's questions** (a filament change, an M0 "insert magnets", a
 runout) are printed as they come. With `--answer-prompts ask` the answer is

@@ -2094,9 +2094,10 @@ Behaviour contract:
   scripts, options and `emit_progress` (or `--progress-on-printer`). The
   progress line is redrawn on a terminal and printed every 10 %
   otherwise; `Completed <name>: <percent> in <time>` goes to stdout. A
-  failed or cancelled print reports `resume with: sprint print FILE
-  --start-line N` from `JobInfo::stopped_at` (0-based, so N =
-  `stopped_at + 1`: `--start-line` counts lines from 1); a failure while
+  failed or cancelled print reports a runnable `resume with: sprint print
+  FILE --start-line N --connect T ...` (the same target and `--profile`)
+  from `JobInfo::stopped_at` (0-based, so N = `stopped_at + 1`:
+  `--start-line` counts lines from 1); a failure while
   the printer answers turns the heaters off before disconnecting.
   `--start-line N` streams from 0-based line N - 1 with `resume_preamble`
   (`--board-reset` = `restore_z_position`, `--z-clearance`,

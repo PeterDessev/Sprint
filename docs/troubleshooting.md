@@ -119,7 +119,7 @@ the printer had not confirmed:
   that line;
 * the shell and the terminal UI have `recover`;
 * `sprint print` prints the command to run, for example
-  `resume with: sprint print cube.gcode --start-line 4721`.
+  `resume with: sprint print cube.gcode --start-line 4721 --connect COM3@250000`.
 
 The resume starts with a preamble: heat to the temperatures of that line,
 home X and Y (not Z, so the nozzle cannot crash into the part), lift, move
