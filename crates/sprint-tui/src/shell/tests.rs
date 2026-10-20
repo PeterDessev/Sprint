@@ -1691,6 +1691,21 @@ fn recover_prints_a_cancelled_file_again_from_where_it_stopped() {
     );
     assert!(text.contains("  G28 X Y"), "{text}");
     assert!(text.contains("Not started"), "{text}");
+    // The cancel script lifted the nozzle 10 mm and switched the motors
+    // off (Z is no longer known to be homed): the firmware followed the
+    // lift, so its Z is trusted. Declaring the resume height up there
+    // would print the rest in the air.
+    assert!(
+        shell
+            .printer
+            .with_state(|s| s.homed.is_some_and(|axes| !axes.z)),
+        "the cancel script switched the motors off"
+    );
+    assert!(!text.contains("\n  G92 Z"), "{text}");
+    assert!(
+        text.contains("the cancel script moved the nozzle: the firmware's Z is trusted"),
+        "{text}"
+    );
     // Yes: it prints from there.
     let mut input = Script::new(["recover", "y"], true);
     shell.run_lines_until_eof_without_leaving(&mut input);
@@ -1708,6 +1723,7 @@ fn recover_prints_a_cancelled_file_again_from_where_it_stopped() {
     );
     let got = received(&shell);
     assert!(got.iter().any(|c| c == "G28 X Y"), "{got:?}");
+    assert!(!got.iter().any(|c| c.starts_with("G92 Z")), "{got:?}");
     shell.printer.cancel();
     wait_for(&shell, "the cancel", |s| !s.job_active());
 }

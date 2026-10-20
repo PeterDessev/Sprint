@@ -1860,6 +1860,24 @@ fn a_cancelled_print_is_recovered_from_the_line_it_stopped_at() {
         "the preamble is shown: {:?}",
         confirm.message
     );
+    // The cancel script lifted the nozzle and switched the motors off: the
+    // firmware's Z, which followed the lift, is trusted, not declared.
+    assert!(
+        !confirm
+            .message
+            .iter()
+            .any(|l| l.trim().starts_with("G92 Z")),
+        "{:?}",
+        confirm.message
+    );
+    assert!(
+        confirm
+            .message
+            .iter()
+            .any(|l| l.contains("the cancel script moved the nozzle")),
+        "{:?}",
+        confirm.message
+    );
     crate::snapshot::save(&render(&mut app, 120, 40), "tui-recover-120x40");
     received(&app);
     press(&mut app, KeyCode::Char('y'));
@@ -1868,7 +1886,9 @@ fn a_cancelled_print_is_recovered_from_the_line_it_stopped_at() {
             .as_ref()
             .is_some_and(|j| j.status.is_active() && j.current_line > stopped)
     });
-    assert!(received(&app).iter().any(|c| c == "G28 X Y"));
+    let got = received(&app);
+    assert!(got.iter().any(|c| c == "G28 X Y"), "{got:?}");
+    assert!(!got.iter().any(|c| c.starts_with("G92 Z")), "{got:?}");
     app.printer.cancel();
     wait(&mut app, "the cancel", |s| !s.job_active());
     // A line past the end of the file is refused.

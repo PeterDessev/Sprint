@@ -556,6 +556,12 @@ pub struct Recovery {
     /// preamble declares the nozzle's Z with `G92 Z` (it must still be
     /// where the print stopped) instead of trusting the firmware's 0.
     pub declares_z: bool,
+    /// Z is not known to be homed, but the last job was cancelled: its
+    /// cancel script moved the nozzle (the default one lifts it, then
+    /// switches the motors off, which forgets the homing), so the
+    /// firmware's Z, which followed that move, is trusted instead of
+    /// declaring the resume height up there.
+    pub trusts_z_after_cancel: bool,
 }
 
 /// What `recover [line]` does with the loaded file: start from `line`
@@ -607,7 +613,14 @@ pub fn recovery(
             index
         }
     };
-    let declares_z = !state.homed.is_some_and(|axes| axes.z);
+    let z_homed = state.homed.is_some_and(|axes| axes.z);
+    // A cancel ran the cancel script (or the printer's own cancel), which
+    // moves the nozzle away from where the print stopped.
+    let cancelled = state
+        .job
+        .as_ref()
+        .is_some_and(|j| j.kind != JobKind::SdUpload && j.status == JobStatus::Cancelled);
+    let declares_z = !z_homed && !cancelled;
     let options = ResumeOptions {
         restore_z_position: declares_z,
         ..ResumeOptions::default()
@@ -616,6 +629,7 @@ pub fn recovery(
         line: index,
         preamble: resume_preamble(&loaded.file, index, &options),
         declares_z,
+        trusts_z_after_cancel: !z_homed && cancelled,
     })
 }
 
@@ -641,6 +655,12 @@ pub fn recovery_lines(recovery: &Recovery, name: &str) -> Vec<String> {
     if recovery.declares_z {
         lines.push(
             "Z is not homed: the nozzle must still be where the print stopped (G92 Z declares it)."
+                .to_string(),
+        );
+    } else if recovery.trusts_z_after_cancel {
+        lines.push(
+            "Z is not homed, but the cancel script moved the nozzle: the firmware's Z is \
+             trusted (no G92 Z)."
                 .to_string(),
         );
     }
@@ -1652,8 +1672,41 @@ mod tests {
         // Z homed: the firmware's Z is trusted.
         state.homed = Some(sprint_host::Axes::ALL);
         let plan = recovery(&state, Some(&loaded), None).expect("recovery");
-        assert!(!plan.declares_z);
+        assert!(!plan.declares_z && !plan.trusts_z_after_cancel);
         assert!(!plan.preamble.iter().any(|l| l.starts_with("G92 Z")));
+        assert!(
+            !recovery_lines(&plan, loaded.name())
+                .iter()
+                .any(|l| l.contains("Z is not homed")),
+            "{plan:?}"
+        );
+        // Cancelled: the cancel script moved the nozzle (the default one
+        // lifts it 10 mm, then switches the motors off, so Z is not homed
+        // any more). The firmware followed that lift: its Z is trusted, as
+        // declaring the resume height would print the rest in the air.
+        job.status = JobStatus::Cancelled;
+        state.job = Some(job.clone());
+        for homed in [None, Some(sprint_host::Axes::NONE)] {
+            state.homed = homed;
+            let plan = recovery(&state, Some(&loaded), None).expect("recovery");
+            assert!(!plan.declares_z && plan.trusts_z_after_cancel, "{plan:?}");
+            assert!(!plan.preamble.iter().any(|l| l.starts_with("G92 Z")));
+            let lines = recovery_lines(&plan, loaded.name());
+            assert_eq!(
+                lines[1],
+                "Z is not homed, but the cancel script moved the nozzle: the firmware's Z is \
+                 trusted (no G92 Z)."
+            );
+        }
+        // An emergency stop fails the print where it stands: declared.
+        job.status = JobStatus::Failed("emergency stop".into());
+        state.job = Some(job.clone());
+        assert!(
+            recovery(&state, Some(&loaded), None)
+                .expect("recovery")
+                .declares_z
+        );
+        state.homed = Some(sprint_host::Axes::ALL);
         // A line given; past the end is refused.
         assert_eq!(
             recovery(&state, Some(&loaded), Some(3)).map(|r| r.line),
