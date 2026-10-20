@@ -927,6 +927,10 @@ impl Printer {
 
     /// Send `setting.to_gcode()`, update `state.settings` optimistically
     /// and refresh them with M503 shortly after the last edit.
+    ///
+    /// A [report-only](SettingCommand::is_report_only) setting (Marlin's
+    /// Autotemp, reported as `M104 S B F`) is not sent: the console gets a
+    /// warning instead, as sending it would heat or move the printer.
     pub fn apply_setting(&self, setting: &SettingCommand) {
         self.command(Command::ApplySetting(setting.clone()));
     }

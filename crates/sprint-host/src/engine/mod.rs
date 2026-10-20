@@ -1300,6 +1300,15 @@ impl Engine {
                 length,
                 feedrate,
             } => self.extrude(tool, length, feedrate),
+            Command::ApplySetting(setting) if setting.is_report_only() => {
+                // Marlin reports Autotemp as `M104 S B F`, but `M104 S`
+                // also sets the hotend temperature.
+                self.warn(format!(
+                    "{} is a reported value, not a setting Sprint changes: sending it would \
+                     heat or move the printer. Type the command yourself to send it.",
+                    setting.to_gcode()
+                ));
+            }
             Command::ApplySetting(setting) => {
                 let gcode = setting.to_gcode();
                 self.shared.update(|s| s.settings.insert(setting));
