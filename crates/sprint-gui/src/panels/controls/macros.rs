@@ -309,12 +309,25 @@ impl Macros {
 
     /// Run `m` (its arguments filled in) through the command-safety
     /// classifier: at once, after a question (also when the macro asks
-    /// for one), or not at all.
+    /// for one), or not at all. A macro holding an M112 sends the
+    /// emergency stop at once, never after a question, and nothing else
+    /// (the firmware halts), as the console does.
     fn check_and_run(&mut self, ctx: &mut AppCtx<'_>, m: Macro, test: bool) {
         let lines = macro_args::rendered(&m.gcode, ctx.state, ctx.config.active());
         let job = safety::job_context(ctx.state);
         let check = safety::assess(&lines, job);
-        if !check.blocked.is_empty() {
+        if check.emergency_stop {
+            ctx.printer.emergency_stop();
+            let toast = ctx.toasts.warning("Emergency stop sent");
+            if check.commands > 1 {
+                toast.message(format!(
+                    "M112 went out at once; the rest of “{}” was not sent (the firmware halts).",
+                    m.name.trim()
+                ));
+            } else {
+                toast.message(crate::job_text::ESTOP_MESSAGE);
+            }
+        } else if !check.blocked.is_empty() {
             ctx.toasts
                 .warning(format!("“{}” not run", m.name.trim()))
                 .message(check.blocked.join("\n"));

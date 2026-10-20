@@ -272,9 +272,9 @@ fn test_send_reaches_the_printer_without_saving() {
     assert!(!h.state().dirty);
 }
 
-/// G-code the reference marks as dangerous (M502 factory reset, M112, ...)
-/// is never sent without a question, whether the macro asks or not, and
-/// also not from the editor's test send.
+/// G-code the reference marks as dangerous (M502 factory reset, ...) is
+/// never sent without a question, whether the macro asks or not, and also
+/// not from the editor's test send.
 #[test]
 fn dangerous_macros_always_ask_first() {
     let mut rig = Rig::simulator();
@@ -308,6 +308,36 @@ fn dangerous_macros_always_ask_first() {
     click(&mut h, "Cancel");
     assert!(h.query(by_label("Save")).is_none());
     assert!(!h.state().dirty);
+}
+
+/// A macro holding an M112 sends the emergency stop at once, even when it
+/// is set to ask first, and nothing else: the firmware halts.
+#[test]
+fn an_emergency_stop_macro_never_asks() {
+    let mut rig = Rig::simulator();
+    rig.config.macros.push(Macro {
+        name: "Stop".into(),
+        gcode: "G28
+M112"
+            .into(),
+        color: None,
+        confirm: true,
+    });
+    let mut h = harness(rig);
+    let printer = h.state().printer.clone();
+    h.get(by_label("Stop…")).click();
+    h.step();
+    h.step();
+    assert!(h.query(by_label("Run “Stop”?")).is_none(), "a question");
+    assert!(
+        h.state()
+            .toasts
+            .iter()
+            .any(|t| t.title() == "Emergency stop sent")
+    );
+    wait_for_commands(&printer, &["M112"]);
+    let got = received(&printer);
+    assert!(!got.iter().any(|c| c.starts_with("G28")), "{got:?}");
 }
 
 /// Macros written in the shell with arguments (`{0}`, `{1=60}`, `{args}`)
