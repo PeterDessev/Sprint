@@ -43,8 +43,9 @@ raw mode, `sprint sim`). Web interfaces and APIs (OctoPrint, Moonraker,
 Duet's HTTP API) are not raw serial streams and do not work.
 
 **Klipper.** Connect to the G-code pseudo-terminal the Klipper host
-exposes (usually `/tmp/printer`), not to the micro-controller's USB port,
-which speaks Klipper's own protocol.
+exposes (`~/printer_data/comms/klippy.serial` on current installs,
+`/tmp/printer` on older ones; Klipper's `-I` option names it), not to the
+micro-controller's USB port, which speaks Klipper's own protocol.
 
 ## Resends
 
