@@ -89,6 +89,26 @@ impl SettingDef {
     pub fn is_selector(&self, letter: char) -> bool {
         self.selectors.contains(&letter.to_ascii_uppercase())
     }
+
+    /// The firmware reports this setting, but sending it back would do more
+    /// than change it (see [`is_report_only`]): show it, never apply it.
+    pub fn is_report_only(&self) -> bool {
+        is_report_only(self.code)
+    }
+}
+
+/// Commands that heat or move. A firmware may report one among its settings
+/// (Marlin reports Autotemp as `M104 S<min> B<max> F<factor>`), but sending
+/// it back does more than change a setting: `M104 S` sets the hotend
+/// temperature.
+static REPORT_ONLY: &[&str] = &[
+    "M104", "M109", "M140", "M190", "M141", "M191", "G0", "G1", "G2", "G3", "G28",
+];
+
+/// True when settings with this code are only ever reported: sending one
+/// would heat or move the printer (see [`SettingDef::is_report_only`]).
+pub fn is_report_only(code: &str) -> bool {
+    normalize_code(code).is_some_and(|c| REPORT_ONLY.contains(&c.as_str()))
 }
 
 /// One parameter of a [`SettingDef`].
@@ -362,6 +382,19 @@ static DEFS: &[SettingDef] = &[
             index('T', "Extruder", 7.0),
         ],
         requires_eeprom_save: true,
+    },
+    SettingDef {
+        code: "M104",
+        name: "Autotemp",
+        category: C::Thermal,
+        description: "While printing, the hotend target rises from the minimum towards the maximum with the extrusion rate, scaled by the factor. Shown for reference only: M104 S also sets the hotend temperature, so Sprint never sends this setting back.",
+        selectors: &[],
+        params: &[
+            num('S', "Minimum temperature", DEG_C, 0.0, 450.0, 0),
+            num('B', "Maximum temperature", DEG_C, 0.0, 450.0, 0),
+            num('F', "Factor", "", 0.0, 10.0, 2),
+        ],
+        requires_eeprom_save: false,
     },
     SettingDef {
         code: "M145",
@@ -854,6 +887,28 @@ mod tests {
                 assert!(def.is_selector(s));
             }
         }
+    }
+
+    #[test]
+    fn heating_and_moving_codes_are_report_only() {
+        // Marlin reports Autotemp in M503 as `M104 S210 B250 F0.10`, but
+        // `M104 S` sets the hotend target: it is shown, never applied.
+        let autotemp = setting_def("M104").unwrap();
+        assert_eq!(autotemp.name, "Autotemp");
+        assert_eq!(autotemp.category, SettingCategory::Thermal);
+        assert!(autotemp.is_report_only());
+        for code in ["M104", "m140", "M0190", "G1", "G28"] {
+            assert!(is_report_only(code), "{code}");
+        }
+        for code in ["M92", "M301", "M145", "G21", "G29", "", "x"] {
+            assert!(!is_report_only(code), "{code}");
+        }
+        let reported: Vec<_> = setting_defs()
+            .iter()
+            .filter(|d| d.is_report_only())
+            .map(|d| d.code)
+            .collect();
+        assert_eq!(reported, ["M104"]);
     }
 
     #[test]

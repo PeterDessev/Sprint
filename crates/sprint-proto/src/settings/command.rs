@@ -296,6 +296,15 @@ impl SettingCommand {
         }
     }
 
+    /// The firmware reports this setting, but [`to_gcode`](Self::to_gcode)
+    /// would heat or move the printer (Marlin's Autotemp is reported as
+    /// `M104 S<min> B<max> F<factor>`, and `M104 S` sets the hotend
+    /// temperature): show it, never send it. See
+    /// [`is_report_only`](crate::is_report_only).
+    pub fn is_report_only(&self) -> bool {
+        super::catalog::is_report_only(&self.code)
+    }
+
     /// G-code that applies this setting: `"M92 X80 Y80 Z400 E93"` (trailing
     /// zeros trimmed, original parameter order kept, flags as bare letters).
     pub fn to_gcode(&self) -> String {
