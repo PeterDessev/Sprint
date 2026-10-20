@@ -351,8 +351,13 @@ pub fn job_progress_text(job: &JobInfo) -> String {
     out
 }
 
-/// The `status` report.
-pub fn status_lines(state: &PrinterState, file: Option<&LoadedFile>) -> Vec<ReportLine> {
+/// The `status` report; a halted printer names the reset command as the
+/// front end spells it (`reset`, `:reset`).
+pub fn status_lines(
+    state: &PrinterState,
+    file: Option<&LoadedFile>,
+    reset: &str,
+) -> Vec<ReportLine> {
     let mut lines = Vec::new();
     let mut printer = ReportLine::row(
         "Printer",
@@ -374,7 +379,7 @@ pub fn status_lines(state: &PrinterState, file: Option<&LoadedFile>) -> Vec<Repo
         printer.push(
             format!(
                 ": {}",
-                crate::actions::halt_recovery(state.restartable, "reset")
+                crate::actions::halt_recovery(state.restartable, reset)
             ),
             Tone::Warn,
         );
@@ -1461,7 +1466,7 @@ mod tests {
 
     #[test]
     fn status_reports_everything_at_a_glance() {
-        let text = joined(&status_lines(&connected_state(), None));
+        let text = joined(&status_lines(&connected_state(), None, "reset"));
         for fact in [
             "Printer    ● Connected  Virtual printer  Marlin 2.1.2.1",
             "Hotend     205.3 / 210 °C  heating  power 64%",
@@ -1474,7 +1479,7 @@ mod tests {
         ] {
             assert!(text.contains(fact), "missing {fact:?} in\n{text}");
         }
-        let offline = joined(&status_lines(&PrinterState::default(), None));
+        let offline = joined(&status_lines(&PrinterState::default(), None, "reset"));
         assert!(
             offline.starts_with("Printer    ● Disconnected"),
             "{offline}"
@@ -1486,7 +1491,7 @@ mod tests {
             message: "Filament runout".into(),
             buttons: vec!["Continue".into(), "Purge".into()],
         });
-        let text = joined(&status_lines(&halted, None));
+        let text = joined(&status_lines(&halted, None, "reset"));
         assert!(text.contains("HALTED"), "{text}");
         assert!(
             text.contains("Prompt     Filament runout  [Continue] [Purge]"),
@@ -1509,7 +1514,7 @@ mod tests {
             target: Some(40.0),
             power: None,
         });
-        let text = joined(&status_lines(&state, None));
+        let text = joined(&status_lines(&state, None, "reset"));
         assert!(
             text.contains("Last error open failed, File: arcs-test.gcode."),
             "{text}"
@@ -1531,7 +1536,7 @@ mod tests {
     fn printer_text_is_sanitized() {
         let mut state = connected_state();
         state.target = Some("evil\x1b[2J\x07".into());
-        let lines = status_lines(&state, None);
+        let lines = status_lines(&state, None, "reset");
         for line in &lines {
             assert!(!line.text().contains('\x1b'), "{line:?}");
             assert!(!line.text().contains('\x07'), "{line:?}");

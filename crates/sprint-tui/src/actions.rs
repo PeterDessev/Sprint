@@ -1204,15 +1204,20 @@ pub fn halt_recovery(restartable: bool, reset: &str) -> String {
     }
 }
 
-/// Why a print cannot start, if it cannot.
-pub fn print_blocker(state: &PrinterState, loaded: Option<&LoadedFile>) -> Option<String> {
+/// Why a print cannot start, if it cannot; a halted printer names the
+/// reset command as the front end spells it (`reset`, `:reset`).
+pub fn print_blocker(
+    state: &PrinterState,
+    loaded: Option<&LoadedFile>,
+    reset: &str,
+) -> Option<String> {
     if !state.is_connected() {
         return Some("Not connected to a printer".to_string());
     }
     if state.halted {
         return Some(format!(
             "The printer is halted: {}",
-            halt_recovery(state.restartable, "reset")
+            halt_recovery(state.restartable, reset)
         ));
     }
     if state.job_active() {
@@ -1861,7 +1866,7 @@ G1 X1
     fn print_needs_a_connection_and_a_file() {
         let offline = PrinterState::default();
         assert_eq!(
-            print_blocker(&offline, None).as_deref(),
+            print_blocker(&offline, None, "reset").as_deref(),
             Some("Not connected to a printer")
         );
         let connected = PrinterState {
@@ -1869,7 +1874,7 @@ G1 X1
             ..PrinterState::default()
         };
         assert_eq!(
-            print_blocker(&connected, None).as_deref(),
+            print_blocker(&connected, None, "reset").as_deref(),
             Some("No file loaded")
         );
         // A halted printer: how to bring it back.
@@ -1877,11 +1882,17 @@ G1 X1
             halted: true,
             ..connected
         };
-        let why = print_blocker(&halted, None).expect("halted");
+        let why = print_blocker(&halted, None, "reset").expect("halted");
         assert_eq!(
             why,
             "The printer is halted: reset resets the board \
              (M999 alone does not recover from M112 or a kill)"
+        );
+        // In the TUI's words.
+        let why = print_blocker(&halted, None, ":reset").expect("halted");
+        assert!(
+            why.starts_with("The printer is halted: :reset resets the board"),
+            "{why}"
         );
         halted.restartable = true;
         assert_eq!(

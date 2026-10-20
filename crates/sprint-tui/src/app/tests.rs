@@ -1307,6 +1307,33 @@ fn emergency_stop_needs_a_second_press() {
         app.toast
     );
     crate::snapshot::save(&render(&mut app, 120, 40), "tui-halted-120x40");
+    // Printing refuses with the TUI's spelling of the reset, and so does
+    // the status report.
+    load(&mut app, "arcs-test.gcode");
+    for print in ["print", "recover"] {
+        app.run_line(print);
+        assert!(app.modal.is_none(), "{print}");
+        let text = app
+            .toast
+            .as_ref()
+            .map(|t| t.text.clone())
+            .unwrap_or_default();
+        assert!(
+            text.starts_with("The printer is halted: :reset resets the board"),
+            "{print}: {text}"
+        );
+    }
+    app.run_line("status");
+    let Some(Modal::Report(report)) = &app.modal else {
+        panic!("no status report: {:?}", app.toast);
+    };
+    let text: Vec<String> = report.lines.iter().map(ReportLine::text).collect();
+    assert!(
+        text.iter()
+            .any(|l| l.contains("HALTED: :reset resets the board")),
+        "{text:?}"
+    );
+    press(&mut app, KeyCode::Esc);
     // :reset brings the printer back; M999 alone would not after M112.
     app.run_line("reset");
     wait_app(&mut app, "the reset", |a| a.background.is_empty());

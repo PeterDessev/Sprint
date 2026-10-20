@@ -904,7 +904,7 @@ impl App {
     fn request_print(&mut self, pause_at: &[u64]) {
         let blocker = self
             .printer
-            .with_state(|s| actions::print_blocker(s, self.file.as_ref()));
+            .with_state(|s| actions::print_blocker(s, self.file.as_ref(), ":reset"));
         if let Some(why) = blocker {
             let hint = match why.as_str() {
                 "No file loaded" if self.loader.is_some() => " yet (still loading)",
@@ -1049,7 +1049,7 @@ impl App {
     fn request_recover(&mut self, line: Option<u64>) {
         let blocker = self
             .printer
-            .with_state(|s| actions::print_blocker(s, self.file.as_ref()));
+            .with_state(|s| actions::print_blocker(s, self.file.as_ref(), ":reset"));
         if let Some(why) = blocker {
             self.warn(why);
             return;
@@ -2284,7 +2284,7 @@ impl App {
             Command::Status => {
                 let lines = self
                     .printer
-                    .with_state(|s| report::status_lines(s, self.file.as_ref()));
+                    .with_state(|s| report::status_lines(s, self.file.as_ref(), ":reset"));
                 self.show_report("Status", lines);
             }
             Command::Monitor(_) => self.info("This screen is the live monitor"),

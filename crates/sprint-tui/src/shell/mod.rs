@@ -759,7 +759,7 @@ impl Shell {
             Command::Status => {
                 let lines = self
                     .printer
-                    .with_state(|s| report::status_lines(s, self.file.as_ref()));
+                    .with_state(|s| report::status_lines(s, self.file.as_ref(), "reset"));
                 self.out.lines(&lines);
             }
             Command::Monitor(secs) => self.monitor(secs, input.interactive()),
@@ -1194,7 +1194,7 @@ impl Shell {
     fn print(&mut self, pause_at: &[u64]) {
         let blocker = self
             .printer
-            .with_state(|s| actions::print_blocker(s, self.file.as_ref()));
+            .with_state(|s| actions::print_blocker(s, self.file.as_ref(), "reset"));
         if let Some(why) = blocker {
             let hint = match why.as_str() {
                 "No file loaded" => " (load <file>)",
@@ -1287,7 +1287,7 @@ impl Shell {
     fn recover(&mut self, line: Option<u64>, input: &mut dyn LineSource) {
         let blocker = self
             .printer
-            .with_state(|s| actions::print_blocker(s, self.file.as_ref()));
+            .with_state(|s| actions::print_blocker(s, self.file.as_ref(), "reset"));
         if let Some(why) = blocker {
             self.out.warn(why);
             return;
