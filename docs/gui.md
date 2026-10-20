@@ -413,9 +413,10 @@ window manager for your attention (the taskbar button flashes).
   lower, prime, restore the extruder position and feedrate) after
   re-establishing units, positioning and extrusion modes and the
   temperatures the print had, then continues streaming.
-* **Cancel** asks first, showing what the profile's **cancel script** will
-  do (by default every heater and the fan off, lift 10 mm, home X and Y,
-  motors off).
+* **Cancel** asks first; the profile's **cancel script** then runs (by
+  default every heater and the fan off, lift 10 mm, home X and Y, motors
+  off). Check a custom script in the printer profile: the question only
+  says that it runs.
 
 A pause made at the printer (its menu, `//action:pause`, M600) shows as
 paused in Sprint too; **Resume** continues it.
