@@ -1456,6 +1456,22 @@ fn parse_set(spec: &'static CommandSpec, rest: &str) -> Result<Command, ParseErr
             format!("'{rest}' is not a setting command such as M92 E415"),
         ));
     };
+    if cmd.is_report_only() {
+        // Marlin reports Autotemp as `M104 S B F`, but `M104 S` also sets
+        // the hotend temperature.
+        let name = setting_def(&cmd.code).map_or_else(
+            || cmd.code.clone(),
+            |def| format!("{} ({})", cmd.code, def.name),
+        );
+        return Err(ParseError::usage(
+            spec,
+            format!(
+                "{name} is only shown, not changed with set: sending {} would heat or move \
+                 the printer; type the command itself to send it",
+                cmd.code
+            ),
+        ));
+    }
     if cmd.params.is_empty() {
         return Err(ParseError::usage(
             spec,
@@ -2111,6 +2127,18 @@ mod tests {
             (
                 "set M92 Q5",
                 "M92 has no parameter Q",
+                Some("set <code> <params>"),
+            ),
+            (
+                "set M104 F0.2",
+                "M104 (Autotemp) is only shown, not changed with set: sending M104 would heat \
+                 or move the printer; type the command itself to send it",
+                Some("set <code> <params>"),
+            ),
+            (
+                "set G28 X",
+                "G28 is only shown, not changed with set: sending G28 would heat or move the \
+                 printer; type the command itself to send it",
                 Some("set <code> <params>"),
             ),
             (

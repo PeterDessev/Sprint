@@ -607,6 +607,9 @@ pub fn settings_lines(settings: &PrinterSettings, filter: Option<&str>) -> Vec<R
             let mut line = ReportLine::new().with(format!("  {key:<10}"), Tone::Accent);
             line.push(format!("{:<26}", def.map_or("", |d| d.name)), Tone::Label);
             line.push(params.join(" "), Tone::Plain);
+            if setting.is_report_only() {
+                line.push("  (shown only: sending it would heat or move)", Tone::Dim);
+            }
             lines.push(line);
         }
     }
@@ -1579,6 +1582,7 @@ mod tests {
             "M301 P22.2 I1.08 D114",
             "M851 X-40 Y-10 Z-1.5",
             "M999 S1",
+            "M104 S210 B250 F0.10",
         ] {
             settings.insert(SettingCommand::parse(line).expect("setting"));
         }
@@ -1589,6 +1593,14 @@ mod tests {
         );
         assert!(text.contains("X80 Y80 Z400 E93"), "{text}");
         assert!(text.contains("Thermal\n  M301"), "{text}");
+        // Marlin's Autotemp report is shown, marked as not changeable.
+        assert!(
+            text.contains(
+                "  M104      Autotemp                  S210 B250 F0.1  (shown only: sending it \
+                 would heat or move)"
+            ),
+            "{text}"
+        );
         assert!(text.contains("P22.2 I1.08 D114"), "{text}");
         assert!(text.contains("Probing"), "{text}");
         assert!(text.contains("Other\n  M999"), "{text}");
