@@ -5,7 +5,7 @@
 //! numbers typed by the user) and never talks to the printer or draws
 //! anything, so it is unit-tested in isolation:
 //!
-//! * [`format`]: human-readable durations ("1d 2h 3m"), lengths, byte
+//! * [`format`](mod@format): human-readable durations ("1d 2h 3m"), lengths, byte
 //!   counts, rates and percentages.
 //! * [`thermal`]: heater stability at target (mean, standard deviation,
 //!   peak-to-peak), heat-up detection (time to target, overshoot, settling

@@ -142,7 +142,7 @@ impl ScrewHelper {
     }
 
     /// `self` with values from storage made usable: a known thread, at
-    /// most [`MAX_SCREWS`] screws at finite positions, a sane inset.
+    /// most `MAX_SCREWS` screws at finite positions, a sane inset.
     pub fn sanitized(mut self) -> ScrewHelper {
         self.thread = self.thread.min(THREADS.len() - 1);
         self.screws

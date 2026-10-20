@@ -61,7 +61,7 @@ pub fn connect(
     }
 }
 
-/// "<label> closed the connection (reason)".
+/// "`<label>` closed the connection (reason)".
 pub fn closed(label: &str, why: &str) -> String {
     if why.is_empty() {
         format!("{label} closed the connection")

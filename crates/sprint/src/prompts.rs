@@ -61,7 +61,7 @@ pub enum Question<'a> {
 pub enum Effect {
     /// Tell the user (stderr).
     Say(String),
-    /// Answer the host prompt with this button (M876 S<index>).
+    /// Answer the host prompt with this button (`M876 S<index>`).
     Answer(usize),
     /// Let the printer go on: release a firmware waiting for the user
     /// (M108) or resume a print the printer paused.
