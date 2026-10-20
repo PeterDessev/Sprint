@@ -106,7 +106,7 @@ sprint print cube.gcode -c "sim://?time_scale=50&instant_moves=true"
 | `--board-reset` | With `--start-line`: the board was reset (a power loss, or a reconnect that reset an 8-bit board) while the nozzle stayed where the print stopped, so its Z is declared with G92 Z before lifting. Without it the firmware's Z is trusted, which after a reset is 0 and would print the rest in the air. |
 | `--z-clearance MM` | With `--start-line`: how far to lift the nozzle above the part before moving to the resume position (0.5 to 50, default 2) |
 | `--no-wait-temps` | With `--start-line`: set the temperatures in effect at line N but do not wait for them (for heaters that are already hot) |
-| `--pause-at-layer L` | Pause (with the pause script) when the print reaches layer L |
+| `--pause-at-layer L` | Pause (with the pause script) when the print reaches layer L, and wait there until you resume it (Sprint says how) |
 | `--progress-on-printer` | Show the progress on the printer's display (M73), whatever the profile says |
 | `--no-progress` | Do not show the progress line on stderr |
 | `--answer-prompts HOW` | What to do when the printer asks something during the print: `ask` (default) or `continue` (see below) |
