@@ -539,16 +539,22 @@ fn toolpath_progress_eta_layers_and_filament() {
         );
         assert!(j.estimated_total.is_some());
     }
-    let lines: Vec<usize> = events
-        .try_iter()
-        .filter_map(|e| match e {
-            Event::JobProgress { line, total } => {
-                assert_eq!(total, file.len());
-                Some(line)
-            }
-            _ => None,
-        })
-        .collect();
+    // (The final JobProgress follows the Completed state: wait for it
+    // rather than look.)
+    let lines: Vec<usize> = events_until(
+        &events,
+        "the last line's JobProgress",
+        |e| matches!(e, Event::JobProgress { line, .. } if *line == file.len()),
+    )
+    .into_iter()
+    .filter_map(|e| match e {
+        Event::JobProgress { line, total } => {
+            assert_eq!(total, file.len());
+            Some(line)
+        }
+        _ => None,
+    })
+    .collect();
     assert!(lines.len() >= 3);
     assert!(lines.windows(2).all(|w| w[0] <= w[1]));
     assert_eq!(lines.last(), Some(&file.len()));
