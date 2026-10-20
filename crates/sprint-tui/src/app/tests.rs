@@ -1903,6 +1903,64 @@ fn a_cancelled_print_is_recovered_from_the_line_it_stopped_at() {
     );
 }
 
+#[test]
+fn a_failed_print_says_where_it_goes_on() {
+    let scratch = Scratch::new("failed");
+    let mut app = timed_app();
+    app.open_file(slow_file(&scratch.0));
+    wait_app(&mut app, "the analysis", |a| a.loader.is_none());
+    let path = scratch.0.join("slow.gcode");
+    let failed = |s: &PrinterState| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| matches!(j.status, JobStatus::Failed(_)))
+    };
+    let stopped = |app: &App| {
+        app.view
+            .job
+            .as_ref()
+            .and_then(|j| j.stopped_at)
+            .expect("stopped at a line")
+    };
+    // A quick stop (M410) fails the print where it stands. The engine
+    // reports the failure as an error too: that must not replace the
+    // message that says where the print goes on.
+    app.run_action(dialogs::Action::StartPrint(path.clone(), Vec::new()));
+    wait(&mut app, "the print", |s| {
+        s.job.as_ref().is_some_and(|j| j.current_line > 20)
+    });
+    app.printer.send("M410");
+    wait(&mut app, "the failure", failed);
+    wait_idle(&mut app);
+    let hint = format!(":recover goes on from line {}", stopped(&app) + 1);
+    assert!(
+        app.toast
+            .as_ref()
+            .is_some_and(|t| t.tone == Tone::Bad && t.text.contains(&hint)),
+        "{:?}",
+        app.toast
+    );
+    // An emergency stop: the board is reset first, then the print goes on.
+    app.run_action(dialogs::Action::StartPrint(path, Vec::new()));
+    wait(&mut app, "the second print", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status.is_active() && j.current_line > 20)
+    });
+    press(&mut app, KeyCode::F(8));
+    press(&mut app, KeyCode::F(8));
+    wait(&mut app, "the halt", |s| s.halted && failed(s));
+    app.sync();
+    let hint = format!(":recover goes on from line {}", stopped(&app) + 1);
+    let text = app
+        .toast
+        .as_ref()
+        .map(|t| t.text.clone())
+        .unwrap_or_default();
+    assert!(text.contains(":reset resets the board"), "{text}");
+    assert!(text.contains(&hint), "{text}");
+}
+
 /// A plate of two objects labelled with M486, `layers` layers of a few
 /// short moves each.
 fn two_objects(dir: &std::path::Path, layers: usize) -> PathBuf {

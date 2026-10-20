@@ -436,10 +436,18 @@ impl App {
                 format::fixed(f64::from(kd), 2)
             )),
             Event::AutotuneFailed(why) => self.error(format!("PID autotune failed: {why}")),
-            // A halt says how to get the printer back.
+            // The engine reports a failed job as an error too; the job's
+            // own message, which says where it goes on, is shown already.
+            Event::Error(why) if self.is_job_failure(&why) => {}
+            // A halt says how to get the printer back, and where the print
+            // it stopped goes on.
             Event::Error(why) if self.view.halted => {
                 let recovery = actions::halt_recovery(self.view.restartable, ":reset");
-                self.error(format!("{why}: {recovery}"));
+                let then = self
+                    .recover_line()
+                    .map(|line| format!("; then :recover goes on from line {line}"))
+                    .unwrap_or_default();
+                self.error(format!("{why}: {recovery}{then}"));
             }
             Event::Error(why) => self.error(why),
             _ => {}
@@ -485,10 +493,27 @@ impl App {
     /// " (:recover goes on from line N)" when the job that ended is a host
     /// print of the loaded file that stopped at a known line.
     fn recover_hint(&self) -> String {
-        match self.job_of_loaded_file().and_then(|(j, _)| j.stopped_at) {
-            Some(line) => format!(" (:recover goes on from line {})", line + 1),
+        match self.recover_line() {
+            Some(line) => format!(" (:recover goes on from line {line})"),
             None => String::new(),
         }
+    }
+
+    /// The 1-based line `:recover` goes on from: where the host print of
+    /// the loaded file stopped, when it failed or was cancelled.
+    fn recover_line(&self) -> Option<usize> {
+        let (job, _) = self.job_of_loaded_file()?;
+        job.stopped_at.map(|line| line + 1)
+    }
+
+    /// Whether `error` is the engine's report of the job's failure
+    /// ("cube.gcode failed: <why>"), which [`App::on_job_status`] shows
+    /// with where the print goes on.
+    fn is_job_failure(&self, error: &str) -> bool {
+        self.view.job.as_ref().is_some_and(|job| match &job.status {
+            JobStatus::Failed(why) => error == format!("{} failed: {why}", job.name),
+            _ => false,
+        })
     }
 
     /// Show or hide the host prompt dialog to match the printer.
