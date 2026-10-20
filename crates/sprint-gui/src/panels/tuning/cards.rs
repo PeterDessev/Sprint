@@ -209,8 +209,23 @@ pub(super) fn setting_card(
                         instance_header(ui, label, entry.is_modified());
                     }
                     ui.push_id(("instance", entry.key.clone()), |ui| {
-                        instance_fields(ui, def, entry);
+                        // Shown, never edited (Marlin's Autotemp: M104 S
+                        // sets the hotend temperature).
+                        ui.add_enabled_ui(!def.is_report_only(), |ui| {
+                            instance_fields(ui, def, entry);
+                        });
                     });
+                }
+                if def.is_report_only() {
+                    ui.add_space(4.0);
+                    kit::caption(
+                        ui,
+                        &format!(
+                            "Reported by the firmware for reference: sending {} would heat or \
+                             move the printer, so Sprint does not change it here.",
+                            def.code
+                        ),
+                    );
                 }
                 if stealth {
                     ui.add_space(4.0);

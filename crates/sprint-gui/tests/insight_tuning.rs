@@ -447,6 +447,42 @@ fn run_frames(h: &mut Harness<'_, Host<TuningTab>>) {
 }
 
 #[test]
+fn tuning_tab_shows_autotemp_read_only() {
+    // A real Marlin reports Autotemp in M503 as `M104 S210 B250 F0.10`;
+    // applying an edit would send `M104 S...`, which heats the hotend.
+    let mut state = demo_state();
+    state.settings.insert(cmd("M104 S210 B250 F0.10"));
+    let mut h = harness_state(
+        Theme::Dark,
+        (1180.0, 900.0),
+        Host::<TuningTab>::synthetic(state),
+        |ui, host| host.frame(ui),
+    );
+    h.run_ok();
+    h.get_all_by_role(egui::accesskit::Role::TextInput)
+        .next()
+        .expect("search box")
+        .click();
+    h.run_ok();
+    h.get_all_by_role(egui::accesskit::Role::TextInput)
+        .next()
+        .expect("search box")
+        .type_text("autotemp");
+    h.run_ok();
+    assert!(h.query_by_label_contains("Autotemp (M104)").is_some());
+    assert!(
+        h.query_by_label_contains("sending M104 would heat or move the printer")
+            .is_some()
+    );
+    let fields: Vec<_> = h
+        .get_all_by_role(egui::accesskit::Role::SpinButton)
+        .map(|f| f.accesskit_node().is_disabled())
+        .collect();
+    assert_eq!(fields, [true, true, true]);
+    assert_eq!(h.state().tab.pending_changes(), 0);
+}
+
+#[test]
 fn tuning_tab_tolerates_odd_settings() {
     let mut state = demo_state();
     for line in [

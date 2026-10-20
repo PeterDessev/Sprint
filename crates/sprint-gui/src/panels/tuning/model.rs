@@ -666,11 +666,12 @@ pub const MAX_IMPORT_SETTINGS: usize = 1000;
 /// Parse a file of setting commands (an export, an M503 log, a list of
 /// `M92 E415` lines). Comments and blank lines are ignored; `echo:`
 /// prefixes are accepted. Only settings known to the catalog or reported
-/// by the printer (`known_codes`) are taken; anything else is skipped with
-/// a reason. Prusa's stealth-mode limits stay apart from the normal-mode
-/// ones: a `; stealth` comment (as exported) or, in an M503 log, a
-/// "... - stealth ..." heading above them marks them, as the reply parser
-/// does.
+/// by the printer (`known_codes`) are taken, never a
+/// [report-only](SettingCommand::is_report_only) one; anything else is
+/// skipped with a reason. Prusa's stealth-mode limits stay apart from the
+/// normal-mode ones: a `; stealth` comment (as exported) or, in an M503
+/// log, a "... - stealth ..." heading above them marks them, as the reply
+/// parser does.
 pub fn parse_import(text: &str, known_codes: &[String]) -> Import {
     let mut import = Import::default();
     // Where each key is in `import.commands`.
@@ -704,6 +705,14 @@ pub fn parse_import(text: &str, known_codes: &[String]) -> Import {
             import
                 .skipped
                 .push(skip("EEPROM commands are not imported"));
+            continue;
+        }
+        // Marlin's M503 reports Autotemp as `M104 S B F`, but `M104 S` sets
+        // the hotend temperature.
+        if cmd.is_report_only() {
+            import
+                .skipped
+                .push(skip("would heat or move the printer, not change a setting"));
             continue;
         }
         let known = setting_def(&cmd.code).is_some() || known_codes.contains(&cmd.code);
@@ -1013,7 +1022,8 @@ mod tests {
     #[test]
     fn import_skips_what_is_not_a_setting() {
         let text = "\u{feff}; header\n\nM500\nG28\nM104 S200\nhello world\necho:  M92 E415 ; comment\nM92 E420\nM851 Z-1.5\n";
-        let import = parse_import(text, &[]);
+        // Even from a printer that reports M104 (Marlin's Autotemp).
+        let import = parse_import(text, &["M104".to_owned()]);
         assert_eq!(
             import
                 .commands
@@ -1027,8 +1037,8 @@ mod tests {
             reasons,
             vec![
                 (3, "EEPROM commands are not imported"),
-                (4, "not a known setting"),
-                (5, "not a known setting"),
+                (4, "would heat or move the printer, not change a setting"),
+                (5, "would heat or move the printer, not change a setting"),
                 (6, "not a setting command"),
             ]
         );
