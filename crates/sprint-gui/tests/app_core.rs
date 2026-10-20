@@ -416,6 +416,40 @@ fn a_print_pauses_before_the_layer_picked_in_the_start_dialog() {
 }
 
 #[test]
+fn the_start_dialog_cannot_turn_off_m73_the_profile_sends() {
+    const M73: &str = "Show progress on the printer's display (M73)";
+    let file = app_support::sample("calibration-cube.gcode");
+    for profile_sends in [true, false] {
+        let mut options = sim_options();
+        options.file = Some(file.clone());
+        options.config.profiles[0].emit_progress = profile_sends;
+        let mut h = app(options, WINDOW);
+        expect(&mut h, "the cube to be analyzed", analyzed);
+        connect(&mut h);
+        h.state_mut()
+            .push_action(AppAction::StartPrintDialog { start_line: 0 });
+        settle(&mut h);
+        h.get_by_label(M73).scroll_to_me();
+        settle(&mut h);
+        // The host sends M73 in every print of a profile that asks for it
+        // (PrintOptions::emit_progress only adds it): the dialog says so
+        // instead of offering a switch that would do nothing.
+        assert_eq!(
+            h.get_by_label(M73).accesskit_node().is_disabled(),
+            profile_sends
+        );
+        h.get_by_label(M73).click();
+        settle(&mut h);
+        let dialog = h.state_mut().start_print_dialog_mut().expect("dialog");
+        assert!(dialog.emit_progress(), "profile_sends: {profile_sends}");
+        if profile_sends {
+            dialog.set_emit_progress(false);
+            assert!(dialog.emit_progress(), "still sent");
+        }
+    }
+}
+
+#[test]
 fn a_cancelled_print_is_recovered_from_the_line_it_stopped_at() {
     let dir = temp_dir("recover");
     let path = dir.join("part.gcode");

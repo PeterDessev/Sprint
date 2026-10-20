@@ -102,7 +102,11 @@ pub struct StartPrintDialog {
     preamble_for: Option<PreambleKey>,
     pending: Option<PendingPreamble>,
     edited: bool,
+    /// M73 progress asked for in this dialog.
     emit_m73: bool,
+    /// The printer profile sends M73 in every print (its `emit_progress`):
+    /// the host adds it whatever this print asks for.
+    profile_m73: bool,
     /// Pause (with the pause script) before this layer.
     pause_layer: Option<usize>,
     /// Going on with a print that stopped part way.
@@ -137,6 +141,7 @@ impl StartPrintDialog {
             pending: None,
             edited: false,
             emit_m73: false,
+            profile_m73: false,
             pause_layer: None,
             recover: None,
             error: None,
@@ -158,17 +163,19 @@ impl StartPrintDialog {
         self.recover.is_some()
     }
 
-    /// Send M73 progress or not to start with: the profile's
-    /// `emit_progress` (the user can still change it here).
+    /// Whether the printer profile sends M73 progress in every print (its
+    /// `emit_progress`): the host then adds it to every print, so the
+    /// dialog shows it on and cannot turn it off; without it the dialog
+    /// can turn it on for this print.
     #[must_use]
-    pub fn with_emit_progress(mut self, on: bool) -> StartPrintDialog {
-        self.emit_m73 = on;
+    pub fn with_emit_progress(mut self, profile_sends: bool) -> StartPrintDialog {
+        self.profile_m73 = profile_sends;
         self
     }
 
     /// Whether M73 progress will be sent.
     pub fn emit_progress(&self) -> bool {
-        self.emit_m73
+        self.emit_m73 || self.profile_m73
     }
 
     /// Pause before `layer` (`None`: do not pause).
@@ -239,7 +246,9 @@ impl StartPrintDialog {
         self.layer = layer;
     }
 
-    /// Send M73 progress to the printer's display.
+    /// Send M73 progress to the printer's display in this print (it is sent
+    /// anyway when the profile sends it, see
+    /// [`StartPrintDialog::with_emit_progress`]).
     pub fn set_emit_progress(&mut self, on: bool) {
         self.emit_m73 = on;
     }
@@ -342,7 +351,7 @@ impl StartPrintDialog {
             pause_script: Some(profile.pause_script.clone()),
             resume_script: Some(profile.resume_script.clone()),
             cancel_script: Some(profile.cancel_script.clone()),
-            emit_progress: self.emit_m73,
+            emit_progress: self.emit_progress(),
         };
         match ctx.printer.start_print(Arc::clone(&file.file), options) {
             Ok(()) => {
@@ -497,12 +506,21 @@ impl StartPrintDialog {
         if let Some(tp) = toolpath {
             self.pause_point(ui, tp, p);
         }
-        ui.add(
-            Toggle::new(&mut self.emit_m73).label("Show progress on the printer's display (M73)"),
-        )
-        .on_hover_text(
-            "M73 P<percent> R<minutes> as the print goes on (the profile sets the default)",
-        );
+        let m73 = "Show progress on the printer's display (M73)";
+        if self.profile_m73 {
+            let mut on = true;
+            ui.add_enabled(false, Toggle::new(&mut on).label(m73))
+                .on_disabled_hover_text(
+                    "The printer profile sends M73 P<percent> R<minutes> in every print; turn \
+                     it off in the profile's settings (Printing)",
+                );
+        } else {
+            ui.add(Toggle::new(&mut self.emit_m73).label(m73))
+                .on_hover_text(
+                    "M73 P<percent> R<minutes> as this print goes on (the profile's settings \
+                     can send it in every print)",
+                );
+        }
         if let Some(error) = &self.error {
             ui.label(RichText::new(icons::with_text(icons::ERROR, error)).color(p.danger));
         }
@@ -1132,6 +1150,9 @@ mod tests {
         let d = StartPrintDialog::new(0, &file);
         assert!(!d.emit_progress());
         let mut d = StartPrintDialog::new(0, &file).with_emit_progress(true);
+        assert!(d.emit_progress());
+        // The host sends it in every print of such a profile.
+        d.set_emit_progress(false);
         assert!(d.emit_progress());
         // Pausing before the second layer: its first line.
         let second = tp

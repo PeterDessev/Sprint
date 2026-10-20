@@ -847,8 +847,8 @@ impl SettingsDialog {
                 .label("Show progress on the printer's display (M73)"),
         )
         .on_hover_text(
-            "M73 P<percent> R<minutes> while printing from Sprint; the start dialog starts \
-             with this and can change it for one print",
+            "M73 P<percent> R<minutes> in every print from Sprint; with this off, the start \
+             dialog can turn it on for one print",
         );
         ui.add(
             Toggle::new(&mut profile.keep_heaters_on_failure)
