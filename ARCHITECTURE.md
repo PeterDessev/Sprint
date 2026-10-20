@@ -112,7 +112,8 @@ pub struct ParsedLine<'a> {
     pub code: Option<Code>,            // first command word
     pub words: Vec<Word>,              // parameters after the code
     /// Free-text argument for commands that take one: M23/M28/M30/M32/M33
-    /// (filenames), M117/M118 (messages), M876? no. Raw remainder, trimmed.
+    /// and M928 (filenames), M117/M118 (messages), M16, M810-M819, and the
+    /// message of M0/M1 (see the notes below). Raw remainder, trimmed.
     pub text: Option<&'a str>,
     pub comment: Option<&'a str>,      // text after ';' or inside '(...)'
     pub checksum: Option<u8>,          // '*nn'
@@ -721,7 +722,7 @@ pub fn setting_def(code: &str) -> Option<&'static SettingDef>;
 ```
 Catalog covers at least: M92 M201 M203 M204 M205 M206 M301 M304 M309 M851 M900
 M200 M145 M420 M413 M906 M913 M914 M569 M593 M207 M208 M209 M217 M218 M149
-M665 M666 M250 M255 M302 M592? (Marlin 2.1 set), plus G29 for the mesh
+M665 M666 M250 M255 M302 M592 (the Marlin 2.1 set), plus G29 for the mesh
 points M503 prints.
 
 Reports that mean different things keep separate keys, so inserting a
@@ -772,7 +773,7 @@ pub struct GcodeDoc {
     pub usage: &'static str,        // "G1 [X<pos>] [Y<pos>] [Z<pos>] [E<pos>] [F<mm/min>]"
     pub description: &'static str,  // one or two sentences
     pub category: GcodeCategory,
-    pub dangerous: bool,            // e.g. M502, M112, M500? -> ask before sending
+    pub dangerous: bool,            // classify asks before sending it (not M112); list below
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum GcodeCategory { Motion, Temperature, Extruder, Fan, SdCard, Settings, Calibration, Leveling, Info, Control, Display, Other }
