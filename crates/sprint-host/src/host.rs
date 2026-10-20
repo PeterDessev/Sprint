@@ -30,20 +30,23 @@ const REPLY_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct DisconnectSummary {
     /// A connection was open (or being opened) and is closed now.
     pub was_connected: bool,
-    /// The host print or SD upload that was cancelled before closing:
-    /// its kind and name.
+    /// The host print or SD upload that was cancelled before closing, or
+    /// the SD print whose cancel ([`Printer::cancel`]) was already under
+    /// way (waited for like the others): its kind and name.
     pub cancelled: Option<(JobKind, String)>,
     /// How that job ended before the link closed: `Cancelled` when the
-    /// printer acknowledged the cancel (the cancel script ran, or the
-    /// partial upload was closed and deleted), `Failed` when it failed
-    /// meanwhile (a halt, a lost link), `Completed` when it finished by
-    /// itself before the cancel reached it. `None` when it was still
-    /// stopping at the timeout: then every heater and the part fan were
-    /// switched off (host print) or the file was closed (upload) as the
-    /// link closed.
+    /// printer acknowledged the cancel (the cancel script ran, the
+    /// partial upload was closed and deleted, or the SD print stopped),
+    /// `Failed` when it failed meanwhile (a halt, a lost link),
+    /// `Completed` when it finished by itself before the cancel reached
+    /// it. `None` when it was still stopping at the timeout: then every
+    /// heater and the part fan were switched off (host print) or the file
+    /// was closed (upload) as the link closed; an SD print is left to the
+    /// printer ([`DisconnectSummary::sd_print_continues`]).
     pub cancel_status: Option<JobStatus>,
     /// An SD print that goes on on the printer, unwatched: its file name.
-    /// It was not cancelled (cancel it first to stop it).
+    /// It was not cancelled (cancel it first to stop it), or its cancel
+    /// was not acknowledged in time.
     pub sd_print_continues: Option<String>,
 }
 
@@ -72,7 +75,8 @@ impl fmt::Display for DisconnectSummary {
                 Some(JobStatus::Cancelled) => {
                     let what = match kind {
                         JobKind::SdUpload => "the partial file was deleted",
-                        _ => "the cancel script ran",
+                        JobKind::SdPrint => "the printer stopped printing it",
+                        JobKind::HostPrint => "the cancel script ran",
                     };
                     write!(f, "Cancelled {job} ({what}), then disconnected")?;
                 }
@@ -85,6 +89,10 @@ impl fmt::Display for DisconnectSummary {
                         f,
                         "{subject} finished before it was cancelled, then disconnected"
                     )?;
+                }
+                // (An SD print: the printer goes on, said below.)
+                None if *kind == JobKind::SdPrint => {
+                    write!(f, "{subject} did not stop in time")?;
                 }
                 None => {
                     let what = match kind {
@@ -390,8 +398,10 @@ impl Printer {
     /// `timeout`. A cancel still running then gets every heater and the
     /// part fan switched off (the upload: its file closed) as the link
     /// closes. An SD print is not cancelled: it goes on on the printer,
-    /// unwatched. Blocks for up to `timeout` (call it off the UI thread);
-    /// the summary says what happened.
+    /// unwatched; one whose cancel is already under way is waited for like
+    /// a host print (nothing is switched off for it at the timeout). Blocks
+    /// for up to `timeout` (call it off the UI thread); the summary says
+    /// what happened.
     ///
     /// ```no_run
     /// # let printer = sprint_host::Printer::new();
@@ -405,7 +415,7 @@ impl Printer {
                 s.job
                     .as_ref()
                     .filter(|j| j.status.is_active())
-                    .map(|j| (j.kind, j.name.clone())),
+                    .map(|j| (j.kind, j.name.clone(), j.status == JobStatus::Cancelling)),
             )
         });
         let mut summary = DisconnectSummary {
@@ -413,10 +423,17 @@ impl Printer {
             ..DisconnectSummary::default()
         };
         match job {
-            Some((JobKind::SdPrint, name)) if open => summary.sd_print_continues = Some(name),
-            Some((kind, name)) if open => {
-                summary.cancelled = Some((kind, name));
+            Some((JobKind::SdPrint, name, false)) if open => {
+                summary.sd_print_continues = Some(name);
+            }
+            Some((kind, name, _)) if open => {
                 summary.cancel_status = self.cancel_and_wait(timeout);
+                if kind == JobKind::SdPrint && summary.cancel_status.is_none() {
+                    // Its M524 was not acknowledged: as far as anyone
+                    // knows, the card goes on.
+                    summary.sd_print_continues = Some(name.clone());
+                }
+                summary.cancelled = Some((kind, name));
             }
             _ => {}
         }

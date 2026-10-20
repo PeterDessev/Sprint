@@ -1021,7 +1021,8 @@ impl Printer {
     pub fn disconnect(&self);
     /// Cancel a host print or SD upload first (cancel script / partial file deleted), wait up to `timeout`
     /// for the printer to acknowledge it (else heaters + part fan off / M29 written as the link closes),
-    /// then disconnect. SD prints are not cancelled: they go on on the printer (said in the summary).
+    /// then disconnect. SD prints are not cancelled: they go on on the printer (said in the summary);
+    /// one whose cancel is already under way is waited for (nothing switched off at the timeout).
     pub fn disconnect_safely(&self, timeout: std::time::Duration) -> DisconnectSummary;
     pub fn is_connected(&self) -> bool;                 // handshake complete
     /// Queue G-code typed by the user or produced by UI controls. Multiple
@@ -1090,10 +1091,12 @@ impl Printer {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DisconnectSummary {                         // impl Display: "Cancelled cube.gcode (the cancel script ran), then disconnected", ...
     pub was_connected: bool,
-    pub cancelled: Option<(JobKind, String)>,          // the host print or upload cancelled first
+    pub cancelled: Option<(JobKind, String)>,          // the host print or upload cancelled first, or the SD print whose
+                                                       //   cancel was already under way
     pub cancel_status: Option<JobStatus>,              // Cancelled (acknowledged), Failed (meanwhile), Completed (finished before the
-                                                       //   cancel reached it), None (timed out: safe stop sent)
-    pub sd_print_continues: Option<String>,            // an SD print left running on the printer
+                                                       //   cancel reached it), None (timed out: safe stop sent, none for an SD print)
+    pub sd_print_continues: Option<String>,            // an SD print left running on the printer (not cancelled, or its cancel
+                                                       //   not acknowledged in time)
 }
 impl DisconnectSummary { pub fn acknowledged(&self) -> bool; }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -1633,7 +1636,10 @@ Every public item is also re-exported at the crate root.
   disconnect writes at once. An active SD print is left alone; closing
   the connection then fails its record with "disconnected; the printer
   goes on printing <name> from its SD card" (as a plain `disconnect()`
-  does). Not connected: just `disconnect()`.
+  does). An SD print already `Cancelling` (its M524 sent or queued) is
+  waited for the same way and reported in `cancelled`; at the timeout
+  nothing more is sent for it and `sd_print_continues` names it. Not
+  connected: just `disconnect()`.
 * Threads: `disconnect()` and dropping the last handle join each thread for
   at most 2 s, then detach it. A panic in the engine leaves status (and any
   job) `Failed`. The waker is called without the rate limit when the engine

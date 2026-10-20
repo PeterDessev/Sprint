@@ -199,6 +199,93 @@ fn an_sd_print_goes_on_on_the_printer() {
     );
 }
 
+/// An SD print under way on a simulator at `time_scale`, past the heat-up
+/// at the start of its file, with a dwell of `dwell_secs` (printer time)
+/// typed in and then cancelled: the dwell holds the cancel's M524 back.
+fn sd_print_being_cancelled(time_scale: f32, dwell_secs: u32) -> Printer {
+    let sim = SimConfig {
+        sd_files: vec![("part.gcode".into(), 400_000)],
+        instant_moves: false,
+        ..fast_sim(time_scale)
+    };
+    let printer = connect(sim, options());
+    let control = printer.sim_control().unwrap();
+    printer.start_sd_print("part.gcode").unwrap();
+    wait_for(&printer, "the print past its heat-up", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Printing)
+            && s.sd.printing.is_some_and(|(done, _)| done > 2_000)
+    });
+    let dwell = format!("G4 S{dwell_secs}");
+    printer.send(&dwell);
+    wait_for(&printer, "the dwell", |_| {
+        control.received_commands().contains(&dwell)
+    });
+    printer.cancel();
+    wait_for(&printer, "the cancel to be under way", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Cancelling)
+    });
+    printer
+}
+
+#[test]
+fn an_sd_print_already_being_cancelled_is_waited_for() {
+    // 100 s of printer time, 2 s here.
+    let printer = sd_print_being_cancelled(50.0, 100);
+    let control = printer.sim_control().unwrap();
+    let summary = printer.disconnect_safely(Duration::from_secs(20));
+    assert_eq!(
+        summary,
+        DisconnectSummary {
+            was_connected: true,
+            cancelled: Some((JobKind::SdPrint, "part.gcode".into())),
+            cancel_status: Some(JobStatus::Cancelled),
+            sd_print_continues: None,
+        }
+    );
+    assert_eq!(
+        summary.to_string(),
+        "Cancelled part.gcode (the printer stopped printing it), then disconnected"
+    );
+    assert!(!control.snapshot().sd_printing);
+    assert_eq!(
+        printer.with_state(|s| s.job.as_ref().map(|j| j.status.clone())),
+        Some(JobStatus::Cancelled)
+    );
+}
+
+#[test]
+fn an_sd_print_whose_cancel_is_not_acknowledged_in_time_may_go_on() {
+    // 100 hours of printer time: the M524 waits behind it.
+    let printer = sd_print_being_cancelled(50.0, 360_000);
+    let started = Instant::now();
+    let summary = printer.disconnect_safely(Duration::from_millis(300));
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert_eq!(
+        summary,
+        DisconnectSummary {
+            was_connected: true,
+            cancelled: Some((JobKind::SdPrint, "part.gcode".into())),
+            cancel_status: None,
+            sd_print_continues: Some("part.gcode".into()),
+        }
+    );
+    assert_eq!(
+        summary.to_string(),
+        "part.gcode did not stop in time; the printer goes on printing part.gcode from its SD \
+         card, unwatched"
+    );
+    // Nothing is switched off for it: the printer runs its own print.
+    let out = sent(&printer);
+    assert!(
+        !out.iter().any(|c| c == "M104 S0" || c == "M107"),
+        "{out:?}"
+    );
+}
+
 #[test]
 fn a_job_that_ends_before_the_cancel_is_not_reported_as_stopped_in_time() {
     // The job finished between the look at the state and the cancel: no
