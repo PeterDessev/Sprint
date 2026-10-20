@@ -16,8 +16,14 @@
 //! its timeout. In ping-pong the printer waits for the next command while
 //! the reader waits for the printer, so every command would be delayed by
 //! the read timeout. The I/O thread writes what is queued between reads,
-//! and when data arrives it waits a moment for the engine's answer (usually
-//! the next command) before it reads again.
+//! and when a complete line arrives it waits a moment for the engine's
+//! answer (usually the next command) before it reads again.
+//!
+//! That wait polls the channel: on Windows a timed channel wait lasts at
+//! least a scheduler tick (about 15.6 ms) however short its timeout, which
+//! made every round trip on real hardware take 15 ms instead of under one
+//! (USB serial bridges deliver `ok` and its newline in separate reads, and
+//! the engine cannot answer half a line).
 
 use std::io::{self, Read, Write};
 use std::sync::Arc;
@@ -25,7 +31,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TryRecvError};
 use serialport::{ClearBuffer, DataBits, FlowControl, Parity, SerialPort, StopBits};
 
 use super::link::{Link, LinkControl, READ_TIMEOUT, is_no_data};
@@ -43,9 +49,14 @@ const WRITE_PATIENCE: Duration = Duration::from_secs(5);
 /// The port's read timeout: the longest a write queued while the I/O
 /// thread waits for data is held back.
 const PORT_TIMEOUT: Duration = Duration::from_millis(20);
-/// After data arrived, how long the I/O thread waits for the engine's
-/// answer before it reads again.
+/// After a complete line arrived, how long the I/O thread waits for the
+/// engine's answer before it reads again.
 const ANSWER_WAIT: Duration = Duration::from_millis(5);
+/// How long the answer wait yields before it sleeps between checks (the
+/// engine usually answers within a few dozen microseconds).
+const ANSWER_SPIN: Duration = Duration::from_micros(200);
+/// The answer wait's sleep between checks after that.
+const ANSWER_POLL: Duration = Duration::from_micros(200);
 /// How long dropping a link waits for its I/O thread to close the port
 /// (so it can be opened again at once, e.g. at the next baud rate).
 const CLOSE_WAIT: Duration = Duration::from_secs(1);
@@ -65,20 +76,40 @@ pub(crate) fn open(port: &str, baud: u32, reset: bool) -> Result<Link, HostError
     }
     // Drop whatever a previous session left in the buffers.
     let _ = port.clear(ClearBuffer::All);
-    spawn_io(port, PORT_TIMEOUT, WRITE_PATIENCE)
+    spawn_io(port, IoTiming::new(PORT_TIMEOUT))
 }
 
 /// Bytes read from the port (empty: end of input), or the error that
 /// ended the I/O thread.
 type Chunk = io::Result<Vec<u8>>;
 
-/// Start the I/O thread for `port` (whose reads return within about
-/// `port_timeout` when no data arrives) and return a link to it.
-pub(crate) fn spawn_io<P>(
-    port: P,
-    port_timeout: Duration,
-    patience: Duration,
-) -> Result<Link, HostError>
+/// The timing of an I/O thread.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct IoTiming {
+    /// The port's reads return within about this when no data arrives.
+    pub(crate) port_timeout: Duration,
+    /// After a complete line arrived, how long to wait for the engine's
+    /// answer before reading again.
+    pub(crate) answer_wait: Duration,
+    /// How long a write may make no progress before the link counts as
+    /// broken.
+    pub(crate) patience: Duration,
+}
+
+impl IoTiming {
+    /// The default timing for a port whose reads time out after
+    /// `port_timeout`.
+    pub(crate) fn new(port_timeout: Duration) -> IoTiming {
+        IoTiming {
+            port_timeout,
+            answer_wait: ANSWER_WAIT,
+            patience: WRITE_PATIENCE,
+        }
+    }
+}
+
+/// Start the I/O thread for `port` and return a link to it.
+pub(crate) fn spawn_io<P>(port: P, timing: IoTiming) -> Result<Link, HostError>
 where
     P: Read + Write + Send + 'static,
 {
@@ -88,7 +119,7 @@ where
     let thread_stop = Arc::clone(&stop);
     let thread = thread::Builder::new()
         .name("sprint-host-serial".to_string())
-        .spawn(move || io_loop(port, &outgoing, &incoming, &thread_stop, patience))?;
+        .spawn(move || io_loop(port, &outgoing, &incoming, &thread_stop, timing))?;
     Ok(Link {
         reader: Box::new(PortReader {
             rx: from_port,
@@ -96,7 +127,7 @@ where
             offset: 0,
             stop: Arc::clone(&stop),
             thread: Some(thread),
-            close_wait: CLOSE_WAIT.max(port_timeout.saturating_mul(4)),
+            close_wait: CLOSE_WAIT.max(timing.port_timeout.saturating_mul(4)),
         }),
         writer: Box::new(PortWriter { tx: to_port }),
         control: LinkControl::Serial(stop),
@@ -110,7 +141,7 @@ fn io_loop<P: Read + Write>(
     outgoing: &Receiver<Vec<u8>>,
     incoming: &Sender<Chunk>,
     stop: &AtomicBool,
-    patience: Duration,
+    timing: IoTiming,
 ) {
     let mut buf = [0u8; 4096];
     loop {
@@ -118,7 +149,7 @@ fn io_loop<P: Read + Write>(
         // closed (an M112 right before disconnecting) still goes out.
         let stopping = stop.load(Ordering::Acquire);
         while let Ok(bytes) = outgoing.try_recv() {
-            if let Err(e) = write_patiently(&mut port, &bytes, patience) {
+            if let Err(e) = write_patiently(&mut port, &bytes, timing.patience) {
                 let _ = incoming.send(Err(e));
                 return;
             }
@@ -132,13 +163,17 @@ fn io_loop<P: Read + Write>(
                 return;
             }
             Ok(n) => {
+                // The engine acts on complete lines: after part of one the
+                // rest is on its way, so read again at once.
+                let complete = buf[n - 1] == b'\n';
                 if incoming.send(Ok(buf[..n].to_vec())).is_err() {
                     return;
                 }
                 // The engine usually answers at once (the next command):
                 // write it now rather than after another read.
-                if let Ok(bytes) = outgoing.recv_timeout(ANSWER_WAIT)
-                    && let Err(e) = write_patiently(&mut port, &bytes, patience)
+                if complete
+                    && let Some(bytes) = wait_answer(outgoing, timing.answer_wait)
+                    && let Err(e) = write_patiently(&mut port, &bytes, timing.patience)
                 {
                     let _ = incoming.send(Err(e));
                     return;
@@ -149,6 +184,34 @@ fn io_loop<P: Read + Write>(
                 let _ = incoming.send(Err(e));
                 return;
             }
+        }
+    }
+}
+
+/// The engine's answer (the next bytes to write) if it comes within
+/// `wait`.
+///
+/// Polls instead of blocking in `recv_timeout`: on Windows a timed channel
+/// wait lasts at least a scheduler tick (about 15.6 ms) however short its
+/// timeout, so every line the engine does not answer (a temperature report,
+/// an `echo:`) would hold back reading the next one that long, while
+/// `thread::sleep` uses a high-resolution timer there.
+fn wait_answer(outgoing: &Receiver<Vec<u8>>, wait: Duration) -> Option<Vec<u8>> {
+    let start = Instant::now();
+    loop {
+        match outgoing.try_recv() {
+            Ok(bytes) => return Some(bytes),
+            Err(TryRecvError::Disconnected) => return None,
+            Err(TryRecvError::Empty) => {}
+        }
+        let waited = start.elapsed();
+        if waited >= wait {
+            return None;
+        }
+        if waited < ANSWER_SPIN {
+            thread::yield_now();
+        } else {
+            thread::sleep(ANSWER_POLL.min(wait - waited));
         }
     }
 }
@@ -629,6 +692,9 @@ mod tests {
         fail: Option<io::ErrorKind>,
         /// Ports currently open (the port is exclusive, as on Windows).
         open: usize,
+        /// Deliver at most this many bytes per read (USB serial bridges
+        /// split replies).
+        max_read: Option<usize>,
     }
 
     /// A fake serial port with the semantics of a synchronous Windows
@@ -671,7 +737,10 @@ mod tests {
                     return Err(io::Error::new(kind, "device removed"));
                 }
                 if !s.to_host.is_empty() {
-                    let n = out.len().min(s.to_host.len());
+                    let n = out
+                        .len()
+                        .min(s.to_host.len())
+                        .min(s.max_read.unwrap_or(usize::MAX));
                     out[..n].copy_from_slice(&s.to_host[..n]);
                     s.to_host.drain(..n);
                     return Ok(n);
@@ -742,7 +811,7 @@ mod tests {
         // wait for that; the I/O thread answers within its answer window.
         let state = port_state(true);
         let timeout = Duration::from_millis(50);
-        let mut link = spawn_io(SyncPort::new(&state, timeout), timeout, WRITE_PATIENCE).unwrap();
+        let mut link = spawn_io(SyncPort::new(&state, timeout), IoTiming::new(timeout)).unwrap();
         let start = Instant::now();
         let rounds = 100u32;
         for i in 0..rounds {
@@ -763,10 +832,75 @@ mod tests {
     }
 
     #[test]
+    fn a_reply_split_across_reads_is_not_held_back() {
+        // USB serial bridges deliver `ok` and its newline in separate
+        // reads. The engine cannot answer half a line, so waiting for its
+        // answer after one cost the whole answer wait on every command.
+        let state = port_state(true);
+        state.0.lock().unwrap().max_read = Some(2);
+        let timeout = Duration::from_millis(50);
+        let timing = IoTiming {
+            answer_wait: Duration::from_millis(200),
+            ..IoTiming::new(timeout)
+        };
+        let mut link = spawn_io(SyncPort::new(&state, timeout), timing).unwrap();
+        let start = Instant::now();
+        let rounds = 20u32;
+        for i in 0..rounds {
+            link.writer
+                .write_all(format!("N{i} M400\n").as_bytes())
+                .unwrap();
+            read_until(&mut link, b"ok\n", Duration::from_secs(5));
+        }
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < timing.answer_wait * rounds / 4,
+            "{rounds} round trips took {elapsed:?}"
+        );
+        assert_eq!(state.0.lock().unwrap().lines.len(), 20);
+    }
+
+    #[test]
+    fn the_answer_wait_lasts_as_long_as_asked() {
+        // On Windows a timed channel wait lasts at least a scheduler tick
+        // (15.6 ms) however short its timeout; the answer wait must not,
+        // or every line the engine does not answer holds back the next.
+        let (tx, rx) = crossbeam_channel::unbounded::<Vec<u8>>();
+        let mut waits: Vec<Duration> = (0..21)
+            .map(|_| {
+                let start = Instant::now();
+                assert!(wait_answer(&rx, ANSWER_WAIT).is_none());
+                start.elapsed()
+            })
+            .collect();
+        waits.sort();
+        let median = waits[waits.len() / 2];
+        assert!(
+            median >= ANSWER_WAIT && median < ANSWER_WAIT * 2,
+            "median wait {median:?}"
+        );
+
+        // An answer that comes during the wait ends it.
+        let sender = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(2));
+            tx.send(b"N2 M105\n".to_vec()).unwrap();
+        });
+        let start = Instant::now();
+        let answer = wait_answer(&rx, Duration::from_secs(5));
+        assert_eq!(answer.as_deref(), Some(&b"N2 M105\n"[..]));
+        assert!(start.elapsed() < Duration::from_secs(1));
+        sender.join().unwrap();
+        // So does the engine going away.
+        let start = Instant::now();
+        assert!(wait_answer(&rx, Duration::from_secs(5)).is_none());
+        assert!(start.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
     fn port_errors_end_the_link_and_closing_releases_the_port() {
         let state = port_state(false);
         let timeout = Duration::from_millis(10);
-        let mut link = spawn_io(SyncPort::new(&state, timeout), timeout, WRITE_PATIENCE).unwrap();
+        let mut link = spawn_io(SyncPort::new(&state, timeout), IoTiming::new(timeout)).unwrap();
         state
             .0
             .lock()
@@ -808,7 +942,7 @@ mod tests {
         // A healthy link: closing it through the handle stops the thread;
         // dropping it releases the port at once, so it can be reopened.
         let state = port_state(true);
-        let link = spawn_io(SyncPort::new(&state, timeout), timeout, WRITE_PATIENCE).unwrap();
+        let link = spawn_io(SyncPort::new(&state, timeout), IoTiming::new(timeout)).unwrap();
         let (mut reader, _writer, handle) = link.split();
         handle.close();
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -822,7 +956,7 @@ mod tests {
         }
         drop(reader);
         assert_eq!(state.0.lock().unwrap().open, 0);
-        let again = spawn_io(SyncPort::new(&state, timeout), timeout, WRITE_PATIENCE).unwrap();
+        let again = spawn_io(SyncPort::new(&state, timeout), IoTiming::new(timeout)).unwrap();
         drop(again);
         assert_eq!(state.0.lock().unwrap().open, 0);
     }
@@ -831,7 +965,7 @@ mod tests {
     fn what_was_written_before_closing_still_goes_out() {
         let state = port_state(false);
         let timeout = Duration::from_millis(30);
-        let link = spawn_io(SyncPort::new(&state, timeout), timeout, WRITE_PATIENCE).unwrap();
+        let link = spawn_io(SyncPort::new(&state, timeout), IoTiming::new(timeout)).unwrap();
         let (reader, mut writer, handle) = link.split();
         // Emergency stop, then disconnect at once.
         writer.write_all(b"M112\n").unwrap();
@@ -854,7 +988,7 @@ mod tests {
             |baud| {
                 opened.push(baud);
                 state.0.lock().unwrap().answer = baud == 115_200;
-                spawn_io(SyncPort::new(&state, timeout), timeout, WRITE_PATIENCE)
+                spawn_io(SyncPort::new(&state, timeout), IoTiming::new(timeout))
             },
             Duration::from_millis(150),
             &mut |_| {},
