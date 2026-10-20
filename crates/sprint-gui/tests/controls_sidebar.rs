@@ -7,8 +7,8 @@ mod controls_common;
 use std::time::{Duration, Instant};
 
 use controls_common::{
-    Rig, click_at, contains_run, printing, received, sidebar_fixed, wait_for, wait_for_commands,
-    wait_idle,
+    Rig, click_at, contains_run, home, printing, received, sidebar_fixed, wait_for,
+    wait_for_commands, wait_idle,
 };
 use egui::accesskit::Role;
 use egui_kittest::{
@@ -215,7 +215,8 @@ fn homing_and_motors_off() {
 fn move_to_lifts_first_and_center_moves_to_the_bed_center() {
     let mut h = connected();
     let p = printer(&h);
-    // The simulator starts at Z0; the default target is X110 Y110 Z10.
+    home(&p);
+    // Homed, the simulator is at Z0; the default target is X110 Y110 Z10.
     click(&mut h, "Move");
     let got = wait_for_commands(&p, &["G90", "G1 Z10 F600", "G90", "G1 X110 Y110 F3000"]);
     assert!(!got.iter().any(|c| c.starts_with("G91")), "{got:?}");
@@ -249,7 +250,8 @@ fn set_move_target(h: &mut Harness<'_, Rig>, axis: usize, value: &str) {
 fn travel_near_the_bed_lifts_first() {
     let mut h = connected();
     let p = printer(&h);
-    // The simulator starts at Z0.
+    home(&p);
+    // Homed, the simulator is at Z0.
     click(&mut h, "Center");
     wait_for_commands(&p, &["G90", "G1 Z5 F600", "G90", "G1 X110 Y110 F3000"]);
     // Straight down at the same spot: one move.
@@ -296,6 +298,7 @@ fn moves_refresh_the_position_without_auto_reports() {
     let mut h = sidebar_fixed(Theme::Dark, (420.0, 2600.0), rig);
     controls_common::settle(&mut h);
     let p = printer(&h);
+    home(&p);
     let at_z = |z: f32| move |s: &PrinterState| s.position.as_ref().is_some_and(|pos| pos.z == z);
     click(&mut h, "Move Z +10 mm");
     wait_for_commands(&p, &["G91", "G1 Z10 F600", "G90", "M114"]);
@@ -561,6 +564,7 @@ fn heaters_off_during_a_print_from_the_card_asks_first() {
 fn babystep_tracks_and_undoes_its_offset() {
     let mut h = connected();
     let p = printer(&h);
+    home(&p);
     click(&mut h, "0.1");
     click(&mut h, "Raise");
     wait_for_commands(&p, &["M290 Z0.1"]);
@@ -594,6 +598,81 @@ fn babystep_tracks_and_undoes_its_offset() {
         h.query_by_label_contains("Undo all babystepping").is_none(),
         "nothing to undo"
     );
+}
+
+/// Absolute moves and babysteps ask first while the axes they need are
+/// not known to be homed (once, until the homing changes); jogs do not.
+/// The Motion card says so in its header, and the readout marks the
+/// positions the printer may have wrong.
+#[test]
+fn moves_and_babysteps_ask_before_running_on_unhomed_axes() {
+    let mut h = connected();
+    let p = printer(&h);
+    clear(&h);
+    assert!(h.query_by_label("Not homed").is_some(), "the header pill");
+    assert!(
+        h.query_by_label_contains("X Y Z not homed").is_some(),
+        "the readout"
+    );
+    // Jogs are relative: they go out.
+    click(&mut h, "Move Z +1 mm");
+    wait_for_commands(&p, &["G91", "G1 Z1 F600", "G90"]);
+    clear(&h);
+    // "Center" asks; cancelled, nothing moves.
+    click(&mut h, "Center");
+    h.run_ok();
+    assert!(h.query_by_label("Move without homing?").is_some());
+    h.get_by_label("Cancel").click();
+    h.run_ok();
+    assert!(h.query_by_label("Move without homing?").is_none());
+    assert_nothing_sent(&mut h, "a cancelled move");
+    // "Move anyway" moves, and the next move does not ask again.
+    click(&mut h, "Center");
+    h.run_ok();
+    h.get_by_label("Move anyway").click();
+    h.run_ok();
+    wait_for_commands(&p, &["G90", "G1 X110 Y110 F3000"]);
+    clear(&h);
+    click(&mut h, "Move");
+    h.run_ok();
+    assert!(h.query_by_label("Move without homing?").is_none());
+    wait_for_commands(&p, &["G90", "G1 X110 Y110 Z10 F3000"]);
+    // Babystepping Z asks on its own.
+    clear(&h);
+    click(&mut h, "Raise");
+    h.run_ok();
+    assert!(h.query_by_label("Babystep without homing Z?").is_some());
+    h.get_by_label("Babystep anyway").click();
+    h.run_ok();
+    wait_for_commands(&p, &["M290 Z0.05"]);
+    // Homing X and Y: the header names Z alone, and a move of Z asks
+    // again (the homing changed).
+    p.home(sprint_host::Axes::XY);
+    wait_for(&p, "the XY homing", |s| {
+        s.homed == Some(sprint_host::Axes::XY)
+    });
+    run_for(&mut h, Duration::from_millis(50));
+    assert!(h.query_by_label("Z not homed").is_some());
+    clear(&h);
+    click(&mut h, "Move");
+    h.run_ok();
+    assert!(h.query_by_label("Move without homing?").is_some());
+    h.get_by_label("Cancel").click();
+    h.run_ok();
+    assert_nothing_sent(&mut h, "a cancelled Z move");
+    // An XY-only move ("Center" at the height it is) does not ask.
+    click(&mut h, "Center");
+    h.run_ok();
+    assert!(h.query_by_label("Move without homing?").is_none());
+    wait_for_commands(&p, &["G90", "G1 X110 Y110 F3000"]);
+    // Homed: nothing asks, nothing warns.
+    p.home(sprint_host::Axes::ALL);
+    wait_for(&p, "the homing", |s| {
+        s.homed == Some(sprint_host::Axes::ALL)
+    });
+    run_for(&mut h, Duration::from_millis(50));
+    assert!(h.query_by_label_contains("not homed").is_none());
+    assert!(h.query_by_label("Not homed").is_none());
 }
 
 #[test]

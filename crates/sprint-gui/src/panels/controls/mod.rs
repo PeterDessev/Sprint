@@ -89,6 +89,7 @@ impl ControlsSidebar {
         // Dialogs are modal windows of their own, outside the scroll area.
         self.temperatures.dialogs(ui, ctx);
         self.motion.dialogs(ui, ctx);
+        self.tuning.dialogs(ui, ctx);
         self.macros.dialogs(ui, ctx);
     }
 }

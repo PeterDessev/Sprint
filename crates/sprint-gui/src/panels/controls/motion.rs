@@ -13,12 +13,13 @@ use sprint_proto::JobContext;
 
 use super::{caption, notice, section, split_row};
 use crate::context::AppCtx;
+use crate::homing::{self, Consent};
 use crate::icons;
 use crate::safety::{self, Assessment};
 use crate::theme::{self, Palette, TextRole, Tone};
 use crate::widgets::{
     ActionButton, Axis, ConfirmDialog, DialogResult, HomeTarget, IconButton, JogAction, JogPad,
-    SegmentedControl, Toggle, ZJog, format_number, section_header, step_label,
+    SegmentedControl, StatusPill, Toggle, ZJog, format_number, section_header, step_label,
 };
 
 /// XY jog feedrate when the profile's is unusable (mm/min).
@@ -54,6 +55,11 @@ pub(super) struct Motion {
     /// A homing or motors off while the print is paused, waiting for "Send
     /// anyway" (with its G-code and why it asks).
     pending: Option<(JogAction, String, Assessment)>,
+    /// "Move anyway" for absolute moves on axes not known to be homed.
+    homing: Consent,
+    /// An absolute move waiting for "Move anyway" (with the axes it asks
+    /// about).
+    pending_move: Option<(Vec<MoveStep>, Axes)>,
 }
 
 impl Default for Motion {
@@ -66,6 +72,8 @@ impl Default for Motion {
             open: true,
             keys_elsewhere: false,
             pending: None,
+            homing: Consent::default(),
+            pending_move: None,
         }
     }
 }
@@ -219,6 +227,29 @@ pub(super) fn plan_center(
     }
 }
 
+/// The axes a planned absolute move positions.
+pub(super) fn move_axes(steps: &[MoveStep]) -> Axes {
+    steps.iter().fold(Axes::NONE, |axes, [x, y, z]| {
+        axes.union(Axes {
+            x: x.is_some(),
+            y: y.is_some(),
+            z: z.is_some(),
+        })
+    })
+}
+
+/// Send a planned absolute move.
+fn send_move(printer: &Printer, steps: &[MoveStep], feeds: (f32, f32)) {
+    for &[x, y, z] in steps {
+        let feed = if z.is_some() && x.is_none() {
+            feeds.1
+        } else {
+            feeds.0
+        };
+        printer.move_to(x, y, z, feed);
+    }
+}
+
 /// Ask for the position after the machine was moved, unless the firmware
 /// reports it by itself (AUTOREPORT_POS): the readout and the planning of
 /// absolute moves need the real position, not the one before the move.
@@ -295,6 +326,14 @@ impl Motion {
         let profile = ctx.config.active();
         let feeds = feedrates(profile);
         let mut jog_actions = Vec::new();
+        let mut wanted_move = None;
+        self.homing.observe(state);
+        // Axes the printer may have wrong (shown while connected only).
+        let unhomed = if connected {
+            homing::unhomed(state, Axes::ALL)
+        } else {
+            Axes::NONE
+        };
         if !self.seeded {
             let (cx, cy) = bed_center(profile);
             self.target = clamp_to_volume(profile, [cx, cy, 10.0]);
@@ -325,6 +364,21 @@ impl Motion {
                 if refresh.clicked() {
                     printer.request_position();
                 }
+                // In the header, so the jog pad does not shift when the
+                // homing changes under the pointer.
+                if !unhomed.is_empty() {
+                    let label = if unhomed == Axes::ALL {
+                        "Not homed".to_owned()
+                    } else {
+                        format!("{} not homed", unhomed.letters())
+                    };
+                    ui.add(StatusPill::new(&label, Tone::Warning).icon(icons::HOME))
+                        .on_hover_text(format!(
+                            "{} Jogs move from wherever the nozzle is; Move and Center ask \
+                             first.",
+                            homing::why_unhomed(state, unhomed)
+                        ));
+                }
             },
             |ui| {
                 if let Some(title) = lock_title {
@@ -339,12 +393,11 @@ impl Motion {
                         Tone::Info,
                     );
                 }
-                position_readout(ui, state.position.as_ref().filter(|_| connected));
+                position_readout(ui, state.position.as_ref().filter(|_| connected), unhomed);
                 ui.add_enabled_ui(lock.is_none(), |ui| {
                     jog_actions = self.jog_row(ui, lock);
                     ui.add_space(2.0);
-                    moved |=
-                        self.move_to(ui, printer, profile, feeds, state.position.as_ref(), lock);
+                    wanted_move = self.move_to(ui, profile, state.position.as_ref(), lock);
                 });
                 ui.add_space(2.0);
                 self.keyboard_row(ui);
@@ -370,14 +423,27 @@ impl Motion {
                 }
             }
         }
+        if let Some(steps) = wanted_move {
+            // Absolute coordinates mean little on axes the printer has not
+            // homed: ask first (once, until the homing changes).
+            let ask = self.homing.ask(state, move_axes(&steps));
+            if ask.is_empty() {
+                send_move(printer, &steps, feeds);
+                moved = true;
+            } else {
+                self.pending_move = Some((steps, ask));
+            }
+        }
         if moved {
             refresh_position(printer, state);
         }
     }
 
-    /// The question before a homing or motors off while the print is
-    /// paused (see [`Motion::show`]).
+    /// The questions before a homing or motors off while the print is
+    /// paused, and before an absolute move on axes not known to be homed
+    /// (see [`Motion::show`]).
     pub(super) fn dialogs(&mut self, ui: &Ui, ctx: &mut AppCtx<'_>) {
+        self.move_dialog(ui, ctx);
         let Some((action, gcode, check)) = &self.pending else {
             return;
         };
@@ -402,6 +468,36 @@ impl Motion {
                 }
             }
             Some(DialogResult::Cancelled) => self.pending = None,
+            None => {}
+        }
+    }
+
+    /// "Move without homing?"
+    fn move_dialog(&mut self, ui: &Ui, ctx: &mut AppCtx<'_>) {
+        let Some(axes) = self.pending_move.as_ref().map(|(_, axes)| *axes) else {
+            return;
+        };
+        let message = format!(
+            "{} An absolute move goes to coordinates the printer may have wrong: it can drive \
+             the nozzle into the bed or the frame. Home first, or move anyway.",
+            homing::why_unhomed(ctx.state, axes)
+        );
+        let answer = ConfirmDialog::new("sprint-controls-move-unhomed", "Move without homing?")
+            .message(&message)
+            .confirm_label("Move anyway")
+            .danger(true)
+            .show(ui.ctx());
+        match answer {
+            Some(DialogResult::Confirmed) => {
+                let steps = self.pending_move.take().map(|(steps, _)| steps);
+                self.homing.give(ctx.state);
+                // Only while moving is still allowed.
+                if let Some(steps) = steps.filter(|_| super::motion_lock(ctx).is_none()) {
+                    send_move(ctx.printer, &steps, feedrates(ctx.config.active()));
+                    refresh_position(ctx.printer, ctx.state);
+                }
+            }
+            Some(DialogResult::Cancelled) => self.pending_move = None,
             None => {}
         }
     }
@@ -434,18 +530,16 @@ impl Motion {
         .inner
     }
 
-    /// The move-to fields, "Move" and "Center"; true when they moved the
-    /// machine.
+    /// The move-to fields, "Move" and "Center"; returns the move they
+    /// asked for.
     fn move_to(
         &mut self,
         ui: &mut Ui,
-        printer: &Printer,
         profile: &PrinterProfile,
-        feeds: (f32, f32),
         position: Option<&PositionReport>,
         lock: Option<&str>,
-    ) -> bool {
-        let mut moved = false;
+    ) -> Option<Vec<MoveStep>> {
+        let mut wanted = None;
         let (min, max) = profile.build_volume();
         section_header(ui, "Move to");
         ui.columns(3, |cols| {
@@ -474,16 +568,6 @@ impl Motion {
         let (cx, cy) = bed_center(profile);
         let current = position.map(|p| [p.x, p.y, p.z]);
         let clearance = travel_clearance(max[2]);
-        let send = |steps: Vec<MoveStep>| {
-            for [x, y, z] in steps {
-                let feed = if z.is_some() && x.is_none() {
-                    feeds.1
-                } else {
-                    feeds.0
-                };
-                printer.move_to(x, y, z, feed);
-            }
-        };
         let lift = format_number(f64::from(clearance), 0);
         ui.columns(2, |cols| {
             let go = cols[0].add(
@@ -499,8 +583,7 @@ impl Motion {
                     )),
             );
             if go.clicked() {
-                send(plan_move(current, target, clearance));
-                moved = true;
+                wanted = Some(plan_move(current, target, clearance));
             }
             let center = cols[1].add(
                 ActionButton::new("Center")
@@ -513,15 +596,14 @@ impl Motion {
                     )),
             );
             if center.clicked() {
-                send(plan_center(current.map(|c| c[2]), (cx, cy), clearance));
-                moved = true;
+                wanted = Some(plan_center(current.map(|c| c[2]), (cx, cy), clearance));
             }
             if let Some(reason) = lock {
                 let _ = go.on_disabled_hover_text(reason);
                 let _ = center.on_disabled_hover_text(reason);
             }
         });
-        moved
+        wanted
     }
 
     fn keyboard_row(&mut self, ui: &mut Ui) {
@@ -572,8 +654,10 @@ fn keyboard_free(ui: &Ui) -> bool {
         && !egui::Popup::is_any_open(ctx)
 }
 
-/// Axis readout: four cells with the axis letter and its position.
-fn position_readout(ui: &mut Ui, position: Option<&PositionReport>) {
+/// Axis readout: four cells with the axis letter and its position (the
+/// values of `unhomed` axes in the warning color: the printer may have
+/// them wrong).
+fn position_readout(ui: &mut Ui, position: Option<&PositionReport>, unhomed: Axes) {
     let p = theme::ui_palette(ui);
     let values = position.map(|pos| [pos.x, pos.y, pos.z, pos.e]);
     let height = 40.0;
@@ -590,7 +674,23 @@ fn position_readout(ui: &mut Ui, position: Option<&PositionReport>) {
         ),
         None => "Position unknown".to_owned(),
     };
+    let label = if unhomed.is_empty() {
+        label
+    } else {
+        format!("{label}, {} not homed", unhomed.letters())
+    };
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &label));
+    if !unhomed.is_empty() {
+        response.on_hover_text(format!(
+            "{} not known to be homed: the printer may have {} wrong.",
+            homing::axes_are(unhomed),
+            if unhomed.letters().len() > 1 {
+                "those positions"
+            } else {
+                "that position"
+            }
+        ));
+    }
     if !ui.is_rect_visible(rect) {
         return;
     }
@@ -625,8 +725,11 @@ fn position_readout(ui: &mut Ui, position: Option<&PositionReport>) {
             caption_font.clone(),
             axis_color(&p, i),
         );
+        let homed = [HostAxis::X, HostAxis::Y, HostAxis::Z]
+            .get(i)
+            .is_none_or(|axis| !unhomed.has(*axis));
         let (value, color) = match values {
-            Some(v) if v[i].is_finite() => (text(v[i]), p.text),
+            Some(v) if v[i].is_finite() => (text(v[i]), if homed { p.text } else { p.warning }),
             _ => ("—".to_owned(), p.text_faint),
         };
         clip.text(

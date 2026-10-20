@@ -18,6 +18,7 @@ pub mod dialogs;
 pub mod fonts;
 pub mod format;
 pub mod fsutil;
+pub mod homing;
 pub mod icons;
 pub mod insight;
 pub mod job_text;

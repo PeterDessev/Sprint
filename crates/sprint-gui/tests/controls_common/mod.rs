@@ -23,7 +23,7 @@ use sprint_host::sprint_proto::{
 };
 use sprint_host::sprint_sim::{SimConfig, SimControl};
 use sprint_host::{
-    AppConfig, ConnectOptions, ConnectTarget, ConnectionStatus, JobInfo, JobKind, JobStatus,
+    AppConfig, Axes, ConnectOptions, ConnectTarget, ConnectionStatus, JobInfo, JobKind, JobStatus,
     Printer, PrinterState, TempSample,
 };
 
@@ -255,6 +255,15 @@ pub fn wait_for(printer: &Printer, what: &str, cond: impl Fn(&PrinterState) -> b
     }
 }
 
+/// Home every axis of the (simulated) printer and forget the traffic:
+/// moves and babysteps then go out without asking first.
+pub fn home(printer: &Printer) {
+    printer.home(Axes::ALL);
+    wait_for(printer, "the homing", |s| s.homed == Some(Axes::ALL));
+    wait_idle(printer);
+    sim(printer).clear_received();
+}
+
 /// Wait until nothing is queued or in flight.
 pub fn wait_idle(printer: &Printer) {
     let deadline = Instant::now() + PATIENCE;
@@ -306,8 +315,8 @@ fn approach(start: f32, target: f32, t: f32, tau: f32) -> f32 {
     target + (start - target) * (-t / tau).exp()
 }
 
-/// A connected Marlin printer mid-way through heating up for PLA, with a
-/// few minutes of history, a known position and a running part fan.
+/// A connected, homed Marlin printer mid-way through heating up for PLA,
+/// with a few minutes of history, a known position and a running part fan.
 pub fn heating_state() -> PrinterState {
     let mut state = PrinterState {
         status: ConnectionStatus::Connected,
@@ -331,6 +340,7 @@ pub fn heating_state() -> PrinterState {
             e: 0.0,
             stepper_counts: None,
         }),
+        homed: Some(Axes::ALL),
         feedrate_pct: 100.0,
         flow_pct: vec![100.0],
         fan_speeds: vec![128],
@@ -365,9 +375,11 @@ pub fn heating_state() -> PrinterState {
     state
 }
 
-/// A cold, idle, connected printer (fresh after connecting).
+/// A cold, idle, connected printer (fresh after connecting: whether it
+/// is homed is not known).
 pub fn cold_state() -> PrinterState {
     let mut state = heating_state();
+    state.homed = None;
     state.temp_history.clear();
     for i in 0..60 {
         state.temp_history.push_back(TempSample {
@@ -477,4 +489,6 @@ pub fn printing(state: &mut PrinterState) {
     job.current_line = 30_000;
     job.progress = 0.25;
     state.job = Some(job);
+    // Its start G-code homed.
+    state.homed = Some(Axes::ALL);
 }

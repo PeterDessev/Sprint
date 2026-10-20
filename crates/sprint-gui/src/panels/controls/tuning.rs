@@ -7,6 +7,8 @@
 //! The babystep offset is the printer state's
 //! ([`PrinterState::babystep_z`]): every acknowledged babystep since Z was
 //! last homed, from here, the console, a macro or the print itself.
+//! Babystepping with Z not known to be homed asks first (once, until the
+//! homing changes): most firmware ignores babysteps then.
 
 use std::collections::HashMap;
 
@@ -14,14 +16,17 @@ use egui::{
     Align2, Color32, CornerRadius, CursorIcon, EventFilter, FontId, Key, Modifiers, Pos2, Rect,
     Response, RichText, Sense, Stroke, Ui, WidgetInfo, vec2,
 };
-use sprint_host::{Printer, PrinterState};
+use sprint_host::{Axes, Printer, PrinterState};
 
 use super::temperatures::{MAX_HOTENDS, hotend_count};
 use super::{caption, section, split_row};
 use crate::context::AppCtx;
+use crate::homing::{self, Consent};
 use crate::icons;
 use crate::theme::{self, TextRole, mix};
-use crate::widgets::{IconButton, SegmentedControl, section_header, step_label};
+use crate::widgets::{
+    ConfirmDialog, DialogResult, IconButton, SegmentedControl, section_header, step_label,
+};
 
 /// Speed override range (%).
 pub(super) const SPEED_RANGE: (f32, f32) = (10.0, 300.0);
@@ -77,6 +82,10 @@ pub(super) struct Tuning {
     /// Babystep size (mm).
     step: f32,
     was_connected: bool,
+    /// "Babystep anyway" with Z not known to be homed.
+    homing: Consent,
+    /// A babystep (mm) waiting for "Babystep anyway".
+    pending_babystep: Option<f32>,
 }
 
 impl Default for Tuning {
@@ -85,6 +94,8 @@ impl Default for Tuning {
             edits: HashMap::new(),
             step: 0.05,
             was_connected: false,
+            homing: Consent::default(),
+            pending_babystep: None,
         }
     }
 }
@@ -140,6 +151,8 @@ impl Tuning {
             self.edits.clear();
         }
         self.was_connected = connected;
+        self.homing.observe(state);
+        let mut babystep = None;
         let hotends = hotend_count(state, ctx.config.active()).min(MAX_HOTENDS);
         let fans = state.fan_speeds.len().clamp(1, MAX_FANS);
         let now = ui.input(|i| i.time);
@@ -204,16 +217,53 @@ impl Tuning {
                         }
                     }
                     ui.add_space(2.0);
-                    self.babystep(ui, printer, state);
+                    babystep = self.babystep(ui, printer, state);
                 });
             },
         );
+        if let Some(mm) = babystep {
+            if self.homing.ask(state, Axes::Z).is_empty() {
+                printer.babystep_z(mm);
+            } else {
+                self.pending_babystep = Some(mm);
+            }
+        }
         // Let stale "sent" values fall back to the reports.
         self.edits
             .retain(|_, p| p.live || now - p.at < PENDING_SECS);
         if self.edits.values().any(|p| !p.live) {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(500));
+        }
+    }
+
+    /// "Babystep without homing Z?" (see [`Tuning::show`]).
+    pub(super) fn dialogs(&mut self, ui: &Ui, ctx: &mut AppCtx<'_>) {
+        let Some(mm) = self.pending_babystep else {
+            return;
+        };
+        let message = format!(
+            "{} Most firmware ignores babysteps until Z is homed, and homing Z drops them \
+             again.",
+            homing::why_unhomed(ctx.state, Axes::Z)
+        );
+        let answer = ConfirmDialog::new(
+            "sprint-controls-babystep-unhomed",
+            "Babystep without homing Z?",
+        )
+        .message(&message)
+        .confirm_label("Babystep anyway")
+        .show(ui.ctx());
+        match answer {
+            Some(DialogResult::Confirmed) => {
+                self.pending_babystep = None;
+                self.homing.give(ctx.state);
+                if ctx.command_blocker().is_none() {
+                    ctx.printer.babystep_z(mm);
+                }
+            }
+            Some(DialogResult::Cancelled) => self.pending_babystep = None,
+            None => {}
         }
     }
 
@@ -308,10 +358,13 @@ impl Tuning {
         send
     }
 
-    fn babystep(&mut self, ui: &mut Ui, printer: &Printer, state: &PrinterState) {
+    /// The babystep row; returns a babystep (mm) to send. The undo goes
+    /// out at once.
+    fn babystep(&mut self, ui: &mut Ui, printer: &Printer, state: &PrinterState) -> Option<f32> {
         section_header(ui, "Babystep Z");
         let unsupported = babystep_unsupported(state);
         let applied = rounded_offset(state.babystep_z);
+        let mut wanted = None;
         ui.add_enabled_ui(!unsupported, |ui| {
             let p = theme::ui_palette(ui);
             let options: Vec<(f32, String)> =
@@ -380,7 +433,7 @@ impl Tuning {
                         )),
                 );
                 if lower.clicked() {
-                    printer.babystep_z(-step);
+                    wanted = Some(-step);
                 }
                 let raise = cols[1].add(
                     crate::widgets::ActionButton::new("Raise")
@@ -393,7 +446,7 @@ impl Tuning {
                         )),
                 );
                 if raise.clicked() {
-                    printer.babystep_z(step);
+                    wanted = Some(step);
                 }
             });
         })
@@ -403,6 +456,7 @@ impl Tuning {
             ui,
             "Babysteps move the nozzle immediately, even mid-print. They are not saved.",
         );
+        wanted
     }
 }
 
