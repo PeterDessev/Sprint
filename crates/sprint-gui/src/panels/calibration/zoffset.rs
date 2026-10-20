@@ -7,18 +7,22 @@
 //! the controls, the console or the print, since the counter was last
 //! reset or the adjustment applied. Homing Z, a reset, a halt or a new
 //! connection make the printer forget its babysteps, and the count starts
-//! over.
+//! over. Babystepping with Z not known to be homed asks first (once, until
+//! the homing changes): most firmware ignores babysteps then.
 
 use egui::{Align, Layout, RichText, Ui};
 
 use crate::context::AppCtx;
+use crate::homing::{self, Consent};
 use crate::icons;
 use crate::insight::calibrate::{
     ZOffsetSource, z_offset_after_babystep, z_offset_command, z_offset_source,
 };
 use crate::insight::{format, ui as kit};
 use crate::theme::{self, TextRole, Tone};
-use crate::widgets::{ActionButton, Card, IconButton, SegmentedControl};
+use crate::widgets::{
+    ActionButton, Card, ConfirmDialog, DialogResult, IconButton, SegmentedControl,
+};
 use sprint_host::{Axes, PrinterState};
 
 /// How to use the wizard.
@@ -88,6 +92,10 @@ pub struct ZOffsetWizard {
     /// The offset the babystepping is relative to, captured on the first
     /// babystep.
     baseline: Option<(ZOffsetSource, f32)>,
+    /// "Babystep anyway" with Z not known to be homed.
+    homing: Consent,
+    /// A babystep (mm) waiting for "Babystep anyway".
+    pending: Option<f32>,
 }
 
 impl Default for ZOffsetWizard {
@@ -96,6 +104,8 @@ impl Default for ZOffsetWizard {
             step: 0.025,
             mark: 0.0,
             baseline: None,
+            homing: Consent::default(),
+            pending: None,
         }
     }
 }
@@ -119,10 +129,15 @@ impl ZOffsetWizard {
     }
 
     /// Follow the printer: babysteps it forgot (homing Z, a reset, a halt,
-    /// a new connection) no longer count.
+    /// a new connection) no longer count, and a "Babystep anyway" lasts
+    /// until the homing changes.
     fn observe(&mut self, state: &PrinterState) {
         if state.babystep_z == 0.0 {
             self.mark = 0.0;
+        }
+        self.homing.observe(state);
+        if !state.is_connected() {
+            self.pending = None;
         }
     }
 
@@ -171,6 +186,7 @@ impl ZOffsetWizard {
                     }
                 }
                 ui.add_space(10.0);
+                self.homing_notice(ui, ctx);
                 self.babystep_panel(ui, ctx);
                 ui.add_space(10.0);
                 ui.separator();
@@ -265,6 +281,62 @@ impl ZOffsetWizard {
                     },
                 );
             });
+        self.dialog(ui, ctx);
+    }
+
+    /// A warning while Z is not known to be homed, with a way to home.
+    fn homing_notice(&mut self, ui: &mut Ui, ctx: &mut AppCtx<'_>) {
+        if !ctx.connected() || homing::unhomed(ctx.state, Axes::Z).is_empty() {
+            return;
+        }
+        let can_home = ctx.command_blocker().is_none() && !ctx.printer_busy();
+        let why = format!(
+            "{} Most firmware ignores babysteps until Z is homed, and homing Z drops them \
+             again: home before babystepping.",
+            homing::unhomed_reason(ctx.state, Axes::Z)
+        );
+        if kit::notice(
+            ui,
+            Tone::Warning,
+            icons::HOME,
+            "Z is not known to be homed",
+            Some(&why),
+            can_home.then_some("Home all axes"),
+        ) && can_home
+        {
+            ctx.printer.home(Axes::ALL);
+        }
+        ui.add_space(10.0);
+    }
+
+    /// "Babystep without homing Z?"
+    fn dialog(&mut self, ui: &Ui, ctx: &mut AppCtx<'_>) {
+        let Some(mm) = self.pending else {
+            return;
+        };
+        let message = format!(
+            "{} Most firmware ignores babysteps until Z is homed, and homing Z drops them \
+             again.",
+            homing::why_unhomed(ctx.state, Axes::Z)
+        );
+        let answer = ConfirmDialog::new(
+            "sprint-zoffset-babystep-unhomed",
+            "Babystep without homing Z?",
+        )
+        .message(&message)
+        .confirm_label("Babystep anyway")
+        .show(ui.ctx());
+        match answer {
+            Some(DialogResult::Confirmed) => {
+                self.pending = None;
+                self.homing.give(ctx.state);
+                if ctx.command_blocker().is_none() {
+                    self.babystep(ctx, mm);
+                }
+            }
+            Some(DialogResult::Cancelled) => self.pending = None,
+            None => {}
+        }
     }
 
     /// Send a babystep, capturing the offset it is relative to on the
@@ -407,7 +479,11 @@ impl ZOffsetWizard {
                 }
             });
         if let Some(mm) = step_by {
-            self.babystep(ctx, mm);
+            if self.homing.ask(ctx.state, Axes::Z).is_empty() {
+                self.babystep(ctx, mm);
+            } else {
+                self.pending = Some(mm);
+            }
         }
     }
 }

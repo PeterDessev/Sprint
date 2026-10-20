@@ -296,6 +296,28 @@ fn zoffset_and_flow_snapshots() {
     snapshot(&mut h, "insight_calibration_flow_light");
 }
 
+/// Fresh after connecting, whether Z is homed is not known: the wizard
+/// says so before any babystep, with a way to home.
+#[test]
+fn zoffset_warns_while_z_is_not_known_to_be_homed() {
+    let mut state = demo_state();
+    state.homed = None;
+    let mut h = tab(Theme::Dark, (1100.0, 900.0), Some(state), None);
+    h.get_by_label("Z offset").click();
+    h.run_ok();
+    assert!(h.query_by_label("Z is not known to be homed").is_some());
+    assert!(h.query_by_label("Home all axes").is_some());
+    pointer_away(&mut h);
+    snapshot(&mut h, "insight_calibration_zoffset_unhomed_dark");
+    // Homed X and Y only: Z is still in question.
+    let mut state = demo_state();
+    state.homed = Some(sprint_host::Axes::XY);
+    let mut h = tab(Theme::Dark, (1100.0, 900.0), Some(state), None);
+    h.get_by_label("Z offset").click();
+    h.run_ok();
+    assert!(h.query_by_label("Z is not known to be homed").is_some());
+}
+
 #[test]
 fn calibration_tab_narrow_and_disconnected() {
     let mut h = tab(
@@ -320,6 +342,7 @@ fn without_probe_offset(state: &mut PrinterState) {
 #[test]
 fn applying_the_home_offset_takes_the_babystep_back() {
     let printer = sim_printer(fast_sim());
+    home(&printer);
     assert!(printer.with_state(|s| s.settings.value("M206", 'Z').is_some()));
     let mut host = Host::<CalibrationTab>::live(printer.clone());
     host.tweak = Some(without_probe_offset);
@@ -385,15 +408,32 @@ fn applying_the_home_offset_takes_the_babystep_back() {
 }
 
 /// The wizard counts the printer's babystepping (from anywhere) since its
-/// counter was reset; homing Z makes the printer forget it.
+/// counter was reset; homing Z makes the printer forget it. Z not known to
+/// be homed is said, and babystepping then asks first.
 #[test]
 fn zoffset_counts_the_printers_babystepping() {
     let printer = sim_printer(fast_sim());
     let mut h = tab(Theme::Dark, (1100.0, 900.0), None, Some(printer.clone()));
     h.get_by_label("Z offset").click();
     h.run_ok();
+    // Not homed: a warning with a way to home, and a question first.
+    assert!(h.query_by_label("Z is not known to be homed").is_some());
     clear_received(&printer);
-    // A babystep from here and one from the console both count.
+    h.get_by_label("Lower the nozzle 0.025 mm").click();
+    h.run_ok();
+    assert!(h.query_by_label("Babystep without homing Z?").is_some());
+    h.get_by_label("Cancel").click();
+    h.run_ok();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert!(!received(&printer, "M290"), "a cancelled babystep");
+    h.get_by_label("Home all axes").click();
+    h.run_ok();
+    run_until(&mut h, "the homing", |s| {
+        s.homed == Some(sprint_host::Axes::ALL)
+    });
+    h.run_ok();
+    assert!(h.query_by_label("Z is not known to be homed").is_none());
+    // Homed: babysteps go out at once, and one from the console counts too.
     h.get_by_label("Lower the nozzle 0.025 mm").click();
     h.run_ok();
     assert_eq!(wait_for_command(&printer, "M290"), "M290 Z-0.025");
@@ -579,6 +619,7 @@ fn esteps_zoffset_and_flow_reach_the_simulator() {
     assert_eq!(wait_for_command(&printer, "M92"), "M92 X80 Y80 Z400 E94.9");
 
     // Z offset: babystep and store it in the probe offset.
+    home(&printer);
     h.get_by_label("Z offset").click();
     h.run_ok();
     clear_received(&printer);

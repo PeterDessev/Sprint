@@ -18,8 +18,8 @@ use sprint_host::sprint_proto::{
 };
 use sprint_host::sprint_sim::SimConfig;
 use sprint_host::{
-    AppConfig, ConnectOptions, ConnectTarget, ConnectionStatus, LinkStats, Printer, PrinterState,
-    TempSample,
+    AppConfig, Axes, ConnectOptions, ConnectTarget, ConnectionStatus, LinkStats, Printer,
+    PrinterState, TempSample,
 };
 
 /// Anything with the panel signature.
@@ -238,6 +238,13 @@ pub fn received(printer: &Printer, prefix: &str) -> bool {
     })
 }
 
+/// Home every axis of the simulator and wait for it: moves and babysteps
+/// then go out without asking first.
+pub fn home(printer: &Printer) {
+    printer.home(Axes::ALL);
+    wait_for(printer, "the homing", |s| s.homed == Some(Axes::ALL));
+}
+
 /// Forget the commands the simulator received so far.
 pub fn clear_received(printer: &Printer) {
     if let Some(sim) = printer.sim_control() {
@@ -411,6 +418,7 @@ pub fn demo_state() -> PrinterState {
         }),
         settings: demo_settings(),
         settings_loaded: true,
+        homed: Some(Axes::ALL),
         endstops: vec![
             ("x_min".to_owned(), false),
             ("y_min".to_owned(), false),
