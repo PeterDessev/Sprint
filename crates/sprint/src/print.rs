@@ -112,9 +112,12 @@ pub fn run(args: &PrintArgs) -> Result<ExitCode> {
     printer.disconnect();
 
     let name = loaded.name();
+    // A failed print stopped where it stands (no cancel script moved the
+    // nozzle); after a cancel the firmware followed the cancel script.
+    let failed = !outcome.abandoned && matches!(outcome.last.0, JobStatus::Failed(_));
     let resume = outcome
         .stopped_at
-        .map(|line| format!("\nresume with: {}", resume_command(args, line)))
+        .map(|line| format!("\nresume with: {}", resume_command(args, line, failed)))
         .unwrap_or_default();
     let (status, elapsed, percent) = outcome.last;
     if outcome.abandoned {
@@ -185,8 +188,13 @@ fn print_options(
 
 /// The command that resumes this print from `stopped_at` (the 0-based
 /// first line the printer did not acknowledge): the same file, printer
-/// and profile, with `--start-line`.
-fn resume_command(args: &PrintArgs, stopped_at: usize) -> String {
+/// and profile, with `--start-line`. After a print that `failed`, also
+/// `--board-reset`: its nozzle stayed where it stopped, and a board reset
+/// before the resume (a halt needs one, and opening a serial port resets
+/// many boards) loses Z, which then has to be declared; on a board that
+/// kept it, declaring it there changes nothing. A cancelled print's
+/// cancel script moved the nozzle, and the firmware's Z followed it.
+fn resume_command(args: &PrintArgs, stopped_at: usize, failed: bool) -> String {
     let mut command = format!(
         "sprint print {} --start-line {}",
         shell_word(&args.file.display().to_string()),
@@ -199,6 +207,9 @@ fn resume_command(args: &PrintArgs, stopped_at: usize) -> String {
     command.push_str(&format!(" --connect {}", shell_word(&target)));
     if let Some(profile) = &args.profile {
         command.push_str(&format!(" --profile {}", shell_word(profile)));
+    }
+    if failed {
+        command.push_str(" --board-reset");
     }
     command
 }
@@ -1016,16 +1027,25 @@ mod tests {
 
     #[test]
     fn the_resume_command_names_the_line_after_the_last_acknowledged() {
+        // Cancelled: the cancel script moved the nozzle, and the firmware
+        // followed it, so its Z is trusted.
         let args = print_args(&["--profile", "Bench 2"]);
         assert_eq!(
-            resume_command(&args, 41),
+            resume_command(&args, 41, false),
             r#"sprint print a.gcode --start-line 42 --connect sim --profile "Bench 2""#
+        );
+        // Failed: the nozzle stayed where the print stopped, and the board
+        // may be reset before the resume (a halt needs it, a serial
+        // connection resets many boards), which loses Z: it is declared.
+        assert_eq!(
+            resume_command(&args, 41, true),
+            r#"sprint print a.gcode --start-line 42 --connect sim --profile "Bench 2" --board-reset"#
         );
         let mut args = print_args(&[]);
         args.file = std::path::PathBuf::from("my part.gcode");
         args.connect = crate::cli::TargetArg::Profile;
         assert_eq!(
-            resume_command(&args, 0),
+            resume_command(&args, 0, false),
             r#"sprint print "my part.gcode" --start-line 1 --connect profile"#
         );
         assert_eq!(shell_word("sim://?a=1&b=2"), r#""sim://?a=1&b=2""#);

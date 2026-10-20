@@ -333,12 +333,19 @@ fn a_failed_print_turns_the_heaters_off_before_exiting() {
     assert!(err.contains("Turning the heaters off"), "{err}");
     assert!(err.contains("long.gcode failed at"), "{err}");
     assert!(err.contains("the heaters are off"), "{err}");
-    // How to go on from where it stopped: the long M117, line 24.
+    // How to go on from where it stopped: the long M117, line 24. The
+    // nozzle stayed there, and a board reset before resuming loses Z, so
+    // the command declares it.
     let resume = format!(
         "resume with: sprint print {} --start-line 24 --connect \"sim://",
         path.display()
     );
     assert!(err.contains(&resume), "{err}");
+    let line = err
+        .lines()
+        .find(|l| l.contains("resume with: "))
+        .expect("resume line");
+    assert!(line.ends_with("\" --board-reset"), "{err}");
 }
 
 #[test]
