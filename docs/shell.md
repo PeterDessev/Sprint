@@ -64,7 +64,7 @@ prompt shows the state: `sprint (offline)>`, `sprint (connecting)>`,
 |---|---|
 | `load <file>` (`open`) | Load and analyse a G-code file (refused when it is not G-code) |
 | `info` | Statistics of the loaded file |
-| `print` | Print the loaded file (with the profile's M73 progress setting) |
+| `print` | Print the loaded file (with the profile's M73 progress setting); an option pauses it before chosen layers, see `help print` |
 | `pause` / `resume` | Pause the job (with the pause script) / resume it; while paused you may jog, move, extrude and type G-code |
 | `cancel` | Cancel the job (the cancel script runs) |
 | `recover` | After a failed or cancelled print of the loaded file: start it again from the first line the printer did not confirm, with a resume preamble |
