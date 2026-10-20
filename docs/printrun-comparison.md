@@ -90,7 +90,7 @@ used; check its documentation for details of a particular version.
   set up printer profiles and macros in Sprint (the shell's
   `connect --save` and `macro define` help).
 * **Round beds.** The viewer draws rectangular beds only; a bed-centre
-  origin for deltas is supported, but the bed outline stays square.
+  origin for deltas is supported, but the bed outline stays rectangular.
 * **Persistent communication log.** The console lives in memory (5000
   lines by default); export it from the GUI's console when you need it.
   Printrun can write its log to a file continuously.
