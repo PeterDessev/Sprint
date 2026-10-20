@@ -97,7 +97,8 @@ fn printing_state(app: &SprintApp) -> PrinterState {
     let current = toolpath.layers.get(layer).map_or(0, |l| {
         (l.lines.start + (l.lines.end - l.lines.start) / 2) as usize
     });
-    let mut job = JobInfo::new(JobKind::HostPrint, file.file.name(), file.file.len(), 0);
+    let bytes = file.file.byte_len() as u64;
+    let mut job = JobInfo::new(JobKind::HostPrint, file.file.name(), file.file.len(), bytes);
     job.path = file.file.path().map(|p| p.to_path_buf());
     job.status = JobStatus::Printing;
     job.current_line = current;
@@ -324,7 +325,8 @@ fn recovering_a_failed_print() {
     let mut h = with_cube(AppOptions::headless());
     let mut state = connected_state();
     let file = h.state().file().expect("file");
-    let mut job = JobInfo::new(JobKind::HostPrint, file.file.name(), file.file.len(), 0);
+    let bytes = file.file.byte_len() as u64;
+    let mut job = JobInfo::new(JobKind::HostPrint, file.file.name(), file.file.len(), bytes);
     job.path = file.file.path().map(|p| p.to_path_buf());
     job.status = JobStatus::Failed("printer reset".into());
     job.stopped_at = Some(4_719);

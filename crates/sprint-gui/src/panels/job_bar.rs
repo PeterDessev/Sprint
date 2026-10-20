@@ -52,10 +52,15 @@ pub struct RecoverPoint {
 }
 
 /// The [`RecoverPoint`] of the last job, when it was a host print of
-/// `file` (the same file on disk) that failed or was cancelled part way.
+/// `file` (the same file on disk, not changed since: an edited file's line
+/// numbers are not the ones the print stopped at) that failed or was
+/// cancelled part way.
 pub fn recover_point(state: &PrinterState, file: &GcodeFile) -> Option<RecoverPoint> {
     let job = state.job.as_ref()?;
     if job.kind != JobKind::HostPrint || !format::same_source(job, file) {
+        return None;
+    }
+    if job.total_lines != file.len() || job.bytes_total != file.byte_len() as u64 {
         return None;
     }
     let how = match &job.status {
@@ -650,7 +655,12 @@ mod tests {
     #[test]
     fn a_failed_or_cancelled_print_of_the_file_can_be_recovered() {
         let file = GcodeFile::from_text("cube.gcode", "G28\nG1 Z0.2\nG1 X10 E1\nG1 Y10 E2\n");
-        let mut job = JobInfo::new(JobKind::HostPrint, "cube.gcode", 4, 40);
+        let mut job = JobInfo::new(
+            JobKind::HostPrint,
+            "cube.gcode",
+            file.len(),
+            file.byte_len() as u64,
+        );
         job.status = JobStatus::Failed("printer reset".into());
         job.stopped_at = Some(2);
         let mut state = PrinterState {
@@ -682,6 +692,15 @@ mod tests {
         let other = GcodeFile::from_text("other.gcode", "G28\nG1 Z0.2\nG1 X10 E1\n");
         state.job = Some(job.clone());
         assert_eq!(recover_point(&state, &other), None);
+        // Nor of the file changed since (edited and loaded again): its line
+        // numbers are not the ones the print stopped at.
+        for edited in [
+            "M104 S215\nG28\nG1 Z0.2\nG1 X10 E1\nG1 Y10 E2\n",
+            "G28\nG1 Z0.25\nG1 X10 E1\nG1 Y10 E2\n",
+        ] {
+            let edited = GcodeFile::from_text("cube.gcode", edited);
+            assert_eq!(recover_point(&state, &edited), None, "{edited:?}");
+        }
         for stopped in [None, Some(0), Some(4), Some(99)] {
             state.job = Some(JobInfo {
                 stopped_at: stopped,
