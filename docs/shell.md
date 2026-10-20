@@ -111,7 +111,7 @@ when the axes are not known to be homed.
 | Command | Does |
 |---|---|
 | `settings [code\|category]` | The firmware settings from M503 as a table (`settings M92`, `settings motion`) |
-| `set <code> <params>` | Change a setting, e.g. `set M92 E415`; the other parameters of that setting are kept |
+| `set <code> <params>` | Change a setting, e.g. `set M92 E415`; the other parameters of that setting are kept. Settings that would heat or move the printer when sent (Marlin's Autotemp, `M104 S B F`) are shown by `settings` but not changed by `set` |
 | `eeprom save \| load \| reset` | Store (M500), reload (M501) or factory-reset (M502, asks first; in scripts `eeprom reset yes`) the settings |
 | `firmware` | Firmware name, version and capabilities (M115) |
 | `endstops` | Endstop and probe states (M119) |

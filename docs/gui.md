@@ -281,6 +281,11 @@ G-code.
 Prusa firmware reports separate *normal* and *stealth* (silent mode)
 limits; both are shown and edited separately.
 
+Marlin reports **Autotemp** as `M104 S<min> B<max> F<factor>`. Sending that
+back would also set the hotend temperature, so the card is read-only and an
+import skips any line that would heat or move the printer. Type the command
+in the console if you mean to send it.
+
 ## The Calibration tab
 
 ![The E-steps wizard](images/gui-calibration.png)
