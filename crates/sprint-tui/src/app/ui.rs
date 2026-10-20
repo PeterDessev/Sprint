@@ -967,8 +967,10 @@ impl App {
             None => "position unknown".to_string(),
         };
         // Moves of axes that are not homed start from wherever the
-        // printer believes it is.
+        // printer believes it is. Not said during a paused job: it set its
+        // axes up itself, and homing Z would drive into the part.
         let missing = match self.view.homed {
+            _ if self.view.job_context() != JobContext::Idle => sprint_host::Axes::NONE,
             None => sprint_host::Axes::ALL,
             Some(homed) => sprint_host::Axes::ALL.without(homed),
         };

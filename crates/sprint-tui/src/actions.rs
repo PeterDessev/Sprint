@@ -1016,12 +1016,19 @@ impl HomingRequests {
 /// The warning for something that needs `axes` homed when some are not
 /// (counting the `homing` ones as homed), such as "X Z not homed: the
 /// move starts from where the printer believes it is (home x z first)".
+/// Never while a job runs or is paused: the job set its axes up itself
+/// (its start G-code homed them, out of the host's sight for an SD print;
+/// a recovery declares Z), and homing Z then would drive the nozzle into
+/// the part.
 pub fn homing_warning(
     state: &PrinterState,
     axes: Axes,
     homing: Axes,
     consequence: &str,
 ) -> Option<String> {
+    if job_context(state) != JobContext::Idle {
+        return None;
+    }
     let missing = not_homed(state, axes).without(homing);
     (!missing.is_empty()).then(|| {
         format!(
@@ -1634,6 +1641,45 @@ mod tests {
                 .starts_with("X Y Z not homed: ")
                 && w.ends_with("(home x y z first)"))
         );
+    }
+
+    #[test]
+    fn a_job_is_never_told_to_home() {
+        // The job set its axes up itself (its start G-code homed them, out
+        // of the host's sight for an SD print; a recovery declares Z), and
+        // homing Z now would drive the nozzle into the part.
+        let mut job = JobInfo::new(JobKind::HostPrint, "part.gcode", 10, 100);
+        job.status = JobStatus::Paused;
+        let mut state = PrinterState {
+            homed: Some(Axes::XY),
+            job: Some(job.clone()),
+            ..PrinterState::default()
+        };
+        assert_eq!(
+            homing_warning(&state, Axes::Z, Axes::NONE, UNHOMED_MOVE),
+            None
+        );
+        job.status = JobStatus::Printing;
+        state.job = Some(job);
+        assert_eq!(
+            homing_warning(&state, Axes::Z, Axes::NONE, UNHOMED_BABYSTEP),
+            None
+        );
+        // The printer's own SD print, homing unknown since connecting.
+        let state = PrinterState {
+            sd: sprint_host::SdState {
+                printing: Some((10, 100)),
+                ..sprint_host::SdState::default()
+            },
+            ..PrinterState::default()
+        };
+        assert_eq!(
+            homing_warning(&state, Axes::Z, Axes::NONE, UNHOMED_BABYSTEP),
+            None
+        );
+        // Once it is over, the warning is back.
+        let state = PrinterState::default();
+        assert!(homing_warning(&state, Axes::Z, Axes::NONE, UNHOMED_BABYSTEP).is_some());
     }
 
     #[test]

@@ -1910,6 +1910,29 @@ fn moves_and_babysteps_warn_while_axes_are_not_homed() {
 }
 
 #[test]
+fn a_babystep_during_a_print_does_not_ask_for_homing() {
+    // The printer homed for its own SD print, which the host never sees:
+    // telling the user to home Z now would wreck the print.
+    let (mut shell, buffer) = connected_to(sd_sim());
+    let mut input = Script::new(["sd print big.gcode"], false);
+    shell.run_lines_until_eof_without_leaving(&mut input);
+    wait_for(&shell, "the SD print", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Printing && j.bytes_done > 0)
+    });
+    received(&shell);
+    buffer.clear();
+    let mut input = Script::new(["babystep 0.05"], false);
+    shell.run_lines_until_eof_without_leaving(&mut input);
+    let text = buffer.text();
+    assert!(!text.contains("not homed"), "{text}");
+    assert!(text.contains("Z nudged by 0.05 mm"), "{text}");
+    shell.printer.cancel();
+    wait_for(&shell, "the cancel", |s| !s.job_active());
+}
+
+#[test]
 fn a_macro_that_asks_shows_its_lines_with_the_placeholders_filled_in() {
     let (mut shell, buffer) = connected();
     shell.config.macros.push(sprint_host::Macro {

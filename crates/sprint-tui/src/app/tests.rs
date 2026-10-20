@@ -1017,6 +1017,52 @@ fn a_paused_print_can_be_jogged_and_extruded() {
 }
 
 #[test]
+fn a_paused_recovery_is_jogged_without_being_told_to_home_z() {
+    // A recovery homes X and Y only (homing Z would drive the nozzle into
+    // the part), so Z is not known to be homed while it runs: jogging it
+    // paused must not tell the user to home Z first.
+    let scratch = Scratch::new("recovered-jog");
+    let mut app = timed_app();
+    app.open_file(slow_file(&scratch.0));
+    wait_app(&mut app, "the analysis", |a| a.loader.is_none());
+    app.run_action(dialogs::Action::Recover(scratch.0.join("slow.gcode"), 10));
+    wait(&mut app, "the recovery", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status.is_active() && j.current_line > 14)
+    });
+    app.printer.pause();
+    wait(&mut app, "the pause", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Paused)
+    });
+    wait_idle(&mut app);
+    assert!(app.view.homed.is_none_or(|h| !h.z), "{:?}", app.view.homed);
+    received(&app);
+    press(&mut app, KeyCode::Char('j'));
+    assert!(app.jog.is_some());
+    let text = screen(&mut app, 120, 40);
+    assert!(!text.contains("not homed"), "{text}");
+    press(&mut app, KeyCode::PageUp);
+    assert!(
+        app.toast
+            .as_ref()
+            .is_none_or(|t| !t.text.contains("not homed")),
+        "{:?}",
+        app.toast
+    );
+    press(&mut app, KeyCode::Esc);
+    wait_idle(&mut app);
+    assert!(
+        received(&app).iter().any(|c| c == "G1 Z10 F600"),
+        "the jog went out"
+    );
+    app.printer.cancel();
+    wait(&mut app, "the cancel", |s| !s.job_active());
+}
+
+#[test]
 fn a_move_answered_after_the_print_went_on_is_not_made() {
     let scratch = Scratch::new("paused-answer");
     let mut app = timed_app();
