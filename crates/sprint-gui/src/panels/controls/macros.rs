@@ -70,6 +70,13 @@ pub(super) fn idle_reasons(text: &str) -> Vec<String> {
     safety::assess(&macro_lines(text), JobContext::Idle).confirm
 }
 
+/// Whether a macro with `text` holds an emergency stop (M112): it goes out
+/// at once when the macro runs, without the macro's own question (see
+/// [`Macros::check_and_run`]).
+pub(super) fn stops_at_once(text: &str) -> bool {
+    safety::assess(&macro_lines(text), JobContext::Idle).emergency_stop
+}
+
 /// What a macro sends now: its G-code (arguments filled in) with the script
 /// placeholders rendered from the printer's state and the profile, one
 /// command per line.
@@ -716,7 +723,8 @@ impl Macros {
 }
 
 /// One macro button: its color (or a neutral fill), name truncated to the
-/// width, "…" when it asks before running (or for arguments).
+/// width, "…" when it asks before running (not with an emergency stop,
+/// which never asks) or for arguments.
 fn macro_tile(
     ui: &mut Ui,
     m: &Macro,
@@ -728,7 +736,7 @@ fn macro_tile(
     let p = theme::ui_palette(ui);
     let (rect, response) = ui.allocate_exact_size(vec2(width, TILE_HEIGHT), Sense::click());
     let id = Id::new(("sprint-controls-macro", index));
-    let asks = m.confirm || macro_args::params(&m.gcode).any();
+    let asks = (m.confirm && !stops_at_once(&m.gcode)) || macro_args::params(&m.gcode).any();
     let label = if asks {
         format!("{}…", m.name.trim())
     } else {
@@ -941,6 +949,13 @@ fn editor_dialog(ctx: &egui::Context, editor: &mut Editor, app: &mut AppCtx<'_>)
             field_label(ui, &p, "Color");
             color_row(ui, &p, editor);
             ui.add(Toggle::new(&mut editor.draft.confirm).label("Ask before running"));
+            if editor.draft.confirm && stops_at_once(&editor.draft.gcode) {
+                caption(
+                    ui,
+                    "Its emergency stop (M112) goes out at once, without this question, and \
+                     nothing else is sent.",
+                );
+            }
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 let test = ui.add_enabled(
@@ -1141,6 +1156,8 @@ mod tests {
         assert!(idle_reasons("G28\nM503\n{heaters_off}").is_empty());
         // An emergency stop never asks.
         assert!(idle_reasons("M112").is_empty());
+        assert!(stops_at_once("G28\nm112 ; stop"));
+        assert!(!stops_at_once("M108\nM410\n; M112"));
     }
 
     #[test]

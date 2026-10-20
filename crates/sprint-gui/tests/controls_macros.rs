@@ -325,7 +325,9 @@ M112"
     });
     let mut h = harness(rig);
     let printer = h.state().printer.clone();
-    h.get(by_label("Stop…")).click();
+    // Its tile does not promise a question ("…") it never asks.
+    assert!(h.query(by_label("Stop…")).is_none());
+    h.get(by_label("Stop")).click();
     h.step();
     h.step();
     assert!(h.query(by_label("Run “Stop”?")).is_none(), "a question");
@@ -338,6 +340,17 @@ M112"
     wait_for_commands(&printer, &["M112"]);
     let got = received(&printer);
     assert!(!got.iter().any(|c| c.starts_with("G28")), "{got:?}");
+}
+
+/// The editor says that a macro's emergency stop skips its question.
+#[test]
+fn the_editor_says_an_emergency_stop_never_asks() {
+    let mut h = harness(Rig::synthetic(controls_common::heating_state()));
+    new_macro(&mut h, "Stop", "G28\nM112");
+    let note = "Its emergency stop (M112) goes out at once";
+    assert!(h.query(by_label_contains(note)).is_none());
+    click(&mut h, "Ask before running");
+    assert!(h.query(by_label_contains(note)).is_some());
 }
 
 /// Macros written in the shell with arguments (`{0}`, `{1=60}`, `{args}`)
