@@ -320,6 +320,80 @@ fn tuning_tab_warns_during_a_job() {
     assert!(h.query_by_label("A job is running").is_some());
 }
 
+/// A Prusa MK3's report: normal-mode and stealth-mode limits (the reply
+/// parser marks the stealth ones with a `; stealth` comment) and a 3×3
+/// mesh with its Z offset.
+fn prusa_state() -> PrinterState {
+    let mut state = demo_state();
+    for line in [
+        "M203 X200 Y200 Z12 E120",
+        "M201 X1000 Y1000 Z200 E5000",
+        "M203 X100 Y100 Z12 E120 ; stealth",
+        "M201 X960 Y960 Z200 E5000 ; stealth",
+    ] {
+        state.settings.insert(cmd(line));
+    }
+    for j in 0..3 {
+        for i in 0..3 {
+            let z = 0.01 * f64::from(i * 3 + j) - 0.04;
+            state
+                .settings
+                .insert(cmd(&format!("G29 S3 I{i} J{j} Z{z:.4}")));
+        }
+    }
+    state.settings.insert(cmd("G29 S4 Z0"));
+    state
+}
+
+/// Prusa's normal-mode and stealth-mode limits are edited apart, named by
+/// their mode, and a stealth-mode edit stays one when it is applied.
+#[test]
+fn stealth_limits_are_edited_apart_from_the_normal_ones() {
+    let mut h = harness_state(
+        Theme::Dark,
+        (1180.0, 900.0),
+        Host::<TuningTab>::synthetic(prusa_state()),
+        |ui, host| host.frame(ui),
+    );
+    h.run_ok();
+    h.get_by_label("Motion").click();
+    h.run_ok();
+    // M203 and M201, each with both modes.
+    assert_eq!(h.query_all_by_label("NORMAL MODE").count(), 2);
+    assert_eq!(h.query_all_by_label("STEALTH MODE").count(), 2);
+    assert!(
+        h.query_by_label_contains("Both modes are applied with M203")
+            .is_some()
+    );
+    // M92 has no stealth-mode copy and names no mode.
+    assert!(
+        h.query_by_label_contains("Both modes are applied with M92")
+            .is_none()
+    );
+    h.event(egui::Event::PointerGone);
+    h.run_ok();
+    snapshot(&mut h, "insight_tuning_stealth_dark");
+    // A stealth-mode edit changes the stealth-mode limit only.
+    h.state_mut()
+        .tab
+        .stage(cmd("M203 X90 Y100 Z12 E120 ; stealth"));
+    h.run_ok();
+    let changes = h.state().tab.draft().changes();
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].command.key(), "M203 stealth");
+    assert_eq!(changes[0].command.to_gcode(), "M203 X90 Y100 Z12 E120");
+    h.get_by_label("Show changes").click();
+    h.run_ok();
+    assert!(
+        h.query_by_label("Maximum feedrate · Stealth mode")
+            .is_some()
+    );
+    assert!(
+        h.query_by_label_contains("X speed: 100.00 → 90.00")
+            .is_some()
+    );
+}
+
 #[test]
 fn tuning_tab_tolerates_odd_settings() {
     let mut state = demo_state();

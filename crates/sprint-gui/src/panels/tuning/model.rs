@@ -121,12 +121,15 @@ impl Entry {
     }
 
     /// A short name for the instance: "Hotend 1", "Extruder 0", "X axis",
-    /// or "" for settings without selectors.
+    /// "Stealth mode" (Prusa's stealth-mode limits), or "" for settings
+    /// without selectors. See [`Draft::instance_label`] for the name the
+    /// editor shows.
     pub fn instance_label(&self) -> String {
         let Some(def) = self.def() else {
             return String::new();
         };
-        def.selectors
+        let mut parts: Vec<String> = def
+            .selectors
             .iter()
             .filter_map(|&sel| {
                 let value = self.draft.get(sel)?;
@@ -137,8 +140,11 @@ impl Entry {
                     label.to_owned()
                 })
             })
-            .collect::<Vec<_>>()
-            .join(", ")
+            .collect();
+        if self.draft.is_stealth() {
+            parts.push(STEALTH_MODE.to_owned());
+        }
+        parts.join(", ")
     }
 
     /// Whether the entry matches a search query (code, name, description,
@@ -164,6 +170,34 @@ impl Entry {
         query
             .split_whitespace()
             .all(|word| haystack.iter().any(|h| h.contains(word)))
+    }
+}
+
+/// The instance name of a Prusa stealth-mode limit.
+const STEALTH_MODE: &str = "Stealth mode";
+/// The instance name of a normal-mode limit next to a stealth-mode one.
+const NORMAL_MODE: &str = "Normal mode";
+
+/// `cmd.raw` written from its values again, keeping the `; stealth`
+/// marker of a Prusa stealth-mode limit: the marker is what keeps it
+/// apart from the normal-mode limit of the same command (its key, and so
+/// the host's update of the settings when it is applied).
+fn refresh_raw(cmd: &mut SettingCommand) {
+    let stealth = cmd.is_stealth();
+    cmd.raw = cmd.to_gcode();
+    if stealth {
+        cmd.mark_stealth();
+    }
+}
+
+/// A setting as a line of G-code for a file or the clipboard: its G-code,
+/// with a `; stealth` comment for a Prusa stealth-mode limit so an import
+/// keeps it apart from the normal-mode one.
+pub fn gcode_line(cmd: &SettingCommand) -> String {
+    if cmd.is_stealth() {
+        format!("{} ; stealth", cmd.to_gcode())
+    } else {
+        cmd.to_gcode()
     }
 }
 
@@ -324,6 +358,24 @@ impl Draft {
         self.entries.iter_mut().find(|e| e.key == key)
     }
 
+    /// The instance name the editor shows for `entry`:
+    /// [`Entry::instance_label`], with "Normal mode" for a normal-mode
+    /// limit the firmware reported next to a stealth-mode one (Prusa's
+    /// M201 and M203).
+    pub fn instance_label(&self, entry: &Entry) -> String {
+        let label = entry.instance_label();
+        let beside_stealth = !entry.draft.is_stealth()
+            && self
+                .entries
+                .iter()
+                .any(|e| e.draft.code == entry.draft.code && e.draft.is_stealth());
+        match (beside_stealth, label.is_empty()) {
+            (false, _) => label,
+            (true, true) => NORMAL_MODE.to_owned(),
+            (true, false) => format!("{label}, {NORMAL_MODE}"),
+        }
+    }
+
     /// Follow a new report: unedited entries take the new values, edited
     /// ones keep their edits against the new reported values (and stop
     /// being edits once the printer reports the edited value), staged
@@ -414,7 +466,7 @@ impl Draft {
         for &(letter, value) in &cmd.params {
             merged.set(letter, value);
         }
-        merged.raw = merged.to_gcode();
+        refresh_raw(&mut merged);
         merged
     }
 
@@ -444,7 +496,7 @@ impl Draft {
             .filter(|e| e.is_modified())
             .filter_map(|e| {
                 let mut command = e.command()?;
-                command.raw = command.to_gcode();
+                refresh_raw(&mut command);
                 Some(Change {
                     also: e
                         .original
@@ -456,7 +508,7 @@ impl Draft {
                     name: e
                         .def()
                         .map_or_else(|| command.code.clone(), |d| d.name.to_owned()),
-                    instance: e.instance_label(),
+                    instance: self.instance_label(e),
                     params: e.param_changes(),
                     old_raw: e.raw.as_ref().map(|_| {
                         e.original
@@ -470,12 +522,13 @@ impl Draft {
             .collect()
     }
 
-    /// Every setting as G-code, one per line (with edits).
+    /// Every setting as G-code, one per line (with edits; see
+    /// [`gcode_line`]).
     pub fn to_gcode(&self) -> String {
         self.entries
             .iter()
             .filter_map(Entry::command)
-            .map(|c| c.to_gcode())
+            .map(|c| gcode_line(&c))
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -593,11 +646,16 @@ pub const MAX_IMPORT_SETTINGS: usize = 1000;
 /// `M92 E415` lines). Comments and blank lines are ignored; `echo:`
 /// prefixes are accepted. Only settings known to the catalog or reported
 /// by the printer (`known_codes`) are taken; anything else is skipped with
-/// a reason.
+/// a reason. Prusa's stealth-mode limits stay apart from the normal-mode
+/// ones: a `; stealth` comment (as exported) or, in an M503 log, a
+/// "... - stealth ..." heading above them marks them, as the reply parser
+/// does.
 pub fn parse_import(text: &str, known_codes: &[String]) -> Import {
     let mut import = Import::default();
     // Where each key is in `import.commands`.
     let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    // Below a stealth-mode heading of an M503 log.
+    let mut stealth = false;
     for (i, line) in text.lines().enumerate().take(100_000) {
         let trimmed = line.trim().trim_start_matches('\u{feff}');
         let trimmed = trimmed.strip_prefix("echo:").map_or(trimmed, str::trim);
@@ -610,10 +668,17 @@ pub fn parse_import(text: &str, known_codes: &[String]) -> Import {
             text: one_line(trimmed).chars().take(120).collect(),
             reason,
         };
-        let Some(cmd) = SettingCommand::parse(body) else {
+        // Parsed with its comment, which may be the stealth marker.
+        let Some(mut cmd) = SettingCommand::parse(trimmed) else {
+            // A heading ("Maximum feedrates - stealth (mm/s):") or other
+            // text.
+            stealth = body.to_ascii_lowercase().contains("stealth");
             import.skipped.push(skip("not a setting command"));
             continue;
         };
+        if stealth {
+            cmd.mark_stealth();
+        }
         if NOT_SETTINGS.contains(&cmd.code.as_str()) {
             import
                 .skipped
@@ -997,6 +1062,113 @@ mod tests {
             "{:?}",
             start.elapsed()
         );
+    }
+
+    /// A Prusa MK3 report: normal-mode and stealth-mode limits.
+    fn prusa() -> PrinterSettings {
+        let mut s = settings(&["M203 X200 Y200 Z12 E120", "M201 X1000 Y1000 Z200 E5000"]);
+        for line in ["M203 X100 Y100 Z12 E120", "M201 X960 Y960 Z200 E5000"] {
+            let mut cmd = SettingCommand::parse(line).expect("parse");
+            cmd.mark_stealth();
+            s.insert(cmd);
+        }
+        s
+    }
+
+    #[test]
+    fn stealth_limits_keep_their_marker_through_edits() {
+        let mut d = Draft::new(&prusa());
+        assert_eq!(d.entries().len(), 4);
+        let stealth = d.entry("M203 stealth").expect("stealth M203");
+        assert_eq!(stealth.instance_label(), "Stealth mode");
+        assert_eq!(d.instance_label(stealth), "Stealth mode");
+        let normal = d.entry("M203").expect("normal M203");
+        assert_eq!(normal.instance_label(), "");
+        assert_eq!(d.instance_label(normal), "Normal mode");
+        assert!(stealth.matches("stealth feedrate"));
+        // Editing the stealth limit changes it, not the normal one.
+        *d.entry_mut("M203 stealth")
+            .and_then(|e| e.value_mut('X'))
+            .expect("X") = 90.0;
+        let changes = d.changes();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].key, "M203 stealth");
+        assert_eq!(changes[0].command.key(), "M203 stealth");
+        assert_eq!(changes[0].command.to_gcode(), "M203 X90 Y100 Z12 E120");
+        assert_eq!(changes[0].instance, "Stealth mode");
+        // The host updates its copy of the settings by the command's key.
+        let mut applied = prusa();
+        applied.insert(changes[0].command.clone());
+        assert_eq!(applied.max_feedrate(), Some([200.0, 200.0, 12.0, 120.0]));
+        assert_eq!(
+            applied.max_feedrate_stealth(),
+            Some([90.0, 100.0, 12.0, 120.0])
+        );
+        // A normal-mode edit says which mode it is.
+        d.revert_all();
+        *d.entry_mut("M201")
+            .and_then(|e| e.value_mut('X'))
+            .expect("X") = 1250.0;
+        let changes = d.changes();
+        assert_eq!(
+            (changes[0].key.as_str(), changes[0].instance.as_str()),
+            ("M201", "Normal mode")
+        );
+        assert!(!changes[0].command.is_stealth());
+        // Without stealth-mode limits no mode is named.
+        let plain = Draft::new(&settings(&["M203 X200 Y200 Z12 E120"]));
+        assert_eq!(plain.instance_label(plain.entry("M203").expect("M203")), "");
+    }
+
+    #[test]
+    fn stealth_limits_survive_export_and_import() {
+        let d = Draft::new(&prusa());
+        let text = export_text(&d, None, None);
+        assert!(
+            text.contains("\nM203 X100 Y100 Z12 E120 ; stealth\n"),
+            "{text}"
+        );
+        assert!(text.contains("\nM203 X200 Y200 Z12 E120\n"), "{text}");
+        let import = parse_import(&text, &[]);
+        let keys: Vec<String> = import.commands.iter().map(SettingCommand::key).collect();
+        assert_eq!(keys, ["M203", "M201", "M203 stealth", "M201 stealth"]);
+        assert!(
+            diff_import(&d, &import)
+                .iter()
+                .all(|(_, diff)| *diff == ImportDiff::Unchanged)
+        );
+        // A changed stealth line is staged onto the stealth limit only.
+        let mut d = d;
+        for cmd in &parse_import("M203 X80 Y80 Z12 E120 ; stealth\n", &[]).commands {
+            d.stage_import(cmd);
+        }
+        let changes = d.changes();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].key, "M203 stealth");
+        assert_eq!(changes[0].command.key(), "M203 stealth");
+        assert_eq!(d.entry("M203").and_then(|e| e.draft.get('X')), Some(200.0));
+    }
+
+    #[test]
+    fn an_m503_log_marks_the_limits_under_stealth_headings() {
+        let log = "echo:Maximum feedrates - normal (mm/s):\n\
+                   echo:  M203 X200.00 Y200.00 Z12.00 E120.00\n\
+                   echo:Maximum feedrates - stealth (mm/s):\n\
+                   echo:  M203 X100.00 Y100.00 Z12.00 E120.00\n\
+                   echo:Maximum acceleration - normal (mm/s2):\n\
+                   echo:  M201 X1000 Y1000 Z200 E5000\n\
+                   echo:Maximum acceleration - stealth (mm/s2):\n\
+                   echo:  M201 X960 Y960 Z200 E5000\n\
+                   echo:Steps per unit:\n\
+                   echo:  M92 X100.00 Y100.00 Z400.00 E280.00\n\
+                   ok\n";
+        let import = parse_import(log, &[]);
+        let keys: Vec<String> = import.commands.iter().map(SettingCommand::key).collect();
+        assert_eq!(
+            keys,
+            ["M203", "M203 stealth", "M201", "M201 stealth", "M92"]
+        );
+        assert_eq!(import.skipped.len(), 6, "the headings and the ok");
     }
 
     #[test]

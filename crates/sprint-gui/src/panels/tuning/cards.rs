@@ -174,6 +174,20 @@ pub(super) fn setting_card(
     let modified = indices
         .iter()
         .any(|&i| draft.entries().get(i).is_some_and(Entry::is_modified));
+    // Named before the fields borrow the draft (a normal-mode limit is
+    // named after its stealth-mode sibling).
+    let labels: Vec<String> = indices
+        .iter()
+        .map(|&i| {
+            draft
+                .entries()
+                .get(i)
+                .map_or_else(String::new, |e| draft.instance_label(e))
+        })
+        .collect();
+    let stealth = indices
+        .iter()
+        .any(|&i| draft.entries().get(i).is_some_and(|e| e.draft.is_stealth()));
     let subtitle = def.code;
     let mut revert = false;
     Card::new(def.name)
@@ -181,58 +195,76 @@ pub(super) fn setting_card(
         .id_salt(("setting", def.code))
         .show_with_header(
             ui,
-            |ui| {
-                ui.add(
-                    IconButton::new(icons::INFO)
-                        .ghost()
-                        .small()
-                        .tooltip(format!(
-                            "{} ({})\n\n{}",
-                            def.name, def.code, def.description
-                        )),
-                );
-                if modified {
-                    if ui
-                        .add(
-                            IconButton::new(icons::RESET)
-                                .ghost()
-                                .small()
-                                .tooltip(format!("Revert {}", def.name)),
-                        )
-                        .clicked()
-                    {
-                        revert = true;
-                    }
-                    ui.add(Badge::new("MODIFIED").tone(Tone::Accent));
-                }
-            },
+            |ui| card_actions(ui, def, modified, &mut revert),
             |ui| {
                 let many = indices.len() > 1;
-                for (n, &i) in indices.iter().enumerate() {
+                for (n, (&i, label)) in indices.iter().zip(&labels).enumerate() {
                     let Some(entry) = draft.entries_mut().get_mut(i) else {
                         continue;
                     };
-                    let label = entry.instance_label();
                     if many || !label.is_empty() {
                         if n > 0 {
                             ui.add_space(6.0);
                         }
-                        instance_header(ui, &label, entry.is_modified());
+                        instance_header(ui, label, entry.is_modified());
                     }
                     ui.push_id(("instance", entry.key.clone()), |ui| {
                         instance_fields(ui, def, entry);
                     });
                 }
+                if stealth {
+                    ui.add_space(4.0);
+                    kit::caption(
+                        ui,
+                        &format!(
+                            "Both modes are applied with {}: Prusa firmware sets the limits \
+                             of the mode the printer is in.",
+                            def.code
+                        ),
+                    );
+                }
             },
         );
     if revert {
-        let keys: Vec<String> = indices
-            .iter()
-            .filter_map(|&i| draft.entries().get(i).map(|e| e.key.clone()))
-            .collect();
-        for key in keys {
-            draft.revert(&key);
+        revert_entries(draft, indices);
+    }
+}
+
+/// The header controls of a setting card: its description, and when
+/// edited, a revert button and a badge.
+fn card_actions(ui: &mut Ui, def: &SettingDef, modified: bool, revert: &mut bool) {
+    ui.add(
+        IconButton::new(icons::INFO)
+            .ghost()
+            .small()
+            .tooltip(format!(
+                "{} ({})\n\n{}",
+                def.name, def.code, def.description
+            )),
+    );
+    if modified {
+        if ui
+            .add(
+                IconButton::new(icons::RESET)
+                    .ghost()
+                    .small()
+                    .tooltip(format!("Revert {}", def.name)),
+            )
+            .clicked()
+        {
+            *revert = true;
         }
+        ui.add(Badge::new("MODIFIED").tone(Tone::Accent));
+    }
+}
+
+fn revert_entries(draft: &mut Draft, indices: &[usize]) {
+    let keys: Vec<String> = indices
+        .iter()
+        .filter_map(|&i| draft.entries().get(i).map(|e| e.key.clone()))
+        .collect();
+    for key in keys {
+        draft.revert(&key);
     }
 }
 
