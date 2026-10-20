@@ -136,7 +136,8 @@ impl ZOffsetWizard {
             self.mark = 0.0;
         }
         self.homing.observe(state);
-        if !state.is_connected() {
+        // The question goes away once Z is homed or the link drops.
+        if !state.is_connected() || homing::unhomed(state, Axes::Z).is_empty() {
             self.pending = None;
         }
     }

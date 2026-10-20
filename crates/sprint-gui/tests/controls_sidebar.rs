@@ -675,6 +675,45 @@ fn moves_and_babysteps_ask_before_running_on_unhomed_axes() {
     assert!(h.query_by_label("Not homed").is_none());
 }
 
+/// A question about unhomed axes goes away when the printer homes them
+/// while it is open (from its display, a macro or the console): it no
+/// longer applies, and the move it held back is not sent.
+#[test]
+fn homing_answers_an_open_question_about_unhomed_axes() {
+    use sprint_host::Axes;
+    let mut h = connected();
+    let p = printer(&h);
+    click(&mut h, "Center");
+    h.run_ok();
+    assert!(h.query_by_label("Move without homing?").is_some());
+    p.home(Axes::ALL);
+    wait_for(&p, "the homing", |s| s.homed == Some(Axes::ALL));
+    wait_idle(&p);
+    clear(&h);
+    run_for(&mut h, Duration::from_millis(50));
+    assert!(h.query_by_label("Move without homing?").is_none());
+    assert_nothing_sent(&mut h, "the question's move");
+    // The motors turned off forget the homing: babystepping asks, and
+    // homing Z answers it.
+    p.motors_off();
+    wait_for(&p, "the motors off", |s| {
+        s.homed.is_some_and(|axes| !axes.z)
+    });
+    wait_idle(&p);
+    run_for(&mut h, Duration::from_millis(50));
+    clear(&h);
+    click(&mut h, "Raise");
+    h.run_ok();
+    assert!(h.query_by_label("Babystep without homing Z?").is_some());
+    p.home(Axes::Z);
+    wait_for(&p, "the Z homing", |s| s.homed.is_some_and(|axes| axes.z));
+    wait_idle(&p);
+    clear(&h);
+    run_for(&mut h, Duration::from_millis(50));
+    assert!(h.query_by_label("Babystep without homing Z?").is_none());
+    assert_nothing_sent(&mut h, "the question's babystep");
+}
+
 #[test]
 fn sliders_send_fan_speed_and_overrides_on_release() {
     let mut h = connected();

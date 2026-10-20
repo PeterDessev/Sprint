@@ -407,6 +407,28 @@ fn applying_the_home_offset_takes_the_babystep_back() {
     printer.disconnect();
 }
 
+/// The question before babystepping with Z not known to be homed goes
+/// away when the printer homes while it is open, without the babystep.
+#[test]
+fn zoffset_question_goes_away_once_z_is_homed() {
+    let printer = sim_printer(fast_sim());
+    let mut h = tab(Theme::Dark, (1100.0, 900.0), None, Some(printer.clone()));
+    h.get_by_label("Z offset").click();
+    h.run_ok();
+    clear_received(&printer);
+    h.get_by_label("Lower the nozzle 0.025 mm").click();
+    h.run_ok();
+    assert!(h.query_by_label("Babystep without homing Z?").is_some());
+    home(&printer);
+    run_until(&mut h, "the homing", |s| {
+        s.homed == Some(sprint_host::Axes::ALL)
+    });
+    h.run_ok();
+    assert!(h.query_by_label("Babystep without homing Z?").is_none());
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert!(!received(&printer, "M290"), "the question's babystep");
+}
+
 /// The wizard counts the printer's babystepping (from anywhere) since its
 /// counter was reset; homing Z makes the printer forget it. Z not known to
 /// be homed is said, and babystepping then asks first.

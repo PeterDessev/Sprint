@@ -328,6 +328,15 @@ impl Motion {
         let mut jog_actions = Vec::new();
         let mut wanted_move = None;
         self.homing.observe(state);
+        // A question the printer answered (the axes were homed since) or
+        // made moot (the link dropped) goes away.
+        if self
+            .pending_move
+            .as_ref()
+            .is_some_and(|(_, axes)| !connected || homing::unhomed(state, *axes).is_empty())
+        {
+            self.pending_move = None;
+        }
         // Axes the printer may have wrong (shown while connected only).
         let unhomed = if connected {
             homing::unhomed(state, Axes::ALL)

@@ -152,6 +152,10 @@ impl Tuning {
         }
         self.was_connected = connected;
         self.homing.observe(state);
+        // The question goes away once Z is homed or the link drops.
+        if !connected || homing::unhomed(state, Axes::Z).is_empty() {
+            self.pending_babystep = None;
+        }
         let mut babystep = None;
         let hotends = hotend_count(state, ctx.config.active()).min(MAX_HOTENDS);
         let fans = state.fan_speeds.len().clamp(1, MAX_FANS);
