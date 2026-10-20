@@ -9,13 +9,16 @@ use egui::{
 use sprint_host::sprint_proto::PositionReport;
 use sprint_host::{Axes, Axis as HostAxis, Printer, PrinterProfile, PrinterState};
 
+use sprint_proto::JobContext;
+
 use super::{caption, notice, section, split_row};
 use crate::context::AppCtx;
 use crate::icons;
+use crate::safety::{self, Assessment};
 use crate::theme::{self, Palette, TextRole, Tone};
 use crate::widgets::{
-    ActionButton, Axis, HomeTarget, IconButton, JogAction, JogPad, SegmentedControl, Toggle, ZJog,
-    format_number, section_header, step_label,
+    ActionButton, Axis, ConfirmDialog, DialogResult, HomeTarget, IconButton, JogAction, JogPad,
+    SegmentedControl, Toggle, ZJog, format_number, section_header, step_label,
 };
 
 /// XY jog feedrate when the profile's is unusable (mm/min).
@@ -48,6 +51,9 @@ pub(super) struct Motion {
     /// The keys went to another part of the window last frame (see
     /// [`Motion::show`]), for the hint under the toggle.
     keys_elsewhere: bool,
+    /// A homing or motors off while the print is paused, waiting for "Send
+    /// anyway" (with its G-code and why it asks).
+    pending: Option<(JogAction, String, Assessment)>,
 }
 
 impl Default for Motion {
@@ -59,6 +65,7 @@ impl Default for Motion {
             seeded: false,
             open: true,
             keys_elsewhere: false,
+            pending: None,
         }
     }
 }
@@ -104,6 +111,15 @@ fn feed_for(axis: HostAxis, feeds: (f32, f32)) -> f32 {
     match axis {
         HostAxis::Z => feeds.1,
         _ => feeds.0,
+    }
+}
+
+/// The G-code of a homing or motors-off jog action (`None` for moves).
+pub(super) fn jog_gcode(action: JogAction) -> Option<String> {
+    match action {
+        JogAction::Move { .. } => None,
+        JogAction::Home(target) => Some(home_axes(target).home_command()),
+        JogAction::MotorsOff => Some("M84".to_owned()),
     }
 }
 
@@ -275,8 +291,10 @@ impl Motion {
         let connected = ctx.connected();
         let lock = super::motion_lock(ctx);
         let lock_title = super::lock_title(ctx);
+        let paused = super::paused(ctx);
         let profile = ctx.config.active();
         let feeds = feedrates(profile);
+        let mut jog_actions = Vec::new();
         if !self.seeded {
             let (cx, cy) = bed_center(profile);
             self.target = clamp_to_volume(profile, [cx, cy, 10.0]);
@@ -312,10 +330,18 @@ impl Motion {
                 if let Some(title) = lock_title {
                     notice(ui, icons::LOCK, title, Tone::Warning)
                         .on_hover_text(lock.unwrap_or_default());
+                } else if paused {
+                    notice(
+                        ui,
+                        icons::PAUSE,
+                        "The print is paused: jog, move and extrude as needed. Resume brings \
+                         the nozzle back and restores the print's modes and temperatures.",
+                        Tone::Info,
+                    );
                 }
                 position_readout(ui, state.position.as_ref().filter(|_| connected));
                 ui.add_enabled_ui(lock.is_none(), |ui| {
-                    moved |= self.jog_row(ui, printer, feeds, lock);
+                    jog_actions = self.jog_row(ui, lock);
                     ui.add_space(2.0);
                     moved |=
                         self.move_to(ui, printer, profile, feeds, state.position.as_ref(), lock);
@@ -325,26 +351,69 @@ impl Motion {
             },
         );
         self.open = shown.is_some();
+        for action in jog_actions {
+            // While paused, homing and motors off go through the
+            // classifier (homing Z lowers the nozzle onto the part, with the
+            // motors off the print's position is lost).
+            let question = jog_gcode(action)
+                .filter(|_| paused)
+                .map(|gcode| {
+                    let check = safety::assess(std::slice::from_ref(&gcode), JobContext::Paused);
+                    (gcode, check)
+                })
+                .filter(|(_, check)| !check.is_clear());
+            match question {
+                Some((gcode, check)) => self.pending = Some((action, gcode, check)),
+                None => {
+                    apply_jog(printer, action, feeds);
+                    moved |= action != JogAction::MotorsOff;
+                }
+            }
+        }
         if moved {
             refresh_position(printer, state);
         }
     }
 
-    /// The jog pad and Z strip; true when they moved the machine.
-    fn jog_row(
-        &self,
-        ui: &mut Ui,
-        printer: &Printer,
-        feeds: (f32, f32),
-        lock: Option<&str>,
-    ) -> bool {
+    /// The question before a homing or motors off while the print is
+    /// paused (see [`Motion::show`]).
+    pub(super) fn dialogs(&mut self, ui: &Ui, ctx: &mut AppCtx<'_>) {
+        let Some((action, gcode, check)) = &self.pending else {
+            return;
+        };
+        let answer = ConfirmDialog::new(
+            "sprint-controls-motion-paused",
+            check.title(JobContext::Paused),
+        )
+        .message(&check.message(JobContext::Paused))
+        .details(gcode)
+        .confirm_label("Send anyway")
+        .danger(true)
+        .show(ui.ctx());
+        let action = *action;
+        match answer {
+            Some(DialogResult::Confirmed) => {
+                self.pending = None;
+                // Only while it is still what was asked about.
+                if super::motion_lock(ctx).is_none() {
+                    let feeds = feedrates(ctx.config.active());
+                    apply_jog(ctx.printer, action, feeds);
+                    refresh_position(ctx.printer, ctx.state);
+                }
+            }
+            Some(DialogResult::Cancelled) => self.pending = None,
+            None => {}
+        }
+    }
+
+    /// The jog pad and Z strip; returns what they asked for.
+    fn jog_row(&self, ui: &mut Ui, lock: Option<&str>) -> Vec<JogAction> {
         let avail = ui.available_width();
         let z_width = if avail >= 270.0 { 60.0 } else { 50.0 };
         let gap = 10.0;
         let pad = (avail - z_width - gap).clamp(160.0, 264.0);
         let total = pad + gap + z_width;
         ui.horizontal(|ui| {
-            let mut moved = false;
             ui.spacing_mut().item_spacing.x = gap;
             ui.add_space(((avail - total) / 2.0).max(0.0));
             let xy = JogPad::new()
@@ -360,11 +429,7 @@ impl Motion {
                 let _ = xy.response.clone().on_disabled_hover_text(reason);
                 let _ = z.response.clone().on_disabled_hover_text(reason);
             }
-            for action in [xy.action, z.action].into_iter().flatten() {
-                apply_jog(printer, action, feeds);
-                moved |= action != JogAction::MotorsOff;
-            }
-            moved
+            [xy.action, z.action].into_iter().flatten().collect()
         })
         .inner
     }

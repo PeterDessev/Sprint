@@ -140,6 +140,61 @@ fn jog_pad_and_z_strip_send_relative_moves() {
     wait_for_commands(&p, &["G91", "G1 Z-10 F600", "G90"]);
 }
 
+/// Mark `state` as a paused host print.
+fn paused(state: &mut PrinterState) {
+    controls_common::printing(state);
+    if let Some(job) = &mut state.job {
+        job.status = sprint_host::JobStatus::Paused;
+    }
+}
+
+/// While a host print is paused the nozzle can be moved and the filament
+/// pushed (resuming restores position, modes and temperatures); homing Z
+/// and the motors off ask first, homing X/Y (parking) does not.
+#[test]
+fn motion_works_while_a_print_is_paused() {
+    let mut rig = Rig::simulator();
+    rig.tweak = Some(paused);
+    let mut h = sidebar_fixed(Theme::Dark, (420.0, 2600.0), rig);
+    controls_common::settle(&mut h);
+    let p = printer(&h);
+    clear(&h);
+    assert!(!h.get_by_label("XY jog").accesskit_node().is_disabled());
+    assert!(h.query_by_label_contains("The print is paused").is_some());
+    click_jog(
+        &mut h,
+        JogRegion::Sector {
+            direction: JogDirection::Up,
+            ring: 1,
+        },
+    );
+    wait_for_commands(&p, &["G91", "G1 Y1 F3000", "G90"]);
+    click(&mut h, "Move Z +1 mm");
+    wait_for_commands(&p, &["G1 Z1 F600"]);
+    clear(&h);
+    // Parking X and Y is fine.
+    click_jog(&mut h, JogRegion::Center);
+    wait_for_commands(&p, &["G28 X Y"]);
+    clear(&h);
+    // Homing every axis lowers the nozzle onto the part: it asks.
+    click_jog(&mut h, JogRegion::Corner(JogCorner::BottomLeft));
+    h.run_ok();
+    assert!(
+        h.query_by_label("Send this while the print is paused?")
+            .is_some()
+    );
+    h.get_by_label("Cancel").click();
+    h.run_ok();
+    assert_nothing_sent(&mut h, "a cancelled homing");
+    // So do the motors off; confirmed, it goes out.
+    click_jog(&mut h, JogRegion::Corner(JogCorner::BottomRight));
+    h.run_ok();
+    assert!(h.query_by_label_contains("M84 (").is_some());
+    h.get_by_label("Send anyway").click();
+    h.run_ok();
+    wait_for_commands(&p, &["M84"]);
+}
+
 #[test]
 fn homing_and_motors_off() {
     let mut h = connected();

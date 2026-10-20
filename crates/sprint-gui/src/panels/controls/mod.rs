@@ -10,8 +10,11 @@
 //! * Nothing is sent while the printer is not connected (controls look
 //!   disabled).
 //! * Anything that moves the machine or extrudes (jog, home, move-to,
-//!   motors off, extrude, filament load) is disabled while a job is active:
-//!   the host would interleave those commands with the print stream.
+//!   motors off, extrude, filament load) is disabled while a job prints:
+//!   the host would interleave those commands with the print stream. While
+//!   a host print is paused moves and extrusion are fine (resuming restores
+//!   the position, modes and temperatures); homing and motors off then ask
+//!   first, as the shared command classifier says ([`crate::safety`]).
 //!   Temperatures, overrides, fans and babystepping stay available; turning
 //!   a heater off or applying a preset then asks first.
 //! * Macros that ask for confirmation, and any macro started while a job
@@ -85,11 +88,18 @@ impl ControlsSidebar {
             });
         // Dialogs are modal windows of their own, outside the scroll area.
         self.temperatures.dialogs(ui, ctx);
+        self.motion.dialogs(ui, ctx);
         self.macros.dialogs(ui, ctx);
     }
 }
 
-/// Why machine motion is unavailable right now, if it is.
+/// Whether a host print is paused: moves and extrusion are fine then.
+fn paused(ctx: &AppCtx<'_>) -> bool {
+    crate::safety::job_context(ctx.state) == sprint_proto::JobContext::Paused
+}
+
+/// Why machine motion is unavailable right now, if it is (not while a host
+/// print is paused, see [`paused`]).
 fn motion_lock(ctx: &AppCtx<'_>) -> Option<&'static str> {
     if !ctx.connected() {
         Some("Connect to a printer to use these controls.")
@@ -98,6 +108,8 @@ fn motion_lock(ctx: &AppCtx<'_>) -> Option<&'static str> {
             "The printer is halted and ignores commands until its board is reset (the \
              red banner above offers it).",
         )
+    } else if paused(ctx) {
+        None
     } else if ctx.printer_busy() {
         Some(
             "Locked while a print runs (also one the printer runs from its card): \
@@ -116,6 +128,8 @@ fn lock_title(ctx: &AppCtx<'_>) -> Option<&'static str> {
         None
     } else if ctx.state.halted {
         Some("Locked while the printer is halted")
+    } else if paused(ctx) {
+        None
     } else if ctx.job_active() {
         Some("Locked while a job runs")
     } else if ctx.printer_busy() {
