@@ -147,7 +147,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         name: "print",
         aliases: &[],
         usage: "print [--pause-at-layer L[,L…]]",
-        summary: "Print the loaded file, pausing before the layers given (1 = the first)",
+        summary: "Print the loaded file, pausing before the layers given (2 = the second: a print starts with the first)",
         group: Group::Job,
     },
     CommandSpec {

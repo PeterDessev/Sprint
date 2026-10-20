@@ -457,7 +457,9 @@ pub struct PausePoint {
 
 /// The pause points for `layers` (1-based) of `loaded`, in file order and
 /// without repeats: each layer must exist and start at or after the line
-/// the print starts from (`start_line`, 0-based).
+/// the print starts from (`start_line`, 0-based). The first layer starts
+/// with the file, whose first line the print streams at once (before a
+/// pause point can be set), so it cannot be paused before.
 pub fn pause_points(
     loaded: &LoadedFile,
     layers: &[u64],
@@ -478,6 +480,12 @@ pub fn pause_points(
             ));
         };
         let line = usize::try_from(found.lines.start).unwrap_or(usize::MAX);
+        if line == 0 {
+            return Err(format!(
+                "--pause-at-layer {layer}: the print starts with layer {layer}, so it cannot \
+                 pause before it (pause before layer 2 or later)"
+            ));
+        }
         if line < start_line {
             return Err(format!(
                 "--pause-at-layer {layer} starts before the line the print starts from"
@@ -1756,6 +1764,43 @@ G1 X1
         let options = print_options(&loaded, &profile);
         assert!(options.emit_progress);
         assert!(progress_note(&options).is_some_and(|n| n.contains("M73")));
+    }
+
+    #[test]
+    fn the_first_layer_cannot_be_paused_before() {
+        // The first layer starts with the file's first line, which the
+        // print streams at once: a pause point there would be passed
+        // before it is set, and the print would never pause.
+        let mut text = String::from("G28\nM83\n");
+        for layer in 1..=3 {
+            text.push_str(&format!("G1 Z{}\nG1 X10 E1\nG1 X20 E1\n", layer * 2));
+        }
+        let file = sprint_host::sprint_gcode::GcodeFile::from_text("layers.gcode", text);
+        let toolpath = sprint_host::sprint_gcode::analyze_simple(
+            &file,
+            &sprint_host::sprint_gcode::AnalyzeOptions::default(),
+        );
+        let loaded = LoadedFile::new("layers.gcode".into(), file, toolpath, Default::default());
+        assert_eq!(loaded.toolpath.layers.len(), 3);
+        assert_eq!(loaded.toolpath.layers[0].lines.start, 0);
+        assert_eq!(
+            pause_points(&loaded, &[1], 0),
+            Err(
+                "--pause-at-layer 1: the print starts with layer 1, so it cannot pause \
+                 before it (pause before layer 2 or later)"
+                    .to_string()
+            )
+        );
+        // Nothing is half done: the whole request is refused.
+        assert!(pause_points(&loaded, &[3, 1], 0).is_err());
+        let second = loaded.toolpath.layers[1].lines.start as usize;
+        assert_eq!(
+            pause_points(&loaded, &[2], 0),
+            Ok(vec![PausePoint {
+                line: second,
+                layer: 2
+            }])
+        );
     }
 
     #[test]

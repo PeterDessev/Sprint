@@ -199,9 +199,10 @@ pub struct PrintArgs {
     /// line N (they are still set); for heaters that are already hot.
     #[arg(long, requires = "start_line")]
     pub no_wait_temps: bool,
-    /// Pause before layer L (1 = the first layer) with the pause script,
-    /// as Printrun's ;@pause would; repeat for several layers. Enter
-    /// resumes the print (Ctrl+C cancels it).
+    /// Pause before layer L with the pause script, as Printrun's ;@pause
+    /// would (2 = the second layer: the print starts with the first);
+    /// repeat for several layers. Enter resumes the print (Ctrl+C cancels
+    /// it).
     #[arg(long, value_name = "L", value_parser = clap::value_parser!(u64).range(1..))]
     pub pause_at_layer: Vec<u64>,
     /// Show the print's progress on the printer's display (M73), as the

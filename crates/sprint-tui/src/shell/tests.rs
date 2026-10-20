@@ -1605,6 +1605,17 @@ fn print_pauses_before_the_layers_asked_for() {
         "{text}"
     );
     assert!(shell.printer.with_state(|s| s.job.is_none()));
+    // The first layer starts with the file, which streams at once: no
+    // pause could be set in time, so it is refused rather than ignored.
+    buffer.clear();
+    script(&mut shell, &["print --pause-at-layer 1"]);
+    let text = buffer.text();
+    assert!(
+        text.contains("--pause-at-layer 1: the print starts with layer 1"),
+        "{text}"
+    );
+    assert!(!text.contains("Pausing before layer 1"), "{text}");
+    assert!(shell.printer.with_state(|s| s.job.is_none()));
     // At a terminal: paused before layer 3, resume goes on.
     buffer.clear();
     let mut input = Script::new(["print --pause-at-layer 3"], true);
