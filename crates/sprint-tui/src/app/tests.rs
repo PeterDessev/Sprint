@@ -1017,6 +1017,59 @@ fn a_paused_print_can_be_jogged_and_extruded() {
 }
 
 #[test]
+fn a_move_answered_after_the_print_went_on_is_not_made() {
+    let scratch = Scratch::new("paused-answer");
+    let mut app = timed_app();
+    app.open_file(slow_file(&scratch.0));
+    wait_app(&mut app, "the analysis", |a| a.loader.is_none());
+    app.run_action(dialogs::Action::StartPrint(
+        scratch.0.join("slow.gcode"),
+        Vec::new(),
+    ));
+    wait(&mut app, "the print", |s| {
+        s.job.as_ref().is_some_and(|j| j.current_line > 8)
+    });
+    app.printer.pause();
+    wait(&mut app, "the pause", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Paused)
+    });
+    wait_idle(&mut app);
+    // Homing Z while paused asks first...
+    app.run_line("home");
+    assert!(
+        matches!(&app.modal, Some(Modal::Confirm(c)) if c.danger),
+        "{:?}",
+        app.toast
+    );
+    // ...and the print goes on before the answer (resumed at the printer).
+    app.printer.resume();
+    wait(&mut app, "the resume", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Printing)
+    });
+    let line = app.view.job.as_ref().map_or(0, |j| j.current_line);
+    received(&app);
+    press(&mut app, KeyCode::Char('y'));
+    assert!(
+        app.toast
+            .as_ref()
+            .is_some_and(|t| t.text.starts_with("Not while a job runs")),
+        "{:?}",
+        app.toast
+    );
+    wait(&mut app, "more of the print", |s| {
+        s.job.as_ref().is_some_and(|j| j.current_line > line + 5)
+    });
+    let got = received(&app);
+    assert!(!got.iter().any(|c| c.starts_with("G28")), "{got:?}");
+    app.printer.cancel();
+    wait(&mut app, "the cancel", |s| !s.job_active());
+}
+
+#[test]
 fn jog_mode_moves_and_homes() {
     let mut app = connected_app();
     received(&app);

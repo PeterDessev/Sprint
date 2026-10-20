@@ -1484,6 +1484,13 @@ impl App {
                 self.guard(&safety, guard, Action::SetTempsAnyway(targets));
             }
             Action::Motion(motion) => {
+                // Asked about while the print was paused: if it prints
+                // again by the answer (resumed at the printer), the motion
+                // would land between its lines.
+                if self.printer.with_state(actions::job_context) == JobContext::Printing {
+                    self.warn(actions::NOT_WHILE_PRINTING);
+                    return;
+                }
                 if let Some(warning) =
                     self.homing_warning(motion.moves_axes(), actions::UNHOMED_MOVE)
                 {

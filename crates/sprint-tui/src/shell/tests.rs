@@ -634,6 +634,74 @@ fn pause_resume_cancel_and_the_prompt() {
     assert!(text.contains("slow.gcode cancelled"), "{text}");
 }
 
+/// A terminal whose answer to the question comes only after the print
+/// was resumed elsewhere (at the printer).
+struct AnswersAfterResume {
+    printer: Printer,
+    answer: Option<String>,
+}
+
+impl LineSource for AnswersAfterResume {
+    fn read(&mut self, _prompt: &str) -> Read {
+        let Some(answer) = self.answer.take() else {
+            return Read::Eof;
+        };
+        self.printer.resume();
+        let printing = |s: &sprint_host::PrinterState| {
+            s.job
+                .as_ref()
+                .is_some_and(|j| j.status == JobStatus::Printing)
+        };
+        let deadline = Instant::now() + PATIENCE;
+        while !self.printer.with_state(printing) {
+            assert!(Instant::now() < deadline, "the print never went on");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        Read::Line(answer)
+    }
+
+    fn interactive(&self) -> bool {
+        true
+    }
+}
+
+#[test]
+fn a_move_answered_after_the_print_went_on_is_not_made() {
+    let scratch = Scratch::new("paused-answer");
+    let (mut shell, buffer) = connected_timed();
+    shell.load(&scratch.slow_file());
+    let mut input = Script::new(["print", "pause"], false);
+    shell.run_lines_until_eof_without_leaving(&mut input);
+    wait_for(&shell, "the pause", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Paused)
+    });
+    shell.echo.settle();
+    received(&shell);
+    buffer.clear();
+    // Homing Z while paused asks; the answer comes once the print runs
+    // again: nothing homes between its lines.
+    let mut input = AnswersAfterResume {
+        printer: shell.printer.clone(),
+        answer: Some("y".into()),
+    };
+    shell.execute_line("home", &mut input);
+    assert!(input.answer.is_none(), "not asked: {}", buffer.text());
+    let text = buffer.text();
+    assert!(text.contains("Not while a job runs"), "{text}");
+    let line = shell
+        .printer
+        .with_state(|s| s.job.as_ref().map_or(0, |j| j.current_line));
+    wait_for(&shell, "more of the print", |s| {
+        s.job.as_ref().is_some_and(|j| j.current_line > line + 5)
+    });
+    let got = received(&shell);
+    assert!(!got.iter().any(|c| c.starts_with("G28")), "{got:?}");
+    shell.printer.cancel();
+    wait_for(&shell, "the cancel", |s| !s.job_active());
+}
+
 #[test]
 fn a_pasted_block_runs_line_by_line() {
     let (mut shell, buffer) = connected();

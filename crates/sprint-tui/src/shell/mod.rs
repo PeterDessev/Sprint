@@ -355,7 +355,8 @@ impl Shell {
     /// (moves and extrusion go, homing Z and probing ask first on a
     /// terminal and are not done by a script).
     fn motion_allowed(&self, motion: &Motion, input: &mut dyn LineSource) -> bool {
-        if self.printer.with_state(actions::job_context) == JobContext::Printing {
+        let printing = || self.printer.with_state(actions::job_context) == JobContext::Printing;
+        if printing() {
             self.out.warn(actions::NOT_WHILE_PRINTING);
             return false;
         }
@@ -366,7 +367,16 @@ impl Shell {
             always_ask: None,
             raw: false,
         };
-        self.safe_to_send(&motion.gcode(), &check, input)
+        if !self.safe_to_send(&motion.gcode(), &check, input) {
+            return false;
+        }
+        // The answer may have come after the print went on (resumed at
+        // the printer): the motion would land between its lines.
+        if printing() {
+            self.out.warn(actions::NOT_WHILE_PRINTING);
+            return false;
+        }
+        true
     }
 
     /// Run a manual motion command if [`Shell::motion_allowed`].
