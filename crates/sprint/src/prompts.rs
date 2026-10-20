@@ -161,7 +161,7 @@ impl PromptWatch {
                 ));
                 self.ask(question, &mut effects);
             }
-        } else if let Some(line) = self.next_line(&mut effects) {
+        } else if let Some(line) = self.next_line(question, &mut effects) {
             match question {
                 Question::Prompt(prompt) => answer_line(prompt, &line, &mut effects),
                 Question::WaitingForUser | Question::Paused | Question::PausedAtLayer(_) => {
@@ -189,7 +189,7 @@ impl PromptWatch {
             self.drain();
             self.start_input();
             effects.push(Effect::Say(
-                self.how_to_answer("Press Enter to resume the print"),
+                self.how_to_answer("Press Enter to resume the print", question),
             ));
             return;
         }
@@ -251,20 +251,33 @@ impl PromptWatch {
                         "Press Enter to resume the print"
                     }
                 };
-                effects.push(Effect::Say(self.how_to_answer(typed)));
+                effects.push(Effect::Say(self.how_to_answer(typed, question)));
             }
         }
     }
 
-    /// The hint for answering, or where to answer when nothing can be
-    /// typed.
-    fn how_to_answer(&self, typed: &str) -> String {
-        if self.input_closed {
-            "Nothing can be typed here (standard input has ended): answer at the printer, \
-             or print with --answer-prompts continue; Ctrl+C cancels the print"
-                .to_string()
-        } else {
-            format!("{typed}, or answer at the printer; Ctrl+C cancels the print")
+    /// The hint for answering `question`, or where to answer it when
+    /// nothing can be typed. `--answer-prompts continue` resumes neither a
+    /// pause made at the printer nor one asked for with `--pause-at-layer`,
+    /// and nothing at the printer answers the latter.
+    fn how_to_answer(&self, typed: &str, question: Question<'_>) -> String {
+        match (self.input_closed, question) {
+            (true, Question::PausedAtLayer(_)) => {
+                "Nothing can be typed here (standard input has ended) to resume the print; \
+                 Ctrl+C cancels it"
+                    .to_string()
+            }
+            (true, Question::Paused) => {
+                "Nothing can be typed here (standard input has ended): resume the print at \
+                 the printer; Ctrl+C cancels it"
+                    .to_string()
+            }
+            (true, _) => "Nothing can be typed here (standard input has ended): answer at the \
+                          printer, or print with --answer-prompts continue; Ctrl+C cancels the \
+                          print"
+                .to_string(),
+            (false, Question::PausedAtLayer(_)) => format!("{typed}; Ctrl+C cancels the print"),
+            (false, _) => format!("{typed}, or answer at the printer; Ctrl+C cancels the print"),
         }
     }
 
@@ -275,8 +288,8 @@ impl PromptWatch {
         }
     }
 
-    /// The next typed line, if one came.
-    fn next_line(&mut self, effects: &mut Vec<Effect>) -> Option<String> {
+    /// The next typed line answering `question`, if one came.
+    fn next_line(&mut self, question: Question<'_>, effects: &mut Vec<Effect>) -> Option<String> {
         let answers = self.answers.as_ref()?;
         match answers.try_recv() {
             Ok(line) => Some(line),
@@ -284,8 +297,11 @@ impl PromptWatch {
             Err(TryRecvError::Disconnected) => {
                 self.answers = None;
                 self.input_closed = true;
-                if self.policy == AnswerPrompts::Ask {
-                    effects.push(Effect::Say(self.how_to_answer("")));
+                // A pause at a layer waits for Enter whatever the policy.
+                if self.policy == AnswerPrompts::Ask
+                    || matches!(question, Question::PausedAtLayer(_))
+                {
+                    effects.push(Effect::Say(self.how_to_answer("", question)));
                 }
                 None
             }
@@ -623,11 +639,49 @@ mod tests {
         // A pause by the printer is a new question.
         let text = said(&watch.update(Some(Question::Paused)));
         assert!(text.contains("Press Enter to resume"), "{text}");
-        // The input ends: the user is told to answer at the printer.
+        // The input ends: the user is told to resume it at the printer
+        // (--answer-prompts continue leaves such a pause alone).
         drop(tx);
         let text = said(&watch.update(Some(Question::Paused)));
-        assert!(text.contains("answer at the printer"), "{text}");
+        assert!(text.contains("resume the print at the printer"), "{text}");
+        assert!(!text.contains("--answer-prompts continue"), "{text}");
+        // A question that continue does answer still names it.
+        let text = said(&watch.update(Some(Question::WaitingForUser)));
         assert!(text.contains("--answer-prompts continue"), "{text}");
         assert_eq!(printable("a\tb\x07"), "a·b·");
+    }
+
+    #[test]
+    fn a_pause_at_a_layer_is_resumed_by_enter_alone() {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let mut watch = PromptWatch::with_answers(AnswerPrompts::Ask, rx, true);
+        let text = said(&watch.update(Some(Question::PausedAtLayer(3))));
+        assert!(text.contains("Paused before layer 3"), "{text}");
+        assert!(text.contains("Press Enter to resume the print"), "{text}");
+        // Nothing at the printer answers a pause the host made.
+        assert!(!text.contains("answer at the printer"), "{text}");
+        // The input ends: neither the printer nor --answer-prompts
+        // continue resume it, only Ctrl+C ends the wait (cancelling).
+        drop(tx);
+        let text = said(&watch.update(Some(Question::PausedAtLayer(3))));
+        assert!(text.contains("standard input has ended"), "{text}");
+        assert!(text.contains("Ctrl+C cancels"), "{text}");
+        assert!(!text.contains("--answer-prompts continue"), "{text}");
+        assert!(!text.contains("answer at the printer"), "{text}");
+        // With --answer-prompts continue it still waits for Enter.
+        let mut watch = PromptWatch::with_answers(
+            AnswerPrompts::Continue,
+            crossbeam_channel::unbounded().1,
+            true,
+        );
+        let effects = watch.update(Some(Question::PausedAtLayer(2)));
+        assert!(!effects.contains(&Effect::Continue), "{effects:?}");
+        // And says so when nothing more can be typed.
+        let effects = watch.update(Some(Question::PausedAtLayer(2)));
+        assert!(!effects.contains(&Effect::Continue), "{effects:?}");
+        assert!(
+            said(&effects).contains("standard input has ended"),
+            "{effects:?}"
+        );
     }
 }
