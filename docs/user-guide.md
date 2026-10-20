@@ -103,8 +103,9 @@ shell's `profile` command, or pick one for a single run with
     settings flash), `M30` (delete an SD file), `M42` (switch a pin), `M81`
     (power off), and Klipper's `FIRMWARE_RESTART`, `RESTART`,
     `SAVE_CONFIG`, `SET_KINEMATIC_POSITION` and `FORCE_MOVE`;
-  * while a host print runs, for anything that would ruin it: moves,
-    homing and probing, mode changes (`G90`/`G91`, `M82`/`M83`, units),
+  * while a print runs (streamed by Sprint or from the printer's SD card)
+    or an SD upload, for anything that would ruin it: moves, homing and
+    probing, mode changes (`G90`/`G91`, `M82`/`M83`, units),
     coordinate shifts, tool changes, motors off, turning a heater off,
     temperature waits, calibration and leveling changes; starting another
     SD print or writing to the card is refused. Temperatures, fans, speed
