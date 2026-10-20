@@ -195,9 +195,9 @@ material.
 **Objects.** When the file labels objects (Marlin `M486`, Klipper
 `EXCLUDE_OBJECT_*`, PrusaSlicer `; printing object`, Cura `;MESH:`), the
 Objects card lists them with their print time and filament; pointing at
-one shows where it is. During a host print each object has a **Skip**
-button (after a confirmation the rest of that object is left out: Sprint
-stops sending its moves and extrusion and travels on to the next part);
+one shows where it is. During a host print each object can be skipped
+(after a confirmation the rest of that object is left out: Sprint stops
+sending its moves and extrusion and travels on to the next part);
 excluded objects and the object being printed are marked, and the job bar's
 tooltip lists the excluded ones. Skipped objects can be included again.
 Sprint does the exclusion itself, so it works on any firmware.
@@ -373,8 +373,8 @@ Everything Sprint sends (`>`) and the printer answers, colored by kind
   (G92 Z) instead of trusting the firmware's, which is 0 after a reset.
   Layers whose first command started in a layer below (a long spiral) are
   not offered; the dialog suggests the next layer that starts cleanly.
-* **Pause at layer** pauses the print (with the pause script) when it
-  reaches a layer, for a filament swap or inserts.
+* The dialog can also pause the print (with the pause script) before a
+  chosen layer, for a filament swap or inserts.
 * **Show progress on the printer's display (M73)** sends the percentage
   and remaining minutes to the printer's screen during this print. A
   profile with this setting turned on sends it for every print (see
