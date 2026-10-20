@@ -507,7 +507,7 @@ impl App {
     }
 
     /// Whether `error` is the engine's report of the job's failure
-    /// ("cube.gcode failed: <why>"), which [`App::on_job_status`] shows
+    /// (`"cube.gcode failed: <why>"`), which [`App::on_job_status`] shows
     /// with where the print goes on.
     fn is_job_failure(&self, error: &str) -> bool {
         self.view.job.as_ref().is_some_and(|job| match &job.status {
