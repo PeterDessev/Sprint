@@ -451,8 +451,10 @@ Macro G-code can use the script placeholders (`{x}`, `{hotend}`,
 [Configuration](configuration.md#placeholders)), filled in when the macro
 runs; confirmations show the G-code with the placeholders filled in. A
 macro defined in the shell may take arguments (`{0}`, `{1}`, `{args}`):
-the GUI asks for them before running it. Macros started while a job runs
-always ask first.
+the GUI asks for them before running it. Macros follow the same safety
+rules as typed commands (see the [user guide](user-guide.md#safety)): a
+macro asks first when it is set to **Ask before running** or holds a
+command that is dangerous or would disturb the running print.
 
 The default macros are **Home**, **Bed mesh** (G28, G29, M420 V; asks
 first), **Cool down** and **Motors off**.
