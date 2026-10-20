@@ -346,7 +346,10 @@ pub fn follow(
     let mut quiet_pause: Option<Instant> = None;
     // The pause points still ahead at the last look, and the layer of the
     // last one the job passed: the pause that follows is the one asked for.
-    let mut points_ahead: Vec<usize> = pauses.iter().map(|p| p.line).collect();
+    // `None` until the engine shows the points (`pause_at_lines` reaches
+    // it a moment after the start): none ahead before that is not the job
+    // passing them.
+    let mut points_ahead: Option<Vec<usize>> = None;
     let mut paused_at_layer: Option<u64> = None;
     loop {
         let (view, elapsed, prompt, waiting, busy, ahead, stopped_at) = printer.with_state(|s| {
@@ -374,10 +377,16 @@ pub fn follow(
                 last_message = Some(text);
             }
         }
-        for passed in points_ahead.iter().filter(|line| !ahead.contains(line)) {
+        for passed in points_ahead
+            .iter()
+            .flatten()
+            .filter(|line| !ahead.contains(line))
+        {
             paused_at_layer = pauses.iter().find(|p| p.line == *passed).map(|p| p.layer);
         }
-        points_ahead = ahead;
+        if points_ahead.is_some() || !ahead.is_empty() {
+            points_ahead = Some(ahead);
+        }
         report.show(&view);
         let percent = format::percent(f64::from(view.progress));
         if view.status.is_finished() {
@@ -1098,6 +1107,69 @@ mod tests {
         assert!(said.contains("Press Enter to resume the print"), "{said}");
         assert!(said.contains("Resuming the print"), "{said}");
         assert!(!said.contains("Paused at the printer"), "{said}");
+        printer.disconnect();
+    }
+
+    #[test]
+    fn a_pause_before_the_engine_has_the_layer_points_is_the_printers() {
+        // The engine takes the --pause-at-layer points a moment after the
+        // start: the first looks at the job may show none ahead. That is
+        // not the job passing them, so a pause the printer makes before
+        // the first layer asked for is still the printer's.
+        let printer = connect(SimConfig {
+            boot_delay_ms: 20,
+            time_scale: 5.0,
+            instant_moves: false,
+            ..SimConfig::default()
+        });
+        let loaded = layered_loaded(8);
+        let points = pause_points(&loaded, &[7], 0).expect("points");
+        printer
+            .start_print(loaded.file.clone(), Default::default())
+            .expect("start");
+        let (typing, typed) = crossbeam_channel::unbounded();
+        let mut prompts = PromptWatch::with_answers(AnswerPrompts::Ask, typed, false);
+        let asked = printer.clone();
+        let line = points[0].line;
+        let user = std::thread::spawn(move || {
+            let interrupt = Interrupt::new();
+            let paused = |s: &sprint_host::PrinterState| {
+                s.job
+                    .as_ref()
+                    .is_some_and(|j| j.status == JobStatus::Paused)
+            };
+            let printing = |s: &sprint_host::PrinterState| {
+                s.job
+                    .as_ref()
+                    .is_some_and(|j| j.status == JobStatus::Printing)
+            };
+            let wait = |what: &dyn Fn(&sprint_host::PrinterState) -> bool| {
+                session::wait_for(&asked, Duration::from_secs(30), &interrupt, true, what).is_ok()
+            };
+            std::thread::sleep(POLL * 3);
+            asked.pause_at_lines(&[line]);
+            // Paused at the printer, long before layer 7.
+            asked.pause();
+            let first = wait(&paused);
+            std::thread::sleep(PAUSE_GRACE + POLL * 5);
+            let _ = typing.send(String::new());
+            let resumed = wait(&printing);
+            // Then the pause asked for.
+            let second =
+                wait(&|s| paused(s) && s.job.as_ref().is_some_and(|j| j.pause_at.is_empty()));
+            std::thread::sleep(POLL * 5);
+            let _ = typing.send(String::new());
+            first && resumed && second
+        });
+        let (outcome, seen) = follow_at_most(&printer, &Interrupt::new(), &mut prompts, &points);
+        assert!(user.join().unwrap_or(false), "{:?}", seen.said);
+        assert_eq!(outcome.last.0, JobStatus::Completed, "{:?}", seen.said);
+        let said = seen.said.join("\n");
+        let printer_pause = said.find("The printer paused the print");
+        let layer_pause = said.find("Paused before layer 7 (--pause-at-layer)");
+        assert!(printer_pause.is_some() && layer_pause.is_some(), "{said}");
+        assert!(printer_pause < layer_pause, "{said}");
+        assert_eq!(said.matches("Paused before layer").count(), 1, "{said}");
         printer.disconnect();
     }
 
