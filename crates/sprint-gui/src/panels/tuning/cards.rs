@@ -268,6 +268,102 @@ fn revert_entries(draft: &mut Draft, indices: &[usize]) {
     }
 }
 
+/// Narrowest column of the mesh point grid.
+const MESH_COLUMN_MIN: f32 = 230.0;
+
+/// The card of the leveling mesh's points (`G29`: M503 reports one
+/// setting per point), a grid of their Z values. It is folded unless
+/// `open` (a search or the Modified filter is showing them): a 7×7 mesh
+/// would otherwise bury every setting below it.
+pub(super) fn mesh_card(
+    ui: &mut Ui,
+    def: &'static SettingDef,
+    draft: &mut Draft,
+    indices: &[usize],
+    open: bool,
+) {
+    let modified = indices
+        .iter()
+        .any(|&i| draft.entries().get(i).is_some_and(Entry::is_modified));
+    let points = indices.len();
+    let subtitle = format!(
+        "{} · {points} point{}",
+        def.code,
+        if points == 1 { "" } else { "s" }
+    );
+    let mut revert = false;
+    Card::new("Mesh points")
+        .subtitle(&subtitle)
+        // Folded and unfolded views are remembered apart.
+        .id_salt(("setting", def.code, open))
+        .collapsible(open)
+        .show_with_header(
+            ui,
+            |ui| card_actions(ui, def, modified, &mut revert),
+            |ui| {
+                kit::caption(
+                    ui,
+                    "The leveling mesh the firmware stores, one Z per point. The Bed mesh tab \
+                     shows it as a map.",
+                );
+                ui.add_space(4.0);
+                mesh_grid(ui, def, draft, indices);
+            },
+        );
+    if revert {
+        revert_entries(draft, indices);
+    }
+}
+
+/// The mesh points' Z values in as many columns as fit.
+fn mesh_grid(ui: &mut Ui, def: &'static SettingDef, draft: &mut Draft, indices: &[usize]) {
+    let width = ui.available_width();
+    let gap = 16.0;
+    let cols = ((width + gap) / (MESH_COLUMN_MIN + gap))
+        .floor()
+        .clamp(1.0, 4.0) as usize;
+    let col_w = (width - gap * (cols as f32 - 1.0)) / cols as f32;
+    let field_w = 112.0;
+    let label_w = (col_w - field_w - 36.0).clamp(60.0, 180.0);
+    let z = def.param('Z');
+    for row in indices.chunks(cols) {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = gap;
+            for &i in row {
+                let Some(entry) = draft.entries_mut().get_mut(i) else {
+                    continue;
+                };
+                let label = entry.instance_label();
+                let hint = entry.draft.to_gcode();
+                let key = entry.key.clone();
+                let original = entry.original_value('Z');
+                ui.allocate_ui_with_layout(
+                    vec2(col_w, 28.0),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.set_width(col_w);
+                        ui.push_id(("mesh-point", key), |ui| match (z, entry.value_mut('Z')) {
+                            (Some(param), Some(value)) => {
+                                ui.add(
+                                    NumericField::from_param(param, value)
+                                        .label(&label)
+                                        .original_opt(original)
+                                        .label_width(label_w)
+                                        .field_width(field_w)
+                                        .hint(&hint),
+                                );
+                            }
+                            _ => {
+                                kit::caption(ui, &format!("{label}: no value reported"));
+                            }
+                        });
+                    },
+                );
+            }
+        });
+    }
+}
+
 fn instance_header(ui: &mut Ui, label: &str, modified: bool) {
     let p = theme::ui_palette(ui);
     let text = if label.is_empty() { "Default" } else { label };

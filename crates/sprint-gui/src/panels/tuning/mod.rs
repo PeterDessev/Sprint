@@ -513,6 +513,8 @@ impl TuningTab {
             self.filter = Filter::All;
         }
         let groups = cards::groups(&self.draft, self.filter, &self.search);
+        // A search or the Modified filter shows the mesh points it found.
+        let narrowed = self.filter == Filter::Modified || !self.search.trim().is_empty();
         egui::ScrollArea::vertical()
             .id_salt("tuning-cards-scroll")
             .auto_shrink([false, false])
@@ -531,6 +533,9 @@ impl TuningTab {
                         ui.add_space(theme::GAP_LG);
                     }
                     match code.as_deref().and_then(setting_def) {
+                        Some(def) if def.code == "G29" => {
+                            cards::mesh_card(ui, def, &mut self.draft, indices, narrowed);
+                        }
                         Some(def) => cards::setting_card(ui, def, &mut self.draft, indices),
                         None => cards::raw_card(ui, &mut self.draft, indices),
                     }

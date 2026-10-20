@@ -394,6 +394,58 @@ fn stealth_limits_are_edited_apart_from_the_normal_ones() {
     );
 }
 
+/// The mesh points (one G29 setting each) share one card, folded until it
+/// is opened or a search or the Modified filter shows them.
+#[test]
+fn mesh_points_share_one_folded_card() {
+    let mut h = harness_state(
+        Theme::Dark,
+        (1180.0, 900.0),
+        Host::<TuningTab>::synthetic(prusa_state()),
+        |ui, host| host.frame(ui),
+    );
+    h.run_ok();
+    h.get_by_label("Leveling").click();
+    h.run_ok();
+    assert!(h.query_by_label("Mesh points").is_some());
+    assert!(
+        h.query_by_label("Column 0, row 0").is_none(),
+        "folded at first"
+    );
+    // The other leveling settings stay in view.
+    assert!(h.query_by_label_contains("(M420)").is_some());
+    h.get_by_label("Mesh points").click();
+    h.run_ok();
+    run_frames(&mut h);
+    for label in ["Column 0, row 0", "Column 2, row 2", "Z offset"] {
+        assert!(h.query_by_label(label).is_some(), "{label}");
+    }
+    h.event(egui::Event::PointerGone);
+    h.run_ok();
+    snapshot(&mut h, "insight_tuning_mesh_points_dark");
+    // Folded again, an edited point shows under Modified.
+    h.get_by_label("Mesh points").click();
+    run_frames(&mut h);
+    assert!(h.query_by_label("Column 0, row 0").is_none());
+    h.state_mut().tab.stage(cmd("G29 S3 I1 J1 Z0.05"));
+    h.run_ok();
+    h.get_by_label("Modified").click();
+    run_frames(&mut h);
+    assert!(h.query_by_label("Column 1, row 1").is_some());
+    assert!(h.query_by_label("Column 0, row 0").is_none());
+    h.get_by_label("Show changes").click();
+    h.run_ok();
+    assert!(h.query_by_label("Mesh point · Column 1, row 1").is_some());
+}
+
+/// Let a card's fold animation finish.
+fn run_frames(h: &mut Harness<'_, Host<TuningTab>>) {
+    for _ in 0..20 {
+        h.step();
+    }
+    h.run_ok();
+}
+
 #[test]
 fn tuning_tab_tolerates_odd_settings() {
     let mut state = demo_state();

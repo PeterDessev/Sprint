@@ -121,13 +121,18 @@ impl Entry {
     }
 
     /// A short name for the instance: "Hotend 1", "Extruder 0", "X axis",
-    /// "Stealth mode" (Prusa's stealth-mode limits), or "" for settings
-    /// without selectors. See [`Draft::instance_label`] for the name the
-    /// editor shows.
+    /// "Stealth mode" (Prusa's stealth-mode limits), "Column 0, row 2" (a
+    /// mesh point), or "" for settings without selectors. See
+    /// [`Draft::instance_label`] for the name the editor shows.
     pub fn instance_label(&self) -> String {
         let Some(def) = self.def() else {
             return String::new();
         };
+        if def.code == "G29"
+            && let Some(label) = mesh_point_label(&self.draft)
+        {
+            return label;
+        }
         let mut parts: Vec<String> = def
             .selectors
             .iter()
@@ -177,6 +182,22 @@ impl Entry {
 const STEALTH_MODE: &str = "Stealth mode";
 /// The instance name of a normal-mode limit next to a stealth-mode one.
 const NORMAL_MODE: &str = "Normal mode";
+
+/// A mesh point's name: "Column 0, row 2" for `G29 S3 I0 J2` (or Marlin
+/// 1.1's `G29 S3 X1 Y3`, numbered from 1 as reported) and a bilinear
+/// `G29 W I0 J2`; "Z offset" for `G29 S4 Z`, the mesh's offset. `None`
+/// for another form.
+pub fn mesh_point_label(cmd: &SettingCommand) -> Option<String> {
+    let index = |column: char, row: char| {
+        let (i, j) = (cmd.get(column)?, cmd.get(row)?);
+        (i.is_finite() && j.is_finite()).then_some((i, j))
+    };
+    if let Some((i, j)) = index('I', 'J').or_else(|| index('X', 'Y')) {
+        let n = |v: f64| crate::insight::format::trimmed(v, 3);
+        return Some(format!("Column {}, row {}", n(i), n(j)));
+    }
+    (cmd.get('S') == Some(4.0)).then(|| "Z offset".to_owned())
+}
 
 /// `cmd.raw` written from its values again, keeping the `; stealth`
 /// marker of a Prusa stealth-mode limit: the marker is what keeps it
@@ -1169,6 +1190,26 @@ mod tests {
             ["M203", "M203 stealth", "M201", "M201 stealth", "M92"]
         );
         assert_eq!(import.skipped.len(), 6, "the headings and the ok");
+    }
+
+    #[test]
+    fn mesh_points_are_named_by_column_and_row() {
+        let d = Draft::new(&settings(&[
+            "G29 S3 I0 J2 Z0.0125",
+            "G29 S3 X1 Y3 Z-0.02",
+            "G29 W I1 J0 Z0.1",
+            "G29 S4 Z0.05",
+        ]));
+        let labels: Vec<String> = d.entries().iter().map(|e| d.instance_label(e)).collect();
+        assert_eq!(
+            labels,
+            [
+                "Column 0, row 2",
+                "Column 1, row 3",
+                "Column 1, row 0",
+                "Z offset"
+            ]
+        );
     }
 
     #[test]
