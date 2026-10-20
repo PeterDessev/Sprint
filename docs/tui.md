@@ -33,7 +33,8 @@ profile has `auto_connect` turned on.
   head marked), with a feature legend. `s` swaps it for the file's
   statistics.
 * **Console**: the printer traffic. Automatic traffic (temperature
-  polling and reports) and the lines a print streams are hidden by default.
+  polling and reports) and the lines a print streams are hidden by default;
+  `:log on` shows everything again, `:log off` hides it.
 * **Input line**: G-code or commands, with completion.
 * **Key bar**: the keys that work right now.
 
