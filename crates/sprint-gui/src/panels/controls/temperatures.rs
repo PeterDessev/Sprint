@@ -275,24 +275,55 @@ pub(super) enum Change {
     CoolDown,
 }
 
-/// Whether a change must be confirmed while a print runs: turning off a
-/// heater that is heating makes the print fail, and a preset button
-/// changes several heaters with one click. Typed targets and targets that
-/// stay the same go through.
+/// The command a target sends ([`Printer::set_temperature`]), as the
+/// shared command classifier reads it.
+fn target_gcode(heater: Heater, celsius: f32) -> String {
+    let t = sprint_host::format_number(f64::from(celsius), 1);
+    match heater {
+        Heater::Hotend(tool) => format!("M104 T{tool} S{t}"),
+        Heater::Bed => format!("M140 S{t}"),
+        Heater::Chamber => format!("M141 S{t}"),
+    }
+}
+
+/// A target above zero that is too cold for a print to go on: a hotend
+/// below the minimum extrusion temperature, a bed or chamber below the
+/// classifier's "off in effect".
+fn too_cold(heater: Heater, celsius: f32) -> bool {
+    let below = match heater {
+        Heater::Hotend(_) => sprint_proto::MIN_EXTRUSION_TEMP,
+        Heater::Bed | Heater::Chamber => sprint_proto::HEATER_OFF_BELOW,
+    };
+    celsius > 0.0 && f64::from(celsius) < below
+}
+
+/// Whether a change must be confirmed while a print runs: a target the
+/// shared command classifier questions in the job's context (a hotend
+/// dropped below printing temperature, a heater switched off; as for the
+/// same command typed in the console), turning off a heater that is
+/// heating (the print fails), and a preset button, which changes several
+/// heaters with one click. Other typed targets and targets that stay the
+/// same go through.
 pub(super) fn needs_confirmation(
     change: &Change,
     targets: &[(Heater, f32)],
     state: &PrinterState,
 ) -> bool {
     let current = |heater: Heater| target_temp(state, heater);
-    match change {
-        Change::Preset(_) => targets
-            .iter()
-            .any(|(heater, t)| (t - current(*heater)).abs() >= 0.5),
-        Change::Card | Change::CoolDown => targets
-            .iter()
-            .any(|(heater, t)| *t <= 0.0 && current(*heater) > 0.0),
-    }
+    let job = crate::safety::job_context(state);
+    let questioned = targets.iter().any(|(heater, t)| {
+        (t - current(*heater)).abs() >= 0.5
+            && !sprint_proto::classify(&target_gcode(*heater, *t), job).is_allowed()
+    });
+    questioned
+        || match change {
+            Change::Preset(_) => targets
+                .iter()
+                .any(|(heater, t)| (t - current(*heater)).abs() >= 0.5),
+            Change::Card | Change::CoolDown => targets
+                .iter()
+                .any(|(heater, t)| *t <= 0.0 && current(*heater) > 0.0),
+        }
 }
 
 /// A target for a confirmation: "215 °C" or "off".
@@ -310,8 +341,11 @@ struct Pending {
     title: String,
     /// One line per heater: "Hotend: 215 °C → off".
     details: String,
-    /// Turns a heater off (red dialog, Enter does not confirm).
+    /// Turns a heater off, or too cold for the print to go on (red
+    /// dialog, Enter does not confirm).
     danger: bool,
+    /// Too cold for the print, but no heater off (see [`too_cold`]).
+    cold: bool,
     targets: Vec<(Heater, f32)>,
 }
 
@@ -334,14 +368,21 @@ impl Pending {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        let danger = targets.iter().any(|(_, t)| *t <= 0.0);
+        let off = targets.iter().any(|(_, t)| *t <= 0.0);
+        let cold = !off && targets.iter().any(|(heater, t)| too_cold(*heater, *t));
+        let danger = off || cold;
         let title = match change {
             Change::CoolDown => "Turn every heater off?".to_owned(),
             Change::Preset(name) => format!("Set the {name} temperatures?"),
             Change::Card => match targets.as_slice() {
-                [(heater, _)] if danger => {
+                [(heater, _)] if off => {
                     format!("Turn the {} off?", heater_name(*heater, hotends))
                 }
+                [(heater, t)] if cold => format!(
+                    "Drop the {} to {}?",
+                    heater_name(*heater, hotends),
+                    target_label(*t)
+                ),
                 _ => "Change the temperatures?".to_owned(),
             },
         };
@@ -349,6 +390,7 @@ impl Pending {
             title,
             details,
             danger,
+            cold,
             targets,
         }
     }
@@ -382,7 +424,12 @@ impl Temperatures {
         let Some(pending) = &self.pending else {
             return;
         };
-        let (message, confirm) = if pending.danger {
+        let (message, confirm) = if pending.cold {
+            (
+                "A print is running: this is too cold for it to go on, and it fails.",
+                "Set",
+            )
+        } else if pending.danger {
             ("A print is running: without heat it fails.", "Turn off")
         } else {
             (
@@ -855,6 +902,43 @@ mod tests {
         );
         assert_eq!(pending.title, "Turn every heater off?");
         assert!(pending.danger);
+    }
+
+    #[test]
+    fn typed_targets_too_cold_to_print_ask_as_the_classifier_does() {
+        let mut state = PrinterState::default();
+        state.temps.hotends = vec![HeaterReading {
+            current: 210.0,
+            target: Some(215.0),
+            power: None,
+        }];
+        state.temps.bed = Some(HeaterReading {
+            current: 60.0,
+            target: Some(60.0),
+            power: None,
+        });
+        let mut job =
+            sprint_host::JobInfo::new(sprint_host::JobKind::HostPrint, "a.gcode", 100, 1000);
+        job.status = sprint_host::JobStatus::Printing;
+        state.job = Some(job.clone());
+        let cold = [(Heater::Hotend(0), 100.0)];
+        let warm = [(Heater::Hotend(0), 190.0)];
+        let cool_bed = [(Heater::Bed, 25.0)];
+        assert!(needs_confirmation(&Change::Card, &cold, &state));
+        assert!(needs_confirmation(&Change::Card, &cool_bed, &state));
+        assert!(!needs_confirmation(&Change::Card, &warm, &state));
+        assert_eq!(target_gcode(Heater::Hotend(0), 100.0), "M104 T0 S100");
+        // While paused the host restores the temperatures on resume.
+        job.status = sprint_host::JobStatus::Paused;
+        state.job = Some(job);
+        assert!(!needs_confirmation(&Change::Card, &cold, &state));
+
+        let pending = Pending::new(&Change::Card, cold.to_vec(), &state, 1);
+        assert_eq!(pending.title, "Drop the Hotend to 100 °C?");
+        assert!(pending.danger && pending.cold);
+        let pending = Pending::new(&Change::Card, vec![(Heater::Bed, 0.0)], &state, 1);
+        assert_eq!(pending.title, "Turn the Bed off?");
+        assert!(pending.danger && !pending.cold);
     }
 
     #[test]

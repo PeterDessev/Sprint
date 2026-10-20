@@ -531,6 +531,53 @@ fn heaters_off_during_a_job_asks_first() {
     wait_for_commands(&p, &["M104 T0 S0", "M140 S0"]);
 }
 
+/// A target typed into a heater card during a print asks first when the
+/// shared classifier asks for the same command typed in the console: a
+/// hotend below printing temperature stops extruding. Other targets go
+/// out at once.
+#[test]
+fn a_typed_target_too_cold_to_print_asks_during_a_job() {
+    let mut rig = Rig::simulator();
+    rig.tweak = Some(printing);
+    let mut h = sidebar_fixed(Theme::Dark, (420.0, 2600.0), rig);
+    controls_common::settle(&mut h);
+    let p = printer(&h);
+    p.set_temperature(sprint_host::Heater::Hotend(0), 215.0);
+    wait_for(&p, "the target", |s| {
+        s.temps.hotends.first().and_then(|t| t.target) == Some(215.0)
+    });
+    run_for(&mut h, Duration::from_millis(50));
+    clear(&h);
+    let type_target = |h: &mut Harness<'_, Rig>, text: &str| {
+        let field = h
+            .get_all_by_role(Role::TextInput)
+            .next()
+            .expect("target field")
+            .rect();
+        click_at(h, field.center());
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.get_all_by_role(Role::TextInput)
+            .next()
+            .expect("target field")
+            .type_text(text);
+        h.step();
+        h.key_press(egui::Key::Enter);
+        h.run_ok();
+    };
+    type_target(&mut h, "100");
+    assert!(
+        h.query_by_label("Drop the Hotend to 100 °C?").is_some(),
+        "no question"
+    );
+    h.get_by_label("Cancel").click();
+    h.run_ok();
+    assert_nothing_more(&mut h, "M104");
+    // Hotter goes out at once.
+    type_target(&mut h, "220");
+    assert!(h.query_by_label("Drop the Hotend to 100 °C?").is_none());
+    wait_for_commands(&p, &["M104 T0 S220"]);
+}
+
 /// A print started on the printer's display fails without heat just the
 /// same: "Cool down" asks first then too.
 #[test]
