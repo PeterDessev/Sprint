@@ -1114,7 +1114,7 @@ fn gcode_answered_after_the_print_went_on_is_not_sent() {
             app.toast
         );
         wait(&mut app, "more of the print", |s| {
-            s.job.as_ref().is_some_and(|j| j.current_line > line + 5)
+            s.job.as_ref().is_some_and(|j| j.current_line > line + 30)
         });
         let got = received(&app);
         assert!(
@@ -1170,10 +1170,50 @@ fn a_move_answered_after_the_print_went_on_is_not_made() {
         app.toast
     );
     wait(&mut app, "more of the print", |s| {
-        s.job.as_ref().is_some_and(|j| j.current_line > line + 5)
+        s.job.as_ref().is_some_and(|j| j.current_line > line + 30)
     });
     let got = received(&app);
     assert!(!got.iter().any(|c| c.starts_with("G28")), "{got:?}");
+    // A move that needs no question is checked against the printer too,
+    // not only against the screen's copy of it, which may still show the
+    // pause.
+    app.printer.pause();
+    wait(&mut app, "the pause", |s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Paused)
+    });
+    wait_idle(&mut app);
+    app.printer.resume();
+    let deadline = Instant::now() + PATIENCE;
+    while !app.printer.with_state(|s| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Printing)
+    }) {
+        assert!(Instant::now() < deadline, "the print never went on");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(app.view.job_context(), JobContext::Paused, "not synced yet");
+    let line = app
+        .printer
+        .with_state(|s| s.job.as_ref().map_or(0, |j| j.current_line));
+    received(&app);
+    app.run_line("move x 7");
+    // Lines sent after the move would have been (user commands go first)
+    // reached the printer, past its buffers.
+    wait(&mut app, "more of the print", |s| {
+        s.job.as_ref().is_some_and(|j| j.current_line > line + 30)
+    });
+    assert!(
+        app.toast
+            .as_ref()
+            .is_some_and(|t| t.text.starts_with("Not while a job runs")),
+        "{:?}",
+        app.toast
+    );
+    let got = received(&app);
+    assert!(!got.iter().any(|c| c.starts_with("G1 X7")), "{got:?}");
     app.printer.cancel();
     wait(&mut app, "the cancel", |s| !s.job_active());
 }

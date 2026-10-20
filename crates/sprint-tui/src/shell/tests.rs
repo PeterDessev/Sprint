@@ -699,7 +699,7 @@ fn a_move_answered_after_the_print_went_on_is_not_made() {
         .printer
         .with_state(|s| s.job.as_ref().map_or(0, |j| j.current_line));
     wait_for(&shell, "more of the print", |s| {
-        s.job.as_ref().is_some_and(|j| j.current_line > line + 5)
+        s.job.as_ref().is_some_and(|j| j.current_line > line + 30)
     });
     let got = received(&shell);
     assert!(!got.iter().any(|c| c.starts_with("G28")), "{got:?}");
@@ -743,7 +743,7 @@ fn gcode_answered_after_the_print_went_on_is_not_sent() {
             .printer
             .with_state(|s| s.job.as_ref().map_or(0, |j| j.current_line));
         wait_for(&shell, "more of the print", |s| {
-            s.job.as_ref().is_some_and(|j| j.current_line > line + 5)
+            s.job.as_ref().is_some_and(|j| j.current_line > line + 30)
         });
         let got = received(&shell);
         assert!(

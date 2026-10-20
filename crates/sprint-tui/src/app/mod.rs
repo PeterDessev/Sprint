@@ -1505,6 +1505,13 @@ impl App {
                 self.run_action(*action);
             }
             Action::Motion(motion) => {
+                // The screen's copy of the job may still show a pause the
+                // printer has left (resumed there): the motion would land
+                // between the print's lines.
+                if self.printer.with_state(actions::job_context) == JobContext::Printing {
+                    self.warn(actions::NOT_WHILE_PRINTING);
+                    return;
+                }
                 if let Some(warning) =
                     self.homing_warning(motion.moves_axes(), actions::UNHOMED_MOVE)
                 {
