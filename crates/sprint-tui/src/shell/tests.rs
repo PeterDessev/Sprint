@@ -1482,7 +1482,10 @@ fn an_emergency_stop_is_never_asked_about() {
     assert!(!text.contains("Send it?"), "{text}");
     // What to do next is said, and status says it too.
     assert!(
-        text.contains("Emergency stop sent (M112): reset resets the board"),
+        text.contains(
+            "Emergency stop sent (M112): reset resets the board (M999 alone does not \
+             recover from M112)"
+        ),
         "{text}"
     );
     assert_eq!(shell.prompt(), "sprint (halted)> ");

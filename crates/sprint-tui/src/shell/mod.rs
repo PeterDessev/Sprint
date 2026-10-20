@@ -587,7 +587,8 @@ impl Shell {
             // After an emergency stop, say how to get the printer back.
             if actions::check_gcode(gcode, JobContext::Idle).emergency_stop {
                 self.out.warn(
-                    "Emergency stop sent (M112): reset resets the board                      (M999 alone does not recover from M112)",
+                    "Emergency stop sent (M112): reset resets the board \
+                     (M999 alone does not recover from M112)",
                 );
             }
         }
