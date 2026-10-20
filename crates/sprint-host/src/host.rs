@@ -657,7 +657,9 @@ impl Printer {
     /// Pause the job (host prints: wait for in-flight commands, then run the
     /// pause script; SD prints: M25). A host print the firmware holds at
     /// an M0/M1 of the file is paused the same way: the wait is ended
-    /// (M108) and the pause script runs.
+    /// (M108, on firmware that reports EMERGENCY_PARSER; any other cannot
+    /// read it while it waits, so the pause waits for the printer's
+    /// button) and the pause script runs.
     pub fn pause(&self) {
         self.command(Command::Pause);
     }
@@ -984,7 +986,11 @@ impl Printer {
 
     /// PID autotune: `M303 E<n|-1|-2> S<target> C<cycles> U1`. The result
     /// arrives as `state.autotune` and [`Event::AutotuneFinished`], after
-    /// which the settings are refreshed.
+    /// which the settings are refreshed. A failure ends it with
+    /// `running` false, `error` set and [`Event::AutotuneFailed`]: one the
+    /// firmware reports, or a halt, a board reset or the connection
+    /// closing that cuts it short. While the printer is halted it fails
+    /// at once, without sending M303.
     pub fn start_pid_autotune(&self, heater: Heater, target: f32, cycles: u32) {
         self.command(Command::Autotune {
             heater,
