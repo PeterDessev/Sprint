@@ -689,7 +689,12 @@ fn a_move_answered_after_the_print_went_on_is_not_made() {
     shell.execute_line("home", &mut input);
     assert!(input.answer.is_none(), "not asked: {}", buffer.text());
     let text = buffer.text();
-    assert!(text.contains("Not while a job runs"), "{text}");
+    assert!(
+        text.contains(
+            "Not done: slow.gcode is printing. The answer came after the job changed; ask again."
+        ),
+        "{text}"
+    );
     let line = shell
         .printer
         .with_state(|s| s.job.as_ref().map_or(0, |j| j.current_line));
@@ -698,6 +703,54 @@ fn a_move_answered_after_the_print_went_on_is_not_made() {
     });
     let got = received(&shell);
     assert!(!got.iter().any(|c| c.starts_with("G28")), "{got:?}");
+    shell.printer.cancel();
+    wait_for(&shell, "the cancel", |s| !s.job_active());
+}
+
+#[test]
+fn gcode_answered_after_the_print_went_on_is_not_sent() {
+    let scratch = Scratch::new("paused-gcode-answer");
+    let (mut shell, buffer) = connected_timed();
+    shell.load(&scratch.slow_file());
+    let mut input = Script::new(["print"], false);
+    shell.run_lines_until_eof_without_leaving(&mut input);
+    // A typed G28, then the Home macro: each asks while the print is
+    // paused, and the answer comes once it runs again. Neither homes
+    // between its lines.
+    for typed in ["G28", "macro home"] {
+        shell.printer.pause();
+        wait_for(&shell, "the pause", |s| {
+            s.job
+                .as_ref()
+                .is_some_and(|j| j.status == JobStatus::Paused)
+        });
+        shell.echo.settle();
+        received(&shell);
+        buffer.clear();
+        let mut input = AnswersAfterResume {
+            printer: shell.printer.clone(),
+            answer: Some("y".into()),
+        };
+        shell.execute_line(typed, &mut input);
+        assert!(
+            input.answer.is_none(),
+            "{typed}: not asked: {}",
+            buffer.text()
+        );
+        let text = buffer.text();
+        assert!(text.contains("slow.gcode is printing"), "{typed}: {text}");
+        let line = shell
+            .printer
+            .with_state(|s| s.job.as_ref().map_or(0, |j| j.current_line));
+        wait_for(&shell, "more of the print", |s| {
+            s.job.as_ref().is_some_and(|j| j.current_line > line + 5)
+        });
+        let got = received(&shell);
+        assert!(
+            !got.iter().any(|c| c.starts_with("G28")),
+            "{typed}: {got:?}"
+        );
+    }
     shell.printer.cancel();
     wait_for(&shell, "the cancel", |s| !s.job_active());
 }

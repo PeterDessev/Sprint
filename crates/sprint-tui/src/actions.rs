@@ -776,9 +776,22 @@ pub struct Safety {
     /// The text has an emergency stop (M112): it goes out at once, never
     /// asked about.
     pub emergency_stop: bool,
+    /// The G-code checked.
+    pub gcode: String,
+    /// The job's state it was checked for.
+    pub context: JobContext,
 }
 
 impl Safety {
+    /// Whether what was decided still holds when the answer comes, with
+    /// the job in state `now`: the job is as it was, or nothing of the
+    /// G-code needs a question in its new state. A paused print resumed at
+    /// the printer while the question was open makes a G28 that homed onto
+    /// the paused part a G28 between the print's lines.
+    pub fn still_holds(&self, now: JobContext) -> bool {
+        now == self.context || check_gcode(&self.gcode, now).is_allowed()
+    }
+
     /// Everything may be sent without asking.
     pub fn is_allowed(&self) -> bool {
         self.confirm.is_empty() && self.blocked.is_empty()
@@ -825,7 +838,11 @@ pub const MAX_FLAGGED_SHOWN: usize = 4;
 /// [`classify`] every line of `gcode` (a typed line, a pasted block, a
 /// macro, a script) for a job in `ctx`.
 pub fn check_gcode(gcode: &str, ctx: JobContext) -> Safety {
-    let mut safety = Safety::default();
+    let mut safety = Safety {
+        gcode: gcode.to_string(),
+        context: ctx,
+        ..Safety::default()
+    };
     for line in gcode.lines() {
         let verdict = classify(line, ctx);
         if verdict.emergency && verdict.command.as_deref() == Some("M112") {
@@ -1909,6 +1926,16 @@ G1 X1
         assert!(check_gcode("G91\nG1 Z5\nG90", JobContext::Paused).is_allowed());
         assert!(check_gcode("G28 X Y", JobContext::Paused).is_allowed());
         assert!(check_gcode("G28", JobContext::Paused).needs_confirmation());
+        // An answer about a paused job no longer holds once it prints
+        // again, unless nothing then needs a question; one about a
+        // running job does once it is over.
+        let asked = check_gcode("G28", JobContext::Paused);
+        assert!(asked.still_holds(JobContext::Paused));
+        assert!(!asked.still_holds(JobContext::Printing));
+        assert!(asked.still_holds(JobContext::Idle));
+        let jog = check_gcode("G91\nG1 Z5\nG90", JobContext::Paused);
+        assert!(!jog.still_holds(JobContext::Printing));
+        assert!(check_gcode("M220 S110", JobContext::Paused).still_holds(JobContext::Printing));
         // M112 is never asked about, and is noticed.
         let stop = check_gcode("G28\nM112", JobContext::Idle);
         assert!(stop.is_allowed() && stop.emergency_stop);

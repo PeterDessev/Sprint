@@ -1063,6 +1063,70 @@ fn a_paused_recovery_is_jogged_without_being_told_to_home_z() {
 }
 
 #[test]
+fn gcode_answered_after_the_print_went_on_is_not_sent() {
+    let scratch = Scratch::new("paused-gcode-answer");
+    let mut app = timed_app();
+    app.open_file(slow_file(&scratch.0));
+    wait_app(&mut app, "the analysis", |a| a.loader.is_none());
+    app.run_action(dialogs::Action::StartPrint(
+        scratch.0.join("slow.gcode"),
+        Vec::new(),
+    ));
+    wait(&mut app, "the print", |s| {
+        s.job.as_ref().is_some_and(|j| j.current_line > 8)
+    });
+    let paused = |s: &PrinterState| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Paused)
+    };
+    let printing = |s: &PrinterState| {
+        s.job
+            .as_ref()
+            .is_some_and(|j| j.status == JobStatus::Printing)
+    };
+    // A G28 typed on the G-code line, then the Home macro: each asks
+    // while the print is paused, and the print goes on before the answer
+    // (resumed at the printer). Neither homes between its lines.
+    for typed in ["G28", ":macro home"] {
+        app.printer.pause();
+        wait(&mut app, "the pause", paused);
+        wait_idle(&mut app);
+        match typed.strip_prefix(':') {
+            Some(command) => app.run_line(command),
+            None => app.send_gcode(typed),
+        }
+        assert!(
+            matches!(&app.modal, Some(Modal::Confirm(c)) if c.danger),
+            "{typed}: {:?}",
+            app.toast
+        );
+        app.printer.resume();
+        wait(&mut app, "the resume", printing);
+        let line = app.view.job.as_ref().map_or(0, |j| j.current_line);
+        received(&app);
+        press(&mut app, KeyCode::Char('y'));
+        assert!(
+            app.toast
+                .as_ref()
+                .is_some_and(|t| t.text.contains("slow.gcode is printing")),
+            "{typed}: {:?}",
+            app.toast
+        );
+        wait(&mut app, "more of the print", |s| {
+            s.job.as_ref().is_some_and(|j| j.current_line > line + 5)
+        });
+        let got = received(&app);
+        assert!(
+            !got.iter().any(|c| c.starts_with("G28")),
+            "{typed}: {got:?}"
+        );
+    }
+    app.printer.cancel();
+    wait(&mut app, "the cancel", |s| !s.job_active());
+}
+
+#[test]
 fn a_move_answered_after_the_print_went_on_is_not_made() {
     let scratch = Scratch::new("paused-answer");
     let mut app = timed_app();
@@ -1100,9 +1164,8 @@ fn a_move_answered_after_the_print_went_on_is_not_made() {
     received(&app);
     press(&mut app, KeyCode::Char('y'));
     assert!(
-        app.toast
-            .as_ref()
-            .is_some_and(|t| t.text.starts_with("Not while a job runs")),
+        app.toast.as_ref().is_some_and(|t| t.text
+            == "Not done: slow.gcode is printing. The answer came after the job changed; ask again."),
         "{:?}",
         app.toast
     );

@@ -68,6 +68,15 @@ pub(crate) enum Action {
     Autotune(Heater, f32, u32),
     /// A manual motion command (already checked).
     Motion(crate::actions::Motion),
+    /// `action`, asked about for G-code judged as `safety`: done when the
+    /// answer comes unless the job changed meanwhile so that it no longer
+    /// holds ([`crate::actions::Safety::still_holds`]); `refused` starts
+    /// the message then ("Not sent").
+    Answered {
+        action: Box<Action>,
+        safety: crate::actions::Safety,
+        refused: &'static str,
+    },
     /// Exclude (or include) an object of the running print, then show
     /// the objects dialog again with row `selected`.
     ToggleObject {
@@ -922,6 +931,10 @@ pub(crate) struct Confirm {
     pub action: Action,
     /// The highlighted button is "yes".
     pub on_yes: bool,
+    /// What the question was asked about, when the action sends G-code:
+    /// the check and the start of the refusal ("Not sent"); the answer
+    /// runs the action as [`Action::Answered`], checked again.
+    pub checked: Option<(crate::actions::Safety, &'static str)>,
 }
 
 impl Confirm {
@@ -942,21 +955,35 @@ impl Confirm {
             danger,
             action,
             on_yes: !danger,
+            checked: None,
         }
     }
 
     pub(crate) fn handle_key(&mut self, key: KeyEvent) -> Outcome {
         match key.code {
             KeyCode::Esc | KeyCode::Char('n' | 'N') => Outcome::Close,
-            KeyCode::Char('y' | 'Y') => Outcome::Run(self.action.clone()),
+            KeyCode::Char('y' | 'Y') => self.yes(),
             KeyCode::Left | KeyCode::Right | KeyCode::Tab | KeyCode::BackTab => {
                 self.on_yes = !self.on_yes;
                 Outcome::Keep
             }
-            KeyCode::Enter if self.on_yes => Outcome::Run(self.action.clone()),
+            KeyCode::Enter if self.on_yes => self.yes(),
             KeyCode::Enter => Outcome::Close,
             _ => Outcome::Keep,
         }
+    }
+
+    /// The answer yes: the action, checked again when it sends G-code.
+    fn yes(&self) -> Outcome {
+        let action = self.action.clone();
+        Outcome::Run(match &self.checked {
+            Some((safety, refused)) => Action::Answered {
+                action: Box::new(action),
+                safety: safety.clone(),
+                refused,
+            },
+            None => action,
+        })
     }
 
     pub(crate) fn draw(&self, frame: &mut Frame, theme: &Theme) {

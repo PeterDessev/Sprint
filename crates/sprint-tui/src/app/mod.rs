@@ -1483,14 +1483,28 @@ impl App {
                 };
                 self.guard(&safety, guard, Action::SetTempsAnyway(targets));
             }
-            Action::Motion(motion) => {
-                // Asked about while the print was paused: if it prints
-                // again by the answer (resumed at the printer), the motion
-                // would land between its lines.
-                if self.printer.with_state(actions::job_context) == JobContext::Printing {
-                    self.warn(actions::NOT_WHILE_PRINTING);
+            Action::Answered {
+                action,
+                safety,
+                refused,
+            } => {
+                // The question was about the job as it was; if it changed
+                // by the answer (a paused print resumed at the printer),
+                // what the answer allowed may land between the print's
+                // lines.
+                let (now, job) = self
+                    .printer
+                    .with_state(|s| (actions::job_context(s), actions::active_job_name(s)));
+                if !safety.still_holds(now) {
+                    let sentence = actions::job_sentence(now, job.as_deref()).unwrap_or_default();
+                    self.warn(format!(
+                        "{refused}: {sentence} The answer came after the job changed; ask again."
+                    ));
                     return;
                 }
+                self.run_action(*action);
+            }
+            Action::Motion(motion) => {
                 if let Some(warning) =
                     self.homing_warning(motion.moves_axes(), actions::UNHOMED_MOVE)
                 {
@@ -2171,14 +2185,10 @@ impl App {
             message.extend(safety.reasons());
         }
         message.extend(guard.preview);
-        self.modal = Some(Modal::Confirm(Confirm::new(
-            guard.title,
-            message,
-            guard.yes,
-            guard.no,
-            ask,
-            action,
-        )));
+        let mut confirm = Confirm::new(guard.title, message, guard.yes, guard.no, ask, action);
+        // The answer is checked again: the job may have changed by then.
+        confirm.checked = Some((safety.clone(), guard.refused));
+        self.modal = Some(Modal::Confirm(confirm));
     }
 
     /// Run one palette line: a command or G-code.

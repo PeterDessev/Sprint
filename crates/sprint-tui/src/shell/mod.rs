@@ -355,8 +355,7 @@ impl Shell {
     /// (moves and extrusion go, homing Z and probing ask first on a
     /// terminal and are not done by a script).
     fn motion_allowed(&self, motion: &Motion, input: &mut dyn LineSource) -> bool {
-        let printing = || self.printer.with_state(actions::job_context) == JobContext::Printing;
-        if printing() {
+        if self.printer.with_state(actions::job_context) == JobContext::Printing {
             self.out.warn(actions::NOT_WHILE_PRINTING);
             return false;
         }
@@ -367,16 +366,7 @@ impl Shell {
             always_ask: None,
             raw: false,
         };
-        if !self.safe_to_send(&motion.gcode(), &check, input) {
-            return false;
-        }
-        // The answer may have come after the print went on (resumed at
-        // the printer): the motion would land between its lines.
-        if printing() {
-            self.out.warn(actions::NOT_WHILE_PRINTING);
-            return false;
-        }
-        true
+        self.safe_to_send(&motion.gcode(), &check, input)
     }
 
     /// Run a manual motion command if [`Shell::motion_allowed`].
@@ -643,7 +633,21 @@ impl Shell {
         };
         let default = ctx == JobContext::Idle || !safety.needs_confirmation();
         if self.confirm(input, &question, default) {
-            return true;
+            // The question was about the job as it was; if it changed by
+            // the answer (a paused print resumed at the printer), what the
+            // answer allowed may land between the print's lines.
+            let (now, job) = self
+                .printer
+                .with_state(|s| (actions::job_context(s), actions::active_job_name(s)));
+            if safety.still_holds(now) {
+                return true;
+            }
+            let sentence = actions::job_sentence(now, job.as_deref()).unwrap_or_default();
+            self.out.warn(format!(
+                "{}: {sentence} The answer came after the job changed; ask again.",
+                check.refused
+            ));
+            return false;
         }
         // A script is not asked: it is told why.
         match why.filter(|_| !input.interactive()) {
