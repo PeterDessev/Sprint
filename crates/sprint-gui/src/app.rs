@@ -1103,8 +1103,9 @@ impl SprintApp {
     }
 
     /// Reset the printer's board on a worker thread (see
-    /// [`Connector::reset_board`]): not while a job would be lost (a halt
-    /// has failed it already) or a connect runs.
+    /// [`Connector::reset_board`]): not while a job or a print the printer
+    /// runs from its card would be lost (a halt has ended it already) or a
+    /// connect runs.
     fn reset_board(&mut self) {
         let state = &self.core.state;
         if !state.status.is_open() {
@@ -1117,6 +1118,13 @@ impl SprintApp {
                 .toasts
                 .warning("Not while a job runs")
                 .message("Resetting the board would end it: cancel it first.");
+        } else if crate::context::printer_busy(state) && !state.halted {
+            self.core
+                .toasts
+                .warning("Not while the printer prints")
+                .message(
+                    "Resetting the board would end the print it runs from its card: stop that                      print on the printer first.",
+                );
         } else if !self.connector.is_connecting() {
             self.connector.reset_board(&self.core.printer);
         }

@@ -2018,6 +2018,47 @@ fn a_print_from_the_card_locks_motion_and_probing() {
 }
 
 #[test]
+fn the_printer_menu_neither_homes_nor_resets_during_a_print_from_the_card() {
+    let mut h = app(AppOptions::headless(), WINDOW);
+    // Started on the printer's display: no job, only its SD progress.
+    let mut state = printing_state(JobStatus::Printing);
+    state.job = None;
+    state.sd.printing = Some((1_000, 50_000));
+    h.state_mut().set_state_override(Some(state.clone()));
+    settle(&mut h);
+    let disabled = |h: &mut Harness<'_, SprintApp>| {
+        open_printer_menu(h);
+        settle(h);
+        let items = ["Home all axes (G28)", "Motors off (M84)", "Reset the board"]
+            .map(|item| h.get_by_label_contains(item).accesskit_node().is_disabled());
+        h.key_press(Key::Escape);
+        settle(h);
+        items
+    };
+    // Homing or the motors off would ruin that print, a reset end it.
+    assert_eq!(disabled(&mut h), [true; 3]);
+    // Asked for anyway, the reset is refused with the reason.
+    h.state_mut().push_action(AppAction::ResetBoard);
+    settle(&mut h);
+    assert!(
+        toast_titles(h.state()).contains(&"Not while the printer prints".to_owned()),
+        "{:?}",
+        toast_titles(h.state())
+    );
+    // Once that print is over they are offered again.
+    state.sd.printing = None;
+    h.state_mut().set_state_override(Some(state.clone()));
+    settle(&mut h);
+    assert_eq!(disabled(&mut h), [false; 3]);
+    // A halted printer is reset whatever it printed (the halt ended it).
+    state.sd.printing = Some((1_000, 50_000));
+    state.halted = true;
+    h.state_mut().set_state_override(Some(state));
+    settle(&mut h);
+    assert_eq!(disabled(&mut h), [true, true, false]);
+}
+
+#[test]
 fn no_print_starts_while_the_printer_prints_from_its_card() {
     let dir = temp_dir("card-print");
     let path = dir.join("square.gcode");

@@ -213,7 +213,10 @@ fn printer_menu(ui: &mut Ui, info: &MenuInfo<'_>, out: &mut Vec<MenuCommand>) {
         out.push(MenuCommand::Action(A::CancelJob));
     }
     ui.separator();
-    let idle = connected && job.is_none() && !state.halted;
+    // Not while anything prints, a print the printer runs from its card
+    // included: homing or the motors off would ruin it.
+    let busy = crate::context::printer_busy(state);
+    let idle = connected && !busy && !state.halted;
     if item(ui, idle, icons::HOME, "Home all axes (G28)", None) {
         out.push(MenuCommand::HomeAll);
     }
@@ -242,8 +245,9 @@ fn printer_menu(ui: &mut Ui, info: &MenuInfo<'_>, out: &mut Vec<MenuCommand>) {
     ) {
         out.push(MenuCommand::RestartFirmware);
     }
-    // While halted, or while no job would be lost.
-    let resettable = open && !info.connecting && (state.halted || job.is_none());
+    // While halted (the halt ended any print), or while nothing prints: a
+    // reset would end a job or a print the printer runs from its card.
+    let resettable = open && !info.connecting && (state.halted || !busy);
     if item(ui, resettable, icons::POWER, "Reset the board", None) {
         out.push(MenuCommand::ResetBoard);
     }
