@@ -273,16 +273,11 @@ fn flow_result_stays_put_after_setting_it() {
 
 #[test]
 fn zoffset_and_flow_snapshots() {
-    let mut h = tab(Theme::Light, (1100.0, 900.0), Some(demo_state()), None);
+    // Babystepped 0.05 mm closer since homing.
+    let mut state = demo_state();
+    state.babystep_z = -0.05;
+    let mut h = tab(Theme::Light, (1100.0, 900.0), Some(state), None);
     h.get_by_label("Z offset").click();
-    h.run_ok();
-    h.get_by_label("Lower the nozzle 0.025 mm").click();
-    h.run_ok();
-    h.get_by_label("Lower the nozzle 0.025 mm").click();
-    h.run_ok();
-    h.get_by_label("Raise the nozzle 0.025 mm").click();
-    h.run_ok();
-    h.get_by_label("Lower the nozzle 0.025 mm").click();
     h.run_ok();
     assert!(
         h.query_by_label_contains("Probe Z offset: -1.520 → -1.570 mm")
@@ -317,19 +312,21 @@ fn calibration_tab_narrow_and_disconnected() {
     snapshot(&mut h, "insight_calibration_narrow_dark");
 }
 
+/// A printer homing on a Z endstop: no probe offset, a home offset.
+fn without_probe_offset(state: &mut PrinterState) {
+    state.settings.remove("M851");
+}
+
 #[test]
 fn applying_the_home_offset_takes_the_babystep_back() {
     let printer = sim_printer(fast_sim());
-    // A printer homing on a Z endstop: no probe offset, a home offset.
-    let mut state = printer.snapshot();
-    state.settings.remove("M851");
-    assert!(state.settings.value("M206", 'Z').is_some());
-    let mut h = tab(
-        Theme::Dark,
-        (1100.0, 900.0),
-        Some(state),
-        Some(printer.clone()),
-    );
+    assert!(printer.with_state(|s| s.settings.value("M206", 'Z').is_some()));
+    let mut host = Host::<CalibrationTab>::live(printer.clone());
+    host.tweak = Some(without_probe_offset);
+    let mut h = harness_state(Theme::Dark, (1100.0, 900.0), host, |ui, host| {
+        host.frame(ui)
+    });
+    h.run_ok();
     h.get_by_label("Z offset").click();
     h.run_ok();
     clear_received(&printer);
@@ -337,6 +334,10 @@ fn applying_the_home_offset_takes_the_babystep_back() {
         h.get_by_label("Lower the nozzle 0.025 mm").click();
         h.run_ok();
     }
+    run_until(&mut h, "both babysteps", |s| {
+        (s.babystep_z + 0.05).abs() < 1e-4
+    });
+    h.run_ok();
     assert!(
         h.query_by_label_contains("Home offset Z: 0.000 → 0.050 mm")
             .is_some()
@@ -368,6 +369,58 @@ fn applying_the_home_offset_takes_the_babystep_back() {
         h.query_by_label_contains("applies to the next moves")
             .is_some()
     );
+    // Taken back, the babystepping no longer counts: nothing more to apply.
+    run_until(&mut h, "the take back", |s| s.babystep_z.abs() < 1e-4);
+    h.run_ok();
+    assert!(
+        h.query_by_label_contains("Home offset Z: 0.050 → 0.050 mm")
+            .is_some()
+    );
+    assert!(
+        h.get_by_label("Apply to home offset")
+            .accesskit_node()
+            .is_disabled()
+    );
+    printer.disconnect();
+}
+
+/// The wizard counts the printer's babystepping (from anywhere) since its
+/// counter was reset; homing Z makes the printer forget it.
+#[test]
+fn zoffset_counts_the_printers_babystepping() {
+    let printer = sim_printer(fast_sim());
+    let mut h = tab(Theme::Dark, (1100.0, 900.0), None, Some(printer.clone()));
+    h.get_by_label("Z offset").click();
+    h.run_ok();
+    clear_received(&printer);
+    // A babystep from here and one from the console both count.
+    h.get_by_label("Lower the nozzle 0.025 mm").click();
+    h.run_ok();
+    assert_eq!(wait_for_command(&printer, "M290"), "M290 Z-0.025");
+    printer.send("M290 Z-0.05");
+    run_until(&mut h, "both babysteps", |s| {
+        (s.babystep_z + 0.075).abs() < 1e-4
+    });
+    h.run_ok();
+    // In the wizard and in its tile of the list.
+    assert_eq!(h.query_all_by_label("\u{2212}0.075 mm").count(), 2);
+    // The counter reset starts the count over without moving the nozzle.
+    clear_received(&printer);
+    h.get_by_label("Reset counter").click();
+    h.run_ok();
+    assert!(h.query_by_label("no adjustment yet").is_some());
+    h.get_by_label("Raise the nozzle 0.025 mm").click();
+    h.run_ok();
+    run_until(&mut h, "the babystep", |s| {
+        (s.babystep_z + 0.05).abs() < 1e-4
+    });
+    h.run_ok();
+    assert_eq!(h.query_all_by_label("+0.025 mm").count(), 2);
+    // Homing Z drops the babysteps on the printer: none count.
+    printer.home(sprint_host::Axes::Z);
+    run_until(&mut h, "the Z homing", |s| s.babystep_z == 0.0);
+    h.run_ok();
+    assert!(h.query_by_label("no adjustment yet").is_some());
     printer.disconnect();
 }
 
@@ -534,6 +587,10 @@ fn esteps_zoffset_and_flow_reach_the_simulator() {
     h.get_by_label("Lower the nozzle 0.025 mm").click();
     h.run_ok();
     assert_eq!(wait_for_command(&printer, "M290"), "M290 Z-0.025");
+    run_until(&mut h, "both babysteps", |s| {
+        (s.babystep_z + 0.05).abs() < 1e-4
+    });
+    h.run_ok();
     h.get_by_label("Apply to probe offset").click();
     h.run_ok();
     assert_eq!(wait_for_command(&printer, "M851"), "M851 X10 Y10 Z-0.05");

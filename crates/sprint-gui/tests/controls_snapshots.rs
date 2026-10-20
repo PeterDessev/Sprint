@@ -93,12 +93,9 @@ fn sidebar_while_printing() {
     printing(&mut state);
     state.feedrate_pct = 120.0;
     state.flow_pct = vec![95.0];
+    // Babystepped a little, so the offset readout shows.
+    state.babystep_z = 0.1;
     let mut h = panel(Theme::Dark, 300.0, rig(state));
-    // Babystep a little so the offset readout shows.
-    h.get(by_label("Raise")).click();
-    settle(&mut h);
-    h.get(by_label("Raise")).click();
-    settle(&mut h);
     assert!(h.query(by_label("+0.100 mm")).is_some());
     pointer_away(&mut h);
     snapshot(&mut h, &name("sidebar_printing", Theme::Dark));
@@ -247,11 +244,8 @@ fn babystep_row_fits_every_width() {
     for width in [280.0, 300.0, 420.0, 480.0] {
         let mut state = heating_state();
         printing(&mut state);
-        let mut h = panel(Theme::Dark, width, rig(state));
-        for _ in 0..3 {
-            h.get(by_label("Lower")).click();
-            settle(&mut h);
-        }
+        state.babystep_z = -0.15;
+        let h = panel(Theme::Dark, width, rig(state));
         let value = h.get(by_label("\u{2212}0.150 mm")).rect();
         let undo = h
             .get(controls_common::by_label_contains("Undo all babystepping"))

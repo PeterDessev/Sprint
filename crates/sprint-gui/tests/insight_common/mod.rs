@@ -51,6 +51,9 @@ pub struct Host<T> {
     /// A synthetic state shown instead of the printer's (for deterministic
     /// snapshots); `None` = the printer's live snapshot each frame.
     pub state: Option<PrinterState>,
+    /// Applied to the state every frame (e.g. a setting the simulator has
+    /// that the test wants gone).
+    pub tweak: Option<fn(&mut PrinterState)>,
     pub config: AppConfig,
     pub config_dirty: bool,
     pub toasts: Toasts,
@@ -79,6 +82,7 @@ impl<T: Panel + Default> Host<T> {
             tab: T::default(),
             printer,
             state,
+            tweak: None,
             config: AppConfig::default(),
             config_dirty: false,
             toasts: Toasts::default(),
@@ -94,10 +98,13 @@ impl<T: Panel + Default> Host<T> {
 impl<T: Panel> Host<T> {
     /// Draw the tab for one frame.
     pub fn frame(&mut self, ui: &mut egui::Ui) {
-        let state = match &self.state {
+        let mut state = match &self.state {
             Some(s) => s.clone(),
             None => self.printer.snapshot(),
         };
+        if let Some(tweak) = self.tweak {
+            tweak(&mut state);
+        }
         let mut ctx = AppCtx {
             printer: &self.printer,
             state: &state,

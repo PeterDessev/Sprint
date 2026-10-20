@@ -3,6 +3,10 @@
 //!
 //! Sliders send their value when released (or on a keyboard change), never
 //! while dragging, so a drag does not flood the printer with commands.
+//!
+//! The babystep offset is the printer state's
+//! ([`PrinterState::babystep_z`]): every acknowledged babystep since Z was
+//! last homed, from here, the console, a macro or the print itself.
 
 use std::collections::HashMap;
 
@@ -72,8 +76,6 @@ pub(super) struct Tuning {
     edits: HashMap<Knob, Pending>,
     /// Babystep size (mm).
     step: f32,
-    /// Babystepping applied since connecting (mm).
-    offset: f32,
     was_connected: bool,
 }
 
@@ -82,19 +84,19 @@ impl Default for Tuning {
         Tuning {
             edits: HashMap::new(),
             step: 0.05,
-            offset: 0.0,
             was_connected: false,
         }
     }
 }
 
-/// Add `step` to a babystep offset, rounded to the micron so repeated
-/// steps do not accumulate float noise.
-pub(super) fn add_offset(offset: f32, step: f32) -> f32 {
-    if !step.is_finite() {
-        return offset;
+/// A babystep offset rounded to the micron (the accumulated reports carry
+/// float noise).
+pub(super) fn rounded_offset(offset: f32) -> f32 {
+    if offset.is_finite() {
+        (offset * 1000.0).round() / 1000.0
+    } else {
+        0.0
     }
-    ((offset + step) * 1000.0).round() / 1000.0
 }
 
 /// A signed offset: "+0.150 mm", "−0.050 mm", "0.000 mm".
@@ -135,8 +137,6 @@ impl Tuning {
         let state = ctx.state;
         let connected = ctx.connected();
         if self.was_connected && !connected {
-            // A new connection starts without babystepping.
-            self.offset = 0.0;
             self.edits.clear();
         }
         self.was_connected = connected;
@@ -311,12 +311,13 @@ impl Tuning {
     fn babystep(&mut self, ui: &mut Ui, printer: &Printer, state: &PrinterState) {
         section_header(ui, "Babystep Z");
         let unsupported = babystep_unsupported(state);
+        let applied = rounded_offset(state.babystep_z);
         ui.add_enabled_ui(!unsupported, |ui| {
             let p = theme::ui_palette(ui);
             let options: Vec<(f32, String)> =
                 BABYSTEPS.iter().map(|s| (*s, step_label(*s))).collect();
-            let offset = offset_label(self.offset);
-            let undo_shown = self.offset != 0.0;
+            let offset = offset_label(applied);
+            let undo_shown = applied != 0.0;
             split_row(
                 ui,
                 |ui| {
@@ -337,22 +338,23 @@ impl Tuning {
                     if needed <= ui.available_width() {
                         ui.label(caption);
                     }
-                    value_label(ui, &offset, self.offset != 0.0)
-                        .on_hover_text("Babystepping applied since connecting");
+                    value_label(ui, &offset, undo_shown).on_hover_text(
+                        "Babystepping since Z was last homed (or the printer connected), \
+                         from any source",
+                    );
                     if undo_shown {
                         let undo = format!(
                             "Undo all babystepping (M290 Z{})",
-                            sprint_host::format_number(f64::from(-self.offset), 3)
+                            sprint_host::format_number(f64::from(-applied), 3)
                         );
                         let r = ui.add(IconButton::new(icons::RESET).ghost().small().tooltip(undo));
                         if r.clicked() {
-                            let mut left = -self.offset;
+                            let mut left = -applied;
                             while left.abs() > 1e-4 {
                                 let chunk = left.clamp(-5.0, 5.0);
                                 printer.babystep_z(chunk);
                                 left -= chunk;
                             }
-                            self.offset = 0.0;
                         }
                     }
                 },
@@ -379,7 +381,6 @@ impl Tuning {
                 );
                 if lower.clicked() {
                     printer.babystep_z(-step);
-                    self.offset = add_offset(self.offset, -step);
                 }
                 let raise = cols[1].add(
                     crate::widgets::ActionButton::new("Raise")
@@ -393,7 +394,6 @@ impl Tuning {
                 );
                 if raise.clicked() {
                     printer.babystep_z(step);
-                    self.offset = add_offset(self.offset, step);
                 }
             });
         })
@@ -572,15 +572,15 @@ mod tests {
     }
 
     #[test]
-    fn babystep_offsets_accumulate_cleanly() {
-        let mut offset = 0.0;
+    fn babystep_offsets_read_out_to_the_micron() {
+        // Reports accumulated in floating point carry noise.
+        let mut offset = 0.0_f32;
         for _ in 0..10 {
-            offset = add_offset(offset, 0.01);
+            offset += 0.01;
         }
-        assert_eq!(offset, 0.1);
-        offset = add_offset(offset, -0.05);
-        assert_eq!(offset, 0.05);
-        assert_eq!(add_offset(offset, f32::NAN), 0.05);
+        assert_eq!(rounded_offset(offset), 0.1);
+        assert_eq!(rounded_offset(0.05 - 0.05 + 1e-7), 0.0);
+        assert_eq!(rounded_offset(f32::NAN), 0.0);
         assert_eq!(offset_label(0.15), "+0.150 mm");
         assert_eq!(offset_label(-0.05), "\u{2212}0.050 mm");
         assert_eq!(offset_label(0.0), "0.000 mm");

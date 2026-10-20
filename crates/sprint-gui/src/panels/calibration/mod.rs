@@ -255,7 +255,7 @@ impl CalibrationTab {
                 _ => None,
             },
             Wizard::Esteps => self.esteps.status(),
-            Wizard::ZOffset => self.zoffset.status(),
+            Wizard::ZOffset => self.zoffset.status(state),
             Wizard::Flow => None,
         }
     }

@@ -554,6 +554,9 @@ fn heaters_off_during_a_print_from_the_card_asks_first() {
     assert_nothing_sent(&mut h, "a cancelled cool down");
 }
 
+/// The offset is the printer's babystepping since Z was homed, whoever
+/// sent it: the buttons here, the console or a macro; homing Z again
+/// clears it.
 #[test]
 fn babystep_tracks_and_undoes_its_offset() {
     let mut h = connected();
@@ -564,11 +567,33 @@ fn babystep_tracks_and_undoes_its_offset() {
     click(&mut h, "0.01");
     click(&mut h, "Lower");
     wait_for_commands(&p, &["M290 Z-0.01"]);
-    h.run_ok();
+    wait_for(&p, "both babysteps", |s| (s.babystep_z - 0.09).abs() < 1e-4);
+    run_for(&mut h, Duration::from_millis(50));
     assert!(h.query_by_label("+0.090 mm").is_some());
+    // From the console.
+    p.send("M290 Z0.02");
+    wait_for(&p, "the typed babystep", |s| {
+        (s.babystep_z - 0.11).abs() < 1e-4
+    });
+    run_for(&mut h, Duration::from_millis(50));
+    assert!(h.query_by_label("+0.110 mm").is_some());
     clear(&h);
-    click(&mut h, "Undo all babystepping (M290 Z-0.09)");
-    wait_for_commands(&p, &["M290 Z-0.09"]);
+    click(&mut h, "Undo all babystepping (M290 Z-0.11)");
+    wait_for_commands(&p, &["M290 Z-0.11"]);
+    wait_for(&p, "the undo", |s| s.babystep_z.abs() < 1e-4);
+    run_for(&mut h, Duration::from_millis(50));
+    assert!(h.query_by_label("0.000 mm").is_some());
+    // Homing Z drops the babysteps.
+    click(&mut h, "Raise");
+    wait_for(&p, "a babystep", |s| s.babystep_z > 0.005);
+    p.home(sprint_host::Axes::Z);
+    wait_for(&p, "the homing", |s| s.babystep_z == 0.0);
+    run_for(&mut h, Duration::from_millis(50));
+    assert!(h.query_by_label("0.000 mm").is_some());
+    assert!(
+        h.query_by_label_contains("Undo all babystepping").is_none(),
+        "nothing to undo"
+    );
 }
 
 #[test]

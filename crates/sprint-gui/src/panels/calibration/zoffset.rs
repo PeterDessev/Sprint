@@ -1,6 +1,13 @@
 //! Z offset / first layer wizard: babystep live while watching the first
 //! layer (or a sheet of paper), then make the adjustment permanent in the
 //! probe offset (M851 Z) or the home offset (M206 Z).
+//!
+//! The babystepping counted is the printer state's
+//! ([`PrinterState::babystep_z`]): every acknowledged babystep, from here,
+//! the controls, the console or the print, since the counter was last
+//! reset or the adjustment applied. Homing Z, a reset, a halt or a new
+//! connection make the printer forget its babysteps, and the count starts
+//! over.
 
 use egui::{Align, Layout, RichText, Ui};
 
@@ -12,7 +19,7 @@ use crate::insight::calibrate::{
 use crate::insight::{format, ui as kit};
 use crate::theme::{self, TextRole, Tone};
 use crate::widgets::{ActionButton, Card, IconButton, SegmentedControl};
-use sprint_host::Axes;
+use sprint_host::{Axes, PrinterState};
 
 /// How to use the wizard.
 const GUIDANCE: &str = concat!(
@@ -58,13 +65,26 @@ const RESET_TIP: &str = "Forget the babystepping counted so far (does not move t
 /// Babystep sizes offered (mm).
 pub const BABYSTEP_SIZES: [f32; 4] = [0.01, 0.025, 0.05, 0.1];
 
+/// The babystepping counted from `mark` when the printer reports
+/// `babystep_z` in all (mm, rounded to the micron: the accumulated reports
+/// carry float noise). A printer that forgot its babysteps (exactly zero)
+/// counts none.
+pub fn counted_babystep(babystep_z: f32, mark: f32) -> f32 {
+    if babystep_z == 0.0 || !babystep_z.is_finite() || !mark.is_finite() {
+        return 0.0;
+    }
+    ((babystep_z - mark) * 1000.0).round() / 1000.0
+}
+
 /// The Z offset wizard.
 #[derive(Debug)]
 pub struct ZOffsetWizard {
     /// Babystep size (mm).
     step: f32,
-    /// Babystepping sent since the baseline (mm; negative = closer).
-    total: f32,
+    /// The printer's babystepping ([`PrinterState::babystep_z`]) the count
+    /// starts from (mm): what it was when the counter was reset or the
+    /// adjustment applied.
+    mark: f32,
     /// The offset the babystepping is relative to, captured on the first
     /// babystep.
     baseline: Option<(ZOffsetSource, f32)>,
@@ -74,7 +94,7 @@ impl Default for ZOffsetWizard {
     fn default() -> Self {
         ZOffsetWizard {
             step: 0.025,
-            total: 0.0,
+            mark: 0.0,
             baseline: None,
         }
     }
@@ -82,23 +102,35 @@ impl Default for ZOffsetWizard {
 
 impl ZOffsetWizard {
     /// Status for the wizard list.
-    pub fn status(&self) -> Option<(String, Tone)> {
-        (self.total.abs() > 1e-4).then(|| {
+    pub fn status(&self, state: &PrinterState) -> Option<(String, Tone)> {
+        let total = self.total(state);
+        (total.abs() > 1e-4).then(|| {
             (
-                format!("{} mm", format::signed(f64::from(self.total), 3)),
+                format!("{} mm", format::signed(f64::from(total), 3)),
                 Tone::Accent,
             )
         })
     }
 
-    /// Babystepping accumulated since the last apply (mm).
-    pub fn total(&self) -> f32 {
-        self.total
+    /// Babystepping since the counter was reset or the adjustment applied
+    /// (mm; negative = closer).
+    pub fn total(&self, state: &PrinterState) -> f32 {
+        counted_babystep(state.babystep_z, self.mark)
+    }
+
+    /// Follow the printer: babysteps it forgot (homing Z, a reset, a halt,
+    /// a new connection) no longer count.
+    fn observe(&mut self, state: &PrinterState) {
+        if state.babystep_z == 0.0 {
+            self.mark = 0.0;
+        }
     }
 
     /// Draw the wizard.
     pub fn ui(&mut self, ui: &mut Ui, ctx: &mut AppCtx<'_>) {
+        self.observe(ctx.state);
         let state = ctx.state;
+        let total = self.total(state);
         let source = z_offset_source(&state.settings);
         let p = theme::ui_palette(ui);
         Card::new("Z offset and first layer")
@@ -151,7 +183,7 @@ impl ZOffsetWizard {
                     Some((s, b)) if s == src => b,
                     _ => z,
                 };
-                let new_z = z_offset_after_babystep(src, baseline, self.total);
+                let new_z = z_offset_after_babystep(src, baseline, total);
                 let changed = (new_z - z).abs() > 1e-4;
                 ui.horizontal(|ui| {
                     ui.label(
@@ -196,13 +228,18 @@ impl ZOffsetWizard {
                             // the babystep still in place the adjustment
                             // would count twice until the next homing.
                             ZOffsetSource::HomeOffset => {
-                                ctx.printer.babystep_z(-self.total);
+                                ctx.printer.babystep_z(-total);
                                 APPLIED_HOME_MESSAGE
                             }
                         };
-                        // Further babysteps count from the new offset.
+                        // Further babysteps count from the new offset: from
+                        // the printer's babystepping now, or once the take
+                        // back above is acknowledged, from what it leaves.
                         self.baseline = Some((src, new_z));
-                        self.total = 0.0;
+                        self.mark = match src {
+                            ZOffsetSource::Probe => state.babystep_z,
+                            ZOffsetSource::HomeOffset => state.babystep_z - total,
+                        };
                         ctx.toasts.success("Z offset applied").message(message);
                     }
                     if ui
@@ -230,10 +267,19 @@ impl ZOffsetWizard {
             });
     }
 
+    /// Send a babystep, capturing the offset it is relative to on the
+    /// first one.
+    fn babystep(&mut self, ctx: &AppCtx<'_>, mm: f32) {
+        if self.baseline.is_none() || self.total(ctx.state).abs() <= 1e-4 {
+            self.baseline = z_offset_source(&ctx.state.settings);
+        }
+        ctx.printer.babystep_z(mm);
+    }
+
     fn babystep_panel(&mut self, ui: &mut Ui, ctx: &mut AppCtx<'_>) {
         let p = theme::ui_palette(ui);
         let ready = ctx.command_blocker().is_none();
-        let source = z_offset_source(&ctx.state.settings);
+        let total = self.total(ctx.state);
         let mut step_by = None;
         egui::Frame::new()
             .fill(p.raised)
@@ -246,20 +292,13 @@ impl ZOffsetWizard {
                         ui.spacing_mut().item_spacing.y = 2.0;
                         kit::caption(ui, "BABYSTEPPED");
                         ui.label(
-                            RichText::new(format!(
-                                "{} mm",
-                                format::signed(f64::from(self.total), 3)
-                            ))
-                            .font(theme::font(ui, TextRole::Display))
-                            .color(if self.total.abs() > 1e-4 {
-                                p.accent
-                            } else {
-                                p.text
-                            }),
+                            RichText::new(format!("{} mm", format::signed(f64::from(total), 3)))
+                                .font(theme::font(ui, TextRole::Display))
+                                .color(if total.abs() > 1e-4 { p.accent } else { p.text }),
                         );
-                        let hint = if self.total < -1e-4 {
+                        let hint = if total < -1e-4 {
                             "nozzle closer to the bed"
-                        } else if self.total > 1e-4 {
+                        } else if total > 1e-4 {
                             "nozzle further from the bed"
                         } else {
                             "no adjustment yet"
@@ -324,7 +363,7 @@ impl ZOffsetWizard {
                 let mut buttons = |ui: &mut Ui| {
                     reset = ui
                         .add_enabled(
-                            self.total.abs() > 1e-6,
+                            total.abs() > 1e-4,
                             ActionButton::new("Reset counter")
                                 .ghost()
                                 .small()
@@ -360,7 +399,7 @@ impl ZOffsetWizard {
                     );
                 }
                 if reset {
-                    self.total = 0.0;
+                    self.mark = ctx.state.babystep_z;
                     self.baseline = None;
                 }
                 if home {
@@ -368,11 +407,7 @@ impl ZOffsetWizard {
                 }
             });
         if let Some(mm) = step_by {
-            if self.baseline.is_none() {
-                self.baseline = source;
-            }
-            ctx.printer.babystep_z(mm);
-            self.total = ((self.total + mm) * 1000.0).round() / 1000.0;
+            self.babystep(ctx, mm);
         }
     }
 }
@@ -384,8 +419,39 @@ mod tests {
     #[test]
     fn status_shows_the_total() {
         let mut w = ZOffsetWizard::default();
-        assert_eq!(w.status(), None);
-        w.total = -0.05;
-        assert_eq!(w.status().map(|s| s.0), Some("\u{2212}0.050 mm".to_owned()));
+        let mut state = PrinterState::default();
+        assert_eq!(w.status(&state), None);
+        state.babystep_z = -0.05;
+        assert_eq!(
+            w.status(&state).map(|s| s.0),
+            Some("\u{2212}0.050 mm".to_owned())
+        );
+        // Counted from the reset counter.
+        w.mark = -0.05;
+        assert_eq!(w.status(&state), None);
+        state.babystep_z = -0.075;
+        assert_eq!(w.total(&state), -0.025);
+    }
+
+    #[test]
+    fn babysteps_count_from_the_mark_until_the_printer_forgets_them() {
+        // Float noise from the accumulated reports reads as the micron.
+        let mut z = 0.0_f32;
+        for _ in 0..4 {
+            z += 0.025;
+        }
+        assert_eq!(counted_babystep(z, 0.0), 0.1);
+        assert_eq!(counted_babystep(z, 0.05), 0.05);
+        // Homing Z (or a reset) zeroes the printer's babystepping: nothing
+        // counts, whatever the mark.
+        assert_eq!(counted_babystep(0.0, 0.05), 0.0);
+        assert_eq!(counted_babystep(f32::NAN, 0.0), 0.0);
+        let mut w = ZOffsetWizard {
+            mark: 0.05,
+            ..ZOffsetWizard::default()
+        };
+        let state = PrinterState::default();
+        w.observe(&state);
+        assert_eq!(w.mark, 0.0);
     }
 }
