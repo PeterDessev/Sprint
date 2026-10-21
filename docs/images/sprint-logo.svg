@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- The Sprint application icon (crates/sprint-gui/src/app_icon.rs) as SVG. -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="12" x2="0" y2="244" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ff9242"/>
+      <stop offset="1" stop-color="#e85c0a"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0" y1="12" x2="0" y2="244" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fff" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#fff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <rect x="12" y="12" width="232" height="232" rx="52" fill="url(#tile)"/>
+  <path fill="url(#rim)" fill-rule="evenodd" d="M64 12H192A52 52 0 0 1 244 64V192A52 52 0 0 1 192 244H64A52 52 0 0 1 12 192V64A52 52 0 0 1 64 12Z M64 18A46 46 0 0 0 18 64V192A46 46 0 0 0 64 238H192A46 46 0 0 0 238 192V64A46 46 0 0 0 192 18Z"/>
+  <g fill="#fffaf4">
+    <rect x="84" y="48" width="88" height="52" rx="9"/>
+    <path d="M96 98H160L138 146H118Z"/>
+    <rect x="118" y="144" width="20" height="16" rx="3"/>
+  </g>
+  <path d="M52.00 197.34 L55.17 199.29 L58.33 200.89 L61.50 202.06 L64.67 202.78 L67.83 203.00 L71.00 202.72 L74.17 201.96 L77.33 200.73 L80.50 199.09 L83.67 197.10 L86.83 194.84 L90.00 192.40 L93.17 189.86 L96.33 187.32 L99.50 184.89 L102.67 182.66 L105.83 180.71 L109.00 179.11 L112.17 177.94 L115.33 177.22 L118.50 177.00 L121.67 177.28 L124.83 178.04 L128.00 179.27 L131.17 180.91 L134.33 182.90 L137.50 185.16 L140.67 187.60 L143.83 190.14 L147.00 192.68 L150.17 195.11 L153.33 197.34 L156.50 199.29 L159.67 200.89 L162.83 202.06 L166.00 202.78 L169.17 203.00 L172.33 202.72 L175.50 201.96 L178.67 200.73 L181.83 199.09 L185.00 197.10 L188.17 194.84 L191.33 192.40 L194.50 189.86 L197.67 187.32 L200.83 184.89 L204.00 182.66" fill="none" stroke="#fffaf4" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="94" y="71" width="68" height="6" rx="3" fill="#d6540c" fill-opacity="0.55"/>
+</svg>
