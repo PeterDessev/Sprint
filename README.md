@@ -1,47 +1,103 @@
 # Sprint
 
-A fast, modern 3D-printer host written in Rust: a replacement for
-[Printrun](https://github.com/kliment/Printrun) (Pronterface and pronsole)
-with a desktop GUI, a full-screen terminal UI, a pronsole-style shell,
-scriptable command-line commands and a built-in virtual printer.
+**A fast, modern 3D-printer host written in Rust.** One self-contained
+program that replaces [Printrun](https://github.com/kliment/Printrun)
+(Pronterface and pronsole) with a GPU-rendered desktop GUI, a terminal UI
+that runs over SSH, a pronsole-style shell, scriptable command-line tools
+and a built-in virtual printer.
+
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+[![Rust 1.95+](https://img.shields.io/badge/rust-1.95%2B-orange.svg?logo=rust)](https://www.rust-lang.org/tools/install)
 
 ![Sprint printing a calibration cube on the virtual printer](docs/images/gui-printing.png)
 
-## Features
+Load a big G-code file in a moment and fly around it in 3D, get a print-time
+estimate from a planner that thinks like your firmware, then stream it over
+USB serial or TCP with resends, recovery and an emergency stop that is
+always in reach. No printer at hand? Sprint has a virtual Marlin
+board built in, so every feature works without hardware.
 
-* **Loads big files quickly and shows them on the GPU.** Lit 3D beads or
-  lines, a layer view, colors by feature, speed, width, layer height, tool,
-  fan, layer or time, layer ranges, scrubbing through a layer's moves, and
-  live print progress with the tool head. Slicer metadata and thumbnails
-  from PrusaSlicer, SuperSlicer, OrcaSlicer, Bambu Studio, Cura and others.
-* **Close print-time estimates** from a planner that models acceleration,
-  junction deviation or jerk and look-ahead the way the firmware does,
-  plus filament use, part size and per-feature statistics.
-* **Streams reliably** over USB serial or TCP: line numbers and checksums,
-  resends, recovery from lost replies, baud-rate auto-detection, and
-  several commands in flight when the firmware keeps up.
-* **Pause, resume, cancel and recover.** Templated pause, resume and cancel
-  scripts, start from any line or layer with a generated resume preamble,
-  recover a failed print from the line where it stopped, pause at a layer,
-  skip objects while printing (`M486`, Klipper `EXCLUDE_OBJECT`, slicer
-  object labels), SD-card printing and uploads.
-* **Shows far more about the printer**: firmware and capabilities, every
-  setting from M503 with descriptions, endstops, lifetime statistics,
-  thermal stability, link quality, the bed mesh as a heatmap and 3D
-  surface.
-* **Tunes the printer**: a catalog-driven settings and EEPROM editor,
-  calibration wizards for PID autotune, extruder E-steps, Z offset and
-  flow, a bed-screw helper, live speed, flow, fan and babystepping.
-* **Four front ends, one engine**: the GUI, a terminal UI that runs over
-  SSH, a shell with pronsole's commands, and headless `print`, `send` and
-  `analyze` commands for scripts. A raw G-code console is everywhere.
-* **Safe by default**: an always-visible emergency stop, one set of rules
-  for which commands need a confirmation, files that are not G-code are
-  never streamed, and Sprint never connects to a printer you did not
-  choose.
-* **A virtual printer** (a simulated Marlin 2.1 board with heaters, a
-  planner, an SD card, a bed mesh, host prompts and fault injection) to try
-  everything without hardware, also served over TCP for other hosts.
+**Tested on a real printer.** Sprint has run on a Marlin bugfix-2.1.x
+delta over a CP210x USB serial link at 250000 baud: baud-rate
+auto-detection, firmware, temperature, position, settings and endstop
+reports, homing with `busy:` keepalives, jogging, an `M109` heat wait, a
+board reset over DTR with reconnect, and a print (in the air) with pause,
+resume and cancel, all with zero resends, errors or timeouts. On that board
+it streamed about 775 lines/s with one command in flight and about
+1700 lines/s with four.
+
+## What's inside
+
+### A desktop GUI
+
+The full workbench: a connection bar with printer profiles and an
+always-visible **E-STOP**, temperature, jog, extrusion and live-tuning
+controls (speed, flow, fan, babystepping), macros, and a console with
+filters, history and G-code completion. Tabs show the 3D and layer view,
+the G-code text with a reference on hover, the temperature graph, everything
+the firmware reports about itself, a settings and EEPROM editor for every
+`M503` setting, calibration wizards (PID autotune, extruder E-steps,
+Z offset, flow), the bed mesh as a heatmap and 3D surface with a bed-screw
+helper, and the SD card. Dark and light themes, drag and drop, keyboard
+shortcuts.
+
+### A terminal UI
+
+`sprint tui` puts temperatures, position, job progress, a Braille layer
+view that follows the print, the console, jogging and a command palette in
+a full-screen terminal interface: handy over SSH to the computer next to
+the printer.
+
+### A pronsole-style shell
+
+`sprint shell` accepts most pronsole commands as they are, with history,
+completion, a G-code reference in `help`, macros with arguments
+(`{0}`, `{1=200}`, `{args}`) and printer profiles. Commands can come from
+a file, a pipe or `-e`, so the shell runs scripts too.
+
+### Command-line tools for scripts
+
+* `sprint print` prints a file headless, with progress, exit codes and
+  recovery: a failed print reports the line to resume from with
+  `--start-line`.
+* `sprint send` sends commands and prints the replies; its exit status
+  tells a script whether every command was acknowledged.
+* `sprint analyze` reports a file's statistics, or prints them as JSON.
+* `sprint ports` lists serial ports without opening them.
+* `sprint sim` serves the virtual printer over TCP for other hosts.
+
+### A built-in virtual printer
+
+A simulated Marlin 2.1 board with a thermal model, planner timing, an SD
+card, a bed mesh, PID autotune, host prompts and fault injection (corrupted
+lines, lost replies). Connect to `sim` from any front end and everything
+works as it would on a printer, faster than real time if you like.
+
+### G-code analysis and preview
+
+* A GPU toolpath viewer that handles millions of segments: lit 3D beads or
+  lines, a layer view, colour by feature, speed, width, layer height, tool,
+  fan, layer or time, layer ranges, scrubbing through a layer's moves and
+  picking a move to find it in the G-code text. During a print the printed
+  part is solid, the rest ghosted, and the tool head follows along.
+* Print-time estimates from a kinematic planner with acceleration,
+  junction deviation or jerk and look-ahead, using the firmware's limits,
+  plus filament use, part size and per-feature time and filament.
+* Slicer metadata and thumbnails from PrusaSlicer, SuperSlicer,
+  OrcaSlicer, Bambu Studio, Cura, Simplify3D, ideaMaker and KISSlicer.
+
+![A close-up of a calibration cube in the 3D view](docs/images/viewer-closeup.jpg)
+
+### Printing that recovers
+
+Templated pause, resume and cancel scripts; start from any line or layer
+with a generated resume preamble; recover a failed print from the first
+line the printer did not confirm; pause at a layer (`;@pause` works too);
+skip objects mid-print (`M486`, Klipper `EXCLUDE_OBJECT`, PrusaSlicer and
+Cura object labels); SD-card printing and uploads; firmware host prompts
+(`M876`) answered from any front end.
+
+## A closer look
 
 | | |
 |---|---|
@@ -54,122 +110,158 @@ scriptable command-line commands and a built-in virtual printer.
 
 ## Quick start
 
-Sprint builds with the stable Rust toolchain (1.95 or newer):
+There are no pre-built binaries yet; Sprint builds from source with the
+stable Rust toolchain, 1.95 or newer ([install Rust](https://www.rust-lang.org/tools/install)):
 
 ```bash
 cargo build --release
 ```
 
-The binary is `target/release/sprint` (`sprint.exe` on Windows). Put it on
-your `PATH`, or run the commands below as `cargo run --release -- <args>`.
+On Linux, install the libudev development files first (`libudev-dev` on
+Debian and Ubuntu, `systemd-devel` on Fedora).
 
-Open the GUI, optionally with a file:
+The result is one program, `target/release/sprint` (`sprint.exe` on
+Windows), with every front end inside. Put it on your `PATH`, or run the
+commands below as `cargo run --release -- <args>`.
 
-```bash
-sprint
-sprint samples/calibration-cube.gcode
-```
-
-Try everything on the built-in virtual printer:
+### Try it on the virtual printer
 
 ```bash
-sprint --sim                     # the GUI, connected to the virtual printer
-sprint gui --sim samples/calibration-cube.gcode
-sprint tui --connect sim         # the full-screen terminal UI
-sprint shell --connect sim       # the pronsole-style shell (type help)
-sprint analyze samples/calibration-cube.gcode
-sprint print samples/calibration-cube.gcode --connect sim
+sprint --sim samples/calibration-cube.gcode   # the GUI, connected, with a file
+sprint tui -c sim                              # the terminal UI
+sprint shell -c sim                            # the shell; type help
+sprint analyze samples/calibration-cube.gcode  # statistics and estimate
 ```
 
-The virtual printer runs in real time, so the last command takes as long as
-the real print (about 18 minutes). Its options make it faster:
+The virtual printer runs in real time, so a print takes as long as it
+would on a printer. Its options speed it up:
 
 ```bash
-sprint print samples/calibration-cube.gcode --connect "sim://?time_scale=50&instant_moves=true"
+sprint print samples/calibration-cube.gcode -c "sim://?time_scale=50&instant_moves=true"
 ```
 
-`samples/` holds three generated files to play with: a PrusaSlicer-style
-calibration cube, a Cura-style vase and an arcs test (see
-[samples/README.md](samples/README.md)).
+`samples/` holds three generated files (a PrusaSlicer-style calibration
+cube, a Cura-style vase and an arcs test, see
+[samples/README.md](samples/README.md)). They were made for Cartesian
+printers with the origin at the front left, so check them before sending
+one to a real printer: on a delta or a smaller bed they are not safe as
+they are.
 
-## Connecting a real printer
+### Connect a printer
 
-List the serial ports (they are only enumerated, never opened):
+List the serial ports (they are only listed, never opened), then connect
+with a *target*:
 
 ```bash
 sprint ports
+sprint shell -c COM3@auto             # try the common baud rates
+sprint tui -c /dev/ttyUSB0@250000
+sprint send -c COM3 M115              # one command, print the reply
+sprint print part.gcode -c COM3@250000
 ```
-
-Then connect with a *target*: a port with an optional baud rate, a TCP
-address, or `sim`:
 
 | Target | Meaning |
 |---|---|
-| `COM3` | Serial port at 115200 baud |
-| `COM3@250000`, `/dev/ttyUSB0@250000` | Serial port at that baud rate |
+| `COM3`, `/dev/ttyUSB0` | Serial port at 115200 baud |
+| `COM3@250000` | Serial port at that baud rate |
 | `COM3@auto` | Try the common baud rates until the printer answers |
 | `tcp://192.168.1.50:23` | A serial-to-network bridge (ESP3D, ser2net, ...) |
 | `sim` | The built-in virtual printer |
 
-```bash
-sprint tui --connect COM3@auto
-sprint shell --connect /dev/ttyUSB0@115200
-```
-
 In the GUI, pick the port and baud rate in the connection bar and press
-**Connect**; **Tools > Printer profiles** stores the port, bed size, scripts
-and options per printer. The [user guide](docs/user-guide.md) covers
-profiles, the configuration file and troubleshooting.
+**Connect**; **Tools > Printer profiles** keeps the port, bed size, scripts
+and options of each printer. Sprint never connects on its own unless you
+turn on *Connect when Sprint starts* for a profile.
 
-## Safety
+## Sprint and Printrun
 
-* **Emergency stop.** The red **E-STOP** button in the GUI (always visible,
-  even above dialogs), F8 pressed twice in the terminal UI, or `M112` typed
-  anywhere sends M112 at once, ahead of everything queued. The firmware
-  halts and turns everything off. To go on, reset the board (Sprint offers
-  it after a halt; a serial board resets through DTR) or power-cycle it and
-  reconnect: Marlin does not accept `M999` after M112.
-* **Confirmations.** Every front end applies the same rules: dangerous
-  commands (factory reset, firmware restart, ...) ask before they are sent,
-  and commands that would ruin a running print (homing, moves, mode
-  changes, ...) ask or are refused while it prints. Jogging and extrusion
-  work while a host print is paused, since resuming restores the position
-  and modes.
-* **No surprise connections.** Sprint opens a port only when you connect,
-  or at startup when you turn on *Connect when Sprint starts*
-  (`auto_connect`) for a profile (off by default). Opening a serial port
-  resets many boards, which stops a print running from the printer's own
-  SD card.
-* **Unattended failures.** When a host print fails while the printer still
-  answers, Sprint turns the heaters and the part fan off (configurable per
-  profile).
-* **Not G-code, not printed.** STL, 3MF, OBJ and STEP models and binary
+| | Printrun | Sprint |
+|---|---|---|
+| Built with | Python, wxPython, OpenGL | Rust, egui on wgpu, ratatui |
+| Install | Python and its packages, or a bundled build | One self-contained program |
+| Front ends | Pronterface, pronsole, printcore | GUI, terminal UI, shell, headless `print` / `send` / `analyze`, the `sprint-host` library |
+| Virtual printer | None built in | A simulated Marlin 2.1 board with fault injection, also served over TCP |
+| Several commands in flight | No | Optional (`max_in_flight`) |
+| Start from a layer, recover a failed print | Partly | Generated resume preamble; resumes at the first unconfirmed line |
+| Print-time estimate | A simple acceleration model | A planner with junction deviation or jerk and look-ahead |
+| Settings, calibration, bed mesh | Settings through the console only | Settings editor, calibration wizards, mesh heatmap and bed-screw helper |
+| Safety rules for typed commands | No | One classifier for every front end |
+
+Printrun still does things Sprint does not, such as slicing from inside the
+host and a spool manager. The [full comparison](docs/printrun-comparison.md)
+goes feature by feature, and the [shell page](docs/shell.md#coming-from-pronsole)
+lists the pronsole commands that differ.
+
+## Safe by default
+
+* **Emergency stop.** The red **E-STOP** in the GUI (visible even above
+  dialogs), F8 twice in the terminal UI, or `M112` typed anywhere sends
+  `M112` at once, ahead of everything queued. Sprint then offers to reset
+  the board.
+* **Confirmations.** Every front end uses the same rules: dangerous
+  commands ask before they are sent, and commands that would ruin a
+  running print (homing, moves, mode changes, ...) ask or are refused while
+  it prints.
+* **No surprise connections.** Ports open only when you connect. Opening a
+  serial port resets many boards, which would stop a print running from
+  the printer's own SD card.
+* **Failures turn the heat off.** When a host print fails while the printer
+  still answers, Sprint turns the heaters and the part fan off
+  (configurable per profile).
+* **Only G-code is printed.** STL, 3MF, OBJ and STEP models and binary
   files are recognised and refused with an explanation.
+
+## Status
+
+Sprint [0.1.0](CHANGELOG.md) is the first release (2026-10-19). It is
+developed and hardware-tested on Windows with Marlin; it uses
+cross-platform crates throughout, and CI builds and tests it on Linux and
+macOS too. Only Marlin has been tried on a real printer so far; reports
+from other firmware are welcome.
+
+Not there yet (details in the [comparison](docs/printrun-comparison.md#what-sprint-does-not-do-yet)):
+
+* slicing from inside Sprint, and Printrun's plater;
+* a spool manager;
+* translations (Sprint is English only);
+* a network API for remote monitoring (hook commands can report job
+  events to other programs);
+* importing `.pronsolerc`;
+* round bed outlines in the viewer;
+* a communication log written to a file as it happens;
+* Python macros and plugins.
 
 ## Documentation
 
-* [User guide](docs/user-guide.md): the GUI, the terminal UI, the shell, the
-  command line, configuration, the virtual printer and troubleshooting.
+* [User guide](docs/user-guide.md): installing, the first steps,
+  connection targets, profiles and safety, with a page for each front end:
+  [GUI](docs/gui.md), [terminal UI](docs/tui.md), [shell](docs/shell.md)
+  and [command line](docs/cli.md).
+* [Configuration](docs/configuration.md): the TOML file, printer profiles,
+  scripts and placeholders, hook commands.
+* [The virtual printer](docs/virtual-printer.md): its options and fault
+  injection.
+* [Troubleshooting](docs/troubleshooting.md): connections, resends,
+  timeouts, halts and board resets.
 * [Sprint and Printrun](docs/printrun-comparison.md): a feature-by-feature
-  comparison, including what Sprint does not do yet.
+  comparison.
 * [Architecture](ARCHITECTURE.md): the crates and the contract between
   them.
 * [Changelog](CHANGELOG.md).
 
-## Development
+## Contributing
 
-The workspace has one crate per layer: `sprint-gcode` (parsing, analysis,
-estimation), `sprint-proto` (the firmware protocol), `sprint-sim` (the
-virtual printer), `sprint-host` (the engine), `sprint-viewer` (the GPU
-viewer), `sprint-gui`, `sprint-tui` and the `sprint` binary.
-[ARCHITECTURE.md](ARCHITECTURE.md) describes each of them.
+Bug reports and pull requests are welcome; [CONTRIBUTING.md](CONTRIBUTING.md)
+explains how to build, test and send changes. The workspace has one crate
+per layer: `sprint-gcode` (parsing, analysis, estimation), `sprint-proto`
+(the firmware protocol), `sprint-sim` (the virtual printer), `sprint-host`
+(the engine), `sprint-viewer` (the GPU viewer), `sprint-gui`, `sprint-tui`
+and the `sprint` binary. Tests use the virtual printer and never open a
+serial port:
 
 ```bash
 cargo test --workspace
 ```
-
-Tests, examples and demos use the virtual printer or TCP loopback to it and
-never open a serial port.
 
 ## License
 
