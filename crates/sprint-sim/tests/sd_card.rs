@@ -157,7 +157,7 @@ fn unnumbered_lines_are_rejected_while_writing() {
             "ok"
         ]
     );
-    // M29 is accepted without a line number (Pronterface does that).
+    // M29 is accepted without a line number (some hosts send it so).
     assert_eq!(h.command("M29"), vec!["Done saving file.", "ok"]);
     h.write(&frame(2, "M105"));
     assert!(h.until(PATIENCE, |l| l.starts_with("ok"))[0].starts_with("ok T:"));

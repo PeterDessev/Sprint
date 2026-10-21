@@ -1,7 +1,6 @@
 //! Job hooks: external commands run when a print starts, finishes, fails
-//! or is cancelled ([`PrinterProfile::on_start_command`] and friends;
-//! Printrun's start, final and error commands), for notifications, relays
-//! or logging. They run on their own thread, never blocking the engine;
+//! or is cancelled ([`PrinterProfile::on_start_command`] and friends),
+//! for notifications, relays or logging. They run on their own thread, never blocking the engine;
 //! their exit status and first lines of output go to the console (output
 //! is read for a second after the hook ends, not for as long as a program
 //! it started in the background keeps it open).

@@ -1,4 +1,4 @@
-//! The pronsole-style line shell: one command or G-code line at a time,
+//! The line shell: one command or G-code line at a time,
 //! with what the printer says printed above the prompt.
 //!
 //! On a terminal the line editor keeps a history (next to the
@@ -825,7 +825,7 @@ impl Shell {
 
     /// `macro define|edit <name> [gcode]`: save a macro; without G-code
     /// on the line, the lines that follow are its G-code, up to a blank
-    /// line (pronsole's way).
+    /// line.
     fn define_macro(
         &mut self,
         name: &str,
@@ -1064,7 +1064,7 @@ impl Shell {
         }
     }
 
-    /// `reset`: reset the board (pronsole's reset; [`Printer::reset_board`]:
+    /// `reset`: reset the board ([`Printer::reset_board`]:
     /// a DTR pulse on a serial port, a reboot of the virtual printer), the
     /// way to recover from an emergency stop, and wait until the printer
     /// is back. A network link cannot reset the board: the reason says
@@ -1407,7 +1407,7 @@ impl Shell {
                     Err(why) => self.out.error(why),
                 }
             }
-            // Asked for, as pronsole does: a target just set shows.
+            // Asked for: a target just set shows.
             Command::GetTemp => {
                 if self.request(
                     Awaited::Temperatures,

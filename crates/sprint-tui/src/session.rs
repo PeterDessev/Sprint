@@ -223,7 +223,7 @@ pub fn heaters_off(printer: &Printer, timeout: Duration) -> bool {
     .is_ok()
 }
 
-/// pronsole's `off`: every heater and fan off and the motors disabled
+/// `off`: every heater and fan off and the motors disabled
 /// (`M84`), without waiting. Returns the heaters turned off.
 pub fn everything_off(printer: &Printer) -> Vec<Heater> {
     let profile = printer.profile();

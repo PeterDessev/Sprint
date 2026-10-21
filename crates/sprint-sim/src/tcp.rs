@@ -1,5 +1,5 @@
-//! Serving the virtual printer over TCP so other hosts (Printrun,
-//! OctoPrint, Sprint itself) can connect to it.
+//! Serving the virtual printer over TCP so other hosts (OctoPrint,
+//! Sprint itself) can connect to it.
 
 use crate::config::SimConfig;
 use crate::link::{SimLink, spawn};

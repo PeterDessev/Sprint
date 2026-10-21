@@ -2723,7 +2723,7 @@ fn the_palette_lists_and_switches_profiles() {
 }
 
 #[test]
-fn the_palette_runs_pronsole_commands() {
+fn the_palette_runs_shell_commands() {
     let mut app = connected_app();
     received(&app);
     app.run_line("settemp pla");

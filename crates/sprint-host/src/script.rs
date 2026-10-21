@@ -24,7 +24,7 @@
 //! extrude relatively.
 //!
 //! Macros also take arguments, filled in before the placeholders above
-//! ([`expand_macro_args`], pronsole's syntax): `{0}`, `{1}`, ... are the
+//! ([`expand_macro_args`]): `{0}`, `{1}`, ... are the
 //! arguments in order, `{1=60}` gives a default, `{args}` is all of them.
 //! [`macro_args`] and [`macro_args_needed`] tell what a macro takes.
 
@@ -402,8 +402,8 @@ pub fn macro_args_needed(text: &str) -> usize {
         .unwrap_or(0)
 }
 
-/// Fill a macro's arguments in, as pronsole (and Sprint's shell and TUI
-/// `macro` command) does: `{0}`, `{1}`, ... are the arguments in order,
+/// Fill a macro's arguments in, as the shell's and the TUI's `macro`
+/// command does: `{0}`, `{1}`, ... are the arguments in order,
 /// `{1=200}` gives a default, `{args}` is all of them separated by
 /// spaces (empty without arguments). Whitespace around the name is
 /// allowed (`{ 0 }`). Every other `{...}` (the machine-state
@@ -630,7 +630,7 @@ mod tests {
     }
 
     #[test]
-    fn macro_arguments_like_pronsole() {
+    fn macro_arguments() {
         // The cases of the shell's and the TUI's `macro` command.
         let heat = "M104 S{0}\nM140 S{1=60}\nM117 {args} at {x}";
         assert_eq!(

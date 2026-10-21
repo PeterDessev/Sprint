@@ -215,7 +215,7 @@ pub fn remove_macro(macros: &mut Vec<Macro>, name: &str) -> Option<Macro> {
     Some(macros.remove(index))
 }
 
-/// A macro's G-code with its arguments filled in, as pronsole does:
+/// A macro's G-code with its arguments filled in:
 /// `{0}`, `{1}`, … are the arguments in order, `{1=200}` gives a default,
 /// and `{args}` is all of them. Other placeholders (`{x}`, `{max_z}`) are
 /// left for the machine-state ones the host fills in. Fails when an
@@ -1392,7 +1392,7 @@ mod tests {
     }
 
     #[test]
-    fn macros_take_arguments_like_pronsole() {
+    fn macros_take_arguments() {
         let heat = named("heat", "M104 S{0}\nM140 S{1=60}\nM117 {args} at {x}");
         assert_eq!(
             macro_gcode(&heat, &["210".into()]).as_deref(),

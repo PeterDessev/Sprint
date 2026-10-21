@@ -2384,7 +2384,7 @@ impl App {
                     Err(why) => self.error(why),
                 }
             }
-            // Asked for, as pronsole does: a target just set shows.
+            // Asked for: a target just set shows.
             Command::GetTemp => {
                 printer.request_temperatures();
                 let pending = Pending::new(REPORT_TIMEOUT, false);

@@ -4,7 +4,7 @@
 //! * [`run_tui`]: the full-screen terminal UI (temperatures, position,
 //!   job, a Braille layer view following the print, the console and a
 //!   G-code line), driven by function keys and a command palette;
-//! * [`run_shell`]: the pronsole-style line shell (history, completion,
+//! * [`run_shell`]: the line shell (history, completion,
 //!   printer output above the prompt, scripts from standard input);
 //! * [`theme`]: the Sprint palette for true-color, 256-color, 16-color and
 //!   colorless (`NO_COLOR`) terminals;
@@ -72,7 +72,7 @@ pub struct TuiOptions {
     /// configuration file is not changed.
     pub profile: Option<String>,
     /// The shell only: commands to run instead of reading standard input
-    /// (pronsole's `-e`); the shell then leaves as at the end of a script,
+    /// (`-e`); the shell then leaves as at the end of a script,
     /// after the queued commands and a running print.
     pub execute: Vec<String>,
 }

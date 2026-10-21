@@ -146,7 +146,7 @@ mod tests {
 
     #[test]
     fn checksum_of_known_lines() {
-        // Values cross-checked against Printrun/OctoPrint output.
+        // Values cross-checked against other hosts' output.
         assert_eq!(checksum(""), 0);
         assert_eq!(checksum("N0 M110 N0"), 125);
         assert_eq!(checksum("N1 G28"), 18);

@@ -98,7 +98,7 @@ pub(super) enum HostCommand {
 
 impl HostCommand {
     /// The host command of a raw file line: OctoPrint's `@pause`,
-    /// `@cancel` and `@abort`, Printrun's `;@pause`. `;@` lines are
+    /// `@cancel` and `@abort`, and `;@pause`. `;@` lines are
     /// comments, so only the ones Sprint knows count; every `@` line is a
     /// host command (the firmware would answer "Unknown command").
     pub(super) fn parse(raw: &str) -> Option<HostCommand> {

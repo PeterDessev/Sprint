@@ -607,7 +607,7 @@ fn the_job_names_the_file_it_streams() {
 
 #[test]
 fn the_profile_can_report_progress_on_the_printer() {
-    // Pronterface's persistent "Display progress on printer": every front
+    // A persistent "progress on the printer's display" setting: every front
     // end gets it from the profile, without a per-print option.
     let mut sim = fast_sim(50.0);
     sim.instant_moves = false;

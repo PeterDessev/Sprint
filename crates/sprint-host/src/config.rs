@@ -232,9 +232,8 @@ pub struct PrinterProfile {
     /// Run when a host print is cancelled.
     pub cancel_script: String,
     /// Show host prints' progress on the printer's display: `M73 P<pct>
-    /// R<min>` whenever the percentage changes (Pronterface's "Display
-    /// progress on printer"). A print sends it when this or
-    /// [`PrintOptions::emit_progress`](crate::PrintOptions::emit_progress)
+    /// R<min>` whenever the percentage changes. A print sends it when this
+    /// or [`PrintOptions::emit_progress`](crate::PrintOptions::emit_progress)
     /// is set. Default false.
     pub emit_progress: bool,
     /// Shell command run when a print (host or SD) starts; empty =
@@ -243,17 +242,16 @@ pub struct PrinterProfile {
     /// `SPRINT_STATUS` (started, completed, failed, cancelled),
     /// `SPRINT_ELAPSED_SECS`, `SPRINT_PRINTER` (profile name) and, for
     /// failures, `SPRINT_REASON` in the environment; the exit status
-    /// and the first lines of output go to the console. Printrun's start
-    /// command. Quote the variables (`"%SPRINT_FILE%"` for cmd,
-    /// `"$SPRINT_FILE"` for sh): a file name such as `a & b.gcode`, a
-    /// profile name or a failure reason may hold characters the shell
-    /// would otherwise act on.
+    /// and the first lines of output go to the console. Quote the variables
+    /// (`"%SPRINT_FILE%"` for cmd, `"$SPRINT_FILE"` for sh): a file name
+    /// such as `a & b.gcode`, a profile name or a failure reason may hold
+    /// characters the shell would otherwise act on.
     pub on_start_command: String,
-    /// Shell command run when a print completes (Printrun's final
-    /// command); see [`PrinterProfile::on_start_command`].
+    /// Shell command run when a print completes; see
+    /// [`PrinterProfile::on_start_command`].
     pub on_finish_command: String,
-    /// Shell command run when a print fails (Printrun's error command);
-    /// see [`PrinterProfile::on_start_command`].
+    /// Shell command run when a print fails; see
+    /// [`PrinterProfile::on_start_command`].
     pub on_fail_command: String,
     /// Shell command run when a print is cancelled; see
     /// [`PrinterProfile::on_start_command`].

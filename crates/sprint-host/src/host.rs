@@ -683,8 +683,8 @@ impl Printer {
         self.command(Command::PauseAt(lines.to_vec()));
     }
 
-    /// Stop printing one object of the running host print (cancel object,
-    /// Printrun's Excluder): the moves, extrusions, retractions and primes
+    /// Stop printing one object of the running host print (cancel
+    /// object): the moves, extrusions, retractions and primes
     /// of its parts not streamed yet are left out, and after each of them
     /// the printer travels to where the file is (with `G92 E` for absolute
     /// extrusion). `name` is one of
