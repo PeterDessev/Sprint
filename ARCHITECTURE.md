@@ -1,11 +1,10 @@
 # Sprint architecture
 
-Sprint is a 3D-printer host in Rust: a modern replacement for Printrun
-(Pronterface / pronsole). It loads and visualizes G-code, streams it to a
-printer over serial or TCP, exposes the printer's firmware state and
-settings in detail, offers tuning and calibration tools, and has a GUI, a
-full-screen terminal UI, a line-mode shell and scriptable CLI commands —
-while always allowing raw G-code to be sent.
+Sprint is a fast, modern 3D-printer host in Rust. It loads and visualizes
+G-code, streams it to a printer over serial or TCP, exposes the printer's
+firmware state and settings in detail, offers tuning and calibration
+tools, and has a GUI, a full-screen terminal UI, a line-mode shell and
+scriptable CLI commands — while always allowing raw G-code to be sent.
 
 This document is the **contract between crates**. Public items listed here
 must exist with these names and meanings. Crates may add more public API;
@@ -36,13 +35,13 @@ crates/
   sprint-viewer  wgpu toolpath renderer as an egui widget (3D orbit view and
                  2D layer view), offscreen MSAA rendering, picking, legends.
   sprint-gui     eframe desktop app.
-  sprint-tui     ratatui full-screen UI and a pronsole-style line shell.
+  sprint-tui     ratatui full-screen UI and a line-mode shell.
   sprint         The `sprint` binary: clap subcommands that dispatch to the
                  GUI, TUI, shell and headless commands.
 samples/         Generated sample G-code files (see sprint-gcode examples).
 docs/            The user guide (GUI, TUI, shell, CLI, configuration,
-                 virtual printer, troubleshooting), the Printrun comparison
-                 and the screenshots they use (docs/images/).
+                 virtual printer, troubleshooting) and the screenshots
+                 they use (docs/images/).
 README.md, CHANGELOG.md, LICENSE-MIT, LICENSE-APACHE
 ```
 
@@ -929,7 +928,7 @@ pub struct SimSnapshot {
 }
 
 /// Serve the virtual printer over TCP (one client at a time) so other hosts,
-/// including Printrun or OctoPrint, can connect to it. Blocks.
+/// such as OctoPrint, can connect to it. Blocks.
 pub fn serve_tcp(addr: &str, config: SimConfig) -> std::io::Result<()>;
 /// The same on a background thread (dropping it stops it).
 pub struct SimServer;
@@ -1271,7 +1270,7 @@ pub struct PrinterProfile {
     pub cancel_script: String,
     pub emit_progress: bool,             // default false: host prints send M73 P R (as if PrintOptions::emit_progress)
     pub on_start_command: String,        // hooks (empty = none): shell commands run when a print (host or SD) starts,
-    pub on_finish_command: String,       //   completes, fails or is cancelled (Printrun's start/final/error commands);
+    pub on_finish_command: String,       //   completes, fails or is cancelled;
     pub on_fail_command: String,         //   env SPRINT_FILE, SPRINT_STATUS, SPRINT_ELAPSED_SECS, SPRINT_PRINTER (+ SPRINT_REASON
     pub on_cancel_command: String,       //   for failures); helper thread, `cmd /C` / `sh -c`, 2 min limit; result to the console
     pub keep_heaters_on_failure: bool,   // default false: a host print the engine gives up on gets every heater and the fan switched off
@@ -1296,7 +1295,7 @@ impl ScriptContext<'_> { pub fn new(state: &MachineState) -> ScriptContext<'_>; 
 pub fn render_script_with(template: &str, ctx: &ScriptContext<'_>) -> Vec<String>;
 /// "M104 S0" (one "M104 T<n> S0" per hotend when there are several), "M140 S0" with `bed`, "M141 S0" with `chamber`.
 pub fn heaters_off(hotends: u8, bed: bool, chamber: bool) -> Vec<String>;
-/// Macro arguments (pronsole's syntax, as the shell's and TUI's `macro` command): `{0}`, `{1}`, ... in order,
+/// Macro arguments (as the shell's and TUI's `macro` command writes them): `{0}`, `{1}`, ... in order,
 /// `{1=60}` with a default, `{args}` all of them joined by spaces; other `{...}` stay for render_script_with.
 pub enum MacroArg { Index { index: usize, default: Option<String> }, All }
 pub enum MacroArgsError { Missing { needed: usize, given: usize }, Unexpected { given: usize } } // Display + Error
@@ -1586,7 +1585,7 @@ Every public item is also re-exported at the crate root.
   feedrate>` and, for absolute extrusion, `G92 E<file E>` (in absolute mm,
   the file's modes restored after).
   Host commands in the file are never sent to the firmware: `@pause` and
-  Printrun's `;@pause` pause the job there (pause script), `@cancel` and
+  `;@pause` pause the job there (pause script), `@cancel` and
   `@abort` cancel it, other `@...` lines are reported and skipped (uploads
   leave them all out). Pause points (`pause_at_lines`) act like `;@pause`
   before their line.
@@ -1924,10 +1923,10 @@ pub struct TuiOptions {
     pub file: Option<PathBuf>,            // G-code file to load at startup
     pub connect: Option<ConnectTarget>,   // without one, only a profile with auto_connect connects
     pub profile: Option<String>,          // profile name, unique prefix or 1-based number; the file is not changed
-    pub execute: Vec<String>,             // shell only: commands to run instead of stdin (pronsole's -e)
+    pub execute: Vec<String>,             // shell only: commands to run instead of stdin (-e)
 }
 pub fn run_tui(options: TuiOptions) -> anyhow::Result<()>;   // full-screen ratatui app
-pub fn run_shell(options: TuiOptions) -> anyhow::Result<()>; // pronsole-style line shell
+pub fn run_shell(options: TuiOptions) -> anyhow::Result<()>; // line-mode shell
 pub use theme::{ColorSupport, Theme}; pub use widgets::*;
 ```
 
@@ -1979,10 +1978,11 @@ Behaviour contract:
   with `[y/N]`; a script (stdin or `-e`) never asks: G-code it sends on
   purpose is sent, a line that would disturb a running print is skipped,
   and `eeprom reset` needs `yes`. M112 is never asked about.
-* The shell's commands are listed in `docs/shell.md`; besides pronsole's
-  they include `reset` (`Printer::reset_board`), `recover` (start again
-  at `JobInfo::stopped_at` with `resume_preamble`), `objects`, `exclude`
-  and `include`. At the end of a script the shell waits for the queue and
+* The shell's commands are listed in `docs/shell.md`; besides connecting,
+  printing, temperatures, moves, the SD card and macros, they include
+  `reset` (`Printer::reset_board`), `recover` (start again at
+  `JobInfo::stopped_at` with `resume_preamble`), `objects`, `exclude` and
+  `include`. At the end of a script the shell waits for the queue and
   a running print, and cancels a print the script left paused.
 * The TUI hides automatic traffic and streamed print lines in its console
   by default (`ConsoleEntry::stream`).
@@ -2049,7 +2049,7 @@ sprint [FILE] [--sim]                         the GUI (default)
 sprint gui [FILE] [--sim] [--connect T]       the GUI
 sprint tui [FILE] [-c T] [-p NAME]            full-screen terminal UI
 sprint shell [FILE] [-e CMD]... [-c T] [-p NAME]
-                                              pronsole-style shell (stdin or -e scripts)
+                                              line-mode shell (stdin or -e scripts)
 sprint print FILE -c T|profile [-p NAME] [--start-line N [--board-reset]
              [--z-clearance MM] [--no-wait-temps]] [--pause-at-layer L]
              [--progress-on-printer] [--no-progress] [--answer-prompts ask|continue]

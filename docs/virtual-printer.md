@@ -96,9 +96,9 @@ Quote the target in shells where `&` and `?` mean something.
 ## Serving it over TCP
 
 `sprint sim` runs the virtual printer as a TCP server so that another
-program can connect to it: Pronterface, OctoPrint, a second Sprint, your
-own scripts. Each client gets a freshly booted printer, one client at a
-time.
+program can connect to it: another printer host such as OctoPrint, a
+second Sprint, your own scripts. Each client gets a freshly booted
+printer, one client at a time.
 
 ```bash
 sprint sim --tcp 127.0.0.1:5000 --time-scale 10
@@ -108,7 +108,7 @@ sprint sim --tcp 127.0.0.1:5000 --time-scale 10
 Virtual printer listening on 127.0.0.1:5000
   Sprint Virtual Printer, 1 extruder, time scale 10x
 Connect with:  sprint tui --connect tcp://127.0.0.1:5000
-          or:  Printrun/Pronterface, port 127.0.0.1:5000
+          or:  any host that connects over TCP, at 127.0.0.1:5000
 Each client gets a freshly booted printer. Press Ctrl+C to stop.
 ```
 

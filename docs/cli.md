@@ -67,7 +67,7 @@ The full-screen terminal UI; see [The terminal UI](tui.md).
 
 ## sprint shell
 
-The pronsole-style shell; see [The shell](shell.md).
+The interactive line shell; see [The shell](shell.md).
 
 | Option | Meaning |
 |---|---|
@@ -213,9 +213,9 @@ Connect with: sprint tui --connect COM10@115200 (or @250000, @auto)
 ## sprint sim
 
 Runs the virtual printer as a TCP server, for Sprint itself or for other
-hosts (Pronterface, OctoPrint, ...). Each client gets a freshly booted
-printer; one client at a time. It serves until Ctrl+C, and exits with an
-error if the listener fails.
+hosts (OctoPrint, ...). Each client gets a freshly booted printer; one
+client at a time. It serves until Ctrl+C, and exits with an error if the
+listener fails.
 
 ```bash
 sprint sim                                   # 127.0.0.1:5000, real time

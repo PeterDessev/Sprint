@@ -8,7 +8,7 @@ settings and calibration tools. One engine drives four front ends:
 |---|---|---|
 | [Desktop GUI](gui.md) | `sprint` or `sprint gui` | Everyday printing, viewing files, tuning and calibration |
 | [Terminal UI](tui.md) | `sprint tui` | A full-screen dashboard in a terminal, also over SSH |
-| [Shell](shell.md) | `sprint shell` | pronsole-style commands, typed or scripted |
+| [Shell](shell.md) | `sprint shell` | Commands and G-code, typed or scripted |
 | [Command line](cli.md) | `sprint print`, `send`, `analyze`, `ports`, `sim` | One-shot jobs and scripts |
 
 The other pages cover what they share:
@@ -20,8 +20,6 @@ The other pages cover what they share:
   printer and its fault injection.
 * [Troubleshooting](troubleshooting.md): connection problems, resends,
   timeouts, halts and board resets, Windows consoles.
-* [Sprint and Printrun](printrun-comparison.md): where Sprint differs from
-  Pronterface and pronsole.
 
 ## Installing
 

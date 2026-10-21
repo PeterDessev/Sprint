@@ -15,10 +15,10 @@ sprint shell -c COM3 < job.txt                # run a script from a pipe
 | `-c`, `--connect T` | Printer to connect to at startup (a [target](user-guide.md#connection-targets)) |
 | `-p`, `--profile NAME` | Use this printer profile instead of the active one (name, unique prefix or number) |
 
-The shell works like pronsole: type a command, or G-code, at the prompt.
-What the printer says is printed above the prompt as it arrives. The
-prompt shows the state: `sprint (offline)>`, `sprint (connecting)>`,
-`sprint>`, `sprint (halted)>`, or the job and its progress
+Type a command, or G-code, at the prompt. What the printer says is printed
+above the prompt as it arrives. The prompt shows the state:
+`sprint (offline)>`, `sprint (connecting)>`, `sprint>`,
+`sprint (halted)>`, or the job and its progress
 (`sprint [printing 42.0%]>`).
 
 ## Typing
@@ -49,7 +49,7 @@ prompt shows the state: `sprint (offline)>`, `sprint (connecting)>`,
 
 | Command | Does |
 |---|---|
-| `connect [target] [baud] [--save]` | Connect to a [target](user-guide.md#connection-targets) (`sim`, `COM3`, `/dev/ttyUSB0@250000`, `tcp://host:port`), or to the profile's printer without one. pronsole's `connect COM3 250000` works too. `--save` makes the target the profile's printer. |
+| `connect [target] [baud] [--save]` | Connect to a [target](user-guide.md#connection-targets) (`sim`, `COM3`, `/dev/ttyUSB0@250000`, `tcp://host:port`), or to the profile's printer without one. The port and the baud rate can also be given apart: `connect COM3 250000`. `--save` makes the target the profile's printer. |
 | `profile [name\|number]` (`profiles`) | List the printer profiles, or switch to one (saved as the active profile) |
 | `disconnect` | Close the connection |
 | `ports` | List the serial ports (they are not opened) |
@@ -148,12 +148,12 @@ sprint> macro define purge
 Saved macro purge (3 lines)
 ```
 
-Arguments work like pronsole's: `{0}`, `{1}`, ... are the arguments in
-order, `{1=200}` gives a default, and `{args}` is all of them. A macro
-whose arguments are missing is not sent. The [script
+In the G-code, `{0}`, `{1}`, ... are the arguments in order, `{1=200}`
+gives a default, and `{args}` is all of them. A macro whose arguments are
+missing is not sent. The [script
 placeholders](configuration.md#placeholders) (`{x}`, `{hotend}`,
-`{heaters_off}`, ...) are filled in from the printer's state when the macro
-runs. Quote a name with spaces: `macro define "level corners" ...`.
+`{heaters_off}`, ...) are filled in from the printer's state when the
+macro runs. Quote a name with spaces: `macro define "level corners" ...`.
 
 ## Scripts
 
@@ -180,22 +180,3 @@ sprint shell < job.txt
 ```
 
 `source` files may run other files, eight deep.
-
-## Coming from pronsole
-
-Most pronsole commands work as they did: `connect`, `load`, `print`,
-`pause`, `resume`, `settemp pla`, `bedtemp`, `gettemp`, `home e`, `move`,
-`extrude`, `reverse`, `tool`, `off`, `reset`, `monitor`, `eta`, `macro`,
-`block_until_online`, `exit`. These differ:
-
-| pronsole | Sprint | Why |
-|---|---|---|
-| `ls` | `sd ls` | List the SD card |
-| `sdprint` | `sd print` | Print a file from the SD card |
-| `upload` | `sd upload` | Write a file to the SD card |
-| `run_script` | (none) | Sprint does not run other programs; `source <file>` runs shell commands from a file |
-| `run_gcode_script` | (none) | Sprint does not run other programs; `source <file>` runs G-code and commands from a file |
-| `slice`, `skein` | (none) | Sprint does not slice: slice in your slicer, then load the G-code |
-| `loadrc` | (none) | Sprint reads no `.pronsolerc`: profiles, macros and presets live in the configuration file |
-| `set port`, `set baudrate` | `connect --save` | `set` changes firmware settings here; `profile` switches printers |
-| `!python` | `!G-code` | `!` sends the rest of the line to the printer as typed |

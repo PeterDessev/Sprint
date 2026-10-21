@@ -438,8 +438,7 @@ reset**.
 ### Hook commands and notifications
 
 A profile can run a program when a print starts, finishes, fails or is
-cancelled (Printrun's start, final and error commands), for example to
-send yourself a message or switch a relay. See
+cancelled, for example to send yourself a message or switch a relay. See
 [Configuration](configuration.md#hook-commands).
 
 ## Macros

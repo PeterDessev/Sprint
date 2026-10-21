@@ -17,8 +17,9 @@ detail, start Sprint from a terminal with `RUST_LOG=debug` (PowerShell:
   `dialout` group (`uucp` on some distributions), then log in again.
 
 **"Access denied" or "port busy".** Another program has the port open:
-Pronterface, a slicer's USB printing, OctoPrint, a serial monitor, a
-firmware updater. Close it; only one program can use a serial port.
+another printer host such as OctoPrint, a slicer's USB printing, a serial
+monitor, a firmware updater. Close it; only one program can use a serial
+port.
 
 **Nothing answers, or the console fills with garbage.** The baud rate is
 wrong. Use **Auto** in the GUI or `@auto` in a target (`COM3@auto`); it

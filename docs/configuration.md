@@ -234,7 +234,7 @@ placeholders filled in wherever they ask for a confirmation.
 ### Macro arguments
 
 Macros defined in the shell (and run from any front end) can take
-arguments, the way pronsole's macros do:
+arguments:
 
 | Placeholder | Value |
 |---|---|
@@ -256,19 +256,19 @@ Lines in a printed file that are meant for the host:
 
 | Line | Effect |
 |---|---|
-| `;@pause` (Printrun), `@pause` (OctoPrint) | Pause there with the pause script |
+| `;@pause`, `@pause` | Pause there with the pause script |
 | `@cancel`, `@abort` | Cancel there with the cancel script |
 | Another `@...` line | Reported in the console, not sent |
 
 ## Hook commands
 
 A profile can run a shell command when a print starts, finishes, fails or
-is cancelled (Printrun's start, final and error commands): to send a
-notification, switch a relay, log the job or move the file. Hooks run for
-host prints and SD prints (not for uploads), on a helper thread, so they
-never hold up the printer. Windows runs them with `cmd /C`, other systems
-with `sh -c`. A hook still running after two minutes is stopped. Its exit
-status and the first lines of its output appear in the console.
+is cancelled: to send a notification, switch a relay, log the job or move
+the file. Hooks run for host prints and SD prints (not for uploads), on a
+helper thread, so they never hold up the printer. Windows runs them with
+`cmd /C`, other systems with `sh -c`. A hook still running after two
+minutes is stopped. Its exit status and the first lines of its output
+appear in the console.
 
 | Key | Runs when |
 |---|---|
@@ -309,9 +309,9 @@ on_fail_command = 'curl -s -d "$SPRINT_PRINTER: $SPRINT_FILE failed: $SPRINT_REA
 With `emit_progress = true` (in the GUI: the profile's printing options),
 host prints send `M73 P<percent> R<minutes left>` whenever the percentage
 changes, so the printer's screen shows Sprint's progress and remaining
-time (Pronterface's "Display progress on printer"). The profile's setting
-applies to host prints started from every front end. With it off, the
-GUI's start dialog and `sprint print --progress-on-printer` turn it on for
-a single print; with it on, every host print sends it (a single print
-cannot turn it off). SD prints show the printer's own progress. Firmware
-without M73 support ignores it.
+time. The profile's setting applies to host prints started from every
+front end. With it off, the GUI's start dialog and
+`sprint print --progress-on-printer` turn it on for a single print; with
+it on, every host print sends it (a single print cannot turn it off). SD
+prints show the printer's own progress. Firmware without M73 support
+ignores it.
