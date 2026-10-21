@@ -329,6 +329,14 @@ flowchart LR
     host --> gcode & proto & sim
 ```
 
+## Credits
+
+Inspired by [Printrun](https://github.com/kliment/Printrun) (Pronterface /
+pronsole) by Kliment and contributors. Built with Rust,
+[egui](https://github.com/emilk/egui), eframe,
+[wgpu](https://github.com/gfx-rs/wgpu), [ratatui](https://github.com/ratatui/ratatui)
+and [Phosphor icons](https://phosphoricons.com).
+
 ## License
 
 Sprint is dual-licensed under the [MIT license](LICENSE-MIT) or the
