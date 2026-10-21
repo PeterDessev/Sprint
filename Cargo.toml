@@ -9,6 +9,8 @@ edition = "2024"
 rust-version = "1.95"
 authors = ["Peter Dessev"]
 license = "MIT OR Apache-2.0"
+readme = "README.md"
+keywords = ["3d-printing", "gcode", "printer-host", "marlin", "printrun"]
 
 [workspace.dependencies]
 # Internal crates
