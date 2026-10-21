@@ -28,7 +28,7 @@ const MAX_REPORT_LINES: usize = 12;
 pub const SCRIPT_PLACEHOLDERS: &str = "{x} {y} {z} {e} {f} — position and feedrate when paused\n{tool} {hotend} {bed} {fan} — tool, targets and fan\n{max_x} {max_y} {max_z} {park_x} {park_y} — from the bed size\n{heaters_off} — every heater off (each hotend, the bed and the chamber)";
 
 /// What the print event commands are and what they get.
-pub const HOOK_HELP: &str = "Shell commands run when a print (from Sprint or from the SD card) starts, finishes, fails or is cancelled, like Printrun's start, final and error commands: on Windows with cmd /C, elsewhere with sh -c, stopped after 2 minutes, their output in the console. Quote the variables (\"%SPRINT_FILE%\" for cmd, \"$SPRINT_FILE\" for sh): a file name may hold characters the shell acts on. Leave one empty to run nothing.";
+pub const HOOK_HELP: &str = "Shell commands run when a print (from Sprint or from the SD card) starts, finishes, fails or is cancelled: on Windows with cmd /C, elsewhere with sh -c, stopped after 2 minutes, their output in the console. Quote the variables (\"%SPRINT_FILE%\" for cmd, \"$SPRINT_FILE\" for sh): a file name may hold characters the shell acts on. Leave one empty to run nothing.";
 
 /// The environment the print event commands get.
 pub const HOOK_ENVIRONMENT: &str = "SPRINT_FILE — the file or SD name\nSPRINT_STATUS — started, completed, failed or cancelled\nSPRINT_ELAPSED_SECS — print time so far\nSPRINT_PRINTER — the printer profile's name\nSPRINT_REASON — why it failed (failures only)";

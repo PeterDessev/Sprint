@@ -1,4 +1,4 @@
-//! Macro arguments, as pronsole has them and the shell writes them: in a
+//! Macro arguments, as the shell and the terminal UI write them: in a
 //! macro's G-code `{0}`, `{1}`, … are its arguments in order, `{1=200}`
 //! gives one a default, and `{args}` is all of them separated by spaces
 //! (the same syntax as `sprint_tui::actions::macro_gcode`). Other
