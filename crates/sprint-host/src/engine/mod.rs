@@ -675,7 +675,9 @@ impl Engine {
                 let limit = Duration::from_secs_f32(self.options.handshake_timeout_secs);
                 if now.duration_since(started) > limit {
                     let message = format!(
-                        "Handshake failed: no answer from the printer within {} s",
+                        "Handshake failed: no answer from {} within {} s \
+                         (check the port and baud rate)",
+                        self.target,
                         format_number(f64::from(self.options.handshake_timeout_secs), 1)
                     );
                     self.close(ConnectionStatus::Failed(message.clone()), &message);

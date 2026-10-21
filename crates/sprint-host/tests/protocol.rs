@@ -177,10 +177,15 @@ fn a_silent_printer_fails_the_handshake() {
     wait_for(&printer, "the handshake to fail", |s| {
         matches!(s.status, ConnectionStatus::Failed(_))
     });
-    let status = printer.with_state(|s| s.status.clone());
-    assert!(
-        matches!(&status, ConnectionStatus::Failed(m) if m.contains("Handshake")),
-        "{status:?}"
+    // The target is named and the usual causes hinted at: a COM10 board at
+    // 250000 baud failed silently at 115200.
+    assert_eq!(
+        printer.with_state(|s| s.status.clone()),
+        ConnectionStatus::Failed(
+            "Handshake failed: no answer from fake printer within 1.5 s \
+             (check the port and baud rate)"
+                .into()
+        )
     );
     // M110 went out after a second of silence.
     assert!(
