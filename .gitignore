@@ -5,8 +5,21 @@
 # Agent worktrees and local tool state
 /.worktrees/
 /.claude/worktrees/
+/.claude/settings.local.json
 
 # Snapshot-test diffs (egui_kittest writes *.diff.png / *.new.png next to snapshots)
 *.diff.png
 *.new.png
 *.old.png
+
+# A local Sprint configuration (the fallback path when the platform has no
+# configuration directory, or a SPRINT_CONFIG file kept in the checkout)
+/sprint-config.toml
+
+# Editors and operating systems
+/.vscode/
+/.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
