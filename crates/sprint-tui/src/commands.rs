@@ -428,10 +428,11 @@ pub fn command_candidates(prefix: &str) -> Vec<&'static CommandSpec> {
         .collect()
 }
 
-/// A pronsole command that Sprint names differently, or does not have.
+/// A command word that is not a Sprint command: another name for one, or
+/// a word that gets an explanation instead.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PronsoleWord {
-    /// pronsole's command word.
+pub struct OtherName {
+    /// The word as typed.
     pub word: &'static str,
     /// The Sprint command it stands for (the rest of the line follows
     /// it), or `None` when Sprint has no such command.
@@ -440,59 +441,58 @@ pub struct PronsoleWord {
     pub note: &'static str,
 }
 
-/// pronsole commands with another name in Sprint, or none. pronsole's
-/// other commands (connect, load, print, pause, resume, home, move,
-/// extrude, reverse, settemp, bedtemp, gettemp, eta, tool, off, reset,
-/// monitor, macro, block_until_online, help, exit) work as in pronsole.
-pub static PRONSOLE: &[PronsoleWord] = &[
-    PronsoleWord {
+/// Command words with another name in Sprint, or no command at all.
+pub static OTHER_NAMES: &[OtherName] = &[
+    OtherName {
         word: "ls",
         sprint: Some("sd ls"),
         note: "list the SD card",
     },
-    PronsoleWord {
+    OtherName {
         word: "sdprint",
         sprint: Some("sd print"),
         note: "print a file from the SD card",
     },
-    PronsoleWord {
+    OtherName {
         word: "upload",
         sprint: Some("sd upload"),
         note: "write a file to the SD card",
     },
-    PronsoleWord {
+    OtherName {
         word: "run_script",
         sprint: None,
         note: "Sprint does not run other programs; source <file> runs shell commands from a file",
     },
-    PronsoleWord {
+    OtherName {
         word: "run_gcode_script",
         sprint: None,
         note: "Sprint does not run other programs; source <file> runs G-code and commands from a file",
     },
-    PronsoleWord {
+    OtherName {
         word: "slice",
         sprint: None,
         note: "Sprint does not slice: slice in your slicer, then load the G-code",
     },
-    PronsoleWord {
+    OtherName {
         word: "skein",
         sprint: None,
         note: "Sprint does not slice: slice in your slicer, then load the G-code",
     },
-    PronsoleWord {
+    OtherName {
         word: "loadrc",
         sprint: None,
-        note: "Sprint reads no .pronsolerc: profiles, macros and presets live in the configuration file",
+        note: "Sprint has no rc file: profiles, macros and presets live in the configuration file",
     },
 ];
 
-/// The pronsole entry for `word`, unless it is a Sprint command.
-pub fn pronsole_word(word: &str) -> Option<&'static PronsoleWord> {
+/// The entry for `word`, unless it is a Sprint command.
+pub fn other_name(word: &str) -> Option<&'static OtherName> {
     if command_spec(word).is_some() {
         return None;
     }
-    PRONSOLE.iter().find(|p| p.word.eq_ignore_ascii_case(word))
+    OTHER_NAMES
+        .iter()
+        .find(|p| p.word.eq_ignore_ascii_case(word))
 }
 
 /// The closest command name to a mistyped word: one edit away (a
@@ -545,7 +545,7 @@ pub enum TempTarget {
     /// Degrees Celsius in 0..=500 (0 = off).
     Celsius(f32),
     /// The hotend or bed temperature of the profile's preset with this
-    /// name (pronsole's `settemp pla`).
+    /// name (`settemp pla`).
     Preset(String),
 }
 
@@ -993,13 +993,13 @@ pub fn parse(line: &str) -> Result<Input, ParseError> {
     if looks_like_gcode(word) {
         return Ok(Input::Gcode(line.to_string()));
     }
-    if let Some(pronsole) = pronsole_word(word) {
+    if let Some(other) = other_name(word) {
         // The Sprint command starts with a command word: no recursion.
-        return match pronsole.sprint {
+        return match other.sprint {
             Some(sprint) => parse(&format!("{sprint} {rest}")),
             None => Err(ParseError::new(format!(
-                "{word} is a pronsole command: {}",
-                pronsole.note
+                "{word} is not a Sprint command: {}",
+                other.note
             ))),
         };
     }
@@ -1408,8 +1408,10 @@ fn parse_macro(spec: &'static CommandSpec, rest: &str) -> Result<Command, ParseE
     })
 }
 
-/// pronsole's own options (its `set` command), not firmware settings.
-const PRONSOLE_OPTIONS: &[&str] = &[
+/// Host options people may try to change with `set` (the port, the baud
+/// rate, temperature presets, ...): in Sprint they are profile options,
+/// not firmware settings.
+const HOST_OPTIONS: &[&str] = &[
     "port",
     "baudrate",
     "dtr",
@@ -1435,16 +1437,13 @@ fn parse_set(spec: &'static CommandSpec, rest: &str) -> Result<Command, ParseErr
     if rest.is_empty() {
         return Err(ParseError::usage(spec, "which setting?"));
     }
-    // pronsole's `set` changed pronsole's own options.
+    // Host options are not firmware settings.
     let first = rest.split_whitespace().next().unwrap_or_default();
-    if PRONSOLE_OPTIONS
-        .iter()
-        .any(|o| o.eq_ignore_ascii_case(first))
-    {
+    if HOST_OPTIONS.iter().any(|o| o.eq_ignore_ascii_case(first)) {
         return Err(ParseError::usage(
             spec,
             format!(
-                "set changes firmware settings; '{first}' is a pronsole option: \
+                "set changes firmware settings; '{first}' is a host option: \
                  connect <port> [baud] --save stores the printer, and the other options \
                  live in the profile (profile lists them)"
             ),
@@ -1735,7 +1734,7 @@ mod tests {
                     zero_e: false,
                 },
             ),
-            // pronsole: `home e` zeroes the extruder, with or without axes.
+            // `home e` zeroes the extruder, with or without axes.
             (
                 "home e",
                 Command::Home {
@@ -1772,7 +1771,7 @@ mod tests {
                 "source my script.txt",
                 Command::Source("my script.txt".into()),
             ),
-            // pronsole's names for the SD card commands.
+            // Other names for the SD card commands.
             ("ls", Command::Sd(SdCommand::List)),
             (
                 "sdprint CUBE.GCO",
@@ -2233,7 +2232,7 @@ mod tests {
     }
 
     #[test]
-    fn pronsole_words_map_to_sprint_commands_or_explain() {
+    fn other_names_map_to_sprint_commands_or_explain() {
         for line in [
             "run_script make.sh",
             "run_gcode_script x",
@@ -2241,24 +2240,24 @@ mod tests {
             "loadrc",
         ] {
             let e = err(line);
-            assert!(e.message.contains("is a pronsole command"), "{e}");
+            assert!(e.message.contains("is not a Sprint command"), "{e}");
             assert!(!e.message.contains("did you mean"), "{e}");
         }
         assert!(err("run_script x").message.contains("source <file>"));
-        // A pronsole `set` option is not a firmware setting.
+        // A host option is not a firmware setting.
         let e = err("set port COM5");
-        assert!(e.message.contains("pronsole option"), "{e}");
+        assert!(e.message.contains("host option"), "{e}");
         assert!(e.message.contains("--save"), "{e}");
-        // Every Sprint name a pronsole word stands for parses.
-        for p in PRONSOLE {
+        // Every Sprint name another name stands for parses.
+        for p in OTHER_NAMES {
             if let Some(sprint) = p.sprint {
                 let word = sprint.split_whitespace().next().unwrap_or_default();
                 assert!(command_spec(word).is_some(), "{}", p.word);
             }
             assert!(command_spec(p.word).is_none(), "{} is a command", p.word);
         }
-        assert!(pronsole_word("ls").is_some());
-        assert!(pronsole_word("print").is_none());
+        assert!(other_name("ls").is_some());
+        assert!(other_name("print").is_none());
     }
 
     #[test]

@@ -937,8 +937,8 @@ fn profiles_are_listed_switched_and_saved() {
 }
 
 #[test]
-fn pronsole_commands_do_what_they_did_in_pronsole() {
-    let scratch = Scratch::new("pronsole");
+fn familiar_commands_work_or_explain_themselves() {
+    let scratch = Scratch::new("familiar");
     let script_file = scratch.0.join("warmup.txt");
     std::fs::write(&script_file, "; a comment\nsettemp 200\nM105\n").expect("write script");
     let (mut shell, buffer) = connected();
@@ -982,7 +982,7 @@ fn pronsole_commands_do_what_they_did_in_pronsole() {
         "Hotend     ",
         "No job is running",
         "Extruder position set to 0 (G92 E0)",
-        "run_script is a pronsole command",
+        "run_script is not a Sprint command",
         "source <file>",
         "fans off, motors off (M84)",
     ] {
@@ -1084,7 +1084,7 @@ fn macros_are_defined_run_with_arguments_and_deleted() {
     shell.connect(fast_sim());
     assert!(shell.printer.is_connected(), "{}", buffer.text());
     received(&shell);
-    // pronsole's way: the lines after `macro define` up to a blank one.
+    // The lines after `macro define` up to a blank one.
     script(
         &mut shell,
         &[
@@ -1490,7 +1490,7 @@ fn resume_goes_on_after_a_wait_the_printer_paused_the_print_for() {
 #[test]
 fn gettemp_asks_the_printer_for_its_temperatures() {
     let (mut shell, buffer) = connected();
-    // As pronsole does: the report shows the target just set.
+    // The report shows the target just set.
     script(&mut shell, &["settemp 205", "gettemp"]);
     let text = buffer.text();
     let report = text

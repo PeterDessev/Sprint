@@ -18,7 +18,7 @@ use sprint_host::{
     PrinterState, SdState, TempPreset,
 };
 
-use crate::commands::{COMMANDS, CommandSpec, Group, PRONSOLE};
+use crate::commands::{COMMANDS, CommandSpec, Group};
 use crate::format;
 use crate::loader::LoadedFile;
 use crate::theme::{ColorSupport, Theme};
@@ -1087,54 +1087,6 @@ pub fn help_lines() -> Vec<ReportLine> {
         "prefix a line with ! to send it raw. help <command> or help <G-code> explains one.",
         Tone::Dim,
     ));
-    lines.push(ReportLine::new());
-    lines.extend(pronsole_lines());
-    lines
-}
-
-/// The "Coming from pronsole" part of `help`: pronsole's commands that
-/// Sprint names differently or does not have.
-pub fn pronsole_lines() -> Vec<ReportLine> {
-    /// pronsole word column width.
-    const WORD: usize = 20;
-    let mut lines = vec![
-        ReportLine::heading("Coming from pronsole"),
-        ReportLine::toned(
-            "  Most pronsole commands work as they did: connect, load, print, pause, settemp pla,",
-            Tone::Dim,
-        ),
-        ReportLine::toned(
-            "  gettemp, eta, home e, tool, off, reset, monitor, macro, ... These differ:",
-            Tone::Dim,
-        ),
-    ];
-    for p in PRONSOLE {
-        let sprint = p.sprint.unwrap_or("(none)");
-        lines.push(
-            ReportLine::new()
-                .with(format!("  {:<WORD$}", p.word), Tone::Plain)
-                .with(format!("{sprint:<14}  "), Tone::Accent)
-                .with(p.note, Tone::Dim),
-        );
-    }
-    lines.push(
-        ReportLine::new()
-            .with(format!("  {:<WORD$}", "set port, baudrate"), Tone::Plain)
-            .with(format!("{:<14}  ", "connect --save"), Tone::Accent)
-            .with(
-                "set changes firmware settings here; profile switches printers",
-                Tone::Dim,
-            ),
-    );
-    lines.push(
-        ReportLine::new()
-            .with(format!("  {:<WORD$}", "!python"), Tone::Plain)
-            .with(format!("{:<14}  ", "!G-code"), Tone::Accent)
-            .with(
-                "! sends the rest of the line to the printer as typed",
-                Tone::Dim,
-            ),
-    );
     lines
 }
 

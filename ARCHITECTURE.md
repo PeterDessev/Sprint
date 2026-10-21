@@ -1938,8 +1938,8 @@ headless commands):
   Result<Input, ParseError>` (`Input` is a `Command`, raw G-code or
   nothing; command words are case-insensitive, G-code-looking lines and
   `!`-prefixed lines are raw, `;` lines are comments), `looks_like_gcode`,
-  `split_args`, `suggest` (one edit away), and `PRONSOLE` /
-  `pronsole_word` for the pronsole words that differ.
+  `split_args`, `suggest` (one edit away), and `OTHER_NAMES` /
+  `other_name` for command words Sprint spells differently or lacks.
 * `actions`: decisions shared by the shell and the TUI: target and profile
   resolution (`startup_target`, `resolve_target`, `find_profile`),
   presets, heaters and safe targets, macros (`find_macro`, `macro_call`,
