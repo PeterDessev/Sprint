@@ -54,9 +54,9 @@ pub enum Command {
     Gui(GuiArgs),
     /// Full-screen terminal UI.
     Tui(TuiArgs),
-    /// Interactive line shell, like pronsole.
+    /// Interactive line shell.
     ///
-    /// Type help for the commands (and the differences from pronsole);
+    /// Type help for the commands;
     /// G-code is sent as typed. Commands can also come from a pipe (sprint
     /// shell -c T < script.txt) or from -e: they run in order, without a
     /// prompt or questions (eeprom reset then needs yes), and at the end
@@ -199,8 +199,9 @@ pub struct PrintArgs {
     /// line N (they are still set); for heaters that are already hot.
     #[arg(long, requires = "start_line")]
     pub no_wait_temps: bool,
-    /// Pause before layer L with the pause script, as Printrun's ;@pause
-    /// would (2 = the second layer: the print starts with the first);
+    /// Pause before layer L with the pause script, as a ;@pause line in
+    /// the file would (2 = the second layer: the print starts with the
+    /// first);
     /// repeat for several layers. Enter resumes the print (Ctrl+C cancels
     /// it).
     #[arg(long, value_name = "L", value_parser = clap::value_parser!(u64).range(1..))]
@@ -523,7 +524,7 @@ mod tests {
         assert_eq!(s.profile.as_deref(), Some("MK3"));
         assert_eq!(s.file, None);
         assert!(s.execute.is_empty());
-        // pronsole's FILE argument and -e.
+        // A FILE argument and -e.
         let Ok(Command::Shell(s)) = parse(&[
             "shell",
             "cube.gcode",

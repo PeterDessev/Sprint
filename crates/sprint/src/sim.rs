@@ -64,7 +64,7 @@ pub fn banner(addr: SocketAddr, config: &SimConfig) -> Vec<String> {
             sprint_tui::format::trimmed(f64::from(config.time_scale), 3),
         ),
         format!("Connect with:  sprint tui --connect tcp://{target}"),
-        format!("          or:  Printrun/Pronterface, port {target}"),
+        format!("          or:  any host that connects over TCP, at {target}"),
         "Each client gets a freshly booted printer. Press Ctrl+C to stop.".to_string(),
     ]
 }
