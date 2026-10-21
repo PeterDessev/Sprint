@@ -11,7 +11,7 @@ authors = ["Peter Dessev"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PeterDessev/Sprint"
 readme = "README.md"
-keywords = ["3d-printing", "gcode", "printer-host", "marlin", "printrun"]
+keywords = ["3d-printing", "gcode", "printer-host", "marlin", "3d-printer"]
 
 [workspace.dependencies]
 # Internal crates

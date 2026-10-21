@@ -13,6 +13,6 @@ labels: enhancement
 <!-- Which front end (GUI, terminal UI, shell, command line), and what you
 would see or type. -->
 
-**Printrun or other hosts**
+**Other programs**
 
-<!-- If Printrun, OctoPrint or another host does this, how does it work there? -->
+<!-- If another printer host or slicer does this, how does it work there? -->
