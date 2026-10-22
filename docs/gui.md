@@ -275,10 +275,13 @@ G-code.
   print ask first.
 * **Save to EEPROM** (M500) keeps the applied values after a restart,
   **Load from EEPROM** (M501) goes back to the stored ones, **Factory
-  reset** (M502, asks first) restores the firmware defaults. The saved
-  message appears once the printer has saved: a printer that is busy, for
-  example heating with M190, takes M500 only afterwards, and a note says so
-  meanwhile.
+  reset** (M502, asks first) restores the firmware defaults.
+* Messages that a change was applied, saved, loaded or reset (here, in
+  the calibration wizards and the bed mesh, and "Printing" for an SD
+  print) appear once the printer has taken the commands without an error.
+  A printer that is busy, for example heating with M190, takes them only
+  afterwards, and a note says so meanwhile; one it answers with an error
+  (`Error:...`, "Unknown command") says what it answered instead.
 * The toolbar reloads the settings (M503), copies them all as G-code,
   exports them to a file and imports a file (with a preview of what would
   change). A delta's geometry (M665) is only imported into a delta: a

@@ -674,6 +674,51 @@ fn switching_a_driver_off_reaches_the_simulator() {
 }
 
 #[test]
+fn a_change_the_printer_rejects_is_not_reported_as_applied() {
+    let printer = sim_printer(fast_sim());
+    let mut h = harness_state(
+        Theme::Dark,
+        (1180.0, 900.0),
+        Host::<TuningTab>::live(printer.clone()),
+        |ui, host| host.frame(ui),
+    );
+    h.run_ok();
+    // The firmware keeps the junction deviation between 0.01 and 0.3.
+    let mut limits = printer
+        .with_state(|s| s.settings.get("M205").cloned())
+        .expect("M205 reported");
+    limits.set('J', 0.5);
+    h.state_mut().tab.stage(limits);
+    h.run_ok();
+    h.get_by_label("Apply change").click();
+    h.run_ok();
+    let toast = |h: &Harness<'_, Host<TuningTab>>, title: &str| {
+        h.state()
+            .toasts
+            .iter()
+            .find(|t| t.title() == title)
+            .map(|t| t.message_text().unwrap_or_default().to_string())
+    };
+    let deadline = std::time::Instant::now() + PATIENCE;
+    while toast(&h, "Setting not applied").is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no answer: {:?}",
+            h.state().toasts.iter().map(|t| t.title()).collect::<Vec<_>>()
+        );
+        h.step();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(
+        toast(&h, "Setting not applied").as_deref(),
+        Some("The printer answered: ?J out of range (0.01 to 0.3)")
+    );
+    assert!(toast(&h, "Applied 1 setting").is_none(), "said applied");
+    assert_eq!(h.state().toasts.followed(), 0);
+    printer.disconnect();
+}
+
+#[test]
 fn saving_to_eeprom_waits_until_the_printer_has_saved() {
     // Slow enough that the bed takes several seconds to heat.
     let printer = sim_printer(SimConfig {

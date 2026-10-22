@@ -8,7 +8,7 @@ use crate::icons;
 use crate::insight::calibrate::{FlowError, flow_from_walls};
 use crate::insight::{format, ui as kit};
 use crate::theme::{self, Tone};
-use crate::widgets::{ActionButton, Card, NumericField};
+use crate::widgets::{ActionButton, Card, Notice, NumericField};
 
 /// Names of the measured walls.
 const WALLS: [&str; 4] = ["Front", "Right", "Back", "Left"];
@@ -190,12 +190,18 @@ impl FlowWizard {
                             )
                             .clicked()
                         {
-                            ctx.printer.set_flow(tool, percent);
+                            let set = ctx.printer.set_flow(tool, percent);
                             // The walls were printed with the old flow: keep
                             // computing from it, not from the new one the
                             // printer reports from now on.
                             self.current = Some(current);
-                            ctx.toasts.success(format!("Flow set to {percent:.0}%"));
+                            ctx.toasts.after(
+                                set,
+                                kit::applied_followup(
+                                    Notice::new(format!("Flow set to {percent:.0}%")),
+                                    "Flow not set",
+                                ),
+                            );
                         }
                     }
                     Err(err) => {

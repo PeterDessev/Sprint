@@ -14,8 +14,8 @@ use crate::insight::{format, ui as kit};
 use crate::panels::printer_info::heater_color;
 use crate::theme::{self, Tone};
 use crate::widgets::{
-    ActionButton, Badge, Card, ChartSeries, KeyValueGrid, LinearProgress, MiniChart, NumericField,
-    SegmentedControl, StatusPill,
+    ActionButton, Badge, Card, ChartSeries, KeyValueGrid, LinearProgress, MiniChart, Notice,
+    NumericField, SegmentedControl, StatusPill,
 };
 
 /// What an autotune does.
@@ -440,9 +440,13 @@ impl PidWizard {
                 },
             );
         if apply {
-            ctx.printer
+            let applied = ctx
+                .printer
                 .apply_setting(&pid_command(&state.settings, heater, gains));
-            ctx.toasts.success("PID gains applied");
+            ctx.toasts.after(
+                applied,
+                kit::applied_followup(Notice::new("PID gains applied"), "PID gains not applied"),
+            );
         }
         if save {
             let save = ctx.printer.save_settings();

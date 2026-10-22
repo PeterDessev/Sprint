@@ -180,18 +180,56 @@ const MAX_TOASTS: usize = 32;
 /// says that it waits ([`Followup::waiting`]).
 pub const FOLLOWUP_NOTE_AFTER: Duration = Duration::from_millis(1500);
 
-/// What to tell about a command sent with
+/// What to tell about commands sent with
 /// [`Printer::send_tracked`](sprint_host::Printer::send_tracked) (see
 /// [`Toasts::after`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Followup {
-    /// Success toast once the printer acknowledged the command.
+    /// Toast once the printer acknowledged the commands without an error
+    /// (of kind `done_kind`).
     pub done: Notice,
-    /// Info toast when it still waits after [`FOLLOWUP_NOTE_AFTER`] (the
+    /// [`ToastKind::Success`] unless [`warning`](Self::warning) said
+    /// otherwise.
+    pub done_kind: ToastKind,
+    /// Info toast when they still wait after [`FOLLOWUP_NOTE_AFTER`] (the
     /// printer is busy, for example heating).
     pub waiting: Notice,
-    /// Error toast when the printer will not acknowledge it.
-    pub lost: Notice,
+    /// Error toast when the printer answered one with an error (its answer
+    /// becomes the message) or will not acknowledge them; none when
+    /// another toast says so already.
+    pub failed: Option<Notice>,
+}
+
+impl Followup {
+    /// `done` once the printer has taken the commands; `waiting` while it
+    /// finishes the commands sent before (with a note saying so); `failed`
+    /// when it rejects them or will not take them.
+    pub fn new(done: Notice, waiting: impl Into<String>, failed: impl Into<String>) -> Followup {
+        Followup {
+            done,
+            done_kind: ToastKind::Success,
+            waiting: Notice::new(waiting)
+                .message("It finishes the commands sent before (heating, for example) first."),
+            failed: Some(
+                Notice::new(failed)
+                    .message("The printer did not confirm it (it disconnected or halted first)."),
+            ),
+        }
+    }
+
+    /// The `done` toast is a warning (a change to look at, such as a
+    /// factory reset).
+    pub fn warning(mut self) -> Followup {
+        self.done_kind = ToastKind::Warning;
+        self
+    }
+
+    /// No `failed` toast: another one says what went wrong (a print's own
+    /// failure, for example).
+    pub fn quiet_failure(mut self) -> Followup {
+        self.failed = None;
+        self
+    }
 }
 
 /// The title and message of a toast to come.
@@ -319,8 +357,8 @@ impl Toasts {
     }
 
     /// Tell about `tracked` when the printer acknowledges it, or that it
-    /// will not, rather than now: see [`Followup`] and
-    /// [`follow`](Self::follow).
+    /// rejected it or will not take it, rather than now: see [`Followup`]
+    /// and [`follow`](Self::follow).
     pub fn after(&mut self, tracked: Tracked, followup: Followup) {
         self.pending.push(Pending {
             tracked,
@@ -336,22 +374,20 @@ impl Toasts {
     }
 
     /// Turn the commands of [`after`](Self::after) the printer
-    /// acknowledged, or will not, into toasts. `printer_gone` (it
-    /// disconnected or halted) means none of them will be acknowledged
-    /// any more. Call once per frame.
+    /// acknowledged, rejected or will not take into toasts. `printer_gone`
+    /// (it disconnected or halted) means none of them will be
+    /// acknowledged any more. Call once per frame.
     pub fn follow(&mut self, printer_gone: bool) {
         for mut p in std::mem::take(&mut self.pending) {
             match p.tracked.poll() {
-                Delivery::Acknowledged => self.notice(ToastKind::Success, p.followup.done),
+                Delivery::Acknowledged => self.notice(p.followup.done_kind, p.followup.done),
                 Delivery::Rejected(answer) => {
                     let answer = crate::format::sanitize(answer.trim(), 200);
-                    let lost = p.followup.lost.message(format!("The printer answered: {answer}"));
-                    self.notice(ToastKind::Error, lost);
+                    let message = format!("The printer answered: {answer}");
+                    self.failed(p.followup.failed.map(|f| f.message(message)));
                 }
-                Delivery::Lost => self.notice(ToastKind::Error, p.followup.lost),
-                Delivery::Pending if printer_gone => {
-                    self.notice(ToastKind::Error, p.followup.lost);
-                }
+                Delivery::Lost => self.failed(p.followup.failed),
+                Delivery::Pending if printer_gone => self.failed(p.followup.failed),
                 Delivery::Pending => {
                     if !p.noted && p.since.elapsed() >= FOLLOWUP_NOTE_AFTER {
                         p.noted = true;
@@ -360,6 +396,12 @@ impl Toasts {
                     self.pending.push(p);
                 }
             }
+        }
+    }
+
+    fn failed(&mut self, failed: Option<Notice>) {
+        if let Some(failed) = failed {
+            self.notice(ToastKind::Error, failed);
         }
     }
 

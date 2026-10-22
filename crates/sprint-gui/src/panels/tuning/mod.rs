@@ -13,6 +13,7 @@ mod cards;
 pub mod model;
 
 use egui::{Align, Layout, Rect, RichText, Ui, UiBuilder, pos2, vec2};
+use sprint_host::Tracked;
 use sprint_proto::setting_def;
 
 use self::cards::Filter;
@@ -22,7 +23,8 @@ use crate::icons;
 use crate::insight::ui::{self as kit, FileOutcome, FileTask};
 use crate::theme::{self, TextRole, Tone};
 use crate::widgets::{
-    ActionButton, Badge, ConfirmDialog, DialogResult, EmptyState, IconButton, card_frame,
+    ActionButton, Badge, ConfirmDialog, DialogResult, EmptyState, Followup, IconButton, Notice,
+    card_frame,
 };
 
 /// Shown for firmware without M503 (Klipper).
@@ -717,28 +719,36 @@ impl TuningTab {
         }
     }
 
-    /// Send `changes` and reload the settings.
+    /// Send `changes` and reload the settings; the toast waits for the
+    /// printer to take them.
     fn apply_changes(&mut self, ctx: &mut AppCtx<'_>, changes: &[model::Change]) {
+        let mut sent = Vec::new();
         for change in changes {
-            ctx.printer.apply_setting(&change.command);
+            sent.push(ctx.printer.apply_setting(&change.command));
             // Sent as plain G-code: as a setting it would replace the
             // command above in the host's optimistic state.
             for also in &change.also {
-                ctx.printer.send(&also.to_gcode());
+                sent.push(ctx.printer.send_tracked(&also.to_gcode()));
             }
         }
         ctx.printer.request_settings();
+        let done = Notice::new(format!(
+            "Applied {} setting{}",
+            changes.len(),
+            if changes.len() == 1 { "" } else { "s" }
+        ))
+        .message(if kit::lacks_eeprom(ctx.state) {
+            "Active until the printer restarts (it has no EEPROM)."
+        } else {
+            "Active until the next restart. Save to EEPROM to keep them."
+        });
+        let failed = if changes.len() == 1 {
+            "Setting not applied"
+        } else {
+            "Settings not applied"
+        };
         ctx.toasts
-            .success(format!(
-                "Applied {} setting{}",
-                changes.len(),
-                if changes.len() == 1 { "" } else { "s" }
-            ))
-            .message(if kit::lacks_eeprom(ctx.state) {
-                "Active until the printer restarts (it has no EEPROM)."
-            } else {
-                "Active until the next restart. Save to EEPROM to keep them."
-            });
+            .after(Tracked::all(sent), kit::applied_followup(done, failed));
         self.show_changes = false;
     }
 
@@ -803,17 +813,33 @@ impl TuningTab {
                                 .after(save, kit::eeprom_followup("Settings saved to EEPROM"));
                         }
                         Confirm::Load => {
-                            ctx.printer.load_settings();
-                            ctx.toasts.info("Settings loaded from EEPROM");
+                            let load = ctx.printer.load_settings();
+                            ctx.toasts.after(
+                                load,
+                                Followup::new(
+                                    Notice::new("Settings loaded from EEPROM"),
+                                    "Loading from EEPROM when the printer is ready",
+                                    "Not loaded from EEPROM",
+                                ),
+                            );
                         }
                         Confirm::FactoryReset => {
-                            ctx.printer.factory_reset_settings();
-                            ctx.toasts.warning("Factory defaults active").message(
+                            let reset = ctx.printer.factory_reset_settings();
+                            let done = Notice::new("Factory defaults active").message(
                                 if kit::lacks_eeprom(ctx.state) {
                                     "They last until the printer restarts."
                                 } else {
                                     "Save to EEPROM to keep them, or load from EEPROM to undo."
                                 },
+                            );
+                            ctx.toasts.after(
+                                reset,
+                                Followup::new(
+                                    done,
+                                    "Resetting the settings when the printer is ready",
+                                    "Settings not reset",
+                                )
+                                .warning(),
                             );
                         }
                     }

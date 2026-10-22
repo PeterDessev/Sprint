@@ -13,7 +13,7 @@ use crate::insight::calibrate::{
 };
 use crate::insight::{format, ui as kit};
 use crate::theme::{self, TextRole, Tone, with_alpha};
-use crate::widgets::{ActionButton, Card, LinearProgress, NumericField, StatusPill};
+use crate::widgets::{ActionButton, Card, LinearProgress, Notice, NumericField, StatusPill};
 
 /// Step 1 guidance.
 const HEAT_HELP: &str = concat!(
@@ -400,12 +400,18 @@ impl EstepsWizard {
                             .clicked()
                     {
                         let cmd = esteps_command(&ctx.state.settings, self.tool, r.new_steps);
-                        ctx.printer.apply_setting(&cmd);
+                        let applied = ctx.printer.apply_setting(&cmd);
                         self.tested_steps = current;
                         self.applied = Some(target);
-                        ctx.toasts
-                            .success("E-steps applied")
-                            .message("Run the test again to confirm, then save to EEPROM.");
+                        ctx.toasts.after(
+                            applied,
+                            kit::applied_followup(
+                                Notice::new("E-steps applied").message(
+                                    "Run the test again to confirm, then save to EEPROM.",
+                                ),
+                                "E-steps not applied",
+                            ),
+                        );
                     }
                     let save = ActionButton::new("Save to EEPROM")
                         .icon(icons::SAVE)

@@ -14,8 +14,8 @@ use crate::context::{AppAction, AppCtx};
 use crate::insight::{format, sdname, ui as kit};
 use crate::theme::{self, Tone};
 use crate::widgets::{
-    ActionButton, Card, ConfirmDialog, DialogResult, EmptyState, IconButton, LinearProgress,
-    StatusPill, Toggle,
+    ActionButton, Card, ConfirmDialog, DialogResult, EmptyState, Followup, IconButton,
+    LinearProgress, Notice, StatusPill, Toggle,
 };
 use crate::{icons, job_text};
 
@@ -129,6 +129,20 @@ fn open_file_button() -> ActionButton<'static> {
         .icon(icons::OPEN)
         .ghost()
         .small()
+}
+
+/// The toasts of an SD print start ([`Printer::start_sd_print`]): `done`
+/// once the printer opened `label` and started; a failure is the job's
+/// own ("Print failed", with the printer's reason).
+///
+/// [`Printer::start_sd_print`]: sprint_host::Printer::start_sd_print
+fn print_followup(done: Notice, label: &str) -> Followup {
+    Followup::new(
+        done,
+        format!("Printing {label} when the printer is ready"),
+        format!("Not printing {label}"),
+    )
+    .quiet_failure()
 }
 
 /// The SD job in the state, if the last job was one.
@@ -324,10 +338,10 @@ impl SdCardTab {
                     return;
                 }
                 match ctx.printer.start_sd_print(&wanted) {
-                    Ok(_) => {
-                        ctx.toasts
-                            .success(format!("Printing {wanted}"))
+                    Ok(started) => {
+                        let done = Notice::new(format!("Printing {wanted}"))
                             .message("The upload finished; the printer prints from its card now.");
+                        ctx.toasts.after(started, print_followup(done, &wanted));
                     }
                     Err(err) => {
                         ctx.toasts
@@ -856,8 +870,9 @@ impl SdCardTab {
                 self.confirm = None;
                 match confirm {
                     Confirm::Print(name, label) => match ctx.printer.start_sd_print(&name) {
-                        Ok(_) => {
-                            ctx.toasts.success(format!("Printing {label}"));
+                        Ok(started) => {
+                            let done = Notice::new(format!("Printing {label}"));
+                            ctx.toasts.after(started, print_followup(done, &label));
                         }
                         Err(err) => {
                             ctx.toasts

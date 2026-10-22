@@ -469,14 +469,24 @@ pub(crate) const NO_EEPROM: &str = concat!(
 ///
 /// [`Printer::save_settings`]: sprint_host::Printer::save_settings
 pub(crate) fn eeprom_followup(done: &str) -> crate::widgets::Followup {
-    use crate::widgets::{Followup, Notice};
-    Followup {
-        done: Notice::new(done),
-        waiting: Notice::new("Saving to EEPROM when the printer is ready")
-            .message("It finishes the commands sent before (heating, for example) first."),
-        lost: Notice::new("Not saved to EEPROM")
-            .message("The printer did not confirm saving (it disconnected or halted first)."),
-    }
+    crate::widgets::Followup::new(
+        crate::widgets::Notice::new(done),
+        "Saving to EEPROM when the printer is ready",
+        "Not saved to EEPROM",
+    )
+}
+
+/// The toasts of a changed setting ([`Printer::apply_setting`]): `done`
+/// once the printer took it, a note while it still finishes earlier
+/// commands, an error titled `failed` when it rejects it or will not
+/// take it.
+///
+/// [`Printer::apply_setting`]: sprint_host::Printer::apply_setting
+pub(crate) fn applied_followup(
+    done: crate::widgets::Notice,
+    failed: &str,
+) -> crate::widgets::Followup {
+    crate::widgets::Followup::new(done, "Applying it when the printer is ready", failed)
 }
 
 /// Whether the printer is a delta: its firmware says so (Marlin's M115

@@ -21,9 +21,9 @@ use crate::insight::calibrate::{
 use crate::insight::{format, ui as kit};
 use crate::theme::{self, TextRole, Tone};
 use crate::widgets::{
-    ActionButton, Card, ConfirmDialog, DialogResult, IconButton, SegmentedControl,
+    ActionButton, Card, ConfirmDialog, DialogResult, IconButton, Notice, SegmentedControl,
 };
-use sprint_host::{Axes, PrinterState};
+use sprint_host::{Axes, PrinterState, Tracked};
 
 /// How to use the wizard.
 const GUIDANCE: &str = concat!(
@@ -235,8 +235,10 @@ impl ZOffsetWizard {
                         )
                         .clicked()
                     {
-                        ctx.printer
-                            .apply_setting(&z_offset_command(&state.settings, src, new_z));
+                        let mut sent = vec![
+                            ctx.printer
+                                .apply_setting(&z_offset_command(&state.settings, src, new_z)),
+                        ];
                         let message = match src {
                             // The probe offset counts from the next homing,
                             // which also ends the babystep.
@@ -245,7 +247,9 @@ impl ZOffsetWizard {
                             // the babystep still in place the adjustment
                             // would count twice until the next homing.
                             ZOffsetSource::HomeOffset => {
-                                ctx.printer.babystep_z(-total);
+                                if total != 0.0 {
+                                    sent.push(ctx.printer.babystep_z(-total));
+                                }
                                 APPLIED_HOME_MESSAGE
                             }
                         };
@@ -257,7 +261,13 @@ impl ZOffsetWizard {
                             ZOffsetSource::Probe => state.babystep_z,
                             ZOffsetSource::HomeOffset => state.babystep_z - total,
                         };
-                        ctx.toasts.success("Z offset applied").message(message);
+                        ctx.toasts.after(
+                            Tracked::all(sent),
+                            kit::applied_followup(
+                                Notice::new("Z offset applied").message(message),
+                                "Z offset not applied",
+                            ),
+                        );
                     }
                     if ui
                         .add_enabled(
