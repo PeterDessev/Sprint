@@ -165,7 +165,9 @@ pub use temperature::{
     HOT_THRESHOLD, HeaterState, TemperatureAction, TemperatureCard, format_temperature,
     parse_temperature,
 };
-pub use toast::{TOAST_OFFSET, Toast, ToastId, ToastKind, Toasts};
+pub use toast::{
+    FOLLOWUP_NOTE_AFTER, Followup, Notice, TOAST_OFFSET, Toast, ToastId, ToastKind, Toasts,
+};
 pub use toggle::{SegmentedControl, Toggle};
 
 use egui::{CornerRadius, FontId, Rect, Response, Stroke, StrokeKind, Ui};

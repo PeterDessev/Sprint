@@ -648,6 +648,11 @@ impl SprintApp {
             .center_rect
             .map_or(screen_right, |r| r.right())
             .min(screen_right);
+        let gone = !self.core.state.is_connected() || self.core.state.halted;
+        self.core.toasts.follow(gone);
+        if self.core.toasts.followed() > 0 {
+            ctx.request_repaint_after(Duration::from_millis(200));
+        }
         let toasts = std::mem::take(&mut self.core.toasts);
         self.core.toasts = toasts.anchor(
             Align2::RIGHT_TOP,

@@ -269,8 +269,9 @@ impl ZOffsetWizard {
                         .on_disabled_hover_text(kit::NO_EEPROM)
                         .clicked()
                     {
-                        ctx.printer.save_settings();
-                        ctx.toasts.success("Z offset saved to EEPROM");
+                        let save = ctx.printer.save_settings();
+                        ctx.toasts
+                            .after(save, kit::eeprom_followup("Z offset saved to EEPROM"));
                     }
                 });
                 ui.add_space(4.0);

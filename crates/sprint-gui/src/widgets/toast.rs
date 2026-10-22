@@ -5,6 +5,10 @@ use egui::{
     Sense, Stroke, Ui, Vec2, WidgetInfo, WidgetType, pos2, vec2,
 };
 
+use std::time::{Duration, Instant};
+
+use sprint_host::{Delivery, Tracked};
+
 use crate::icons;
 use crate::theme::{self, Palette, TextRole, Tone, with_alpha};
 
@@ -144,9 +148,14 @@ impl Toast {
 ///
 /// Adding a toast identical to the newest visible one bumps a "×2"
 /// counter instead of stacking duplicates.
-#[derive(Clone, Debug)]
+///
+/// A command the printer has yet to carry out gets its toast when the
+/// printer acknowledges it: [`after`](Self::after), then
+/// [`follow`](Self::follow) once per frame.
+#[derive(Debug)]
 pub struct Toasts {
     items: Vec<Toast>,
+    pending: Vec<Pending>,
     next_id: u64,
     anchor: Align2,
     offset: Vec2,
@@ -167,12 +176,65 @@ pub const TOAST_OFFSET: Vec2 = vec2(-16.0, 84.0);
 /// At most this many toasts are kept (the oldest are dropped).
 const MAX_TOASTS: usize = 32;
 
+/// How long a followed command may wait for the printer before a toast
+/// says that it waits ([`Followup::waiting`]).
+pub const FOLLOWUP_NOTE_AFTER: Duration = Duration::from_millis(1500);
+
+/// What to tell about a command sent with
+/// [`Printer::send_tracked`](sprint_host::Printer::send_tracked) (see
+/// [`Toasts::after`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Followup {
+    /// Success toast once the printer acknowledged the command.
+    pub done: Notice,
+    /// Info toast when it still waits after [`FOLLOWUP_NOTE_AFTER`] (the
+    /// printer is busy, for example heating).
+    pub waiting: Notice,
+    /// Error toast when the printer will not acknowledge it.
+    pub lost: Notice,
+}
+
+/// The title and message of a toast to come.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Notice {
+    /// Title.
+    pub title: String,
+    /// Message under the title, if any.
+    pub message: Option<String>,
+}
+
+impl Notice {
+    /// A notice with `title` and no message.
+    pub fn new(title: impl Into<String>) -> Notice {
+        Notice {
+            title: title.into(),
+            message: None,
+        }
+    }
+
+    /// The same with `message`.
+    pub fn message(mut self, message: impl Into<String>) -> Notice {
+        self.message = Some(message.into());
+        self
+    }
+}
+
+/// A command whose toast waits for the printer.
+#[derive(Debug)]
+struct Pending {
+    tracked: Tracked,
+    followup: Followup,
+    since: Instant,
+    noted: bool,
+}
+
 impl Toasts {
     /// Top-right below the toolbars ([`TOAST_OFFSET`]), 340 pt wide, at
     /// most 5 visible.
     pub fn new() -> Self {
         Toasts {
             items: Vec::new(),
+            pending: Vec::new(),
             next_id: 1,
             anchor: Align2::RIGHT_TOP,
             offset: TOAST_OFFSET,
@@ -254,6 +316,53 @@ impl Toasts {
     /// Add an error toast.
     pub fn error(&mut self, title: impl Into<String>) -> &mut Toast {
         self.add(ToastKind::Error, title)
+    }
+
+    /// Tell about `tracked` when the printer acknowledges it, or that it
+    /// will not, rather than now: see [`Followup`] and
+    /// [`follow`](Self::follow).
+    pub fn after(&mut self, tracked: Tracked, followup: Followup) {
+        self.pending.push(Pending {
+            tracked,
+            followup,
+            since: Instant::now(),
+            noted: false,
+        });
+    }
+
+    /// Commands still waiting for the printer ([`after`](Self::after)).
+    pub fn followed(&self) -> usize {
+        self.pending.len()
+    }
+
+    /// Turn the commands of [`after`](Self::after) the printer
+    /// acknowledged, or will not, into toasts. `printer_gone` (it
+    /// disconnected or halted) means none of them will be acknowledged
+    /// any more. Call once per frame.
+    pub fn follow(&mut self, printer_gone: bool) {
+        for mut p in std::mem::take(&mut self.pending) {
+            match p.tracked.poll() {
+                Delivery::Acknowledged => self.notice(ToastKind::Success, p.followup.done),
+                Delivery::Lost => self.notice(ToastKind::Error, p.followup.lost),
+                Delivery::Pending if printer_gone => {
+                    self.notice(ToastKind::Error, p.followup.lost);
+                }
+                Delivery::Pending => {
+                    if !p.noted && p.since.elapsed() >= FOLLOWUP_NOTE_AFTER {
+                        p.noted = true;
+                        self.notice(ToastKind::Info, p.followup.waiting.clone());
+                    }
+                    self.pending.push(p);
+                }
+            }
+        }
+    }
+
+    fn notice(&mut self, kind: ToastKind, notice: Notice) {
+        let toast = self.add(kind, notice.title);
+        if let Some(message) = notice.message {
+            toast.message(message);
+        }
     }
 
     /// Remove a toast; `false` if it was already gone.

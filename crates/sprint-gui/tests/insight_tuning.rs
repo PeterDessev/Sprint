@@ -12,6 +12,7 @@ use sprint_gui::panels::TuningTab;
 use sprint_gui::theme::Theme;
 use sprint_host::PrinterState;
 use sprint_host::sprint_proto::SettingCommand;
+use sprint_host::sprint_sim::SimConfig;
 
 fn cmd(text: &str) -> SettingCommand {
     SettingCommand::parse(text).expect("setting command")
@@ -670,4 +671,55 @@ fn switching_a_driver_off_reaches_the_simulator() {
     // Leaving Z out of the list does not change it: it is switched off.
     assert_eq!(wait_for_command(&printer, "M569 S0"), "M569 S0 Z");
     printer.disconnect();
+}
+
+#[test]
+fn saving_to_eeprom_waits_until_the_printer_has_saved() {
+    // Slow enough that the bed takes several seconds to heat.
+    let printer = sim_printer(SimConfig {
+        time_scale: 10.0,
+        ..fast_sim()
+    });
+    let mut h = harness_state(
+        Theme::Dark,
+        (1180.0, 900.0),
+        Host::<TuningTab>::live(printer.clone()),
+        |ui, host| host.frame(ui),
+    );
+    h.run_ok();
+    // Heat and wait: the firmware takes no other command meanwhile.
+    printer.send("M190 S60");
+    wait_for(&printer, "the bed to heat", |s| {
+        s.temps.bed.as_ref().is_some_and(|b| b.target == Some(60.0))
+    });
+    h.get_by_label("Save to EEPROM").click();
+    h.run_ok();
+    h.get_all_by_label("Save to EEPROM")
+        .last()
+        .expect("confirm button")
+        .click();
+    h.run_ok();
+    let has = |h: &Harness<'_, Host<TuningTab>>, title: &str| {
+        h.state().toasts.iter().any(|t| t.title() == title)
+    };
+    assert!(!has(&h, "Settings saved to EEPROM"), "saved too early");
+    assert_eq!(h.state().toasts.followed(), 1);
+    // A note while it waits, the success once the printer has saved.
+    let deadline = std::time::Instant::now() + PATIENCE;
+    let mut noted = false;
+    while !has(&h, "Settings saved to EEPROM") {
+        assert!(std::time::Instant::now() < deadline, "never saved");
+        noted |= has(&h, "Saving to EEPROM when the printer is ready");
+        h.step();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(noted, "no note while the printer heated");
+    let bed = printer.with_state(|s| s.temps.bed.as_ref().map(|b| b.current));
+    assert!(
+        bed.is_some_and(|t| t > 58.0),
+        "saved before the bed was hot: {bed:?}"
+    );
+    assert!(received(&printer, "M500"));
+    assert_eq!(h.state().toasts.followed(), 0);
+    printer.send("M140 S0");
 }

@@ -445,8 +445,9 @@ impl PidWizard {
             ctx.toasts.success("PID gains applied");
         }
         if save {
-            ctx.printer.save_settings();
-            ctx.toasts.success("PID gains saved to EEPROM");
+            let save = ctx.printer.save_settings();
+            ctx.toasts
+                .after(save, kit::eeprom_followup("PID gains saved to EEPROM"));
         }
     }
 }

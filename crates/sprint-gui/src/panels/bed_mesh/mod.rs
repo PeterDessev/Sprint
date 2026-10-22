@@ -600,8 +600,10 @@ impl BedMeshTab {
                         .on_disabled_hover_text(kit::NO_EEPROM)
                         .clicked()
                     {
-                        ctx.printer.save_settings();
-                        ctx.toasts.success("Saved to EEPROM").message(SAVED_MESSAGE);
+                        let save = ctx.printer.save_settings();
+                        let mut followup = kit::eeprom_followup("Saved to EEPROM");
+                        followup.done = followup.done.message(SAVED_MESSAGE);
+                        ctx.toasts.after(save, followup);
                     }
                 });
             });

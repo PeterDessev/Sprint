@@ -421,8 +421,9 @@ impl EstepsWizard {
                         })
                         .clicked()
                     {
-                        ctx.printer.save_settings();
-                        ctx.toasts.success("E-steps saved to EEPROM");
+                        let save = ctx.printer.save_settings();
+                        ctx.toasts
+                            .after(save, kit::eeprom_followup("E-steps saved to EEPROM"));
                     }
                 });
             }

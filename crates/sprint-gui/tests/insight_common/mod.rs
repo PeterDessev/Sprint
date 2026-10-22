@@ -118,6 +118,8 @@ impl<T: Panel> Host<T> {
         if !self.hidden {
             self.tab.show(ui, &mut ctx);
         }
+        // As the app does each frame.
+        self.toasts.follow(!state.is_connected() || state.halted);
         self.last_state = state;
     }
 }

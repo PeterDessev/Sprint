@@ -463,6 +463,22 @@ pub(crate) const NO_EEPROM: &str = concat!(
     "last until the printer restarts.",
 );
 
+/// The toasts of an EEPROM save ([`Printer::save_settings`]): `done` once
+/// the printer has saved, a note while it still finishes earlier commands
+/// (a heat wait, a long move), an error when it will not save.
+///
+/// [`Printer::save_settings`]: sprint_host::Printer::save_settings
+pub(crate) fn eeprom_followup(done: &str) -> crate::widgets::Followup {
+    use crate::widgets::{Followup, Notice};
+    Followup {
+        done: Notice::new(done),
+        waiting: Notice::new("Saving to EEPROM when the printer is ready")
+            .message("It finishes the commands sent before (heating, for example) first."),
+        lost: Notice::new("Not saved to EEPROM")
+            .message("The printer did not confirm saving (it disconnected or halted first)."),
+    }
+}
+
 /// The firmware said it has no EEPROM (`Cap:EEPROM:0`); M500 and M501 do
 /// nothing there. Firmware that does not report it counts as having one.
 pub(crate) fn lacks_eeprom(state: &sprint_host::PrinterState) -> bool {

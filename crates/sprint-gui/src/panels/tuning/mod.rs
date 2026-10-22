@@ -794,8 +794,9 @@ impl TuningTab {
                     self.confirm = None;
                     match confirm {
                         Confirm::Save => {
-                            ctx.printer.save_settings();
-                            ctx.toasts.success("Settings saved to EEPROM");
+                            let save = ctx.printer.save_settings();
+                            ctx.toasts
+                                .after(save, kit::eeprom_followup("Settings saved to EEPROM"));
                         }
                         Confirm::Load => {
                             ctx.printer.load_settings();
