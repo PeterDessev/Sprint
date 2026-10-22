@@ -282,9 +282,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             size: [250.0, 210.0],
             max_z: 220.0,
             origin_center: false,
+            round: false,
         });
         empty.options_mut().show_build_volume = true;
         save(&mut empty, &dir, "21_empty_bed.png")?;
+    }
+
+    // A delta's round bed with its cylindrical build volume.
+    {
+        let mut delta = GcodeViewer::new_headless(&device, &queue);
+        delta.set_bed(BedSpec::round(200.0, 300.0));
+        delta.options_mut().show_build_volume = true;
+        save(&mut delta, &dir, "21_round_bed.png")?;
     }
 
     // Lightweight stress run to report load and frame time.

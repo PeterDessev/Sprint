@@ -377,6 +377,9 @@ pub struct BedSpec {
     /// `true` when the origin is the bed centre (delta printers), `false`
     /// for a front-left origin.
     pub origin_center: bool,
+    /// A round bed (delta printers): `size[0]` is its diameter, and its
+    /// centre is the origin whatever `origin_center` says.
+    pub round: bool,
 }
 
 impl Default for BedSpec {
@@ -385,6 +388,7 @@ impl Default for BedSpec {
             size: [220.0, 220.0],
             max_z: 250.0,
             origin_center: false,
+            round: false,
         }
     }
 }
@@ -394,8 +398,18 @@ impl BedSpec {
     /// back to the defaults.
     pub const MAX_SIZE: f32 = 10_000.0;
 
+    /// A round bed of `diameter` mm centred on the origin (a delta).
+    pub fn round(diameter: f32, max_z: f32) -> BedSpec {
+        BedSpec {
+            size: [diameter, diameter],
+            max_z,
+            origin_center: true,
+            round: true,
+        }
+    }
+
     /// A copy with non-finite / non-positive / absurd values replaced by the
-    /// defaults.
+    /// defaults (a round bed: square, centred).
     pub fn sanitized(&self) -> BedSpec {
         let fix = |v: f32, default: f32| {
             if v.is_finite() && v > 0.0 && v <= Self::MAX_SIZE {
@@ -405,11 +419,25 @@ impl BedSpec {
             }
         };
         let d = BedSpec::default();
+        let x = fix(self.size[0], d.size[0]);
         BedSpec {
-            size: [fix(self.size[0], d.size[0]), fix(self.size[1], d.size[1])],
+            size: [
+                x,
+                if self.round {
+                    x
+                } else {
+                    fix(self.size[1], d.size[1])
+                },
+            ],
             max_z: fix(self.max_z, d.max_z),
-            origin_center: self.origin_center,
+            origin_center: self.origin_center || self.round,
+            round: self.round,
         }
+    }
+
+    /// The radius of a round bed (`None` for a rectangular one).
+    pub fn radius(&self) -> Option<f32> {
+        self.round.then(|| self.sanitized().size[0] * 0.5)
     }
 
     /// Front-left corner of the bed (mm).
@@ -472,6 +500,7 @@ mod tests {
             size: [200.0, 100.0],
             max_z: 180.0,
             origin_center: true,
+            round: false,
         };
         assert_eq!(bed.min_xy(), [-100.0, -50.0]);
         assert_eq!(bed.max_xy(), [100.0, 50.0]);
@@ -481,8 +510,30 @@ mod tests {
             size: [f32::NAN, -3.0],
             max_z: f32::INFINITY,
             origin_center: false,
+            round: false,
         };
         assert_eq!(bad.sanitized(), BedSpec::default());
+    }
+
+    #[test]
+    fn a_round_bed_is_a_centred_disc() {
+        let bed = BedSpec::round(180.0, 300.0);
+        assert_eq!(bed.radius(), Some(90.0));
+        assert_eq!(bed.min_xy(), [-90.0, -90.0]);
+        assert_eq!(bed.max_xy(), [90.0, 90.0]);
+        // The diameter rules and the centre is the origin, whatever the
+        // other fields say.
+        let odd = BedSpec {
+            size: [200.0, 50.0],
+            max_z: 100.0,
+            origin_center: false,
+            round: true,
+        };
+        assert_eq!(odd.sanitized(), BedSpec::round(200.0, 100.0));
+        assert_eq!(odd.min_xy(), [-100.0, -100.0]);
+        assert_eq!(BedSpec::default().radius(), None);
+        // A bad diameter falls back to the default size.
+        assert_eq!(BedSpec::round(f32::NAN, 100.0).radius(), Some(110.0));
     }
 
     #[test]

@@ -13,7 +13,8 @@ struct Globals {
     forward: vec4<f32>,
     // xyz: unit direction towards the key light; w: intensity.
     key_light: vec4<f32>,
-    // Bed rectangle: min x, min y, max x, max y.
+    // Bed rectangle: min x, min y, max x, max y (around the disc of a round
+    // bed, with FLAG_ROUND_BED).
     bed: vec4<f32>,
     feature_colors: array<vec4<f32>, 16>, // linear rgb
     tool_colors: array<vec4<f32>, 8>,     // linear rgb
@@ -67,6 +68,7 @@ const FLAG_ENCODE_GAMMA: u32 = 32u;
 const FLAG_TRANSLUCENT_GHOSTS: u32 = 64u;
 const FLAG_HEAD: u32 = 128u;
 const FLAG_CURRENT_LAYER: u32 = 256u;
+const FLAG_ROUND_BED: u32 = 512u;
 
 const TRAVEL_BIT: u32 = 32u;
 
@@ -888,10 +890,22 @@ fn fs_bed(in: BedOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f
     color = mix(color, g.grid_bold_color.rgb, bold);
     // Border: distance to the closest bed edge in pixels.
     let px = max(length(fwidth(p)), 1e-6);
-    let edge = min(min(p.x - g.bed.x, g.bed.z - p.x), min(p.y - g.bed.y, g.bed.w - p.y)) / px;
+    var alpha = g.plate_color.a;
+    var edge = min(min(p.x - g.bed.x, g.bed.z - p.x), min(p.y - g.bed.y, g.bed.w - p.y)) / px;
+    if (has_flag(FLAG_ROUND_BED)) {
+        // A round bed (delta): the disc inside the quad, its rim
+        // anti-aliased.
+        let centre = (g.bed.xy + g.bed.zw) * 0.5;
+        let radius = (g.bed.z - g.bed.x) * 0.5;
+        edge = (radius - length(p - centre)) / px;
+        let inside = clamp(edge + 0.5, 0.0, 1.0);
+        if (inside <= 0.0) {
+            discard;
+        }
+        alpha = alpha * inside;
+    }
     let border = clamp(2.0 - edge, 0.0, 1.0);
     color = mix(color, g.grid_bold_color.rgb * 1.35, border);
-    var alpha = g.plate_color.a;
     if (!front) {
         alpha = alpha * 0.35;
     }

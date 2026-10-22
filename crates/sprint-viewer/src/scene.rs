@@ -414,8 +414,44 @@ pub fn tool_head_vertex_count() -> usize {
     tool_head_mesh(Vec3::ZERO).vertices.len()
 }
 
-/// Build-volume wireframe (12 edges) as a line list.
+/// Segments of each circle of a round bed's build volume.
+const VOLUME_CIRCLE_SEGMENTS: usize = 96;
+
+/// Vertical edges drawn on a round build volume's cylinder.
+const VOLUME_CYLINDER_EDGES: usize = 4;
+
+/// Most vertices [`build_volume_lines`] returns (a round bed's cylinder).
+pub const BUILD_VOLUME_MAX_VERTICES: usize =
+    VOLUME_CIRCLE_SEGMENTS * 2 * 2 + VOLUME_CYLINDER_EDGES * 2;
+
+/// Build-volume wireframe as a line list: a box's 12 edges, or for a round
+/// bed a cylinder (the bed's rim and the top circle, joined by a few
+/// vertical edges).
 pub fn build_volume_lines(bed: &BedSpec) -> Vec<LineVertex> {
+    let color = [0x8C, 0x98, 0xB4, 0x8C];
+    if let Some(radius) = bed.radius() {
+        let height = bed.sanitized().max_z;
+        let at = |i: usize, z: f32| {
+            let a = i as f32 / VOLUME_CIRCLE_SEGMENTS as f32 * std::f32::consts::TAU;
+            LineVertex {
+                pos: [radius * a.cos(), radius * a.sin(), z],
+                color,
+            }
+        };
+        let mut out = Vec::with_capacity(BUILD_VOLUME_MAX_VERTICES);
+        for z in [0.0, height] {
+            for i in 0..VOLUME_CIRCLE_SEGMENTS {
+                out.push(at(i, z));
+                out.push(at(i + 1, z));
+            }
+        }
+        for edge in 0..VOLUME_CYLINDER_EDGES {
+            let i = edge * VOLUME_CIRCLE_SEGMENTS / VOLUME_CYLINDER_EDGES;
+            out.push(at(i, 0.0));
+            out.push(at(i, height));
+        }
+        return out;
+    }
     let v = bed.volume();
     let (min, max) = (Vec3::from(v.min), Vec3::from(v.max));
     let corner = |i: u32| {
@@ -425,7 +461,6 @@ pub fn build_volume_lines(bed: &BedSpec) -> Vec<LineVertex> {
             if i & 4 == 0 { min.z } else { max.z },
         )
     };
-    let color = [0x8C, 0x98, 0xB4, 0x8C];
     let mut out = Vec::with_capacity(24);
     for i in 0..8u32 {
         for bit in [1u32, 2, 4] {
@@ -556,5 +591,25 @@ mod tests {
             assert!(r <= TOOL_HEAD_RADIUS + 1e-4, "{r}");
         }
         assert_eq!(build_volume_lines(&BedSpec::default()).len(), 24);
+    }
+
+    #[test]
+    fn a_round_build_volume_is_a_cylinder() {
+        let lines = build_volume_lines(&BedSpec::round(200.0, 300.0));
+        assert_eq!(lines.len(), BUILD_VOLUME_MAX_VERTICES);
+        for v in &lines {
+            let r = Vec3::from(v.pos).truncate().length();
+            assert!((r - 100.0).abs() < 1e-3, "{r}");
+            assert!(v.pos[2] == 0.0 || v.pos[2] == 300.0, "{:?}", v.pos);
+        }
+        // Both circles close, and edges join them.
+        assert!(lines.iter().filter(|v| v.pos[2] == 300.0).count() > 100);
+        let verticals = lines
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .filter(|seg| seg[0].pos[2] != seg[1].pos[2])
+            .count();
+        assert_eq!(verticals, 4);
     }
 }

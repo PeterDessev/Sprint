@@ -1547,6 +1547,9 @@ impl GcodeViewer {
         if current_layer.is_some() {
             flag_bits |= flags::CURRENT_LAYER;
         }
+        if self.bed.round {
+            flag_bits |= flags::ROUND_BED;
+        }
 
         let scalar = self
             .info

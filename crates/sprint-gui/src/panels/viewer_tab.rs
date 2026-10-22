@@ -103,6 +103,7 @@ pub fn bed_spec(profile: &sprint_host::PrinterProfile) -> BedSpec {
         size: profile.bed_size,
         max_z: profile.max_z,
         origin_center: profile.origin == BedOrigin::Center,
+        round: false,
     }
     .sanitized()
 }

@@ -1716,8 +1716,9 @@ pub struct ViewerOptions {
 impl ViewerOptions { pub fn is_feature_hidden(&self, f: Feature) -> bool; pub fn set_feature_hidden(&mut self, f: Feature, hidden: bool);
                      pub fn hidden_mask(&self) -> u32; pub fn clamped_layer_range(&self, layer_count: usize) -> Option<(usize, usize)>; }
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct BedSpec { pub size: [f32; 2], pub max_z: f32, pub origin_center: bool }
-    // MAX_SIZE, sanitized, min_xy, max_xy, volume
+pub struct BedSpec { pub size: [f32; 2], pub max_z: f32, pub origin_center: bool,
+                     pub round: bool }  // round: a delta's disc, diameter size[0], centred
+    // MAX_SIZE, round(diameter, max_z), sanitized, radius, min_xy, max_xy, volume
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ViewInsets { pub left: f32, pub right: f32, pub top: f32, pub bottom: f32 } // logical points; NONE
 

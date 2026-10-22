@@ -81,6 +81,7 @@ pub(crate) mod flags {
     pub const TRANSLUCENT_GHOSTS: u32 = 64;
     pub const HEAD: u32 = 128;
     pub const CURRENT_LAYER: u32 = 256;
+    pub const ROUND_BED: u32 = 512;
 }
 
 /// Everything needed to draw one frame.
@@ -414,7 +415,7 @@ impl Renderer {
         });
         let volume = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("sprint-viewer build volume"),
-            size: (24 * std::mem::size_of::<LineVertex>()) as u64,
+            size: (scene::BUILD_VOLUME_MAX_VERTICES * std::mem::size_of::<LineVertex>()) as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });

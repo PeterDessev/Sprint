@@ -528,6 +528,7 @@ fn clearing_during_a_camera_animation_frames_the_bed() {
         size: [350.0, 350.0],
         max_z: 300.0,
         origin_center: true,
+        round: false,
     };
     let mut reference = GcodeViewer::new_headless(&device, &queue);
     reference.render_offscreen(W, H);
@@ -1143,4 +1144,45 @@ fn the_layer_being_printed_is_highlighted() {
         (luma(lower) - luma(lower_while_printing)).abs() < 2.0,
         "{lower:?} vs {lower_while_printing:?}"
     );
+}
+
+#[test]
+fn a_round_bed_is_a_disc() {
+    let Some((device, queue)) = device() else {
+        return;
+    };
+    let mut viewer = GcodeViewer::new_headless(&device, &queue);
+    viewer.options_mut().show_axes = false;
+    viewer.set_bed(BedSpec::round(200.0, 250.0));
+    viewer.set_view(ViewPreset::Top);
+    viewer.fit_to_view();
+    // Settle any camera animation.
+    for _ in 0..3 {
+        render(&mut viewer);
+    }
+    let img = render(&mut viewer);
+    let at = |x: f32, y: f32| {
+        let [sx, sy] = viewer
+            .project([x, y, 0.0], [W as f32, H as f32])
+            .expect("on screen");
+        px(&img, sx.round() as u32, sy.round() as u32)
+    };
+    // The plate inside the circle, nothing in the square's corners.
+    let centre = at(0.0, 0.0);
+    assert!(
+        !near(centre, BACKGROUND, 2),
+        "plate expected, got {centre:?}"
+    );
+    let inside = at(60.0, 60.0);
+    assert!(
+        !near(inside, BACKGROUND, 2),
+        "plate expected, got {inside:?}"
+    );
+    for (x, y) in [(-92.0, -92.0), (92.0, -92.0), (92.0, 92.0), (-92.0, 92.0)] {
+        let corner = at(x, y);
+        assert!(
+            near(corner, BACKGROUND, 2),
+            "background expected at ({x}, {y}), got {corner:?}"
+        );
+    }
 }
