@@ -51,6 +51,12 @@ cargo test --workspace
 `--workspace` matters: the workspace's default member is only the `sprint`
 binary, so a bare `cargo test` skips the other crates.
 
+CI pins its Rust toolchain (`RUST_TOOLCHAIN` in
+`.github/workflows/ci.yml`), so a new Rust release cannot break the build
+on its own: bump it on purpose, together with whatever the new clippy
+asks for. It also checks that the workspace builds with the oldest Rust
+it supports (`rust-version` in `Cargo.toml`).
+
 Some tests are ignored because they are benchmarks or slow in debug builds;
 each `#[ignore]` says how to run it.
 
@@ -60,8 +66,14 @@ The GUI tests in `crates/sprint-gui/tests` render with wgpu and compare
 the images against `tests/snapshots/*.png`. The committed snapshots were
 made on Windows 10 with Segoe UI and Cascadia Mono; on a machine with other
 fonts, or without a GPU adapter, the tests still run but skip the image
-comparison. When you change how something looks on such a machine,
-refresh the snapshots and check the new images before committing them:
+comparison. Without those fonts the tests use egui's bundled fonts, so text
+measures the same on every machine; checks tuned to the reference fonts'
+widths are skipped. Two variables reproduce CI: `SPRINT_TEST_NO_GPU=1`
+runs the GPU tests as without an adapter, and `SPRINT_TEST_BUNDLED_FONTS=1`
+uses the bundled fonts even where the reference fonts are installed.
+
+When you change how something looks, refresh the snapshots on a machine
+with the reference fonts and check the new images before committing them:
 
 ```bash
 UPDATE_SNAPSHOTS=1 cargo test -p sprint-gui

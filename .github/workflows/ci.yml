@@ -15,15 +15,20 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # Every job uses an exact toolchain, so a new Rust release (and the
+  # clippy lints it adds) cannot turn CI red on its own. Bump it on
+  # purpose, together with any fixes the new clippy asks for.
+  RUST_TOOLCHAIN: "1.97.1"
 
 jobs:
   fmt:
     name: Format
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: rustfmt
       - run: cargo fmt --all --check
 
@@ -35,7 +40,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-24.04, windows-2025, macos-15]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
@@ -46,21 +51,26 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libudev-dev libwayland-dev libxkbcommon-dev
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      # The GUI tests render with wgpu when the runner has a usable adapter
-      # and compare snapshots only with the fonts they were made with
-      # (Windows 10), so on CI they mostly run without the image comparison.
+      # The GUI snapshots are compared only on a machine with the fonts and
+      # GPU they were made with; elsewhere the tests use egui's bundled
+      # fonts. Runners have no GPU, and the software rasterizers some of
+      # them offer vary and can crash, so the GPU tests run as without an
+      # adapter here: rendering is checked on a developer machine.
       - name: Tests
-        run: cargo test --workspace --locked
+        env:
+          SPRINT_TEST_NO_GPU: "1"
+        run: cargo test --workspace --locked --no-fail-fast
 
   msrv:
     name: Minimum Rust version
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
       - name: Install Linux packages
