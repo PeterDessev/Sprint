@@ -600,7 +600,8 @@ impl App {
             self.profile.bed_size,
         )
         .fit(self.fit)
-        .origin_center(self.profile.origin == BedOrigin::Center)
+        .origin_center(self.profile.effective_origin() == BedOrigin::Center)
+        .round_bed(self.profile.is_delta())
         .object_bounds(file.object_bounds)
         .show_travel(self.show_travel)
         .show_tool(job_active && printing == Some(shown))

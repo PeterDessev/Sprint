@@ -5,7 +5,7 @@ use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::symbols::Marker;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::canvas::{Canvas, Context, Line as CanvasLine, Rectangle};
+use ratatui::widgets::canvas::{Canvas, Circle, Context, Line as CanvasLine, Rectangle};
 use ratatui::widgets::{Block, Paragraph, Widget};
 use sprint_gcode::{Bounds, Feature, Segment, Toolpath};
 
@@ -69,6 +69,7 @@ pub struct LayerCanvas<'a> {
     progress_line: Option<u32>,
     bed_size: [f32; 2],
     bed_origin_center: bool,
+    bed_round: bool,
     fit: LayerFit,
     show_previous: bool,
     show_travel: bool,
@@ -124,6 +125,7 @@ impl<'a> LayerCanvas<'a> {
             progress_line,
             bed_size,
             bed_origin_center: false,
+            bed_round: false,
             fit: LayerFit::Bed,
             show_previous: true,
             show_travel: false,
@@ -140,6 +142,14 @@ impl<'a> LayerCanvas<'a> {
     #[must_use]
     pub fn origin_center(mut self, center: bool) -> Self {
         self.bed_origin_center = center;
+        self
+    }
+
+    /// The bed is round (a delta's): `bed_size[0]` is its diameter, its
+    /// centre the origin; the outline is a circle.
+    #[must_use]
+    pub fn round_bed(mut self, round: bool) -> Self {
+        self.bed_round = round;
         self
     }
 
@@ -218,13 +228,17 @@ impl<'a> LayerCanvas<'a> {
             .unwrap_or(&[])
     }
 
-    /// The bed rectangle in millimetres, if the size is usable.
+    /// The bed rectangle in millimetres (around a round bed), if the size
+    /// is usable.
     fn bed_rect(&self) -> Option<View> {
-        let [w, h] = self.bed_size.map(f64::from);
+        let [w, mut h] = self.bed_size.map(f64::from);
+        if self.bed_round {
+            h = w;
+        }
         if !(w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0) {
             return None;
         }
-        let (x0, y0) = if self.bed_origin_center {
+        let (x0, y0) = if self.bed_origin_center || self.bed_round {
             (-w / 2.0, -h / 2.0)
         } else {
             (0.0, 0.0)
@@ -384,13 +398,22 @@ impl Widget for LayerCanvas<'_> {
             .y_bounds(view.y)
             .paint(|ctx| {
                 if let Some(bed) = bed {
-                    ctx.draw(&Rectangle::new(
-                        bed.x[0],
-                        bed.y[0],
-                        bed.x[1] - bed.x[0],
-                        bed.y[1] - bed.y[0],
-                        theme.border,
-                    ));
+                    if self.bed_round {
+                        ctx.draw(&Circle {
+                            x: (bed.x[0] + bed.x[1]) / 2.0,
+                            y: (bed.y[0] + bed.y[1]) / 2.0,
+                            radius: (bed.x[1] - bed.x[0]) / 2.0,
+                            color: theme.border,
+                        });
+                    } else {
+                        ctx.draw(&Rectangle::new(
+                            bed.x[0],
+                            bed.y[0],
+                            bed.x[1] - bed.x[0],
+                            bed.y[1] - bed.y[0],
+                            theme.border,
+                        ));
+                    }
                 }
                 ctx.marker(ghost_marker);
                 draw_segments(ctx, previous, |s| s.is_extrusion().then_some(theme.travel));
@@ -668,6 +691,42 @@ G1 X120 Y100 E1\nG1 X120 Y120 E1\nG1 X100 Y120 E1\nG1 X100 Y100 E1\n";
         let centered = LayerCanvas::new(&tp, 0, None, [200.0, 200.0]).origin_center(true);
         let v = centered.view(20, 10);
         assert!(v.x[0] < -100.0 && v.x[1] > 100.0);
+    }
+
+    #[test]
+    fn a_round_bed_is_outlined_as_a_circle_around_the_origin() {
+        let tp = two_layers();
+        let theme = Theme::default();
+        let border = |canvas: LayerCanvas<'_>| -> Vec<(u16, u16)> {
+            braille_cells(&render(canvas, 40, 20))
+                .into_iter()
+                .filter(|c| c.2 == theme.border)
+                .map(|c| (c.0, c.1))
+                .collect()
+        };
+        let square = border(
+            LayerCanvas::new(&tp, 0, None, [200.0, 200.0])
+                .origin_center(true)
+                .theme(&theme),
+        );
+        let round_canvas = LayerCanvas::new(&tp, 0, None, [200.0, 120.0])
+            .round_bed(true)
+            .theme(&theme);
+        // Centred and square whatever the second size says.
+        let v = round_canvas.view(20, 10);
+        assert!(
+            v.x[0] < -100.0 && v.x[1] > 100.0 && v.y[0] < -100.0,
+            "{v:?}"
+        );
+        let round = border(round_canvas);
+        assert!(!round.is_empty());
+        // The square's corner has no outline on the circle.
+        let corner = (
+            square.iter().map(|c| c.0).min().unwrap(),
+            square.iter().map(|c| c.1).min().unwrap(),
+        );
+        assert!(square.contains(&corner));
+        assert!(!round.contains(&corner), "{round:?}");
     }
 
     #[test]

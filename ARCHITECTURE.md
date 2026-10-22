@@ -2025,6 +2025,7 @@ any area size, including zero, is safe.
   `trimmed`, `fixed`, `count`, `bytes`, `relative_difference`.
 * `LayerCanvas::new(&Toolpath, layer, progress_line: Option<u32>, bed_size)`
   (Braille canvas; `fit(LayerFit::{Bed, Object})`, `origin_center`,
+  `round_bed` (a delta's: a circle, centred),
   `show_previous` (ghost), `show_travel`, `show_tool`, `show_label`,
   `object_bounds`; segments after the progress line are dimmed);
   `FeatureLegend`; `object_bounds(&Toolpath)` (extrusions without custom
