@@ -190,9 +190,17 @@ fn a_cancelled_tcp_attempt_ends_disconnected() {
         let printer = printer.clone();
         std::thread::spawn(move || printer.connect(target, options()))
     };
-    wait_for(&printer, "connecting", |s| {
-        s.status == ConnectionStatus::Connecting
-    });
+    // Linux refuses at once: the attempt may be over before it shows.
+    let deadline = std::time::Instant::now() + PATIENCE;
+    while printer.with_state(|s| s.status != ConnectionStatus::Connecting) {
+        if connecting.is_finished() {
+            let result = connecting.join().unwrap();
+            assert!(result.is_err(), "connected to nothing: {result:?}");
+            return;
+        }
+        assert!(std::time::Instant::now() < deadline, "never connecting");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
     printer.disconnect();
     let result = connecting.join().unwrap();
     if started.elapsed() < std::time::Duration::from_millis(50) {
