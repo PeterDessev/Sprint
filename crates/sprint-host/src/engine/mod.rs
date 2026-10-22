@@ -212,6 +212,12 @@ impl Shared {
 pub(crate) enum Command {
     /// Cleaned, non-emergency commands for the priority queue.
     Send(Vec<String>),
+    /// One more such command, `ack` told when the firmware acknowledges
+    /// it.
+    SendTracked {
+        line: String,
+        ack: Sender<()>,
+    },
     /// Queries of the convenience methods (queued like `Send`).
     Query(Vec<String>),
     /// Bypass queue and flow control.
@@ -1259,6 +1265,9 @@ impl Engine {
                     self.queue_user(line);
                 }
             }
+            Command::SendTracked { line, ack } => {
+                self.queue_user_meta(CmdMeta::tracked(line, Source::User, ack));
+            }
             Command::Query(lines) => {
                 for line in lines {
                     self.manual.push_back(CmdMeta::new(line, Source::Query));
@@ -1351,7 +1360,10 @@ impl Engine {
     }
 
     fn queue_user(&mut self, text: String) {
-        let meta = CmdMeta::new(text, Source::User);
+        self.queue_user_meta(CmdMeta::new(text, Source::User));
+    }
+
+    fn queue_user_meta(&mut self, meta: Meta) {
         if meta.is('M', 999) {
             self.firmware_restart();
             return;

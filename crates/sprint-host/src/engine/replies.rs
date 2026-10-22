@@ -630,6 +630,14 @@ impl Engine {
     }
 
     fn complete_with_rtt(&mut self, meta: &Meta, rtt: Option<Duration>, now: Instant) {
+        // Only a real `ok` (it has a round trip) acknowledges a tracked
+        // command; one released after a timeout or a halt may never have
+        // run, and dropping its sender reports it lost.
+        if let Some(ack) = meta.ack.lock().take()
+            && rtt.is_some()
+        {
+            let _ = ack.send(());
+        }
         match meta.source {
             Source::Poll(PollKind::Temperature) => self.temp_poll_outstanding = false,
             Source::Poll(PollKind::SdStatus) => self.sd_poll_outstanding = false,

@@ -5,7 +5,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::Receiver;
+use crossbeam_channel::{Receiver, TryRecvError};
 use parking_lot::Mutex;
 use sprint_gcode::{GcodeFile, MachineState, clean_line};
 use sprint_proto::{FirmwareFlavor, SettingCommand, is_emergency_command};
@@ -23,6 +23,57 @@ use crate::transport::{ConnectTarget, Link};
 
 /// How long a request that needs the engine's answer may take.
 const REPLY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// What became of a command sent with [`Printer::send_tracked`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Delivery {
+    /// Queued or sent; the firmware has not acknowledged it yet.
+    Pending,
+    /// The firmware acknowledged it (its `ok`).
+    Acknowledged,
+    /// It will not be acknowledged: the connection closed, or the command
+    /// was dropped or released without an `ok` (a halt, a timeout).
+    Lost,
+}
+
+/// Follows one command sent with [`Printer::send_tracked`]; poll it, for
+/// example once a frame.
+#[derive(Debug)]
+pub struct Tracked {
+    rx: Option<Receiver<()>>,
+    state: Delivery,
+}
+
+impl Tracked {
+    fn new(rx: Receiver<()>) -> Tracked {
+        Tracked {
+            rx: Some(rx),
+            state: Delivery::Pending,
+        }
+    }
+
+    fn lost() -> Tracked {
+        Tracked {
+            rx: None,
+            state: Delivery::Lost,
+        }
+    }
+
+    /// Where the command is now (never blocks).
+    pub fn poll(&mut self) -> Delivery {
+        if self.state == Delivery::Pending {
+            self.state = match self.rx.as_ref().map(Receiver::try_recv) {
+                Some(Ok(())) => Delivery::Acknowledged,
+                Some(Err(TryRecvError::Empty)) => Delivery::Pending,
+                Some(Err(TryRecvError::Disconnected)) | None => Delivery::Lost,
+            };
+            if self.state != Delivery::Pending {
+                self.rx = None;
+            }
+        }
+        self.state
+    }
+}
 
 /// What [`Printer::disconnect_safely`] did before it closed the
 /// connection. [`Display`](fmt::Display) words it for a status line.
@@ -627,6 +678,36 @@ impl Printer {
         taken
     }
 
+    /// [`Printer::send`], following the last queued command: the returned
+    /// [`Tracked`] tells when the firmware acknowledged it (its `ok`),
+    /// which is later than now when the printer is busy, for example
+    /// waiting for a heater (the commands before it are then done too).
+    /// Emergency commands bypass the queue and are not followed; with no
+    /// other command the tracker reports [`Delivery::Lost`].
+    pub fn send_tracked(&self, gcode: &str) -> Tracked {
+        let lines: Vec<String> = command_lines(gcode).collect();
+        let Some(at) = lines.iter().rposition(|line| !is_emergency_command(line)) else {
+            self.send_lines(gcode);
+            return Tracked::lost();
+        };
+        if at > 0 {
+            self.send_lines(&lines[..at].join("\n"));
+        }
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let queued = self.command(Command::SendTracked {
+            line: lines[at].clone(),
+            ack: tx,
+        });
+        if at + 1 < lines.len() {
+            self.send_lines(&lines[at + 1..].join("\n"));
+        }
+        if queued {
+            Tracked::new(rx)
+        } else {
+            Tracked::lost()
+        }
+    }
+
     /// Send right away, bypassing the queue and flow control (unnumbered).
     pub fn send_immediate(&self, gcode: &str) {
         for line in command_lines(gcode) {
@@ -910,9 +991,11 @@ impl Printer {
         self.query("M503");
     }
 
-    /// `M500`: store the settings in EEPROM.
-    pub fn save_settings(&self) {
-        self.send("M500");
+    /// `M500`: store the settings in EEPROM. The tracker tells when the
+    /// firmware has done it, which can be much later than now when it is
+    /// busy (a heat wait, a long move).
+    pub fn save_settings(&self) -> Tracked {
+        self.send_tracked("M500")
     }
 
     /// `M501` (load from EEPROM), then `M503`.

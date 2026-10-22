@@ -2,6 +2,8 @@
 
 use std::sync::Arc;
 
+use crossbeam_channel::Sender;
+use parking_lot::Mutex;
 use sprint_gcode::{Code, parse_line};
 
 /// Where a command came from.
@@ -65,6 +67,11 @@ pub(crate) struct CmdMeta {
     pub auto: bool,
     /// Known to run long (homing, probing, heat waits, dwells, ...).
     pub long: bool,
+    /// Told when the firmware's `ok` for the command arrives
+    /// ([`Printer::send_tracked`](crate::Printer::send_tracked)); taken
+    /// when the command completes, and dropped (which the tracker sees as
+    /// lost) when it completes without an `ok` or never completes.
+    pub ack: Mutex<Option<Sender<()>>>,
 }
 
 pub(crate) type Meta = Arc<CmdMeta>;
@@ -72,7 +79,15 @@ pub(crate) type Meta = Arc<CmdMeta>;
 impl CmdMeta {
     /// Classify `text`.
     pub(crate) fn new(text: impl Into<String>, source: Source) -> Meta {
-        let text = text.into();
+        Arc::new(Self::build(text.into(), source, None))
+    }
+
+    /// [`CmdMeta::new`], telling `ack` when the firmware acknowledges it.
+    pub(crate) fn tracked(text: impl Into<String>, source: Source, ack: Sender<()>) -> Meta {
+        Arc::new(Self::build(text.into(), source, Some(ack)))
+    }
+
+    fn build(text: String, source: Source, ack: Option<Sender<()>>) -> CmdMeta {
         let code = parse_line(&text).code;
         let long = match code {
             Some(c) => is_long(c),
@@ -80,13 +95,14 @@ impl CmdMeta {
             None => true,
         };
         let auto = matches!(source, Source::Poll(_));
-        Arc::new(CmdMeta {
+        CmdMeta {
             text,
             code,
             source,
             auto,
             long,
-        })
+            ack: Mutex::new(ack),
+        }
     }
 
     /// Whether the command is `letter` `number` (e.g. `'M', 503`).

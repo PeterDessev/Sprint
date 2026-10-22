@@ -1031,6 +1031,10 @@ impl Printer {
     /// M410, M876) bypass the queue automatically.
     pub fn send(&self, gcode: &str);
     pub fn send_immediate(&self, gcode: &str);          // bypass queue + flow control
+    /// `send`, following the last queued (non-emergency) command: the Tracked reports Acknowledged on
+    /// its `ok` (later than now while the firmware is busy, e.g. in a heat wait), Lost when it is
+    /// dropped or released without one (disconnect, halt, timeout) or nothing was queued.
+    pub fn send_tracked(&self, gcode: &str) -> Tracked;
     pub fn emergency_stop(&self);                        // M112 now, abort job, mark halted
     pub fn start_print(&self, file: std::sync::Arc<GcodeFile>, options: PrintOptions) -> Result<(), HostError>;
     pub fn pause(&self); pub fn resume(&self); pub fn cancel(&self);
@@ -1071,7 +1075,7 @@ impl Printer {
     pub fn request_position(&self);                      // M114
     pub fn request_firmware_info(&self);                 // M115
     pub fn request_settings(&self);                      // M503 (clears + refills state.settings)
-    pub fn save_settings(&self);                         // M500
+    pub fn save_settings(&self) -> Tracked;              // M500 via send_tracked
     pub fn load_settings(&self);                         // M501 then M503
     pub fn factory_reset_settings(&self);                // M502 then M503 (UI must confirm first)
     pub fn apply_setting(&self, setting: &SettingCommand); // send to_gcode(), update state optimistically, M503 later
@@ -1100,6 +1104,11 @@ pub struct DisconnectSummary {                         // impl Display: "Cancell
 }
 impl DisconnectSummary { pub fn acknowledged(&self) -> bool; }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Delivery { Pending, Acknowledged, Lost }        // what became of a send_tracked command
+#[derive(Debug)]
+pub struct Tracked;                                      // follows one command (a channel told on its `ok`)
+impl Tracked { pub fn poll(&mut self) -> Delivery; }     // never blocks; Lost and Acknowledged are final
 pub enum Heater { Hotend(u8), Bed, Chamber }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Axis { X, Y, Z, E }

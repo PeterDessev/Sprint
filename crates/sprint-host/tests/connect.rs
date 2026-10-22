@@ -4,7 +4,7 @@
 mod common;
 
 use common::*;
-use sprint_host::{ConnectionStatus, ConsoleKind, Event, Printer};
+use sprint_host::{ConnectionStatus, ConsoleKind, Delivery, Event, Printer, Tracked};
 
 #[test]
 fn handshake_populates_firmware_capabilities_and_settings() {
@@ -217,4 +217,62 @@ fn a_cancelled_tcp_attempt_ends_disconnected() {
         ConnectionStatus::Disconnected
     );
     assert!(failures(&events).is_empty(), "no failure was reported");
+}
+
+/// Poll `tracked` until it is no longer pending.
+fn settle(tracked: &mut Tracked) -> Delivery {
+    let start = std::time::Instant::now();
+    while tracked.poll() == Delivery::Pending {
+        assert!(start.elapsed() < PATIENCE, "still pending");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    tracked.poll()
+}
+
+#[test]
+fn a_save_queued_behind_a_heat_wait_is_acknowledged_after_it() {
+    let printer = connect(fast_sim(20.0), options());
+    printer.send("M190 S60");
+    let mut save = printer.save_settings();
+    // The firmware takes nothing else while it waits for the bed.
+    wait_for(&printer, "the bed to heat", |s| {
+        s.temps.bed.as_ref().is_some_and(|b| b.target == Some(60.0))
+    });
+    assert_eq!(save.poll(), Delivery::Pending);
+    let warming = printer.with_state(|s| s.temps.bed.as_ref().map(|b| b.current));
+    assert!(warming.is_some_and(|t| t < 59.0), "{warming:?}");
+    assert_eq!(settle(&mut save), Delivery::Acknowledged);
+    // It was not acknowledged before the bed reached its target.
+    let bed = printer.with_state(|s| s.temps.bed.as_ref().map(|b| b.current));
+    assert!(bed.is_some_and(|t| t > 58.0), "{bed:?}");
+    wait_for(&printer, "M500's message", |s| {
+        s.firmware_messages
+            .iter()
+            .any(|m| m.contains("Settings Stored"))
+    });
+    printer.send("M140 S0");
+    wait_idle(&printer);
+}
+
+#[test]
+fn a_tracked_command_is_lost_when_the_link_closes_first() {
+    let printer = connect(fast_sim(1.0), options());
+    printer.send("M190 S90");
+    let mut save = printer.save_settings();
+    assert_eq!(save.poll(), Delivery::Pending);
+    printer.disconnect();
+    assert_eq!(settle(&mut save), Delivery::Lost);
+}
+
+#[test]
+fn send_tracked_follows_the_last_command_and_needs_one() {
+    let printer = connect(fast_sim(20.0), options());
+    let mut two = printer.send_tracked("G92 E0\nM114 ; where");
+    assert_eq!(settle(&mut two), Delivery::Acknowledged);
+    // Emergency commands bypass the queue: nothing to follow.
+    assert_eq!(printer.send_tracked("M108").poll(), Delivery::Lost);
+    assert_eq!(printer.send_tracked("; a comment").poll(), Delivery::Lost);
+    printer.disconnect();
+    // Not connected: nothing takes the command.
+    assert_eq!(printer.send_tracked("M500").poll(), Delivery::Lost);
 }
