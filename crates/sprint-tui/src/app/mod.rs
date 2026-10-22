@@ -22,8 +22,8 @@ use crossterm::event::{
 use ratatui::layout::{Position, Rect};
 use sprint_host::sprint_proto::{JobContext, gcode_doc, setting_def};
 use sprint_host::{
-    AppConfig, Axes, Axis, ConnectTarget, ConsoleKind as HostKind, Event, Heater, HostPrompt,
-    JobKind, JobStatus, Printer, PrinterProfile, list_ports,
+    AppConfig, Axes, Axis, ConnectTarget, ConsoleKind as HostKind, Delivery, Event, Heater,
+    HostPrompt, JobKind, JobStatus, Printer, PrinterProfile, Tracked, list_ports,
 };
 
 use crate::actions::{self, Motion};
@@ -156,6 +156,8 @@ pub(crate) struct App {
     pub file: Option<LoadedFile>,
     pub loader: Option<LoadJob>,
     connecting: Option<Receiver<Result<(), String>>>,
+    /// EEPROM saves the printer has not confirmed yet.
+    saves: Vec<Tracked>,
     /// Work running off the UI thread; each ends with a status message
     /// (`Err` for a failure).
     background: Vec<Receiver<Result<String, String>>>,
@@ -263,6 +265,7 @@ impl App {
             file: None,
             loader: None,
             connecting: None,
+            saves: Vec::new(),
             background: Vec::new(),
             focus: Focus::Layers,
             return_focus: Focus::Layers,
@@ -549,6 +552,19 @@ impl App {
 
     /// Advance timers: status messages, the E-stop arm, loads, connects
     /// and report timeouts.
+    /// Say which EEPROM saves the printer confirmed, or will not.
+    fn poll_saves(&mut self) {
+        for mut save in std::mem::take(&mut self.saves) {
+            match save.poll() {
+                Delivery::Pending => self.saves.push(save),
+                Delivery::Acknowledged => self.good("Settings saved to EEPROM"),
+                Delivery::Lost => {
+                    self.warn("Not saved to EEPROM: the printer did not confirm M500");
+                }
+            }
+        }
+    }
+
     pub(crate) fn tick(&mut self, now: Instant) {
         if self.toast.as_ref().is_some_and(|t| now >= t.until) {
             self.toast = None;
@@ -562,6 +578,7 @@ impl App {
             self.info("Emergency stop disarmed");
         }
         self.poll_loader();
+        self.poll_saves();
         if let Some(rx) = &self.connecting {
             let result = match rx.try_recv() {
                 Ok(result) => Some(result),
@@ -2480,8 +2497,10 @@ impl App {
                 self.guard(&safety, guard, Action::ApplySetting(merged));
             }
             Command::Eeprom(Eeprom::Save) => {
-                printer.save_settings();
-                self.good("Settings saved to EEPROM (M500)");
+                // Confirmed in `tick` once the printer has saved, which is
+                // later than now when it is busy (a heat wait, a long move).
+                self.saves.push(printer.save_settings());
+                self.info("Saving the settings to EEPROM (M500)");
             }
             Command::Eeprom(Eeprom::Load) => {
                 printer.load_settings();

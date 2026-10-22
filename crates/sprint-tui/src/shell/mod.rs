@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::Receiver;
 use sprint_host::sprint_proto::{JobContext, gcode_doc, setting_def};
 use sprint_host::{
-    AppConfig, Axes, Axis, ConnectTarget, ConnectionStatus, Heater, JobKind, Printer,
+    AppConfig, Axes, Axis, ConnectTarget, ConnectionStatus, Delivery, Heater, JobKind, Printer,
     PrinterProfile, list_ports,
 };
 
@@ -1537,8 +1537,23 @@ impl Shell {
                 }
             }
             Command::Eeprom(Eeprom::Save) => {
-                printer.save_settings();
-                self.out.good("Settings saved to EEPROM (M500)");
+                let mut save = printer.save_settings();
+                self.out.dim("Saving the settings to EEPROM (M500)");
+                // Said once the printer has saved, which is later than now
+                // when it is busy (a heat wait, a long move).
+                let out = self.out.clone();
+                std::thread::spawn(move || {
+                    loop {
+                        match save.poll() {
+                            Delivery::Pending => std::thread::sleep(Duration::from_millis(50)),
+                            Delivery::Acknowledged => break out.good("Settings saved to EEPROM"),
+                            Delivery::Lost => {
+                                break out
+                                    .warn("Not saved to EEPROM: the printer did not confirm M500");
+                            }
+                        }
+                    }
+                });
             }
             Command::Eeprom(Eeprom::Load) => {
                 if self.request(

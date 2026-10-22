@@ -2013,3 +2013,30 @@ fn a_macro_that_asks_shows_its_lines_with_the_placeholders_filled_in() {
     assert!(!text.contains("  G28"), "{text}");
     assert!(text.contains("Macro Home"), "{text}");
 }
+
+#[test]
+fn eeprom_save_says_saved_once_the_printer_has_saved() {
+    let (mut shell, buffer) = connected_timed();
+    let mut input = Script::new(["M190 S35", "eeprom save"], false);
+    shell.run_lines_until_eof_without_leaving(&mut input);
+    // The firmware waits for the bed before it takes M500.
+    let text = buffer.text();
+    assert!(
+        text.contains("Saving the settings to EEPROM (M500)"),
+        "{text}"
+    );
+    assert!(!text.contains("Settings saved to EEPROM"), "{text}");
+    let deadline = Instant::now() + PATIENCE;
+    while !buffer.text().contains("Settings saved to EEPROM") {
+        assert!(Instant::now() < deadline, "never saved:\n{}", buffer.text());
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let bed = shell
+        .printer
+        .with_state(|s| s.temps.bed.as_ref().map(|b| b.current));
+    assert!(
+        bed.is_some_and(|t| t > 33.0),
+        "saved before the bed was hot: {bed:?}"
+    );
+    shell.printer.send("M140 S0");
+}
