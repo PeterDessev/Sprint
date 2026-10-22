@@ -13,14 +13,20 @@ All notable changes to Sprint are listed here. The format follows
   round plate and a cylindrical build volume, the terminal UI's layer view
   a circle; jog targets stay on the round bed, the parking point is at its
   back, and the starter macros check the towers instead of the corners.
-- `Printer::send_tracked` follows a command until the printer acknowledges
-  it; `save_settings` returns such a tracker.
+- `Printer::send_tracked` follows commands until the printer acknowledges
+  them, or reports what it answered when it rejects one (`Error:...`,
+  "Unknown command"); the settings, temperature, fan, speed, flow and
+  babystep controls and `start_sd_print` return such a tracker, and
+  `Tracked::all` follows several.
 
 ### Fixed
 
-- "Saved to EEPROM" (Tuning tab, calibration wizards, bed mesh, the shell
-  and the terminal UI) appears once the printer has saved, not as soon as
-  M500 is queued: a printer busy with a heat wait takes it only afterwards.
+- Messages that a command succeeded wait for the printer: "Saved to
+  EEPROM", "Applied", "E-steps applied", "Flow set", "Printing" (an SD
+  print) and the like in the GUI, the terminal UI and the shell appear once
+  the printer has taken the commands, not as soon as they are queued (a
+  printer busy with a heat wait takes them only afterwards), and never when
+  it answered one with an error: they say what it answered instead.
 - A delta's geometry (M665) is no longer imported into a printer that is not
   a delta, and M665 shows Marlin 2.1's diagonal rod trims (A, B, C).
 - A recent file is listed once however its path was spelled, also on Linux
