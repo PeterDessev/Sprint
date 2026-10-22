@@ -1030,11 +1030,11 @@ impl Printer {
     /// print-stream lines (priority queue). Emergency commands (M112, M108,
     /// M410, M876) bypass the queue automatically.
     pub fn send(&self, gcode: &str);
-    pub fn send_immediate(&self, gcode: &str);          // bypass queue + flow control
     /// `send`, following the last queued (non-emergency) command: the Tracked reports Acknowledged on
     /// its `ok` (later than now while the firmware is busy, e.g. in a heat wait), Lost when it is
     /// dropped or released without one (disconnect, halt, timeout) or nothing was queued.
     pub fn send_tracked(&self, gcode: &str) -> Tracked;
+    pub fn send_immediate(&self, gcode: &str);          // bypass queue + flow control
     pub fn emergency_stop(&self);                        // M112 now, abort job, mark halted
     pub fn start_print(&self, file: std::sync::Arc<GcodeFile>, options: PrintOptions) -> Result<(), HostError>;
     pub fn pause(&self); pub fn resume(&self); pub fn cancel(&self);
@@ -1103,12 +1103,12 @@ pub struct DisconnectSummary {                         // impl Display: "Cancell
                                                        //   not acknowledged in time)
 }
 impl DisconnectSummary { pub fn acknowledged(&self) -> bool; }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Delivery { Pending, Acknowledged, Lost }        // what became of a send_tracked command
 #[derive(Debug)]
 pub struct Tracked;                                      // follows one command (a channel told on its `ok`)
 impl Tracked { pub fn poll(&mut self) -> Delivery; }     // never blocks; Lost and Acknowledged are final
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Heater { Hotend(u8), Bed, Chamber }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Axis { X, Y, Z, E }
@@ -1834,6 +1834,7 @@ pub struct AppOptions {
     pub native_dialogs: bool,               // without them "Open" only counts the request (tests)
     pub restore_prefs: bool,                // restore UI preferences from eframe's storage
     pub connect: Option<ConnectTarget>,     // connect at startup; wins over `simulator` and auto_connect
+    pub bundled_fonts: bool,                // egui's bundled fonts, not the system's (text measures alike everywhere: tests)
 }
 impl AppOptions {
     pub fn desktop(gui: GuiOptions) -> AppOptions;  // AppConfig::path() (SPRINT_CONFIG), port scans, native dialogs
@@ -1851,7 +1852,6 @@ impl SprintApp {
     // window_title(); and control: push_action(AppAction),
     // set_state_override(Option<PrinterState>), set_side_panels(sidebar, console),
     // start_print_dialog_mut(), settings_dialog_mut(), toasts_mut(),
-    pub bundled_fonts: bool,                // egui's bundled fonts, not the system's (text measures alike everywhere: tests)
     // console_mut(), viewer_tab_mut().
 }
 ```
