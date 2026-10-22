@@ -261,7 +261,7 @@ fn push_frustum(
 /// Flip triangles appended after vertex `first_vertex` whose geometric
 /// normal disagrees with the stored vertex normals.
 fn fix_winding_outward(mesh: &mut Mesh<MeshVertex>, first_vertex: u32) {
-    for tri in mesh.indices.chunks_exact_mut(3) {
+    for tri in mesh.indices.as_chunks_mut::<3>().0 {
         if tri[0] < first_vertex {
             continue;
         }
