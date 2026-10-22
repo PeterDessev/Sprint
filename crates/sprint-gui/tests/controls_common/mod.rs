@@ -276,6 +276,32 @@ pub fn wait_idle(printer: &Printer) {
     }
 }
 
+/// Run `f` with the panels showing the printer's state as it is now, held
+/// still (and laid out once) until `f` returns. Live readouts change the
+/// layout as the printer reports, and a report arriving between finding a
+/// widget and clicking it would move the widget from under the pointer:
+/// find and click inside `f`. Commands still go to the live printer. A
+/// fixed state stays as it is.
+pub fn frozen<R>(h: &mut Harness<'_, Rig>, f: impl FnOnce(&mut Harness<'_, Rig>) -> R) -> R {
+    if h.state().state.is_some() {
+        return f(h);
+    }
+    let now = h.state().printer.snapshot();
+    h.state_mut().state = Some(now);
+    h.step();
+    let result = f(h);
+    h.state_mut().state = None;
+    result
+}
+
+/// Click where `find` says, on one layout ([`frozen`]).
+pub fn click_found(h: &mut Harness<'_, Rig>, find: impl FnOnce(&Harness<'_, Rig>) -> egui::Pos2) {
+    frozen(h, |h| {
+        let pos = find(h);
+        click_at(h, pos);
+    });
+}
+
 /// Commands the simulator executed, without automatic temperature traffic.
 pub fn received(printer: &Printer) -> Vec<String> {
     sim(printer)

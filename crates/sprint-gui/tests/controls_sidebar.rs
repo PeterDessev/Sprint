@@ -7,8 +7,8 @@ mod controls_common;
 use std::time::{Duration, Instant};
 
 use controls_common::{
-    Rig, click_at, contains_run, home, printing, received, sidebar_fixed, wait_for,
-    wait_for_commands, wait_idle,
+    Rig, contains_run, home, printing, received, sidebar_fixed, wait_for, wait_for_commands,
+    wait_idle,
 };
 use egui::accesskit::Role;
 use egui_kittest::{
@@ -73,9 +73,14 @@ fn wait_enabled(h: &mut Harness<'_, Rig>, label: &str) {
 
 /// Click the center of a jog pad region.
 fn click_jog(h: &mut Harness<'_, Rig>, region: JogRegion) {
+    controls_common::click_found(h, |h| jog_point(h, region));
+}
+
+/// The center of a jog pad region on screen.
+fn jog_point(h: &Harness<'_, Rig>, region: JogRegion) -> egui::Pos2 {
     let rect = h.get_by_label("XY jog").rect();
     let geo = JogGeometry::new(rect, true);
-    let pos = match region {
+    match region {
         JogRegion::Center => geo.center,
         JogRegion::Corner(corner) => geo.corner_rect(corner).center(),
         JogRegion::Sector { direction, ring } => {
@@ -89,21 +94,20 @@ fn click_jog(h: &mut Harness<'_, Rig>, region: JogRegion) {
             };
             geo.center + offset
         }
-    };
-    click_at(h, pos);
+    }
 }
 
 /// Click a widget by its accessible label with separate press and release
 /// frames (custom-painted widgets act on the press position). With several
 /// matches the first in drawing order is clicked.
 fn click(h: &mut Harness<'_, Rig>, label: &str) {
-    let pos = h
-        .get_all_by_label(label)
-        .next()
-        .unwrap_or_else(|| panic!("no widget labelled {label:?}"))
-        .rect()
-        .center();
-    click_at(h, pos);
+    controls_common::click_found(h, |h| {
+        h.get_all_by_label(label)
+            .next()
+            .unwrap_or_else(|| panic!("no widget labelled {label:?}"))
+            .rect()
+            .center()
+    });
 }
 
 /// The rect of the slider labelled `label`.
@@ -231,12 +235,13 @@ fn move_to_lifts_first_and_center_moves_to_the_bed_center() {
 
 /// Type `value` into the move-to field of `axis` (0 = X, 1 = Y, 2 = Z).
 fn set_move_target(h: &mut Harness<'_, Rig>, axis: usize, value: &str) {
-    let field = h
-        .get_all_by_role(Role::SpinButton)
-        .nth(axis)
-        .expect("move-to field")
-        .rect();
-    click_at(h, field.center());
+    controls_common::click_found(h, |h| {
+        h.get_all_by_role(Role::SpinButton)
+            .nth(axis)
+            .expect("move-to field")
+            .rect()
+            .center()
+    });
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
     h.event(egui::Event::Text(value.into()));
     h.step();
@@ -356,12 +361,13 @@ fn temperature_presets_cool_down_and_typed_targets() {
     run_for(&mut h, Duration::from_millis(50));
     clear(&h);
     // Type a target into the hotend card and press Enter.
-    let field = h
-        .get_all_by_role(Role::TextInput)
-        .next()
-        .expect("target field")
-        .rect();
-    click_at(&mut h, field.center());
+    controls_common::click_found(&mut h, |h| {
+        h.get_all_by_role(Role::TextInput)
+            .next()
+            .expect("target field")
+            .rect()
+            .center()
+    });
     h.get_all_by_role(Role::TextInput)
         .next()
         .expect("target field")
@@ -455,22 +461,24 @@ fn hot_presets_are_not_cut_by_the_heater_cards() {
     controls_common::settle(&mut h);
     let p = printer(&h);
     // The bed card's preset menu (the hotend card's comes first).
-    let menu = h
-        .get_all_by_label("Presets")
-        .nth(1)
-        .expect("the bed card's presets")
-        .rect();
-    click_at(&mut h, menu.center());
+    controls_common::click_found(&mut h, |h| {
+        h.get_all_by_label("Presets")
+            .nth(1)
+            .expect("the bed card's presets")
+            .rect()
+            .center()
+    });
     h.run_ok();
     click(&mut h, "PC  \u{b7}  130 \u{b0}C");
     wait_for_commands(&p, &["M140 S130"]);
     // A target typed into the hotend card.
-    let field = h
-        .get_all_by_role(Role::TextInput)
-        .next()
-        .expect("target field")
-        .rect();
-    click_at(&mut h, field.center());
+    controls_common::click_found(&mut h, |h| {
+        h.get_all_by_role(Role::TextInput)
+            .next()
+            .expect("target field")
+            .rect()
+            .center()
+    });
     h.get_all_by_role(Role::TextInput)
         .next()
         .expect("target field")
@@ -549,12 +557,13 @@ fn a_typed_target_too_cold_to_print_asks_during_a_job() {
     run_for(&mut h, Duration::from_millis(50));
     clear(&h);
     let type_target = |h: &mut Harness<'_, Rig>, text: &str| {
-        let field = h
-            .get_all_by_role(Role::TextInput)
-            .next()
-            .expect("target field")
-            .rect();
-        click_at(h, field.center());
+        controls_common::click_found(h, |h| {
+            h.get_all_by_role(Role::TextInput)
+                .next()
+                .expect("target field")
+                .rect()
+                .center()
+        });
         h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
         h.get_all_by_role(Role::TextInput)
             .next()
@@ -766,8 +775,10 @@ fn sliders_send_fan_speed_and_overrides_on_release() {
     let mut h = connected();
     let p = printer(&h);
     // Click the far right of the fan slider: full speed.
-    let fan = slider(&h, "Fan");
-    click_at(&mut h, egui::pos2(fan.max.x - 2.0, fan.center().y));
+    controls_common::click_found(&mut h, |h| {
+        let fan = slider(h, "Fan");
+        egui::pos2(fan.max.x - 2.0, fan.center().y)
+    });
     wait_for_commands(&p, &["M106 S255"]);
     wait_for(&p, "the fan report", |s| s.fan_speeds.first() == Some(&255));
     h.run_ok();
@@ -780,31 +791,33 @@ fn sliders_send_fan_speed_and_overrides_on_release() {
     clear(&h);
     click(&mut h, "Reset to 100% (M220 S100)");
     wait_for_commands(&p, &["M220 S100"]);
-    // Dragging only sends once, on release.
+    // Dragging only sends once, on release (on one layout throughout).
     clear(&h);
-    let speed = slider(&h, "Speed");
-    let start = egui::pos2(speed.min.x + 40.0, speed.center().y);
-    h.hover_at(start);
-    h.step();
-    h.event(egui::Event::PointerButton {
-        pos: start,
-        button: egui::PointerButton::Primary,
-        pressed: true,
-        modifiers: egui::Modifiers::NONE,
-    });
-    for i in 1..=8 {
-        h.hover_at(start + egui::vec2(i as f32 * 10.0, 0.0));
+    controls_common::frozen(&mut h, |h| {
+        let speed = slider(h, "Speed");
+        let start = egui::pos2(speed.min.x + 40.0, speed.center().y);
+        h.hover_at(start);
         h.step();
-    }
-    assert_nothing_sent(&mut h, "a slider being dragged");
-    let end = start + egui::vec2(80.0, 0.0);
-    h.event(egui::Event::PointerButton {
-        pos: end,
-        button: egui::PointerButton::Primary,
-        pressed: false,
-        modifiers: egui::Modifiers::NONE,
+        h.event(egui::Event::PointerButton {
+            pos: start,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        });
+        for i in 1..=8 {
+            h.hover_at(start + egui::vec2(i as f32 * 10.0, 0.0));
+            h.step();
+        }
+        assert_nothing_sent(h, "a slider being dragged");
+        let end = start + egui::vec2(80.0, 0.0);
+        h.event(egui::Event::PointerButton {
+            pos: end,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.step();
     });
-    h.step();
     run_for(&mut h, Duration::from_millis(300));
     wait_idle(&p);
     let got: Vec<_> = received(&p)
@@ -837,19 +850,21 @@ fn overrides_beyond_the_slider_ranges_read_out_as_reported() {
 fn a_quick_tap_sets_a_slider() {
     let mut h = connected();
     let p = printer(&h);
-    let fan = slider(&h, "Fan");
-    let pos = egui::pos2(fan.max.x - 2.0, fan.center().y);
-    h.hover_at(pos);
-    h.step();
-    for pressed in [true, false] {
-        h.event(egui::Event::PointerButton {
-            pos,
-            button: egui::PointerButton::Primary,
-            pressed,
-            modifiers: egui::Modifiers::NONE,
-        });
-    }
-    h.step();
+    controls_common::frozen(&mut h, |h| {
+        let fan = slider(h, "Fan");
+        let pos = egui::pos2(fan.max.x - 2.0, fan.center().y);
+        h.hover_at(pos);
+        h.step();
+        for pressed in [true, false] {
+            h.event(egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+        h.step();
+    });
     run_for(&mut h, Duration::from_millis(100));
     wait_for_commands(&p, &["M106 S255"]);
 }
@@ -958,12 +973,13 @@ fn keyboard_jogging_needs_the_toggle_and_a_free_keyboard() {
     wait_for_commands(&p, &["G91", "G1 Z-1 F600", "G90"]);
     clear(&h);
     // Typing in a field keeps the arrows for the field.
-    let field = h
-        .get_all_by_role(Role::TextInput)
-        .next()
-        .expect("field")
-        .rect();
-    click_at(&mut h, field.center());
+    controls_common::click_found(&mut h, |h| {
+        h.get_all_by_role(Role::TextInput)
+            .next()
+            .expect("field")
+            .rect()
+            .center()
+    });
     h.key_press(egui::Key::ArrowLeft);
     h.run_ok();
     assert_nothing_sent(&mut h, "arrows while typing");
@@ -1000,16 +1016,21 @@ fn keyboard_jogging_pauses_while_the_motion_card_is_collapsed() {
     let p = printer(&h);
     h.get_by_label("Keyboard jog").click();
     h.run_ok();
-    // Collapse the card by its header.
-    click(&mut h, "Motion");
-    h.run_ok();
+    // Collapse the card by its header (its own action: the collapse moves
+    // the next card under the pointer).
+    controls_common::frozen(&mut h, |h| {
+        h.get_by_label("Motion").click();
+        h.run_ok();
+    });
     assert!(h.query_by_label("Keyboard jog").is_none(), "card collapsed");
     h.key_press(egui::Key::ArrowUp);
     h.run_ok();
     assert_nothing_sent(&mut h, "arrows with the motion card collapsed");
     // Open again: the toggle is still on and the arrows jog.
-    click(&mut h, "Motion");
-    h.run_ok();
+    controls_common::frozen(&mut h, |h| {
+        h.get_by_label("Motion").click();
+        h.run_ok();
+    });
     h.key_press(egui::Key::ArrowUp);
     h.run_ok();
     wait_for_commands(&p, &["G91", "G1 Y1 F3000", "G90"]);

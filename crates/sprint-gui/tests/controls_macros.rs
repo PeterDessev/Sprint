@@ -33,8 +33,12 @@ fn names(h: &Harness<'_, Rig>) -> Vec<String> {
 }
 
 fn click(h: &mut Harness<'_, Rig>, label: &str) {
-    h.get(by_label(label)).click();
-    settle(h);
+    // On one layout: the live readouts move the sidebar as the printer
+    // reports.
+    controls_common::frozen(h, |h| {
+        h.get(by_label(label)).click();
+        settle(h);
+    });
 }
 
 /// Open the context menu of the macro tile labelled `tile` and pick the
