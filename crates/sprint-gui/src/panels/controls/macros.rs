@@ -121,8 +121,8 @@ fn new_macro(name: &str, gcode: &str, color: Option<[u8; 3]>, confirm: bool) -> 
 }
 
 /// Useful starter macros for `profile`: preheat with its PLA preset, level
-/// corners (home, then each corner at Z0.2 with a pause), filament change
-/// and a settings report.
+/// corners (home, then each corner at Z0.2 with a pause; on a delta, each
+/// tower and the centre), filament change and a settings report.
 pub(super) fn default_macros(profile: &PrinterProfile) -> Vec<Macro> {
     let usable = |t: f32| t.is_finite() && t > 0.0;
     let preset = profile
@@ -139,26 +139,51 @@ pub(super) fn default_macros(profile: &PrinterProfile) -> Vec<Macro> {
     }
     preheat.push_str(&format!("M104 S{}", num(hotend)));
 
-    let (min, max) = profile.build_volume();
-    let inset = |lo: f32, hi: f32| ((hi - lo) * 0.15).clamp(5.0, 30.0).min((hi - lo) / 2.0);
-    let (ix, iy) = (inset(min[0], max[0]), inset(min[1], max[1]));
-    let (x0, x1, y0, y1) = (min[0] + ix, max[0] - ix, min[1] + iy, max[1] - iy);
-    let mut level = String::from(
-        "; Home, then visit each corner at Z0.2 and wait (M0) while you\n\
-         ; adjust its screw with a sheet of paper under the nozzle.\nG28\nG90\n",
-    );
-    for (corner, x, y) in [
-        ("front left", x0, y0),
-        ("front right", x1, y0),
-        ("back right", x1, y1),
-        ("back left", x0, y1),
-    ] {
+    let visit = |level: &mut String, x: f32, y: f32, ask: &str| {
         level.push_str(&format!(
-            "G1 Z5 F600\nG1 X{} Y{} F3000\nG1 Z0.2 F600\nM0 Adjust the {corner} corner\n",
+            "G1 Z5 F600\nG1 X{} Y{} F3000\nG1 Z0.2 F600\nM0 {ask}\n",
             num(x),
             num(y)
         ));
-    }
+    };
+    let (level_name, mut level) = if let Some(diameter) = profile.bed_diameter() {
+        // A delta's corners are off its round bed: check the towers
+        // (Marlin's A, B and C at 210, 330 and 90 degrees) and the centre.
+        let mut level = String::from(
+            "; Home, then visit each tower and the centre at Z0.2 and wait (M0):\n\
+             ; the gap under the nozzle should feel the same everywhere.\nG28\nG90\n",
+        );
+        let reach = diameter / 2.0 * 0.8;
+        for (tower, degrees) in [("A", 210.0f32), ("B", 330.0), ("C", 90.0)] {
+            let (sin, cos) = degrees.to_radians().sin_cos();
+            visit(
+                &mut level,
+                reach * cos,
+                reach * sin,
+                &format!("Check tower {tower}"),
+            );
+        }
+        visit(&mut level, 0.0, 0.0, "Check the centre");
+        ("Check the towers", level)
+    } else {
+        let (min, max) = profile.build_volume();
+        let inset = |lo: f32, hi: f32| ((hi - lo) * 0.15).clamp(5.0, 30.0).min((hi - lo) / 2.0);
+        let (ix, iy) = (inset(min[0], max[0]), inset(min[1], max[1]));
+        let (x0, x1, y0, y1) = (min[0] + ix, max[0] - ix, min[1] + iy, max[1] - iy);
+        let mut level = String::from(
+            "; Home, then visit each corner at Z0.2 and wait (M0) while you\n\
+             ; adjust its screw with a sheet of paper under the nozzle.\nG28\nG90\n",
+        );
+        for (corner, x, y) in [
+            ("front left", x0, y0),
+            ("front right", x1, y0),
+            ("back right", x1, y1),
+            ("back left", x0, y1),
+        ] {
+            visit(&mut level, x, y, &format!("Adjust the {corner} corner"));
+        }
+        ("Level corners", level)
+    };
     level.push_str("G1 Z10 F600");
 
     vec![
@@ -168,7 +193,7 @@ pub(super) fn default_macros(profile: &PrinterProfile) -> Vec<Macro> {
             Some(SWATCHES[0]),
             false,
         ),
-        new_macro("Level corners", &level, Some(SWATCHES[5]), true),
+        new_macro(level_name, &level, Some(SWATCHES[5]), true),
         new_macro("Filament change", "M600", Some(SWATCHES[6]), true),
         new_macro("Report settings", "M503", None, false),
     ]
@@ -1207,6 +1232,41 @@ mod tests {
         profile.bed_size = [8.0, 8.0];
         let level = macro_lines(&default_macros(&profile)[1].gcode);
         assert!(level.contains(&"G1 X0 Y0 F3000".to_owned()));
+    }
+
+    #[test]
+    fn a_delta_checks_its_towers_on_the_round_bed() {
+        let profile = PrinterProfile {
+            machine: sprint_host::MachineKind::Delta,
+            bed_size: [200.0, 200.0],
+            ..PrinterProfile::default()
+        };
+        let defaults = default_macros(&profile);
+        assert_eq!(defaults[1].name, "Check the towers");
+        let level = macro_lines(&defaults[1].gcode);
+        assert_eq!(level[0], "G28");
+        assert_eq!(level.iter().filter(|l| l.starts_with("M0")).count(), 4);
+        // Tower C at the back, the others in front, all on the bed.
+        assert!(level.contains(&"G1 X0 Y80 F3000".to_owned()), "{level:?}");
+        assert!(
+            level.contains(&"G1 X-69.3 Y-40 F3000".to_owned()),
+            "{level:?}"
+        );
+        assert!(
+            level.contains(&"G1 X69.3 Y-40 F3000".to_owned()),
+            "{level:?}"
+        );
+        assert!(level.contains(&"G1 X0 Y0 F3000".to_owned()), "{level:?}");
+        for line in level.iter().filter(|l| l.starts_with("G1 X")) {
+            let coord = |axis: char| -> f32 {
+                let word = line
+                    .split(' ')
+                    .find(|w| w.starts_with(axis))
+                    .expect("coordinate");
+                word[1..].parse().expect("number")
+            };
+            assert!(coord('X').hypot(coord('Y')) <= 100.0, "{line}");
+        }
     }
 
     #[test]

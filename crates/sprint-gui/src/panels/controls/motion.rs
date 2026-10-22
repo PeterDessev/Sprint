@@ -149,7 +149,8 @@ pub(super) fn bed_center(profile: &PrinterProfile) -> (f32, f32) {
     ((min[0] + max[0]) / 2.0, (min[1] + max[1]) / 2.0)
 }
 
-/// `target` clamped into the build volume (NaN becomes the minimum).
+/// `target` clamped into the build volume (NaN becomes the minimum; on a
+/// delta's round bed, XY are pulled in to its rim).
 pub(super) fn clamp_to_volume(profile: &PrinterProfile, target: [f32; 3]) -> [f32; 3] {
     let (min, max) = profile.build_volume();
     let mut out = [0.0; 3];
@@ -160,6 +161,14 @@ pub(super) fn clamp_to_volume(profile: &PrinterProfile, target: [f32; 3]) -> [f3
         } else {
             lo
         };
+    }
+    if let Some(diameter) = profile.bed_diameter() {
+        let radius = diameter / 2.0;
+        let distance = out[0].hypot(out[1]);
+        if distance > radius {
+            out[0] *= radius / distance;
+            out[1] *= radius / distance;
+        }
     }
     out
 }
@@ -817,6 +826,17 @@ mod tests {
         assert_eq!(
             clamp_to_volume(&profile, [-500.0, 10.0, 20.0]),
             [-117.5, 10.0, 20.0]
+        );
+        // A delta: inside the round bed, not its square.
+        profile.machine = sprint_host::MachineKind::Delta;
+        profile.bed_size = [200.0, 200.0];
+        assert_eq!(bed_center(&profile), (0.0, 0.0));
+        let [x, y, z] = clamp_to_volume(&profile, [100.0, 100.0, 5.0]);
+        assert!((x.hypot(y) - 100.0).abs() < 1e-3, "{x} {y}");
+        assert!((x - y).abs() < 1e-3 && z == 5.0);
+        assert_eq!(
+            clamp_to_volume(&profile, [30.0, -40.0, 1.0]),
+            [30.0, -40.0, 1.0]
         );
     }
 
