@@ -47,8 +47,8 @@ impl Rng {
         self.next() % 100 < percent
     }
 
-    fn pick<'a, T>(&mut self, items: &'a [T]) -> &'a T {
-        &items[self.below(items.len())]
+    fn pick<T: Copy>(&mut self, items: &[T]) -> T {
+        items[self.below(items.len())]
     }
 }
 
@@ -212,7 +212,7 @@ fn classic_line(rng: &mut Rng) -> String {
         if rng.chance(80) {
             s.push(' ');
         }
-        s.push(*rng.pick(LETTERS));
+        s.push(rng.pick(LETTERS));
         if rng.chance(90) {
             s.push_str(&number(rng));
         }
@@ -232,7 +232,7 @@ fn junk_line(rng: &mut Rng) -> String {
     for _ in 0..rng.below(12) {
         match rng.below(4) {
             0 => s.push_str(rng.pick(JUNK)),
-            1 => s.push(*rng.pick(LETTERS)),
+            1 => s.push(rng.pick(LETTERS)),
             2 => s.push_str(&number(rng)),
             _ => s.push_str(rng.pick(CODES)),
         }
@@ -350,7 +350,7 @@ fn analysis_never_panics_on_random_bytes() {
         let bytes: Vec<u8> = (0..len)
             .map(|_| {
                 if rng.chance(85) {
-                    *rng.pick(alphabet)
+                    rng.pick(alphabet)
                 } else {
                     (rng.next() & 0xFF) as u8
                 }
