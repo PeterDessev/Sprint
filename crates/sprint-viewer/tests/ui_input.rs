@@ -32,7 +32,9 @@ impl Harness {
     }
 
     fn with_toolpath(toolpath: Toolpath) -> Option<Harness> {
-        let Some((device, queue)) = headless_device() else {
+        // `SPRINT_TEST_NO_GPU`: as without an adapter (CI; see gpu_render.rs).
+        let device = headless_device().filter(|_| std::env::var_os("SPRINT_TEST_NO_GPU").is_none());
+        let Some((device, queue)) = device else {
             eprintln!("skipping UI test: no wgpu adapter available");
             return None;
         };

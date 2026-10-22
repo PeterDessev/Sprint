@@ -73,6 +73,10 @@ fn a_narrow_header_keeps_its_title_readable() {
 
 #[test]
 fn a_narrow_tab_keeps_the_screw_card_inside() {
+    if !common::system_has_reference_fonts() {
+        eprintln!("skipped: these widths are tuned to the reference fonts");
+        return;
+    }
     let width = 380.0;
     let mut h = tab(Theme::Dark, (width, 2400.0), demo_state());
     // The direction switch used to push the screw card (bed plan, list,

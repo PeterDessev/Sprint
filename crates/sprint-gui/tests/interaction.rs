@@ -734,6 +734,10 @@ fn key_value_custom_row_stays_in_the_value_column() {
 
 #[test]
 fn long_card_title_is_cut_short_with_a_tooltip() {
+    if !common::system_has_reference_fonts() {
+        eprintln!("skipped: the hover point is tuned to the reference fonts");
+        return;
+    }
     let title = "Part cooling fan and the auxiliary chamber fan";
     let mut h = harness_state(Theme::Dark, (240.0, 160.0), (), move |ui, ()| {
         card(

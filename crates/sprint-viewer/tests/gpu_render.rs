@@ -14,8 +14,15 @@ const W: u32 = 320;
 const H: u32 = 240;
 const BACKGROUND: [u8; 3] = [24, 26, 31];
 
+/// `SPRINT_TEST_NO_GPU` (set, any value) makes the GPU tests run as on a
+/// machine without an adapter: CI sets it, as software rasterizers on
+/// runners vary and some crash.
+fn gpu_disabled() -> bool {
+    std::env::var_os("SPRINT_TEST_NO_GPU").is_some()
+}
+
 fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
-    let d = headless_device();
+    let d = headless_device().filter(|_| !gpu_disabled());
     if d.is_none() {
         eprintln!("skipping GPU test: no wgpu adapter available");
     }
@@ -282,6 +289,9 @@ fn odd_sizes_and_zero_sizes() {
 
 /// A device whose `max_buffer_size` is only `max_buffer` bytes.
 fn small_buffer_device(max_buffer: u64) -> Option<(wgpu::Device, wgpu::Queue)> {
+    if gpu_disabled() {
+        return None;
+    }
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends: wgpu::Backends::from_env().unwrap_or(wgpu::Backends::PRIMARY),
         ..wgpu::InstanceDescriptor::new_without_display_handle()

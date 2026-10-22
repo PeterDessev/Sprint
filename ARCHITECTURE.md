@@ -1842,6 +1842,7 @@ impl SprintApp {
     // window_title(); and control: push_action(AppAction),
     // set_state_override(Option<PrinterState>), set_side_panels(sidebar, console),
     // start_print_dialog_mut(), settings_dialog_mut(), toasts_mut(),
+    pub bundled_fonts: bool,                // egui's bundled fonts, not the system's (text measures alike everywhere: tests)
     // console_mut(), viewer_tab_mut().
 }
 ```

@@ -4,7 +4,9 @@
 //! `tests/snapshots/` (regenerate with `UPDATE_SNAPSHOTS=1`). They were made
 //! with the reference fonts below; on a machine with different system
 //! fonts, or without a GPU adapter, the widgets are still rendered but the
-//! image comparison is skipped.
+//! image comparison is skipped. Without the reference fonts the harness
+//! uses egui's bundled fonts, so the layout tests measure the same text
+//! everywhere, and `SPRINT_TEST_NO_GPU` runs it as without an adapter (CI).
 
 #![allow(dead_code)]
 
@@ -31,7 +33,7 @@ fn builder<S>(theme: Theme, size: impl Into<Vec2>) -> HarnessBuilder<S> {
         .with_max_steps(64);
     match gpu_support::renderer() {
         Some(renderer) => builder.renderer(renderer),
-        None => builder,
+        None => builder.renderer(gpu_support::NoRenderer),
     }
 }
 
@@ -71,6 +73,9 @@ fn build<'a, S>(
         state,
     );
     theme::setup(&h.ctx, theme);
+    if !system_has_reference_fonts() {
+        fonts::install_bundled(&h.ctx);
+    }
     settle(&mut h);
     if fit {
         // Twice: the first resize can change wrapping and thus the height.
@@ -127,7 +132,26 @@ pub fn settle<S>(h: &mut Harness<'_, S>) {
     let _ = h.run_ok();
 }
 
-/// Whether this machine has the fonts the snapshots were made with.
+/// Whether this machine has the fonts the snapshots were made with. Where
+/// it has not, the harnesses use egui's bundled fonts, so that text
+/// measures the same on every machine and the layout tests hold
+/// everywhere.
+pub fn system_has_reference_fonts() -> bool {
+    static HAS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *HAS.get_or_init(|| {
+        // Tests the bundled fonts on a machine that has the reference ones.
+        if std::env::var_os("SPRINT_TEST_BUNDLED_FONTS").is_some() {
+            return false;
+        }
+        let (_, report) = fonts::system_definitions();
+        [report.proportional, report.strong, report.monospace]
+            .iter()
+            .map(|f| f.as_deref())
+            .eq(REFERENCE_FONTS.iter().map(|f| Some(*f)))
+    })
+}
+
+/// Whether the harness uses the fonts the snapshots were made with.
 pub fn has_reference_fonts<S>(h: &Harness<'_, S>) -> bool {
     let Some(report) = fonts::report(&h.ctx) else {
         return false;
@@ -139,6 +163,10 @@ pub fn has_reference_fonts<S>(h: &Harness<'_, S>) -> bool {
 
 /// Compare against `tests/snapshots/{name}.png` (see the module docs).
 pub fn snapshot<S>(h: &mut Harness<'_, S>, name: &str) {
+    if !gpu_support::available() {
+        eprintln!("snapshot {name}: no GPU adapter, rendering and comparison skipped");
+        return;
+    }
     if !has_reference_fonts(h) {
         eprintln!("snapshot {name}: system fonts differ from the reference, comparison skipped");
         if let Err(err) = h.render() {

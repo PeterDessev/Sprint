@@ -432,6 +432,10 @@ fn objects_while_printing() {
     for _ in 0..4 {
         settle(&mut h);
     }
+    if !app_support::gpu_available() {
+        eprintln!("skipped: the objects card is part of the 3D view, which needs a GPU");
+        return;
+    }
     let row = h.get_by_label("Clip B").rect().center();
     h.hover_at(row);
     settle(&mut h);

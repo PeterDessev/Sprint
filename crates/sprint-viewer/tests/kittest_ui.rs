@@ -74,7 +74,8 @@ fn travels_of(tp: &Toolpath, layer: usize) -> Vec<sprint_gcode::Segment> {
 
 #[test]
 fn hovering_a_travel_in_the_real_ui_shows_its_tooltip() {
-    if headless_device().is_none() {
+    // `SPRINT_TEST_NO_GPU`: as without an adapter (CI; see gpu_render.rs).
+    if std::env::var_os("SPRINT_TEST_NO_GPU").is_some() || headless_device().is_none() {
         eprintln!("skipping UI test: no wgpu adapter available");
         return;
     }

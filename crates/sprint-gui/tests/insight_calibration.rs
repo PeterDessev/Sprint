@@ -516,6 +516,10 @@ fn wizards_do_not_save_without_eeprom() {
 
 #[test]
 fn every_wizard_fits_a_narrow_tab() {
+    if !common::system_has_reference_fonts() {
+        eprintln!("skipped: these widths are tuned to the reference fonts");
+        return;
+    }
     let width = 420.0;
     let mut h = tab(Theme::Dark, (width, 1100.0), Some(demo_state()), None);
     // The switcher takes the short titles rather than widening the tab.

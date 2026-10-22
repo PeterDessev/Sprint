@@ -103,6 +103,10 @@ pub struct AppOptions {
     pub native_dialogs: bool,
     /// Restore the UI preferences from eframe's storage.
     pub restore_prefs: bool,
+    /// Use egui's bundled fonts instead of the system's
+    /// ([`fonts::install_bundled`](crate::fonts::install_bundled)), so text
+    /// measures the same on every machine (layout tests).
+    pub bundled_fonts: bool,
 }
 
 impl AppOptions {
@@ -123,6 +127,7 @@ impl AppOptions {
             scan_ports: true,
             native_dialogs: true,
             restore_prefs: true,
+            bundled_fonts: false,
         }
     }
 
@@ -140,6 +145,7 @@ impl AppOptions {
             scan_ports: false,
             native_dialogs: false,
             restore_prefs: false,
+            bundled_fonts: false,
         }
     }
 }
@@ -341,6 +347,9 @@ impl SprintApp {
             UiPrefs::default()
         };
         theme::setup(&ctx, prefs.theme);
+        if options.bundled_fonts {
+            crate::fonts::install_bundled(&ctx);
+        }
         let mut config = options.config;
         // At least one profile, and a valid index.
         let _ = config.active_mut();

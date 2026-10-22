@@ -351,6 +351,15 @@ pub fn install(ctx: &Context) -> FontReport {
     report
 }
 
+/// Install egui's bundled fonts (with Phosphor icons) instead of the
+/// system's: text then measures the same on every machine, which layout
+/// tests on machines without the fonts they were written for rely on.
+pub fn install_bundled(ctx: &Context) -> FontReport {
+    let (defs, report) = definitions_from(None, None, None);
+    install_definitions(ctx, defs, &report);
+    report
+}
+
 /// Whether the fonts egui uses *right now* define `family`.
 ///
 /// New definitions only become active at the start of the next pass, and

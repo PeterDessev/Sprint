@@ -6,6 +6,9 @@
 //! (regenerate with `UPDATE_SNAPSHOTS=1`). They were made on Windows 10
 //! with the reference fonts; on other machines, or without a GPU adapter,
 //! the app still runs every frame but the image comparison is skipped.
+//! Without the reference fonts the app uses egui's bundled fonts, so the
+//! layout tests measure the same text everywhere, and `SPRINT_TEST_NO_GPU`
+//! runs it as without an adapter (CI).
 
 #![allow(dead_code)]
 
@@ -69,17 +72,44 @@ pub fn sample(name: &str) -> PathBuf {
     )
 }
 
-/// The app in a harness of `size`, with a wgpu render state when possible.
-pub fn app(options: AppOptions, size: Vec2) -> Harness<'static, SprintApp> {
+/// Whether the tests render on a GPU (the 3D view needs one: without it
+/// the viewer tab shows a notice instead of the scene and its cards).
+pub fn gpu_available() -> bool {
+    gpu_support::available()
+}
+
+/// Whether this machine has the fonts the snapshots were made with. Where
+/// it has not, the tests use egui's bundled fonts, so that text measures
+/// the same on every machine and the layout tests hold everywhere.
+pub fn system_has_reference_fonts() -> bool {
+    static HAS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *HAS.get_or_init(|| {
+        // Tests the bundled fonts on a machine that has the reference ones.
+        if std::env::var_os("SPRINT_TEST_BUNDLED_FONTS").is_some() {
+            return false;
+        }
+        let (_, report) = fonts::system_definitions();
+        [report.proportional, report.strong, report.monospace]
+            .iter()
+            .map(|f| f.as_deref())
+            .eq(REFERENCE_FONTS.iter().map(|f| Some(*f)))
+    })
+}
+
+/// The app in a harness of `size`, with a wgpu render state when possible
+/// (and egui's bundled fonts without the reference fonts).
+pub fn app(mut options: AppOptions, size: Vec2) -> Harness<'static, SprintApp> {
+    options.bundled_fonts |= !system_has_reference_fonts();
     // Frames of 1/60 s, so toasts and animations last as long (in frames)
     // as on a real display.
     let mut builder = Harness::builder()
         .with_size(size)
         .with_max_steps(400)
         .with_step_dt(1.0 / 60.0);
-    if let Some(renderer) = gpu_support::renderer() {
-        builder = builder.renderer(renderer);
-    }
+    builder = match gpu_support::renderer() {
+        Some(renderer) => builder.renderer(renderer),
+        None => builder.renderer(gpu_support::NoRenderer),
+    };
     let mut h = builder.build_eframe(move |cc| SprintApp::new(cc, options));
     // Fonts become active on the second pass.
     h.run_steps(3);
@@ -136,6 +166,10 @@ pub fn has_reference_fonts(h: &Harness<'_, SprintApp>) -> bool {
 /// module docs). A full window has a little more anti-aliasing noise than
 /// a single widget, hence the slightly wider tolerance.
 pub fn snapshot(h: &mut Harness<'_, SprintApp>, name: &str) {
+    if !gpu_support::available() {
+        eprintln!("snapshot {name}: no GPU adapter, rendering and comparison skipped");
+        return;
+    }
     if !has_reference_fonts(h) {
         eprintln!("snapshot {name}: system fonts differ from the reference, comparison skipped");
         if let Err(err) = h.render() {

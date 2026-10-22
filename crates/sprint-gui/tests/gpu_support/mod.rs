@@ -13,14 +13,17 @@ use egui_kittest::wgpu::WgpuTestRenderer;
 use egui_wgpu::wgpu;
 
 /// The wgpu setup: prefer a real GPU over CPU rasterizers (the DX12 WARP
-/// adapter crashes on some Windows machines), Vulkan/Metal over DX12/GL.
-/// `WGPU_BACKEND` still narrows the backends.
+/// adapter crashes on some Windows machines), Vulkan/Metal over DX12.
+/// OpenGL is left out: its context belongs to one thread, and the shared
+/// device is used from every test thread, which drivers refuse (EGL
+/// `BadAccess` on Linux, aborting the test binary). `WGPU_BACKEND` still
+/// narrows the backends.
 fn wgpu_setup() -> egui_wgpu::WgpuSetup {
     let mut setup = egui_wgpu::WgpuSetupCreateNew::without_display_handle();
     setup
         .instance_descriptor
         .backends
-        .remove(wgpu::Backends::BROWSER_WEBGPU);
+        .remove(wgpu::Backends::BROWSER_WEBGPU | wgpu::Backends::GL);
     setup.native_adapter_selector = Some(Arc::new(|adapters, _surface| {
         let mut adapters: Vec<_> = adapters
             .iter()
@@ -63,9 +66,19 @@ fn quietly<T>(f: impl FnOnce() -> T) -> Option<T> {
     result
 }
 
+/// `SPRINT_TEST_NO_GPU` (set, any value) makes the GPU tests run as on a
+/// machine without an adapter: CI sets it, as software rasterizers on
+/// runners vary and some crash.
+pub fn gpu_disabled() -> bool {
+    std::env::var_os("SPRINT_TEST_NO_GPU").is_some()
+}
+
 /// The shared GPU, created on first use (`None` when the machine has no
-/// usable adapter).
+/// usable adapter, or with [`gpu_disabled`]).
 fn shared_gpu() -> Option<egui_wgpu::WgpuSetupExisting> {
+    if gpu_disabled() {
+        return None;
+    }
     static GPU: OnceLock<Option<(wgpu::Instance, wgpu::Adapter, wgpu::Device, wgpu::Queue)>> =
         OnceLock::new();
     let (instance, adapter, device, queue) = GPU
@@ -85,6 +98,34 @@ fn shared_gpu() -> Option<egui_wgpu::WgpuSetupExisting> {
         device,
         queue,
     })
+}
+
+/// Whether the shared GPU exists: without it the harnesses have no
+/// renderer of ours, and must not render at all (egui_kittest would fall
+/// back to its own wgpu setup, OpenGL included, which crashes on some
+/// Linux machines).
+pub fn available() -> bool {
+    shared_gpu().is_some()
+}
+
+/// The renderer of a harness without the shared GPU: it drops the texture
+/// updates and renders nothing. (egui_kittest's default would keep every
+/// font atlas update until a render, then set up wgpu on its own, OpenGL
+/// included.)
+pub struct NoRenderer;
+
+impl egui_kittest::TestRenderer for NoRenderer {
+    fn handle_delta(&mut self, delta: &mut egui::TexturesDelta) {
+        delta.clear();
+    }
+
+    fn render(
+        &mut self,
+        _ctx: &egui::Context,
+        _output: &egui::FullOutput,
+    ) -> Result<image::RgbaImage, String> {
+        Err("no GPU adapter".to_owned())
+    }
 }
 
 /// A wgpu renderer on the shared GPU (its own egui renderer, the device
