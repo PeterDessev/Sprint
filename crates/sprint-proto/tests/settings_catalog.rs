@@ -126,6 +126,12 @@ const LINES: &[(&str, &str, &str)] = &[
         "M665",
         "M665 L250 R125 H250 S200 X0 Y0 Z0",
     ),
+    // Marlin 2.1 adds the diagonal rod trims (a real delta's report).
+    (
+        "echo:  M665 L218.00 R102.00 H342.50 S150.00 X0.00 Y0.00 Z0.00 A0.00 B0.00 C0.00",
+        "M665",
+        "M665 L218 R102 H342.5 S150 X0 Y0 Z0 A0 B0 C0",
+    ),
     ("echo:  M666 X0.00 Y0.00 Z0.00", "M666", "M666 X0 Y0 Z0"),
     ("echo:  M250 C26", "M250", "M250 C26"),
     ("echo:  M255 S5", "M255", "M255 S5"),
