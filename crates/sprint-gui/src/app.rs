@@ -908,9 +908,10 @@ impl SprintApp {
             return;
         }
         if let Some(path) = &path {
-            // Once, however it was spelled before (case on Windows).
+            // Once, however it was spelled before (case on Windows, `..`
+            // in it anywhere: `std::path::absolute` keeps those on Unix).
             let recent = &mut self.core.config.recent_files;
-            recent.retain(|p| !loader::same_path(p, path));
+            recent.retain(|p| !loader::same_path(&loader::absolute_path(p), path));
             self.core.config.push_recent(path.clone());
             self.core.config_dirty = true;
         }
