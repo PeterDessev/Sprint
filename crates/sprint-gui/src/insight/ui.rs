@@ -479,6 +479,19 @@ pub(crate) fn eeprom_followup(done: &str) -> crate::widgets::Followup {
     }
 }
 
+/// Whether the printer is a delta: its firmware says so (Marlin's M115
+/// `KINEMATICS:DELTA`), it reports a delta's geometry (`M665` with its rod
+/// length and radius), or its profile is a delta's.
+pub(crate) fn is_delta(
+    state: &sprint_host::PrinterState,
+    profile: &sprint_host::PrinterProfile,
+) -> bool {
+    let firmware = state.firmware.as_ref().is_some_and(firmware_says_delta);
+    let geometry =
+        state.settings.value("M665", 'L').is_some() && state.settings.value("M665", 'R').is_some();
+    firmware || geometry || profile.is_delta()
+}
+
 /// The firmware names delta kinematics (Marlin's M115 `KINEMATICS:DELTA`).
 pub(crate) fn firmware_says_delta(info: &sprint_host::sprint_proto::FirmwareInfo) -> bool {
     info.get("KINEMATICS")
@@ -680,6 +693,44 @@ fn block_on<F: std::future::Future>(future: F) -> F::Output {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_delta_is_known_by_its_firmware_geometry_or_profile() {
+        use sprint_host::sprint_proto::{SettingCommand, parse_firmware_line};
+        // A real delta's M115.
+        let delta = parse_firmware_line(
+            "FIRMWARE_NAME:Marlin bugfix-2.1.x (Oct 21 2026 00:06:13) \
+             SOURCE_CODE_URL:github.com/MarlinFirmware/Marlin PROTOCOL_VERSION:1.0 \
+             MACHINE_TYPE:Space Construction Vehicle KINEMATICS:DELTA EXTRUDER_COUNT:1",
+        )
+        .expect("M115");
+        assert!(firmware_says_delta(&delta));
+        let cartesian = parse_firmware_line(
+            "FIRMWARE_NAME:Marlin 2.1.2.1 PROTOCOL_VERSION:1.0 MACHINE_TYPE:Ender EXTRUDER_COUNT:1",
+        )
+        .expect("M115");
+        assert!(!firmware_says_delta(&cartesian));
+        let profile = sprint_host::PrinterProfile::default();
+        let mut state = sprint_host::PrinterState::default();
+        assert!(!is_delta(&state, &profile));
+        state.firmware = Some(delta);
+        assert!(is_delta(&state, &profile));
+        // Its geometry in the settings.
+        let mut state = sprint_host::PrinterState::default();
+        state
+            .settings
+            .insert(SettingCommand::parse("M665 L218 R102 H342.5").expect("M665"));
+        assert!(is_delta(&state, &profile));
+        // Or its profile.
+        let delta_profile = sprint_host::PrinterProfile {
+            machine: sprint_host::MachineKind::Delta,
+            ..sprint_host::PrinterProfile::default()
+        };
+        assert!(is_delta(
+            &sprint_host::PrinterState::default(),
+            &delta_profile
+        ));
+    }
 
     #[test]
     fn column_count_fits_width() {

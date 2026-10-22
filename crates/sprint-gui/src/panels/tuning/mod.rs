@@ -87,6 +87,9 @@ pub struct TuningTab {
     confirm_apply: Option<(crate::safety::Assessment, sprint_proto::JobContext)>,
     import: Option<ImportPreview>,
     file: Option<FileJob>,
+    /// The printer is a delta ([`kit::is_delta`]): imports may set its
+    /// geometry.
+    delta: bool,
 }
 
 impl TuningTab {
@@ -205,7 +208,7 @@ impl TuningTab {
             .iter()
             .map(|e| e.draft.code.clone())
             .collect();
-        let import = parse_import(text, &known);
+        let import = parse_import(text, &known, self.delta);
         let diffs = diff_import(&self.draft, &import);
         self.import = Some(ImportPreview {
             name: name.to_owned(),
@@ -228,6 +231,7 @@ impl TuningTab {
     /// rebase the draft on every new report.
     fn sync(&mut self, ctx: &AppCtx<'_>) {
         let state = ctx.state;
+        self.delta = kit::is_delta(state, ctx.config.active());
         // An EEPROM question asked of a printer that went away: confirming
         // would send nothing and still report success (or, on the next
         // connection, act on a printer it was not asked about).

@@ -111,6 +111,16 @@ pub fn is_report_only(code: &str) -> bool {
     normalize_code(code).is_some_and(|c| REPORT_ONLY.contains(&c.as_str()))
 }
 
+/// Settings that only a delta printer has (its geometry, `M665`): a
+/// printer that is not one has no use for them, so the UIs leave them out
+/// when they did not come from the printer (see [`is_delta_setting`]).
+static DELTA_ONLY: &[&str] = &["M665"];
+
+/// True for a delta printer's own settings ([`DELTA_ONLY`]).
+pub fn is_delta_setting(code: &str) -> bool {
+    normalize_code(code).is_some_and(|c| DELTA_ONLY.contains(&c.as_str()))
+}
+
 /// One parameter of a [`SettingDef`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ParamDef {
@@ -835,6 +845,20 @@ pub(crate) fn normalize_code(code: &str) -> Option<String> {
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn only_the_delta_geometry_is_delta_only() {
+        assert!(is_delta_setting("M665"));
+        assert!(is_delta_setting("m665"));
+        // Also dual endstops on Cartesian printers.
+        assert!(!is_delta_setting("M666"));
+        assert!(!is_delta_setting("M92"));
+        assert!(!is_delta_setting(""));
+        let geometry = setting_def("M665").expect("M665");
+        for letter in ['L', 'R', 'H', 'S', 'X', 'Y', 'Z', 'A', 'B', 'C'] {
+            assert!(geometry.param(letter).is_some(), "{letter}");
+        }
+    }
 
     #[test]
     fn no_duplicate_codes() {

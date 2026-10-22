@@ -718,6 +718,7 @@ pub struct ParamDef { pub letter: char, pub label: &'static str, pub unit: &'sta
 pub enum SettingCategory { Motion, Thermal, Extrusion, Probing, Leveling, Homing, Drivers, Retraction, Other }
 pub fn setting_defs() -> &'static [SettingDef];
 pub fn setting_def(code: &str) -> Option<&'static SettingDef>;
+pub fn is_delta_setting(code: &str) -> bool;    // M665: only a delta has it
 ```
 Catalog covers at least: M92 M201 M203 M204 M205 M206 M301 M304 M309 M851 M900
 M200 M145 M420 M413 M906 M913 M914 M569 M593 M207 M208 M209 M217 M218 M149

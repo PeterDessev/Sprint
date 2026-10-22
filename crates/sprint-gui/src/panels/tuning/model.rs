@@ -1,7 +1,9 @@
 //! The settings editor's model: a draft of every reported setting, what
 //! changed, import and export. Pure; the tab draws it.
 
-use sprint_proto::{PrinterSettings, SettingCategory, SettingCommand, SettingDef, setting_def};
+use sprint_proto::{
+    PrinterSettings, SettingCategory, SettingCommand, SettingDef, is_delta_setting, setting_def,
+};
 
 use crate::widgets::is_modified;
 
@@ -668,11 +670,13 @@ pub const MAX_IMPORT_SETTINGS: usize = 1000;
 /// prefixes are accepted. Only settings known to the catalog or reported
 /// by the printer (`known_codes`) are taken, never a
 /// [report-only](SettingCommand::is_report_only) one; anything else is
-/// skipped with a reason. Prusa's stealth-mode limits stay apart from the
+/// skipped with a reason, and so is a delta's geometry
+/// ([`is_delta_setting`]) when the printer is not a `delta` and did not
+/// report it. Prusa's stealth-mode limits stay apart from the
 /// normal-mode ones: a `; stealth` comment (as exported) or, in an M503
 /// log, a "... - stealth ..." heading above them marks them, as the reply
 /// parser does.
-pub fn parse_import(text: &str, known_codes: &[String]) -> Import {
+pub fn parse_import(text: &str, known_codes: &[String], delta: bool) -> Import {
     let mut import = Import::default();
     // Where each key is in `import.commands`.
     let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
@@ -715,9 +719,16 @@ pub fn parse_import(text: &str, known_codes: &[String]) -> Import {
                 .push(skip("would heat or move the printer, not change a setting"));
             continue;
         }
-        let known = setting_def(&cmd.code).is_some() || known_codes.contains(&cmd.code);
+        let reported = known_codes.contains(&cmd.code);
+        let known = setting_def(&cmd.code).is_some() || reported;
         if !known {
             import.skipped.push(skip("not a known setting"));
+            continue;
+        }
+        if !delta && !reported && is_delta_setting(&cmd.code) {
+            import
+                .skipped
+                .push(skip("a delta's geometry, and this printer is not a delta"));
             continue;
         }
         // A later line for the same setting replaces the earlier one.
@@ -1005,7 +1016,7 @@ mod tests {
         let text = export_text(&d, Some("Marlin 2.1.2.1\n"), Some("Ender"));
         assert!(text.starts_with("; Sprint settings export\n; Firmware: Marlin 2.1.2.1\n"));
         assert!(text.contains("M92 X80 Y80 Z400 E95.4\n"));
-        let import = parse_import(&text, &["G21".to_owned()]);
+        let import = parse_import(&text, &["G21".to_owned()], true);
         assert_eq!(import.commands.len(), 6);
         assert!(import.skipped.is_empty(), "{:?}", import.skipped);
         // Against the unedited draft only M92 differs.
@@ -1020,10 +1031,31 @@ mod tests {
     }
 
     #[test]
+    fn a_deltas_geometry_is_imported_only_into_a_delta() {
+        let text = "M92 E415\nM665 L218 R102 H342.5\nM666 X0.1 Y0 Z0\n";
+        let codes =
+            |i: &Import| -> Vec<String> { i.commands.iter().map(|c| c.code.clone()).collect() };
+        // A Cartesian printer: no geometry, the endstop trims stay (dual
+        // endstops use them too).
+        let cartesian = parse_import(text, &[], false);
+        assert_eq!(codes(&cartesian), ["M92", "M666"]);
+        assert_eq!(cartesian.skipped.len(), 1);
+        assert_eq!(cartesian.skipped[0].line, 2);
+        assert!(cartesian.skipped[0].reason.contains("not a delta"));
+        // A delta, or a printer that reported the geometry itself.
+        assert_eq!(
+            codes(&parse_import(text, &[], true)),
+            ["M92", "M665", "M666"]
+        );
+        let reported = parse_import(text, &["M665".to_owned()], false);
+        assert_eq!(codes(&reported), ["M92", "M665", "M666"]);
+    }
+
+    #[test]
     fn import_skips_what_is_not_a_setting() {
         let text = "\u{feff}; header\n\nM500\nG28\nM104 S200\nhello world\necho:  M92 E415 ; comment\nM92 E420\nM851 Z-1.5\n";
         // Even from a printer that reports M104 (Marlin's Autotemp).
-        let import = parse_import(text, &["M104".to_owned()]);
+        let import = parse_import(text, &["M104".to_owned()], true);
         assert_eq!(
             import
                 .commands
@@ -1072,14 +1104,14 @@ mod tests {
             print.push_str(&format!("G1 X{i} E0.1\nM204 S{}\n", i % 3000));
         }
         let start = std::time::Instant::now();
-        let import = parse_import(&print, &[]);
+        let import = parse_import(&print, &[], true);
         assert_eq!(import.commands.len(), 1);
         assert_eq!(import.commands[0].to_gcode(), "M204 S1999");
         // Distinct settings by the thousand (every hotend index).
         let many: String = (0..20_000)
             .map(|i| format!("M301 E{i} P22 I1 D100\n"))
             .collect();
-        let import = parse_import(&many, &[]);
+        let import = parse_import(&many, &[], true);
         assert_eq!(import.commands.len(), MAX_IMPORT_SETTINGS);
         assert_eq!(
             import.skipped.len(),
@@ -1160,7 +1192,7 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("\nM203 X200 Y200 Z12 E120\n"), "{text}");
-        let import = parse_import(&text, &[]);
+        let import = parse_import(&text, &[], true);
         let keys: Vec<String> = import.commands.iter().map(SettingCommand::key).collect();
         assert_eq!(keys, ["M203", "M201", "M203 stealth", "M201 stealth"]);
         assert!(
@@ -1170,7 +1202,7 @@ mod tests {
         );
         // A changed stealth line is staged onto the stealth limit only.
         let mut d = d;
-        for cmd in &parse_import("M203 X80 Y80 Z12 E120 ; stealth\n", &[]).commands {
+        for cmd in &parse_import("M203 X80 Y80 Z12 E120 ; stealth\n", &[], true).commands {
             d.stage_import(cmd);
         }
         let changes = d.changes();
@@ -1193,7 +1225,7 @@ mod tests {
                    echo:Steps per unit:\n\
                    echo:  M92 X100.00 Y100.00 Z400.00 E280.00\n\
                    ok\n";
-        let import = parse_import(log, &[]);
+        let import = parse_import(log, &[], true);
         let keys: Vec<String> = import.commands.iter().map(SettingCommand::key).collect();
         assert_eq!(
             keys,
