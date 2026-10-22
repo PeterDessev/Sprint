@@ -168,3 +168,8 @@ pulse on a serial port, a reset of the virtual printer), or reconnect
   confirm.
 * The configuration, profiles, macros and recent files are the same as in
   the GUI and the shell.
+* The status line after a setting or a target (`:fan 50`, `:temp 210`,
+  `:set ...`, `:eeprom save`, an SD print) appears once the printer has
+  taken the command; a busy printer (heating with M190, for example) takes
+  it later and the status line says it waits. When the printer answers
+  with an error, the status line says what it answered instead.

@@ -142,6 +142,24 @@ pub(crate) struct Toast {
     pub until: Instant,
 }
 
+/// After this long without the printer's answer a followed command
+/// ([`App::after`]) says that it waits.
+const FOLLOW_NOTE_AFTER: Duration = Duration::from_millis(1500);
+
+/// A status message that waits for the printer to take a command
+/// ([`App::after`]).
+struct Followed {
+    tracked: Tracked,
+    /// The message, and its tone, once the printer acknowledged it.
+    done: (String, Tone),
+    /// What did not happen ("Not saved to EEPROM"), which starts the
+    /// message when the printer rejects it or will not take it; `None`
+    /// when another message says so (a print's own failure).
+    failed: Option<String>,
+    since: Instant,
+    noted: bool,
+}
+
 /// The TUI's state.
 pub(crate) struct App {
     pub printer: Printer,
@@ -156,8 +174,8 @@ pub(crate) struct App {
     pub file: Option<LoadedFile>,
     pub loader: Option<LoadJob>,
     connecting: Option<Receiver<Result<(), String>>>,
-    /// EEPROM saves the printer has not confirmed yet.
-    saves: Vec<Tracked>,
+    /// Commands whose status message waits for the printer.
+    followed: Vec<Followed>,
     /// Work running off the UI thread; each ends with a status message
     /// (`Err` for a failure).
     background: Vec<Receiver<Result<String, String>>>,
@@ -265,7 +283,7 @@ impl App {
             file: None,
             loader: None,
             connecting: None,
-            saves: Vec::new(),
+            followed: Vec::new(),
             background: Vec::new(),
             focus: Focus::Layers,
             return_focus: Focus::Layers,
@@ -332,6 +350,20 @@ impl App {
 
     fn error(&mut self, text: impl Into<String>) {
         self.notify(text, Tone::Bad);
+    }
+
+    /// Say `done` in `tone` once the printer has taken `tracked`, which is
+    /// later than now when it is busy (a heat wait, a long move); when it
+    /// rejects it or will not take it, `failed` and why.
+    fn after(&mut self, tracked: Tracked, done: (String, Tone), failed: Option<&str>) {
+        self.followed.push(Followed {
+            tracked,
+            done,
+            failed: failed.map(str::to_string),
+            since: Instant::now(),
+            noted: false,
+        });
+        self.poll_followed();
     }
 
     /// Show what loading the configuration file left out
@@ -550,24 +582,35 @@ impl App {
 
     // ----- timers -----
 
-    /// Advance timers: status messages, the E-stop arm, loads, connects
-    /// and report timeouts.
-    /// Say which EEPROM saves the printer confirmed, or will not.
-    fn poll_saves(&mut self) {
-        for mut save in std::mem::take(&mut self.saves) {
-            match save.poll() {
-                Delivery::Pending => self.saves.push(save),
-                Delivery::Acknowledged => self.good("Settings saved to EEPROM"),
+    /// Say which followed commands ([`App::after`]) the printer took,
+    /// rejected or will not take, and which still wait.
+    fn poll_followed(&mut self) {
+        for mut f in std::mem::take(&mut self.followed) {
+            match f.tracked.poll() {
+                Delivery::Pending => {
+                    if !f.noted && f.since.elapsed() >= FOLLOW_NOTE_AFTER {
+                        f.noted = true;
+                        self.info("Waiting for the printer: it finishes the commands sent before");
+                    }
+                    self.followed.push(f);
+                }
+                Delivery::Acknowledged => self.notify(f.done.0, f.done.1),
                 Delivery::Rejected(answer) => {
-                    self.error(format!("Not saved to EEPROM: {}", answer.trim()));
+                    if let Some(failed) = f.failed {
+                        self.error(format!("{failed}: {}", answer.trim()));
+                    }
                 }
                 Delivery::Lost => {
-                    self.warn("Not saved to EEPROM: the printer did not confirm M500");
+                    if let Some(failed) = f.failed {
+                        self.warn(format!("{failed}: the printer did not confirm it"));
+                    }
                 }
             }
         }
     }
 
+    /// Advance timers: status messages, the E-stop arm, loads, connects
+    /// and report timeouts.
     pub(crate) fn tick(&mut self, now: Instant) {
         if self.toast.as_ref().is_some_and(|t| now >= t.until) {
             self.toast = None;
@@ -581,7 +624,7 @@ impl App {
             self.info("Emergency stop disarmed");
         }
         self.poll_loader();
-        self.poll_saves();
+        self.poll_followed();
         if let Some(rx) = &self.connecting {
             let result = match rx.try_recv() {
                 Ok(result) => Some(result),
@@ -1452,10 +1495,16 @@ impl App {
 
     /// Send heater targets.
     fn set_temps(&mut self, targets: &[(Heater, f32)]) {
-        for &(heater, celsius) in targets {
-            self.printer.set_temperature(heater, celsius);
+        if targets.is_empty() {
+            return;
         }
-        self.info(actions::targets_text(targets));
+        let set = Tracked::all(
+            targets
+                .iter()
+                .map(|&(heater, celsius)| self.printer.set_temperature(heater, celsius)),
+        );
+        let done = (actions::targets_text(targets), Tone::Plain);
+        self.after(set, done, Some("Temperatures not set"));
     }
 
     /// Run what a dialog asked for.
@@ -1567,11 +1616,10 @@ impl App {
                 self.modal = Some(Modal::Objects(ObjectsDialog::new(selected)));
             }
             Action::ApplySetting(setting) => {
-                self.printer.apply_setting(&setting);
-                self.info(format!(
-                    "Sent {} (eeprom save keeps it)",
-                    setting.to_gcode()
-                ));
+                let applied = self.printer.apply_setting(&setting);
+                let gcode = setting.to_gcode();
+                let done = (format!("Set {gcode} (eeprom save keeps it)"), Tone::Good);
+                self.after(applied, done, Some(&format!("{gcode} not set")));
             }
             Action::Autotune(heater, celsius, cycles) => {
                 self.printer.start_pid_autotune(heater, celsius, cycles);
@@ -1592,8 +1640,12 @@ impl App {
             }
             Action::Quit => self.quit = true,
             Action::EepromReset => {
-                self.printer.factory_reset_settings();
-                self.warn("Settings reset to factory defaults (M502); eeprom save keeps them");
+                let reset = self.printer.factory_reset_settings();
+                let done = (
+                    "Settings reset to factory defaults (M502); eeprom save keeps them".to_string(),
+                    Tone::Warn,
+                );
+                self.after(reset, done, Some("Settings not reset"));
             }
             Action::Send(gcode) => {
                 self.printer.send(&gcode);
@@ -1628,8 +1680,12 @@ impl App {
                     Err(why) => self.error(format!("{name} not deleted: {why}")),
                 }
             }
+            // A start that fails fails the job, which says why.
             Action::SdPrint(name) => match self.printer.start_sd_print(&name) {
-                Ok(_) => self.good(format!("Printing {name} from the SD card")),
+                Ok(started) => {
+                    let done = (format!("Printing {name} from the SD card"), Tone::Good);
+                    self.after(started, done, None);
+                }
                 Err(e) => self.error(format!("Cannot print {name}: {e}")),
             },
             Action::SdDelete(name) => {
@@ -2464,8 +2520,12 @@ impl App {
                 self.motion(Motion::Extrude { tool, mm, feedrate });
             }
             Command::Fan(pct) => {
-                printer.set_fan(0, actions::fan_value(pct));
-                self.info(format!("Fan {}%", format::trimmed(f64::from(pct), 0)));
+                let set = printer.set_fan(0, actions::fan_value(pct));
+                let done = (
+                    format!("Fan {}%", format::trimmed(f64::from(pct), 0)),
+                    Tone::Plain,
+                );
+                self.after(set, done, Some("Fan not set"));
             }
             Command::Speed(pct) => {
                 printer.set_feedrate_override(pct);
@@ -2475,13 +2535,16 @@ impl App {
             }
             Command::Babystep(mm) => {
                 let warning = self.homing_warning(Axes::Z, actions::UNHOMED_BABYSTEP);
-                printer.babystep_z(mm);
+                let nudged = printer.babystep_z(mm);
                 match warning {
                     Some(warning) => self.warn(warning),
-                    None => self.info(format!(
-                        "Z nudged by {} mm",
-                        format::trimmed(f64::from(mm), 3)
-                    )),
+                    None => {
+                        let done = (
+                            format!("Z nudged by {} mm", format::trimmed(f64::from(mm), 3)),
+                            Tone::Plain,
+                        );
+                        self.after(nudged, done, Some("Z not nudged"));
+                    }
                 }
             }
             Command::Settings(filter) => {
@@ -2506,12 +2569,15 @@ impl App {
             Command::Eeprom(Eeprom::Save) => {
                 // Confirmed in `tick` once the printer has saved, which is
                 // later than now when it is busy (a heat wait, a long move).
-                self.saves.push(printer.save_settings());
+                let save = printer.save_settings();
                 self.info("Saving the settings to EEPROM (M500)");
+                let done = ("Settings saved to EEPROM".to_string(), Tone::Good);
+                self.after(save, done, Some("Not saved to EEPROM"));
             }
             Command::Eeprom(Eeprom::Load) => {
-                printer.load_settings();
-                self.info("Settings reloaded from EEPROM (M501)");
+                let load = printer.load_settings();
+                let done = ("Settings reloaded from EEPROM (M501)".to_string(), Tone::Plain);
+                self.after(load, done, Some("Settings not reloaded from EEPROM"));
             }
             Command::Eeprom(Eeprom::Reset { .. }) => {
                 self.modal = Some(Modal::Confirm(Confirm::new(

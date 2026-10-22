@@ -454,16 +454,45 @@ fn turning_heaters_off_while_printing_asks_first() {
     );
     press(&mut app, KeyCode::Esc);
     // Raising a target or setting one that is already off does not ask.
+    // (No printer takes it here: the status line says so instead of
+    // naming the new target.)
     app.run_line("temp 220");
     assert!(app.modal.is_none());
     assert!(
         app.toast
             .as_ref()
-            .is_some_and(|t| t.text == "Hotend T0 220 °C")
+            .is_some_and(|t| t.text.starts_with("Temperatures not set")),
+        "{:?}",
+        app.toast
     );
     app.view.temps.bed = None;
     app.run_line("bedtemp off");
     assert!(app.modal.is_none(), "the bed was not heating");
+}
+
+#[test]
+fn a_setting_the_printer_rejects_says_why_instead_of_set() {
+    let mut app = connected_app();
+    // The firmware keeps the junction deviation between 0.01 and 0.3.
+    app.run_line("set M205 J0.5");
+    wait_app(&mut app, "the printer's answer", |a| {
+        a.toast.as_ref().is_some_and(|t| t.text.contains("not set"))
+    });
+    let toast = app.toast.clone().expect("a status message");
+    assert_eq!(toast.tone, Tone::Bad);
+    assert!(
+        toast.text.ends_with("J0.5 not set: ?J out of range (0.01 to 0.3)"),
+        "{}",
+        toast.text
+    );
+    // A setting it takes is said once it did.
+    app.run_line("set M205 J0.05");
+    wait_app(&mut app, "the setting", |a| {
+        a.toast
+            .as_ref()
+            .is_some_and(|t| t.text.contains("(eeprom save keeps it)"))
+    });
+    assert!(app.toast.as_ref().is_some_and(|t| t.tone == Tone::Good));
 }
 
 #[test]
