@@ -61,9 +61,10 @@ console_max_lines = 5000    # console lines kept in memory (100 to 1000000)
 [[profiles]]
 name = "Virtual printer"
 auto_connect = false        # connect when Sprint starts (GUI, TUI, shell)
-bed_size = [220.0, 220.0]   # X, Y in mm
+machine = "Cartesian"       # or "Delta": a round bed, its origin the centre
+bed_size = [220.0, 220.0]   # X, Y in mm (a delta: its diameter, twice)
 max_z = 250.0               # mm
-origin = "FrontLeft"        # or "Center" (deltas, some CoreXY machines)
+origin = "FrontLeft"        # or "Center" (some CoreXY machines; a delta's is)
 extruders = 1
 heated_bed = true
 heated_chamber = false
@@ -220,7 +221,7 @@ are dropped. Macros use the same templating.
 | `{bed}` | The bed's target temperature (°C) |
 | `{fan}` | The part-cooling fan speed (0 to 255) |
 | `{max_x}` `{max_y}` `{max_z}` | The build volume's largest coordinates, from the profile (mm) |
-| `{park_x}` `{park_y}` | The parking position: the back left corner, 10 mm in from the edges |
+| `{park_x}` `{park_y}` | The parking position: the back left corner, 10 mm in from the edges (a delta: the back of its round bed, 10 mm in) |
 | `{heaters_off}` | Every heater off, one command per line: `M104 S0` (`M104 T<n> S0` for each hotend of a multi-hotend printer), `M140 S0` with a heated bed, `M141 S0` with a heated chamber; it also covers heaters the printer reports that the profile leaves out |
 
 Unknown placeholders stay as written. A line that uses `{e}` is left out

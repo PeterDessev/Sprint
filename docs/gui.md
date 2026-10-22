@@ -148,7 +148,9 @@ not saved.
 ## The 3D view tab
 
 The viewer draws every extrusion as a lit bead (or as thin lines, for huge
-files and slow GPUs) on the bed of the active profile.
+files and slow GPUs) on the bed of the active profile: a rectangle, or for
+a delta a round plate with a cylindrical build volume (see
+[Settings and printer profiles](#settings-and-printer-profiles)).
 
 ![A close-up in the 3D view](images/viewer-closeup.jpg)
 
@@ -273,10 +275,15 @@ G-code.
   print ask first.
 * **Save to EEPROM** (M500) keeps the applied values after a restart,
   **Load from EEPROM** (M501) goes back to the stored ones, **Factory
-  reset** (M502, asks first) restores the firmware defaults.
+  reset** (M502, asks first) restores the firmware defaults. The saved
+  message appears once the printer has saved: a printer that is busy, for
+  example heating with M190, takes M500 only afterwards, and a note says so
+  meanwhile.
 * The toolbar reloads the settings (M503), copies them all as G-code,
   exports them to a file and imports a file (with a preview of what would
-  change).
+  change). A delta's geometry (M665) is only imported into a delta: a
+  printer whose firmware reports delta kinematics or the geometry, or
+  whose profile is a delta's.
 
 Prusa firmware reports separate *normal* and *stealth* (silent mode)
 limits; both are shown and edited separately.
@@ -483,9 +490,12 @@ printer** (switch while disconnected). Each profile has:
   reply and handshake timeouts, temperature polling and auto-report
   intervals, commands in flight, reading firmware info after connecting,
   resetting the board when connecting.
-* **Machine**: bed width and depth, maximum height, origin (front left or
-  bed centre), extruders, heated bed and chamber; filament and nozzle
-  diameter.
+* **Machine**: the kinematics (Cartesian, or Delta for a round bed around
+  its centre: the bed diameter instead of width, depth and origin), bed
+  width and depth, maximum height, origin (front left or bed centre),
+  extruders, heated bed and chamber; filament and nozzle diameter. On a
+  delta the jog targets stay on the round bed, and the starter macros
+  check the towers rather than the corners.
 * **Temperature presets**, **jog speeds**, and the **pause, resume and
   cancel scripts**.
 * Whether prints show their progress on the printer's display (M73), and

@@ -284,9 +284,8 @@ printer so far, so reports from other firmware are welcome.
 
 **Not there yet:** slicing (slice in your slicer and open the G-code),
 spool tracking, translations, a network API for remote monitoring (hook
-commands can report job events to other programs), round bed outlines in
-the viewer, a communication log written to a file as it happens, and
-plugins beyond G-code macros.
+commands can report job events to other programs), a communication log
+written to a file as it happens, and plugins beyond G-code macros.
 
 ## Documentation
 

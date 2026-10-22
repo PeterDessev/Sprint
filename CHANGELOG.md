@@ -4,6 +4,28 @@ All notable changes to Sprint are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and Sprint uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- Delta printers: a printer profile's kinematics can be Delta, with a round
+  bed of a given diameter around its centre. The 3D and layer views draw a
+  round plate and a cylindrical build volume, the terminal UI's layer view
+  a circle; jog targets stay on the round bed, the parking point is at its
+  back, and the starter macros check the towers instead of the corners.
+- `Printer::send_tracked` follows a command until the printer acknowledges
+  it; `save_settings` returns such a tracker.
+
+### Fixed
+
+- "Saved to EEPROM" (Tuning tab, calibration wizards, bed mesh, the shell
+  and the terminal UI) appears once the printer has saved, not as soon as
+  M500 is queued: a printer busy with a heat wait takes it only afterwards.
+- A delta's geometry (M665) is no longer imported into a printer that is not
+  a delta, and M665 shows Marlin 2.1's diagonal rod trims (A, B, C).
+- A recent file is listed once however its path was spelled, also on Linux
+  and macOS (where `..` in a path is not resolved).
+
 ## 0.1.0 - 2026-10-19
 
 The first release: a 3D-printer host written in Rust that replaces
