@@ -976,6 +976,17 @@ impl SprintApp {
             if let Some(notice) = self.notifier.notice(&event, secs, job_name.as_deref()) {
                 notice.show(&mut self.core.toasts);
             }
+            // Marlin's M115 names a delta (KINEMATICS:DELTA): its profile
+            // should say so for the round bed.
+            if let Event::Firmware(info) = &event
+                && crate::insight::ui::firmware_says_delta(info)
+                && !self.core.config.active().is_delta()
+            {
+                self.core
+                    .toasts
+                    .info("This printer is a delta")
+                    .message("Set Kinematics to Delta in its profile (Settings, Machine) to see its round bed.");
+            }
             if let Event::Job(status) = &event
                 && let Some(kind) = print_attention(status, job_kind)
             {

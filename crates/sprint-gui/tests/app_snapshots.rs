@@ -443,3 +443,67 @@ fn objects_while_printing() {
     drop(h);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn a_delta_profile_has_a_round_bed() {
+    // A ring around the centre, where a delta's origin is.
+    let dir = std::env::temp_dir().join(format!("sprint-delta-bed-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let path = dir.join("ring.gcode");
+    let mut gcode = String::from(
+        "G21
+G90
+M83
+G28
+",
+    );
+    for layer in 1..=20 {
+        let z = f32::from(layer as u8) * 0.2;
+        gcode.push_str(&format!(
+            ";LAYER_CHANGE
+;Z:{z:.1}
+G1 Z{z:.1} F600
+G1 X40 Y0 F6000
+"
+        ));
+        for step in 1..=36 {
+            let a = (step as f32 * 10.0).to_radians();
+            gcode.push_str(&format!(
+                "G1 X{:.2} Y{:.2} E0.5 F1800
+",
+                40.0 * a.cos(),
+                40.0 * a.sin()
+            ));
+        }
+    }
+    std::fs::write(&path, gcode).expect("write the ring");
+    let mut options = AppOptions {
+        file: Some(path),
+        ..AppOptions::headless()
+    };
+    let profile = options.config.active_mut();
+    profile.machine = sprint_host::MachineKind::Delta;
+    profile.bed_size = [200.0, 200.0];
+    profile.max_z = 300.0;
+    let mut h = app(options, WINDOW);
+    h.state_mut().set_side_panels(false, false);
+    expect(&mut h, "the ring to be analyzed", |app| {
+        app.file().is_some_and(|f| f.toolpath.is_some()) && !app.is_loading()
+    });
+    expect(&mut h, "the 3D view to be ready", |app| {
+        app.viewer_tab().viewer().is_none_or(|v| !v.is_loading())
+    });
+    settle(&mut h);
+    h.state_mut().toasts_mut().clear();
+    settle(&mut h);
+    snapshot(&mut h, "app_delta_bed");
+    // Its machine settings ask for a diameter, and no origin.
+    h.state_mut().push_action(AppAction::OpenSettings);
+    settle(&mut h);
+    assert_eq!(h.state().dialog(), Some(DialogKind::Settings));
+    assert!(h.query_by_label_contains("Bed diameter").is_some());
+    assert!(h.query_by_label_contains("Bed width").is_none());
+    assert!(h.query_by_label("Front left").is_none());
+    drop(h);
+    let _ = std::fs::remove_dir_all(dir);
+}

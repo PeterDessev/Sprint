@@ -479,6 +479,12 @@ pub(crate) fn eeprom_followup(done: &str) -> crate::widgets::Followup {
     }
 }
 
+/// The firmware names delta kinematics (Marlin's M115 `KINEMATICS:DELTA`).
+pub(crate) fn firmware_says_delta(info: &sprint_host::sprint_proto::FirmwareInfo) -> bool {
+    info.get("KINEMATICS")
+        .is_some_and(|k| k.trim().eq_ignore_ascii_case("DELTA"))
+}
+
 /// The firmware said it has no EEPROM (`Cap:EEPROM:0`); M500 and M501 do
 /// nothing there. Firmware that does not report it counts as having one.
 pub(crate) fn lacks_eeprom(state: &sprint_host::PrinterState) -> bool {

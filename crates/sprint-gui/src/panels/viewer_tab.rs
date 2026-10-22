@@ -97,13 +97,16 @@ pub fn layer_of_line(toolpath: &Toolpath, line: u32) -> Option<usize> {
     toolpath.layer_at_line(line)
 }
 
-/// The viewer's bed for a printer profile.
+/// The viewer's bed for a printer profile (round for a delta).
 pub fn bed_spec(profile: &sprint_host::PrinterProfile) -> BedSpec {
-    BedSpec {
-        size: profile.bed_size,
-        max_z: profile.max_z,
-        origin_center: profile.origin == BedOrigin::Center,
-        round: false,
+    match profile.bed_diameter() {
+        Some(diameter) => BedSpec::round(diameter, profile.max_z),
+        None => BedSpec {
+            size: profile.bed_size,
+            max_z: profile.max_z,
+            origin_center: profile.origin == BedOrigin::Center,
+            round: false,
+        },
     }
     .sanitized()
 }

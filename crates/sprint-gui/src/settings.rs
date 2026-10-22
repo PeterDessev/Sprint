@@ -9,7 +9,7 @@ use sprint_host::sprint_sim::SimConfig;
 use sprint_host::{
     AppConfig, BAUD_RATES, BedOrigin, CONFIG_ENV, ChecksumMode, ConfigReport, ConnectTarget,
     DEFAULT_BAUD, DEFAULT_CANCEL_SCRIPT, DEFAULT_PAUSE_SCRIPT, DEFAULT_RESUME_SCRIPT,
-    MAX_IN_FLIGHT_LIMIT, PrinterProfile, TempPreset,
+    MAX_IN_FLIGHT_LIMIT, MachineKind, PrinterProfile, TempPreset,
 };
 
 use crate::dialogs::{backdrop, dialog_title, modal_frame};
@@ -69,6 +69,11 @@ pub fn sanitize_profile(p: &mut PrinterProfile) {
     fix(&mut p.bed_size[0], 10.0, 10_000.0, d.bed_size[0]);
     fix(&mut p.bed_size[1], 10.0, 10_000.0, d.bed_size[1]);
     fix(&mut p.max_z, 1.0, 10_000.0, d.max_z);
+    if p.is_delta() {
+        // A round bed: its diameter twice, the origin its centre.
+        p.bed_size[1] = p.bed_size[0];
+        p.origin = BedOrigin::Center;
+    }
     p.extruders = p.extruders.clamp(1, 16);
     fix(&mut p.filament_diameter, 0.5, 5.0, d.filament_diameter);
     fix(&mut p.nozzle_diameter, 0.05, 5.0, d.nozzle_diameter);
@@ -670,22 +675,57 @@ impl SettingsDialog {
         );
 
         section(ui, "Machine", p);
-        ui.add(
-            NumericField::new(&mut profile.bed_size[0])
-                .label("Bed width (X)")
-                .unit("mm")
-                .range(10.0..=10_000.0)
-                .decimals(1)
-                .label_width(w),
-        );
-        ui.add(
-            NumericField::new(&mut profile.bed_size[1])
-                .label("Bed depth (Y)")
-                .unit("mm")
-                .range(10.0..=10_000.0)
-                .decimals(1)
-                .label_width(w),
-        );
+        let was_delta = profile.is_delta();
+        ui.horizontal(|ui| {
+            ui.add_sized(
+                vec2(w, 20.0),
+                egui::Label::new(RichText::new("Kinematics").color(p.text_dim)),
+            );
+            ui.add(
+                SegmentedControl::new(
+                    &mut profile.machine,
+                    &[
+                        (MachineKind::Cartesian, "Cartesian"),
+                        (MachineKind::Delta, "Delta"),
+                    ],
+                )
+                .id_salt("profile-machine"),
+            );
+        });
+        if profile.is_delta() && !was_delta {
+            // The largest round bed on the old rectangle, around its centre.
+            let diameter = profile.bed_size[0].min(profile.bed_size[1]);
+            profile.bed_size = [diameter, diameter];
+            profile.origin = BedOrigin::Center;
+        }
+        if profile.is_delta() {
+            ui.add(
+                NumericField::new(&mut profile.bed_size[0])
+                    .label("Bed diameter")
+                    .unit("mm")
+                    .range(10.0..=10_000.0)
+                    .decimals(1)
+                    .label_width(w),
+            );
+            profile.bed_size[1] = profile.bed_size[0];
+        } else {
+            ui.add(
+                NumericField::new(&mut profile.bed_size[0])
+                    .label("Bed width (X)")
+                    .unit("mm")
+                    .range(10.0..=10_000.0)
+                    .decimals(1)
+                    .label_width(w),
+            );
+            ui.add(
+                NumericField::new(&mut profile.bed_size[1])
+                    .label("Bed depth (Y)")
+                    .unit("mm")
+                    .range(10.0..=10_000.0)
+                    .decimals(1)
+                    .label_width(w),
+            );
+        }
         ui.add(
             NumericField::new(&mut profile.max_z)
                 .label("Max height (Z)")
@@ -694,22 +734,28 @@ impl SettingsDialog {
                 .decimals(1)
                 .label_width(w),
         );
-        ui.horizontal(|ui| {
-            ui.add_sized(
-                vec2(w, 20.0),
-                egui::Label::new(RichText::new("Origin").color(p.text_dim)),
+        if profile.is_delta() {
+            ui.label(
+                RichText::new("A delta's origin is the centre of its round bed.").color(p.text_dim),
             );
-            ui.add(
-                SegmentedControl::new(
-                    &mut profile.origin,
-                    &[
-                        (BedOrigin::FrontLeft, "Front left"),
-                        (BedOrigin::Center, "Bed center"),
-                    ],
-                )
-                .id_salt("profile-origin"),
-            );
-        });
+        } else {
+            ui.horizontal(|ui| {
+                ui.add_sized(
+                    vec2(w, 20.0),
+                    egui::Label::new(RichText::new("Origin").color(p.text_dim)),
+                );
+                ui.add(
+                    SegmentedControl::new(
+                        &mut profile.origin,
+                        &[
+                            (BedOrigin::FrontLeft, "Front left"),
+                            (BedOrigin::Center, "Bed center"),
+                        ],
+                    )
+                    .id_salt("profile-origin"),
+                );
+            });
+        }
         ui.add(
             NumericField::new(&mut profile.extruders)
                 .label("Extruders")
@@ -1277,6 +1323,27 @@ mod tests {
         assert!(!d.delete_profile(0), "the last profile stays");
         assert!(!d.delete_profile(5));
         assert!(d.duplicate_profile(9).is_none());
+    }
+
+    #[test]
+    fn a_delta_keeps_a_round_bed_around_its_centre() {
+        let mut p = PrinterProfile {
+            machine: MachineKind::Delta,
+            bed_size: [180.0, 90.0],
+            origin: BedOrigin::FrontLeft,
+            ..PrinterProfile::default()
+        };
+        sanitize_profile(&mut p);
+        assert_eq!(p.bed_size, [180.0, 180.0]);
+        assert_eq!(p.origin, BedOrigin::Center);
+        // A Cartesian printer keeps its rectangle and origin.
+        let mut c = PrinterProfile {
+            bed_size: [180.0, 90.0],
+            ..PrinterProfile::default()
+        };
+        sanitize_profile(&mut c);
+        assert_eq!(c.bed_size, [180.0, 90.0]);
+        assert_eq!(c.origin, BedOrigin::FrontLeft);
     }
 
     #[test]
