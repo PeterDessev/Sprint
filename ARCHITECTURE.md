@@ -1262,6 +1262,7 @@ pub struct PrinterProfile {
     pub connection: ConnectTarget,       // default Simulator(SimConfig::default())
     pub options: ConnectOptions,
     pub auto_connect: bool,              // default false
+    pub machine: MachineKind,            // Cartesian (default) | Delta: round bed, diameter = bed_size[0], centre origin
     pub bed_size: [f32; 2],              // [220, 220]
     pub max_z: f32,                      // 250
     pub origin: BedOrigin,               // FrontLeft (default) | Center
@@ -1289,6 +1290,8 @@ pub struct PrinterProfile {
 pub struct TempPreset { pub name: String, pub hotend: f32, pub bed: f32 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BedOrigin { #[default] FrontLeft, Center }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum MachineKind { #[default] Cartesian, Delta }
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Macro { pub name: String, pub gcode: String, pub color: Option<[u8; 3]>, pub confirm: bool }
 
@@ -1389,7 +1392,10 @@ Every public item is also re-exported at the crate root.
   and the file itself stays until the next save. `load_from` stays strict.
   `MAX_RECENT_FILES` (12), `DEFAULT_CONSOLE_LINES`.
   `PrinterProfile::{build_volume, park_position, script_context}`: parking is
-  the back left corner 10 mm in (X10 Y210 by default, honouring `origin`).
+  the back left corner 10 mm in (X10 Y210 by default, honouring `origin`); on
+  a delta the back of the round bed 10 mm in. `is_delta`, `bed_diameter`
+  (a delta's), `effective_origin` (a delta's is the centre); a delta's
+  build volume is the box around its cylinder.
   In the file, `kinematics.junction_deviation = false` stands for `None`
   (classic jerk), which TOML cannot write as a missing key.
 * `script`: `DEFAULT_PAUSE_SCRIPT`, `DEFAULT_RESUME_SCRIPT`,

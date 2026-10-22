@@ -163,6 +163,18 @@ pub enum BedOrigin {
     Center,
 }
 
+/// What kind of motion system a printer has, as far as Sprint cares: the
+/// shape of its bed and which settings apply to it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MachineKind {
+    /// A rectangular bed: Cartesian, CoreXY, bed slingers and the like.
+    #[default]
+    Cartesian,
+    /// A delta: a round bed whose centre is the origin. Its diameter is
+    /// [`PrinterProfile::bed_size`] (the first value; both are kept equal).
+    Delta,
+}
+
 /// A user-defined button that sends G-code.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Macro {
@@ -201,7 +213,11 @@ pub struct PrinterProfile {
     pub options: ConnectOptions,
     /// Connect when the application starts. Default false.
     pub auto_connect: bool,
-    /// Bed size X, Y in mm. Default [220, 220].
+    /// The kind of printer. Default Cartesian. A delta's bed is round, its
+    /// diameter in `bed_size`, and its origin is the centre whatever
+    /// `origin` says.
+    pub machine: MachineKind,
+    /// Bed size X, Y in mm (a delta's diameter twice). Default [220, 220].
     pub bed_size: [f32; 2],
     /// Maximum Z in mm. Default 250.
     pub max_z: f32,
@@ -279,6 +295,7 @@ impl Default for PrinterProfile {
             connection: ConnectTarget::default(),
             options: ConnectOptions::default(),
             auto_connect: false,
+            machine: MachineKind::Cartesian,
             bed_size: [220.0, 220.0],
             max_z: 250.0,
             origin: BedOrigin::FrontLeft,
@@ -410,21 +427,50 @@ fn finite_or(value: f32, default: f32) -> f32 {
 }
 
 impl PrinterProfile {
+    /// True for a delta ([`MachineKind::Delta`]).
+    pub fn is_delta(&self) -> bool {
+        self.machine == MachineKind::Delta
+    }
+
+    /// A delta's bed diameter in mm (its `bed_size`); `None` for other
+    /// printers.
+    pub fn bed_diameter(&self) -> Option<f32> {
+        self.is_delta().then(|| finite_or(self.bed_size[0], 220.0))
+    }
+
+    /// The origin in use: a delta's is always the bed centre.
+    pub fn effective_origin(&self) -> BedOrigin {
+        if self.is_delta() {
+            BedOrigin::Center
+        } else {
+            self.origin
+        }
+    }
+
     /// Smallest and largest X, Y, Z of the build volume, honouring
-    /// [`PrinterProfile::origin`].
+    /// [`PrinterProfile::origin`]. For a delta, the box around its
+    /// cylinder.
     pub fn build_volume(&self) -> ([f32; 3], [f32; 3]) {
         let x = finite_or(self.bed_size[0], 220.0);
-        let y = finite_or(self.bed_size[1], 220.0);
+        let y = self
+            .bed_diameter()
+            .unwrap_or(finite_or(self.bed_size[1], 220.0));
         let z = finite_or(self.max_z, 250.0);
-        match self.origin {
+        match self.effective_origin() {
             BedOrigin::FrontLeft => ([0.0, 0.0, 0.0], [x, y, z]),
             BedOrigin::Center => ([-x / 2.0, -y / 2.0, 0.0], [x / 2.0, y / 2.0, z]),
         }
     }
 
     /// The parking position used by `{park_x}` / `{park_y}`: the back left
-    /// corner, 10 mm in from the edges (Marlin's NOZZLE_PARK_POINT default).
+    /// corner, 10 mm in from the edges (Marlin's NOZZLE_PARK_POINT default);
+    /// on a delta, the back of the bed 10 mm in from its edge, as the
+    /// corners are off the bed.
     pub fn park_position(&self) -> (f32, f32) {
+        if let Some(diameter) = self.bed_diameter() {
+            let radius = diameter / 2.0;
+            return (0.0, radius - PARK_MARGIN.min(radius));
+        }
         let (min, max) = self.build_volume();
         let margin_x = PARK_MARGIN.min((max[0] - min[0]) / 2.0);
         let margin_y = PARK_MARGIN.min((max[1] - min[1]) / 2.0);
@@ -849,6 +895,43 @@ mod tests {
         let state = MachineState::new();
         let ctx = p.script_context(&state);
         assert_eq!((ctx.max_x, ctx.max_y, ctx.max_z), (220.0, 4.0, 250.0));
+    }
+
+    #[test]
+    fn a_delta_has_a_round_bed_around_its_centre() {
+        let mut p = PrinterProfile {
+            machine: MachineKind::Delta,
+            bed_size: [180.0, 120.0],
+            max_z: 300.0,
+            origin: BedOrigin::FrontLeft,
+            ..PrinterProfile::default()
+        };
+        assert!(p.is_delta());
+        assert_eq!(p.bed_diameter(), Some(180.0));
+        // The diameter rules, and the centre is the origin.
+        assert_eq!(p.effective_origin(), BedOrigin::Center);
+        assert_eq!(p.build_volume(), ([-90.0, -90.0, 0.0], [90.0, 90.0, 300.0]));
+        // On the bed: the back, 10 mm in, not a corner.
+        assert_eq!(p.park_position(), (0.0, 80.0));
+        p.bed_size = [12.0, 12.0];
+        assert_eq!(p.park_position(), (0.0, 0.0));
+        p.machine = MachineKind::Cartesian;
+        assert_eq!(p.bed_diameter(), None);
+        assert_eq!(p.effective_origin(), BedOrigin::FrontLeft);
+        // Old files without the key load as Cartesian.
+        let old: PrinterProfile = toml::from_str(
+            "name = \"Old\"
+",
+        )
+        .expect("parse");
+        assert_eq!(old.machine, MachineKind::Cartesian);
+        let delta: PrinterProfile = toml::from_str(
+            "machine = \"Delta\"
+bed_size = [200.0, 200.0]
+",
+        )
+        .expect("parse");
+        assert!(delta.is_delta());
     }
 
     #[test]

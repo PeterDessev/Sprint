@@ -76,8 +76,8 @@ pub mod transport;
 
 pub use config::{
     AppConfig, BedOrigin, CONFIG_ENV, ChecksumMode, ConfigReport, ConnectOptions,
-    DEFAULT_CONSOLE_LINES, MAX_IN_FLIGHT_LIMIT, MAX_RECENT_FILES, Macro, PrinterProfile,
-    TempPreset,
+    DEFAULT_CONSOLE_LINES, MAX_IN_FLIGHT_LIMIT, MAX_RECENT_FILES, MachineKind, Macro,
+    PrinterProfile, TempPreset,
 };
 pub use console::{Console, ConsoleEntry, ConsoleKind};
 pub use error::HostError;
