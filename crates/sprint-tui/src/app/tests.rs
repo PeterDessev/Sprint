@@ -481,7 +481,9 @@ fn a_setting_the_printer_rejects_says_why_instead_of_set() {
     let toast = app.toast.clone().expect("a status message");
     assert_eq!(toast.tone, Tone::Bad);
     assert!(
-        toast.text.ends_with("J0.5 not set: ?J out of range (0.01 to 0.3)"),
+        toast
+            .text
+            .ends_with("J0.5 not set: ?J out of range (0.01 to 0.3)"),
         "{}",
         toast.text
     );

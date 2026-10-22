@@ -301,7 +301,11 @@ fn trackers_can_be_followed_together() {
     );
     assert_eq!(Tracked::all([]).poll(), Delivery::Lost);
     assert_eq!(
-        Tracked::all([printer.send_tracked("; nothing"), printer.send_tracked("M114")]).poll(),
+        Tracked::all([
+            printer.send_tracked("; nothing"),
+            printer.send_tracked("M114")
+        ])
+        .poll(),
         Delivery::Lost
     );
     wait_idle(&printer);

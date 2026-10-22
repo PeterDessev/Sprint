@@ -235,10 +235,11 @@ impl ZOffsetWizard {
                         )
                         .clicked()
                     {
-                        let mut sent = vec![
-                            ctx.printer
-                                .apply_setting(&z_offset_command(&state.settings, src, new_z)),
-                        ];
+                        let mut sent = vec![ctx.printer.apply_setting(&z_offset_command(
+                            &state.settings,
+                            src,
+                            new_z,
+                        ))];
                         let message = match src {
                             // The probe offset counts from the next homing,
                             // which also ends the babystep.

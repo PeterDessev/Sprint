@@ -406,9 +406,8 @@ impl EstepsWizard {
                         ctx.toasts.after(
                             applied,
                             kit::applied_followup(
-                                Notice::new("E-steps applied").message(
-                                    "Run the test again to confirm, then save to EEPROM.",
-                                ),
+                                Notice::new("E-steps applied")
+                                    .message("Run the test again to confirm, then save to EEPROM."),
                                 "E-steps not applied",
                             ),
                         );

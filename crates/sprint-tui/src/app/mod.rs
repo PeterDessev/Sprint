@@ -2576,7 +2576,10 @@ impl App {
             }
             Command::Eeprom(Eeprom::Load) => {
                 let load = printer.load_settings();
-                let done = ("Settings reloaded from EEPROM (M501)".to_string(), Tone::Plain);
+                let done = (
+                    "Settings reloaded from EEPROM (M501)".to_string(),
+                    Tone::Plain,
+                );
                 self.after(load, done, Some("Settings not reloaded from EEPROM"));
             }
             Command::Eeprom(Eeprom::Reset { .. }) => {

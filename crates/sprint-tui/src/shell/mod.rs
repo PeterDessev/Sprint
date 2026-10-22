@@ -1595,8 +1595,16 @@ impl Shell {
                     load = Some(p.load_settings());
                 }) && let Some(load) = load
                 {
-                    let done = (Style::Good, "Settings reloaded from EEPROM (M501)".to_string());
-                    self.after(load, done, Some("Settings not reloaded from EEPROM"), &*input);
+                    let done = (
+                        Style::Good,
+                        "Settings reloaded from EEPROM (M501)".to_string(),
+                    );
+                    self.after(
+                        load,
+                        done,
+                        Some("Settings not reloaded from EEPROM"),
+                        &*input,
+                    );
                 }
             }
             Command::Eeprom(Eeprom::Reset { confirmed }) => {

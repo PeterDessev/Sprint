@@ -2052,10 +2052,7 @@ fn a_script_waits_for_the_save_it_reports() {
     let text = buffer.text();
     let saving = text.find("Saving the settings to EEPROM (M500)");
     let saved = text.find("Settings saved to EEPROM");
-    assert!(
-        saving.zip(saved).is_some_and(|(a, b)| a < b),
-        "{text}"
-    );
+    assert!(saving.zip(saved).is_some_and(|(a, b)| a < b), "{text}");
     let bed = shell
         .printer
         .with_state(|s| s.temps.bed.as_ref().map(|b| b.current));

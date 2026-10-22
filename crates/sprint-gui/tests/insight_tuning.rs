@@ -704,7 +704,11 @@ fn a_change_the_printer_rejects_is_not_reported_as_applied() {
         assert!(
             std::time::Instant::now() < deadline,
             "no answer: {:?}",
-            h.state().toasts.iter().map(|t| t.title()).collect::<Vec<_>>()
+            h.state()
+                .toasts
+                .iter()
+                .map(|t| t.title())
+                .collect::<Vec<_>>()
         );
         h.step();
         std::thread::sleep(std::time::Duration::from_millis(20));

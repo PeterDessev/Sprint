@@ -1182,13 +1182,20 @@ G1 X20
     fn a_save_before_the_first_look_counts_against_the_file_as_read() {
         let dir = temp_dir("watch-read");
         let path = dir.join("read.gcode");
-        std::fs::write(&path, "G28
-").expect("write");
+        std::fs::write(
+            &path, "G28
+",
+        )
+        .expect("write");
         let (_, read) = read_gcode(&path).expect("read");
         // Saved again before the watch ever looked at the disk.
-        std::fs::write(&path, "G28
+        std::fs::write(
+            &path,
+            "G28
 G1 X10
-").expect("rewrite");
+",
+        )
+        .expect("rewrite");
         let mut watch = FileWatch::default();
         watch.watch(Some(path.clone()), read);
         assert!(!watch.poll(0.0), "the check runs in the background");
