@@ -37,6 +37,7 @@ use crate::transport::{Link, LinkHandle};
 
 use flow::{Flow, LINE_NUMBER_LIMIT, Wire};
 use jobs::JobRuntime;
+pub(crate) use meta::Ack;
 use meta::{CmdMeta, Meta, PollKind, Source};
 use reader::ReaderMsg;
 
@@ -212,11 +213,10 @@ impl Shared {
 pub(crate) enum Command {
     /// Cleaned, non-emergency commands for the priority queue.
     Send(Vec<String>),
-    /// One more such command, `ack` told when the firmware acknowledges
-    /// it.
+    /// More such commands, `ack` told how the firmware took each of them.
     SendTracked {
-        line: String,
-        ack: Sender<()>,
+        lines: Vec<String>,
+        ack: Ack,
     },
     /// Queries of the convenience methods (queued like `Send`).
     Query(Vec<String>),
@@ -228,9 +228,11 @@ pub(crate) enum Command {
         options: PrintOptions,
         reply: Sender<Result<(), HostError>>,
     },
+    /// `ack` is told how the firmware took M23 and M24.
     StartSdPrint {
         name: String,
         reply: Sender<Result<(), HostError>>,
+        ack: Ack,
     },
     UploadToSd {
         file: Arc<GcodeFile>,
@@ -251,7 +253,10 @@ pub(crate) enum Command {
         length: f32,
         feedrate: f32,
     },
-    ApplySetting(SettingCommand),
+    ApplySetting {
+        setting: SettingCommand,
+        ack: Ack,
+    },
     Autotune {
         heater: Heater,
         target: f32,
@@ -1265,8 +1270,10 @@ impl Engine {
                     self.queue_user(line);
                 }
             }
-            Command::SendTracked { line, ack } => {
-                self.queue_user_meta(CmdMeta::tracked(line, Source::User, ack));
+            Command::SendTracked { lines, ack } => {
+                for line in lines {
+                    self.queue_user_meta(CmdMeta::tracked(line, Source::User, ack.clone()));
+                }
             }
             Command::Query(lines) => {
                 for line in lines {
@@ -1292,8 +1299,8 @@ impl Engine {
                 let r = self.start_print(file, options, now);
                 let _ = reply.send(r);
             }
-            Command::StartSdPrint { name, reply } => {
-                let r = self.start_sd_print(&name, now);
+            Command::StartSdPrint { name, reply, ack } => {
+                let r = self.start_sd_print(&name, &ack, now);
                 let _ = reply.send(r);
             }
             Command::UploadToSd { file, name, reply } => {
@@ -1311,20 +1318,22 @@ impl Engine {
                 length,
                 feedrate,
             } => self.extrude(tool, length, feedrate),
-            Command::ApplySetting(setting) if setting.is_report_only() => {
+            Command::ApplySetting { setting, ack } if setting.is_report_only() => {
                 // Marlin reports Autotemp as `M104 S B F`, but `M104 S`
                 // also sets the hotend temperature.
-                self.warn(format!(
+                let why = format!(
                     "{} is a reported value, not a setting Sprint changes: sending it would \
                      heat or move the printer. Type the command yourself to send it.",
                     setting.to_gcode()
-                ));
+                );
+                let _ = ack.send(Err(why.clone()));
+                self.warn(why);
             }
-            Command::ApplySetting(setting) => {
+            Command::ApplySetting { setting, ack } => {
                 let gcode = setting.to_gcode();
                 self.shared.update(|s| s.settings.insert(setting));
                 self.shared.emit(Event::SettingsUpdated);
-                self.queue_user(gcode);
+                self.queue_user_meta(CmdMeta::tracked(gcode, Source::User, ack));
                 self.settings_refresh_at = Some(now + SETTINGS_REFRESH_DELAY);
             }
             Command::Autotune {

@@ -324,7 +324,7 @@ impl SdCardTab {
                     return;
                 }
                 match ctx.printer.start_sd_print(&wanted) {
-                    Ok(()) => {
+                    Ok(_) => {
                         ctx.toasts
                             .success(format!("Printing {wanted}"))
                             .message("The upload finished; the printer prints from its card now.");
@@ -856,7 +856,7 @@ impl SdCardTab {
                 self.confirm = None;
                 match confirm {
                     Confirm::Print(name, label) => match ctx.printer.start_sd_print(&name) {
-                        Ok(()) => {
+                        Ok(_) => {
                             ctx.toasts.success(format!("Printing {label}"));
                         }
                         Err(err) => {

@@ -24,54 +24,122 @@ use crate::transport::{ConnectTarget, Link};
 /// How long a request that needs the engine's answer may take.
 const REPLY_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// What became of a command sent with [`Printer::send_tracked`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// What became of the commands sent with [`Printer::send_tracked`].
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Delivery {
-    /// Queued or sent; the firmware has not acknowledged it yet.
+    /// Queued or sent; the firmware has not acknowledged all of them yet.
     Pending,
-    /// The firmware acknowledged it (its `ok`).
+    /// The firmware acknowledged every one (their `ok`s) and answered none
+    /// with an error.
     Acknowledged,
-    /// It will not be acknowledged: the connection closed, or the command
-    /// was dropped or released without an `ok` (a halt, a timeout).
+    /// The firmware answered one with an error (`Error:...`, "Unknown
+    /// command"): what it said. (Or the host refused to send it, saying
+    /// why.)
+    Rejected(String),
+    /// Not all will be acknowledged: the connection closed, or a command
+    /// was dropped or released without an `ok` (a halt, a timeout), or
+    /// nothing was sent.
     Lost,
 }
 
-/// Follows one command sent with [`Printer::send_tracked`]; poll it, for
-/// example once a frame.
+/// Follows commands sent with [`Printer::send_tracked`] (and the
+/// convenience controls that return one); poll it, for example once a
+/// frame. Ignoring it changes nothing about the commands.
 #[derive(Debug)]
 pub struct Tracked {
-    rx: Option<Receiver<()>>,
+    parts: Vec<TrackedPart>,
     state: Delivery,
 }
 
+/// Commands that share one channel: each tells it `Ok` or `Err` once.
+#[derive(Debug)]
+struct TrackedPart {
+    rx: Receiver<Result<(), String>>,
+    expected: usize,
+    acked: usize,
+}
+
 impl Tracked {
-    fn new(rx: Receiver<()>) -> Tracked {
+    fn new(rx: Receiver<Result<(), String>>, expected: usize) -> Tracked {
+        if expected == 0 {
+            return Tracked::lost();
+        }
         Tracked {
-            rx: Some(rx),
+            parts: vec![TrackedPart {
+                rx,
+                expected,
+                acked: 0,
+            }],
             state: Delivery::Pending,
         }
     }
 
     fn lost() -> Tracked {
         Tracked {
-            rx: None,
+            parts: Vec::new(),
             state: Delivery::Lost,
         }
     }
 
-    /// Where the command is now (never blocks).
-    pub fn poll(&mut self) -> Delivery {
-        if self.state == Delivery::Pending {
-            self.state = match self.rx.as_ref().map(Receiver::try_recv) {
-                Some(Ok(())) => Delivery::Acknowledged,
-                Some(Err(TryRecvError::Empty)) => Delivery::Pending,
-                Some(Err(TryRecvError::Disconnected)) | None => Delivery::Lost,
-            };
-            if self.state != Delivery::Pending {
-                self.rx = None;
+    /// Follows all of `tracked` at once: acknowledged once each is,
+    /// rejected or lost as soon as one is. Nothing to follow is lost.
+    pub fn all(tracked: impl IntoIterator<Item = Tracked>) -> Tracked {
+        let mut all = Tracked {
+            parts: Vec::new(),
+            state: Delivery::Lost,
+        };
+        for t in tracked {
+            match t.state {
+                Delivery::Pending => {
+                    all.parts.extend(t.parts);
+                    all.state = Delivery::Pending;
+                }
+                Delivery::Acknowledged if all.parts.is_empty() => {
+                    all.state = Delivery::Acknowledged;
+                }
+                Delivery::Acknowledged => {}
+                Delivery::Rejected(_) | Delivery::Lost => return t,
             }
         }
-        self.state
+        all
+    }
+
+    /// Where the commands are now (never blocks).
+    pub fn poll(&mut self) -> Delivery {
+        if self.state == Delivery::Pending {
+            self.state = self.check();
+            if self.state != Delivery::Pending {
+                self.parts.clear();
+            }
+        }
+        self.state.clone()
+    }
+
+    fn check(&mut self) -> Delivery {
+        let (mut pending, mut lost) = (false, false);
+        for part in &mut self.parts {
+            loop {
+                match part.rx.try_recv() {
+                    Ok(Ok(())) => part.acked += 1,
+                    Ok(Err(answer)) => return Delivery::Rejected(answer),
+                    Err(TryRecvError::Empty) => {
+                        pending |= part.acked < part.expected;
+                        break;
+                    }
+                    Err(TryRecvError::Disconnected) => {
+                        lost |= part.acked < part.expected;
+                        break;
+                    }
+                }
+            }
+        }
+        if lost {
+            Delivery::Lost
+        } else if pending {
+            Delivery::Pending
+        } else {
+            Delivery::Acknowledged
+        }
     }
 }
 
@@ -678,31 +746,37 @@ impl Printer {
         taken
     }
 
-    /// [`Printer::send`], following the last queued command: the returned
-    /// [`Tracked`] tells when the firmware acknowledged it (its `ok`),
-    /// which is later than now when the printer is busy, for example
-    /// waiting for a heater (the commands before it are then done too).
-    /// Emergency commands bypass the queue and are not followed; with no
-    /// other command the tracker reports [`Delivery::Lost`].
+    /// [`Printer::send`], following every queued command: the returned
+    /// [`Tracked`] tells when the firmware has acknowledged them all (their
+    /// `ok`s), which is later than now when the printer is busy, for
+    /// example waiting for a heater, and whether it answered one with an
+    /// error ([`Delivery::Rejected`]). Emergency commands bypass the queue
+    /// and are not followed; with no other command the tracker reports
+    /// [`Delivery::Lost`].
     pub fn send_tracked(&self, gcode: &str) -> Tracked {
-        let lines: Vec<String> = command_lines(gcode).collect();
-        let Some(at) = lines.iter().rposition(|line| !is_emergency_command(line)) else {
-            self.send_lines(gcode);
-            return Tracked::lost();
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let (mut taken, mut expected) = (true, 0);
+        let mut queued = Vec::new();
+        let mut flush = |queued: &mut Vec<String>, taken: &mut bool| {
+            if !queued.is_empty() {
+                expected += queued.len();
+                *taken &= self.command(Command::SendTracked {
+                    lines: std::mem::take(queued),
+                    ack: tx.clone(),
+                });
+            }
         };
-        if at > 0 {
-            self.send_lines(&lines[..at].join("\n"));
+        for line in command_lines(gcode) {
+            if is_emergency_command(&line) {
+                flush(&mut queued, &mut taken);
+                taken &= self.send_lines(&line);
+            } else {
+                queued.push(line);
+            }
         }
-        let (tx, rx) = crossbeam_channel::bounded(1);
-        let queued = self.command(Command::SendTracked {
-            line: lines[at].clone(),
-            ack: tx,
-        });
-        if at + 1 < lines.len() {
-            self.send_lines(&lines[at + 1..].join("\n"));
-        }
-        if queued {
-            Tracked::new(rx)
+        flush(&mut queued, &mut taken);
+        if taken {
+            Tracked::new(rx, expected)
         } else {
             Tracked::lost()
         }
@@ -794,10 +868,17 @@ impl Printer {
     }
 
     /// Print a file from the SD card: `M23` + `M24`, then `M27 S<n>` auto-reports
-    /// (or M27 polling).
-    pub fn start_sd_print(&self, filename: &str) -> Result<(), HostError> {
+    /// (or M27 polling). The tracker follows M23 and M24: acknowledged
+    /// once the printer prints, rejected when it could not open the file.
+    pub fn start_sd_print(&self, filename: &str) -> Result<Tracked, HostError> {
         let name = filename.to_string();
-        self.request(|reply| Command::StartSdPrint { name, reply })
+        let (tx, rx) = crossbeam_channel::unbounded();
+        self.request(|reply| Command::StartSdPrint {
+            name,
+            reply,
+            ack: tx,
+        })?;
+        Ok(Tracked::new(rx, 2))
     }
 
     /// Write `file` to the SD card as `sd_name` (M28 ... M29, every line
@@ -907,46 +988,53 @@ impl Printer {
     }
 
     /// Set a heater target (`M104 T<n> S`, `M140 S`, `M141 S`); 0 = off.
-    pub fn set_temperature(&self, heater: Heater, celsius: f32) {
+    /// The tracker follows the command ([`Printer::send_tracked`]).
+    pub fn set_temperature(&self, heater: Heater, celsius: f32) -> Tracked {
         let t = format_number(f64::from(clamp_temp(celsius)), 1);
-        self.send(&match heater {
+        self.send_tracked(&match heater {
             Heater::Hotend(tool) => format!("M104 T{tool} S{t}"),
             Heater::Bed => format!("M140 S{t}"),
             Heater::Chamber => format!("M141 S{t}"),
-        });
+        })
     }
 
     /// Set a fan speed 0..=255 (`M106 P<fan> S<speed>`, `M107` for 0).
-    pub fn set_fan(&self, fan: u8, speed: u8) {
+    /// The tracker follows the command.
+    pub fn set_fan(&self, fan: u8, speed: u8) -> Tracked {
         let p = if fan == 0 {
             String::new()
         } else {
             format!(" P{fan}")
         };
         if speed == 0 {
-            self.send(&format!("M107{p}"));
+            self.send_tracked(&format!("M107{p}"))
         } else {
-            self.send(&format!("M106{p} S{speed}"));
+            self.send_tracked(&format!("M106{p} S{speed}"))
         }
     }
 
-    /// Feedrate override in percent (`M220 S`).
-    pub fn set_feedrate_override(&self, percent: f32) {
-        self.send(&format!("M220 S{}", percent_value(percent)));
+    /// Feedrate override in percent (`M220 S`). The tracker follows the
+    /// command.
+    pub fn set_feedrate_override(&self, percent: f32) -> Tracked {
+        self.send_tracked(&format!("M220 S{}", percent_value(percent)))
     }
 
-    /// Flow override of `tool` in percent (`M221 T S`).
-    pub fn set_flow(&self, tool: u8, percent: f32) {
-        self.send(&format!("M221 T{tool} S{}", percent_value(percent)));
+    /// Flow override of `tool` in percent (`M221 T S`). The tracker
+    /// follows the command.
+    pub fn set_flow(&self, tool: u8, percent: f32) -> Tracked {
+        self.send_tracked(&format!("M221 T{tool} S{}", percent_value(percent)))
     }
 
-    /// Babystep Z by `mm` (`M290 Z`).
-    pub fn babystep_z(&self, mm: f32) {
+    /// Babystep Z by `mm` (`M290 Z`). The tracker follows the command; a
+    /// step of 0 sends nothing (lost).
+    pub fn babystep_z(&self, mm: f32) -> Tracked {
         if mm.is_finite() && mm != 0.0 {
-            self.send(&format!(
+            self.send_tracked(&format!(
                 "M290 Z{}",
                 format_number(f64::from(mm.clamp(-5.0, 5.0)), 3)
-            ));
+            ))
+        } else {
+            Tracked::lost()
         }
     }
 
@@ -993,29 +1081,42 @@ impl Printer {
 
     /// `M500`: store the settings in EEPROM. The tracker tells when the
     /// firmware has done it, which can be much later than now when it is
-    /// busy (a heat wait, a long move).
+    /// busy (a heat wait, a long move), or that it would not.
     pub fn save_settings(&self) -> Tracked {
         self.send_tracked("M500")
     }
 
-    /// `M501` (load from EEPROM), then `M503`.
-    pub fn load_settings(&self) {
-        self.send("M501\nM503");
+    /// `M501` (load from EEPROM), then `M503`; the tracker follows both.
+    pub fn load_settings(&self) -> Tracked {
+        self.send_tracked("M501\nM503")
     }
 
-    /// `M502` (factory defaults; the UI must confirm first), then `M503`.
-    pub fn factory_reset_settings(&self) {
-        self.send("M502\nM503");
+    /// `M502` (factory defaults; the UI must confirm first), then `M503`;
+    /// the tracker follows both.
+    pub fn factory_reset_settings(&self) -> Tracked {
+        self.send_tracked("M502\nM503")
     }
 
     /// Send `setting.to_gcode()`, update `state.settings` optimistically
-    /// and refresh them with M503 shortly after the last edit.
+    /// and refresh them with M503 shortly after the last edit. The tracker
+    /// follows the command (the refresh is not part of it).
     ///
     /// A [report-only](SettingCommand::is_report_only) setting (Marlin's
     /// Autotemp, reported as `M104 S B F`) is not sent: the console gets a
-    /// warning instead, as sending it would heat or move the printer.
-    pub fn apply_setting(&self, setting: &SettingCommand) {
-        self.command(Command::ApplySetting(setting.clone()));
+    /// warning instead, as sending it would heat or move the printer, and
+    /// the tracker reports it [rejected](Delivery::Rejected) with that
+    /// warning.
+    pub fn apply_setting(&self, setting: &SettingCommand) -> Tracked {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let taken = self.command(Command::ApplySetting {
+            setting: setting.clone(),
+            ack: tx,
+        });
+        if taken {
+            Tracked::new(rx, 1)
+        } else {
+            Tracked::lost()
+        }
     }
 
     /// `M119`.

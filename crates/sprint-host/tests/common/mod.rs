@@ -33,7 +33,9 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::Receiver;
 use sprint_host::sprint_sim::SimConfig;
-use sprint_host::{ConnectOptions, ConnectTarget, ConsoleEntry, Event, Printer, PrinterState};
+use sprint_host::{
+    ConnectOptions, ConnectTarget, ConsoleEntry, Delivery, Event, Printer, PrinterState, Tracked,
+};
 
 /// Generous upper bound for anything a test waits for.
 pub const PATIENCE: Duration = Duration::from_secs(30);
@@ -152,6 +154,17 @@ pub fn wait_idle(printer: &Printer) {
         assert!(Instant::now() < deadline, "the link never became idle");
         std::thread::sleep(Duration::from_millis(25));
     }
+}
+
+/// Poll `tracked` until it is no longer pending (failing after
+/// [`PATIENCE`]).
+pub fn settle(tracked: &mut Tracked) -> Delivery {
+    let start = Instant::now();
+    while tracked.poll() == Delivery::Pending {
+        assert!(start.elapsed() < PATIENCE, "still pending");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    tracked.poll()
 }
 
 /// The last `n` console lines, formatted.

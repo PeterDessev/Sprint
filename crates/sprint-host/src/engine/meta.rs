@@ -67,14 +67,19 @@ pub(crate) struct CmdMeta {
     pub auto: bool,
     /// Known to run long (homing, probing, heat waits, dwells, ...).
     pub long: bool,
-    /// Told when the firmware's `ok` for the command arrives
-    /// ([`Printer::send_tracked`](crate::Printer::send_tracked)); taken
-    /// when the command completes, and dropped (which the tracker sees as
-    /// lost) when it completes without an `ok` or never completes.
-    pub ack: Mutex<Option<Sender<()>>>,
+    /// Told how the firmware took the command
+    /// ([`Printer::send_tracked`](crate::Printer::send_tracked)): taken by
+    /// the error the firmware answered it with, or when its `ok` arrives,
+    /// and dropped (which the tracker sees as lost) when it completes
+    /// without an `ok` or never completes.
+    pub ack: Mutex<Option<Ack>>,
 }
 
 pub(crate) type Meta = Arc<CmdMeta>;
+
+/// Where a tracked command's outcome goes: `Ok` on its `ok`, `Err` with
+/// what the firmware answered when it rejected it.
+pub(crate) type Ack = Sender<Result<(), String>>;
 
 impl CmdMeta {
     /// Classify `text`.
@@ -82,12 +87,12 @@ impl CmdMeta {
         Arc::new(Self::build(text.into(), source, None))
     }
 
-    /// [`CmdMeta::new`], telling `ack` when the firmware acknowledges it.
-    pub(crate) fn tracked(text: impl Into<String>, source: Source, ack: Sender<()>) -> Meta {
+    /// [`CmdMeta::new`], telling `ack` how the firmware took it.
+    pub(crate) fn tracked(text: impl Into<String>, source: Source, ack: Ack) -> Meta {
         Arc::new(Self::build(text.into(), source, Some(ack)))
     }
 
-    fn build(text: String, source: Source, ack: Option<Sender<()>>) -> CmdMeta {
+    fn build(text: String, source: Source, ack: Option<Ack>) -> CmdMeta {
         let code = parse_line(&text).code;
         let long = match code {
             Some(c) => is_long(c),

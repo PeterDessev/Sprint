@@ -219,16 +219,6 @@ fn a_cancelled_tcp_attempt_ends_disconnected() {
     assert!(failures(&events).is_empty(), "no failure was reported");
 }
 
-/// Poll `tracked` until it is no longer pending.
-fn settle(tracked: &mut Tracked) -> Delivery {
-    let start = std::time::Instant::now();
-    while tracked.poll() == Delivery::Pending {
-        assert!(start.elapsed() < PATIENCE, "still pending");
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    tracked.poll()
-}
-
 #[test]
 fn a_save_queued_behind_a_heat_wait_is_acknowledged_after_it() {
     let printer = connect(fast_sim(20.0), options());
@@ -265,7 +255,7 @@ fn a_tracked_command_is_lost_when_the_link_closes_first() {
 }
 
 #[test]
-fn send_tracked_follows_the_last_command_and_needs_one() {
+fn send_tracked_follows_every_command_and_needs_one() {
     let printer = connect(fast_sim(20.0), options());
     let mut two = printer.send_tracked("G92 E0\nM114 ; where");
     assert_eq!(settle(&mut two), Delivery::Acknowledged);
@@ -275,4 +265,44 @@ fn send_tracked_follows_the_last_command_and_needs_one() {
     printer.disconnect();
     // Not connected: nothing takes the command.
     assert_eq!(printer.send_tracked("M500").poll(), Delivery::Lost);
+}
+
+#[test]
+fn a_command_the_printer_answers_with_an_error_is_rejected() {
+    let printer = connect(fast_sim(20.0), options());
+    // The printer still says `ok` after "Unknown command": not a success.
+    let mut unknown = printer.send_tracked("M12345 X1");
+    assert_eq!(
+        settle(&mut unknown),
+        Delivery::Rejected("Unknown command: M12345 X1".to_string())
+    );
+    // An error for any of the lines rejects them all, even when the last
+    // one is fine.
+    let mut first = printer.send_tracked("M301 E7 P20\nM114");
+    assert_eq!(
+        settle(&mut first),
+        Delivery::Rejected("Invalid extruder".to_string())
+    );
+    // The commands after a rejected one are not taken for it.
+    let mut fine = printer.send_tracked("M114");
+    assert_eq!(settle(&mut fine), Delivery::Acknowledged);
+}
+
+#[test]
+fn trackers_can_be_followed_together() {
+    let printer = connect(fast_sim(20.0), options());
+    let mut both = Tracked::all([printer.send_tracked("M114"), printer.set_fan(0, 128)]);
+    assert_eq!(settle(&mut both), Delivery::Acknowledged);
+    let mut one_bad = Tracked::all([printer.send_tracked("M12345"), printer.send_tracked("M114")]);
+    assert!(
+        matches!(settle(&mut one_bad), Delivery::Rejected(_)),
+        "{:?}",
+        one_bad.poll()
+    );
+    assert_eq!(Tracked::all([]).poll(), Delivery::Lost);
+    assert_eq!(
+        Tracked::all([printer.send_tracked("; nothing"), printer.send_tracked("M114")]).poll(),
+        Delivery::Lost
+    );
+    wait_idle(&printer);
 }

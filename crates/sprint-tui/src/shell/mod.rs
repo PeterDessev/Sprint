@@ -1547,6 +1547,9 @@ impl Shell {
                         match save.poll() {
                             Delivery::Pending => std::thread::sleep(Duration::from_millis(50)),
                             Delivery::Acknowledged => break out.good("Settings saved to EEPROM"),
+                            Delivery::Rejected(answer) => {
+                                break out.error(format!("Not saved to EEPROM: {}", answer.trim()));
+                            }
                             Delivery::Lost => {
                                 break out
                                     .warn("Not saved to EEPROM: the printer did not confirm M500");
@@ -1560,7 +1563,9 @@ impl Shell {
                     Awaited::Settings,
                     false,
                     REPORT_TIMEOUT,
-                    Printer::load_settings,
+                    |p| {
+                        p.load_settings();
+                    },
                 ) {
                     self.out.good("Settings reloaded from EEPROM (M501)");
                 }
@@ -1585,7 +1590,9 @@ impl Shell {
                     Awaited::Settings,
                     false,
                     REPORT_TIMEOUT,
-                    Printer::factory_reset_settings,
+                    |p| {
+                        p.factory_reset_settings();
+                    },
                 ) {
                     self.out.warn(
                         "Settings reset to the firmware defaults (M502); eeprom save keeps them",
@@ -1664,9 +1671,9 @@ impl Shell {
             }
             Command::Sd(SdCommand::Print(name)) => match printer
                 .start_sd_print(&name)
-                .inspect(|()| self.pause_asked = None)
+                .inspect(|_| self.pause_asked = None)
             {
-                Ok(()) => self.out.good(format!("Printing {name} from the SD card")),
+                Ok(_) => self.out.good(format!("Printing {name} from the SD card")),
                 Err(e) => self.out.error(format!("Cannot print {name}: {e}")),
             },
             Command::Sd(SdCommand::Remove(name)) => {

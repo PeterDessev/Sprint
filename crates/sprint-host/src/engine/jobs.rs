@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use sprint_gcode::{GcodeFile, MachineState, ParsedLine, clean_line, state_at_line};
 
-use super::meta::{CmdMeta, JobLine, Meta, Source};
+use super::meta::{Ack, CmdMeta, JobLine, Meta, Source};
 use super::objects::{Objects, is_object_motion, resync};
 use super::scripts::{
     ResumeExtras, guarded, hotend_hot, in_script_modes, modes_after, render_job_script,
@@ -207,6 +207,17 @@ impl JobRuntime {
             lines
                 .into_iter()
                 .map(|l| CmdMeta::new(l, Source::Job(JobLine::Script))),
+        );
+        self.after_scripts = then;
+    }
+
+    /// [`queue_scripts`](Self::queue_scripts), telling `ack` how the
+    /// firmware took each line.
+    fn queue_tracked_scripts(&mut self, lines: Vec<String>, then: Option<JobStatus>, ack: &Ack) {
+        self.scripts.extend(
+            lines
+                .into_iter()
+                .map(|l| CmdMeta::tracked(l, Source::Job(JobLine::Script), ack.clone())),
         );
         self.after_scripts = then;
     }
@@ -483,14 +494,22 @@ impl Engine {
         Ok(())
     }
 
-    pub(super) fn start_sd_print(&mut self, name: &str, now: Instant) -> Result<(), HostError> {
+    /// Start an SD print: M23 and M24, `ack` told how the firmware took
+    /// each.
+    pub(super) fn start_sd_print(
+        &mut self,
+        name: &str,
+        ack: &Ack,
+        now: Instant,
+    ) -> Result<(), HostError> {
         self.check_can_start()?;
         let name = valid_sd_name(name)?;
         let info = JobInfo::new(JobKind::SdPrint, name.clone(), 0, 0);
         let mut job = JobRuntime::new(info, None, PrintOptions::default(), now);
-        job.queue_scripts(
+        job.queue_tracked_scripts(
             vec![format!("M23 {name}"), "M24".to_string()],
             Some(JobStatus::Printing),
+            ack,
         );
         self.begin_job(job);
         self.manual_before_scripts();

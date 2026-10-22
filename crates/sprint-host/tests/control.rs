@@ -9,16 +9,16 @@ use common::*;
 use sprint_host::sprint_proto::SettingCommand;
 use sprint_host::sprint_sim::SimConfig;
 use sprint_host::{
-    Axes, Axis, ConnectOptions, ConsoleKind, Event, Heater, HostError, Macro, Printer,
+    Axes, Axis, ConnectOptions, ConsoleKind, Delivery, Event, Heater, HostError, Macro, Printer,
 };
 
 /// Run `f`, wait until the link is idle and return what the simulator
 /// executed meanwhile.
-fn executed(printer: &Printer, f: impl FnOnce(&Printer)) -> Vec<String> {
+fn executed<R>(printer: &Printer, f: impl FnOnce(&Printer) -> R) -> Vec<String> {
     let control = printer.sim_control().expect("simulator");
     wait_idle(printer);
     control.clear_received();
-    f(printer);
+    let _ = f(printer);
     wait_idle(printer);
     control.received_commands()
 }
@@ -140,8 +140,15 @@ fn reported_autotemp_is_never_sent_back() {
     let mut autotemp = SettingCommand::parse("echo:  M104 S210 B250 F0.10").unwrap();
     autotemp.set('F', 0.2);
     let before = last_seq(&printer);
-    let got = executed(&printer, |p| p.apply_setting(&autotemp));
+    let mut tracked = None;
+    let got = executed(&printer, |p| tracked = Some(p.apply_setting(&autotemp)));
     assert!(got.is_empty(), "{got:?}");
+    // Whoever applied it hears why it was not sent.
+    let delivery = settle(&mut tracked.expect("a tracker"));
+    assert!(
+        matches!(&delivery, Delivery::Rejected(why) if why.starts_with("M104 S210 B250 F0.2 is a reported value")),
+        "{delivery:?}"
+    );
     assert!(printer.with_state(|s| s.settings.get("M104").is_none()));
     assert_eq!(printer.with_state(|s| s.temps.hotends[0].target), Some(0.0));
     let warned = console(&printer)

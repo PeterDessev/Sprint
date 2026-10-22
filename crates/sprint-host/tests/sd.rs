@@ -8,7 +8,7 @@ use std::sync::Arc;
 use common::*;
 use sprint_host::sprint_gcode::GcodeFile;
 use sprint_host::sprint_sim::SimConfig;
-use sprint_host::{ChecksumMode, ConnectOptions, ConsoleKind, Event, JobKind, JobStatus};
+use sprint_host::{ChecksumMode, ConnectOptions, ConsoleKind, Delivery, Event, JobKind, JobStatus};
 
 fn small_file() -> Arc<GcodeFile> {
     let mut text = String::from("; uploaded\nG28\nG90\nM28 nested.gco\n");
@@ -158,7 +158,9 @@ fn sd_print_reports_progress_and_completes() {
     };
     let printer = connect(sim, options());
     let events = printer.subscribe();
-    printer.start_sd_print("part.gcode").unwrap();
+    let mut started = printer.start_sd_print("part.gcode").unwrap();
+    // Acknowledged once the printer opened the file and started (M23, M24).
+    assert_eq!(settle(&mut started), Delivery::Acknowledged);
     wait_for(&printer, "SD progress", |s| {
         s.job
             .as_ref()
@@ -302,7 +304,12 @@ fn a_print_started_on_the_printer_is_followed_until_it_ends() {
 #[test]
 fn missing_sd_file_fails_the_job() {
     let printer = connect(fast_sim(50.0), options());
-    printer.start_sd_print("nope.gcode").unwrap();
+    let mut started = printer.start_sd_print("nope.gcode").unwrap();
+    let delivery = settle(&mut started);
+    assert!(
+        matches!(&delivery, Delivery::Rejected(why) if why == "open failed, File: nope.gcode."),
+        "{delivery:?}"
+    );
     wait_for(&printer, "failure", |s| !s.job_active());
     let status = printer.with_state(|s| s.job.as_ref().map(|j| j.status.clone()));
     assert!(

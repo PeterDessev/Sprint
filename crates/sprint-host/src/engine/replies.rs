@@ -392,6 +392,7 @@ impl Engine {
             self.flow.on_error(kind);
             return;
         }
+        self.reject_front(&message);
         let text = format!("Error: {message}");
         self.shared.update(|s| {
             s.last_error = Some(message.clone());
@@ -411,8 +412,18 @@ impl Engine {
             .is_some_and(|e| matches!(e.meta.source, Source::Query | Source::Setup))
     }
 
+    /// The firmware answered the command it works on (the oldest awaiting
+    /// its `ok`) with an error: a tracked command is rejected, with what
+    /// the firmware said.
+    fn reject_front(&self, answer: &str) {
+        if let Some(ack) = self.flow.front().and_then(|e| e.meta.ack.lock().take()) {
+            let _ = ack.send(Err(answer.to_string()));
+        }
+    }
+
     fn on_unknown_command(&mut self, cmd: String) {
         let text = format!("Unknown command: {cmd}");
+        self.reject_front(&text);
         if !self.answering_a_query() {
             self.shared.update(|s| s.push_message(text.clone()));
             self.shared.emit(Event::FirmwareMessage(text));
@@ -632,11 +643,12 @@ impl Engine {
     fn complete_with_rtt(&mut self, meta: &Meta, rtt: Option<Duration>, now: Instant) {
         // Only a real `ok` (it has a round trip) acknowledges a tracked
         // command; one released after a timeout or a halt may never have
-        // run, and dropping its sender reports it lost.
+        // run, and dropping its sender reports it lost. (One the firmware
+        // rejected was told so already.)
         if let Some(ack) = meta.ack.lock().take()
             && rtt.is_some()
         {
-            let _ = ack.send(());
+            let _ = ack.send(Ok(()));
         }
         match meta.source {
             Source::Poll(PollKind::Temperature) => self.temp_poll_outstanding = false,

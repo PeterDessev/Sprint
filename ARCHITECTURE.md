@@ -1031,9 +1031,11 @@ impl Printer {
     /// print-stream lines (priority queue). Emergency commands (M112, M108,
     /// M410, M876) bypass the queue automatically.
     pub fn send(&self, gcode: &str);
-    /// `send`, following the last queued (non-emergency) command: the Tracked reports Acknowledged on
-    /// its `ok` (later than now while the firmware is busy, e.g. in a heat wait), Lost when it is
-    /// dropped or released without one (disconnect, halt, timeout) or nothing was queued.
+    /// `send`, following every queued (non-emergency) command: the Tracked reports Acknowledged once
+    /// each has its `ok` (later than now while the firmware is busy, e.g. in a heat wait), Rejected
+    /// with the firmware's words when it answers one with an error (`Error:...`, "Unknown command":
+    /// the command it works on, the oldest awaiting its `ok`), Lost when one is dropped or released
+    /// without an `ok` (disconnect, halt, timeout) or nothing was queued.
     pub fn send_tracked(&self, gcode: &str) -> Tracked;
     pub fn send_immediate(&self, gcode: &str);          // bypass queue + flow control
     pub fn emergency_stop(&self);                        // M112 now, abort job, mark halted
@@ -1045,7 +1047,8 @@ impl Printer {
     /// Exclude (cancel) one object of the running host print, or print it again: effective for
     /// the parts not streamed yet (names from JobInfo::objects; unknown names are reported).
     pub fn exclude_object(&self, name: &str); pub fn include_object(&self, name: &str);
-    pub fn start_sd_print(&self, filename: &str) -> Result<(), HostError>;   // M23 + M24, then M27 S<n>
+    pub fn start_sd_print(&self, filename: &str) -> Result<Tracked, HostError>; // M23 + M24 (followed: Rejected
+                                                       //   "open failed, ..."), then M27 S<n>
     pub fn upload_to_sd(&self, file: std::sync::Arc<GcodeFile>, sd_name: &str) -> Result<(), HostError>; // M28 ... M29 as a job
     /// Answer an active host prompt (M876 S<index>).
     pub fn answer_prompt(&self, button: usize);
@@ -1060,16 +1063,16 @@ impl Printer {
     pub fn console_since(&self, after: u64, max: usize) -> Vec<ConsoleEntry>;
     pub fn clear_console(&self);
 
-    // Convenience controls (build the G-code and `send` it):
+    // Convenience controls (build the G-code and `send` it; those returning a Tracked use send_tracked):
     pub fn home(&self, axes: Axes);                      // G28 [X] [Y] [Z]
     pub fn jog(&self, axis: Axis, distance_mm: f32, feedrate_mm_min: f32); // G91, G1, G90
     pub fn move_to(&self, x: Option<f32>, y: Option<f32>, z: Option<f32>, feedrate_mm_min: f32);
     pub fn extrude(&self, tool: u8, length_mm: f32, feedrate_mm_min: f32); // negative = retract; M83 G1 E.. (restores M82 if needed)
-    pub fn set_temperature(&self, heater: Heater, celsius: f32); // M104 T / M140 / M141
-    pub fn set_fan(&self, fan: u8, speed: u8);           // M106 P S / M107
-    pub fn set_feedrate_override(&self, percent: f32);   // M220 S
-    pub fn set_flow(&self, tool: u8, percent: f32);      // M221 T S
-    pub fn babystep_z(&self, mm: f32);                   // M290 Z
+    pub fn set_temperature(&self, heater: Heater, celsius: f32) -> Tracked; // M104 T / M140 / M141
+    pub fn set_fan(&self, fan: u8, speed: u8) -> Tracked; // M106 P S / M107
+    pub fn set_feedrate_override(&self, percent: f32) -> Tracked; // M220 S
+    pub fn set_flow(&self, tool: u8, percent: f32) -> Tracked; // M221 T S
+    pub fn babystep_z(&self, mm: f32) -> Tracked;        // M290 Z (0 sends nothing: Lost)
     pub fn motors_off(&self);                            // M84
     pub fn select_tool(&self, tool: u8);                 // T<n>
     pub fn request_temperatures(&self);                  // M105
@@ -1077,9 +1080,10 @@ impl Printer {
     pub fn request_firmware_info(&self);                 // M115
     pub fn request_settings(&self);                      // M503 (clears + refills state.settings)
     pub fn save_settings(&self) -> Tracked;              // M500 via send_tracked
-    pub fn load_settings(&self);                         // M501 then M503
-    pub fn factory_reset_settings(&self);                // M502 then M503 (UI must confirm first)
-    pub fn apply_setting(&self, setting: &SettingCommand); // send to_gcode(), update state optimistically, M503 later
+    pub fn load_settings(&self) -> Tracked;              // M501 then M503
+    pub fn factory_reset_settings(&self) -> Tracked;     // M502 then M503 (UI must confirm first)
+    pub fn apply_setting(&self, setting: &SettingCommand) -> Tracked; // send to_gcode(), update state optimistically,
+                                                       //   M503 later; a report-only one is not sent (Rejected, saying why)
     pub fn request_endstops(&self);                      // M119
     pub fn request_sd_files(&self);                      // M21 if needed, M20 L
     pub fn delete_sd_file(&self, name: &str);            // M30
@@ -1104,11 +1108,15 @@ pub struct DisconnectSummary {                         // impl Display: "Cancell
                                                        //   not acknowledged in time)
 }
 impl DisconnectSummary { pub fn acknowledged(&self) -> bool; }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Delivery { Pending, Acknowledged, Lost }        // what became of a send_tracked command
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Delivery { Pending, Acknowledged, Rejected(String), Lost } // what became of send_tracked commands
 #[derive(Debug)]
-pub struct Tracked;                                      // follows one command (a channel told on its `ok`)
-impl Tracked { pub fn poll(&mut self) -> Delivery; }     // never blocks; Lost and Acknowledged are final
+pub struct Tracked;                                      // follows commands (each tells a channel Ok on its `ok`, or Err
+                                                       //   with the firmware's answer); ignoring it changes nothing
+impl Tracked {
+    pub fn poll(&mut self) -> Delivery;                  // never blocks; Acknowledged, Rejected and Lost are final
+    pub fn all(tracked: impl IntoIterator<Item = Tracked>) -> Tracked; // acknowledged once each is, rejected or
+}                                                        //   lost as soon as one is; nothing to follow is Lost
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Heater { Hotend(u8), Bed, Chamber }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

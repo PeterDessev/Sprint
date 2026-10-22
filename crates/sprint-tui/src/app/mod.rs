@@ -558,6 +558,9 @@ impl App {
             match save.poll() {
                 Delivery::Pending => self.saves.push(save),
                 Delivery::Acknowledged => self.good("Settings saved to EEPROM"),
+                Delivery::Rejected(answer) => {
+                    self.error(format!("Not saved to EEPROM: {}", answer.trim()));
+                }
                 Delivery::Lost => {
                     self.warn("Not saved to EEPROM: the printer did not confirm M500");
                 }
@@ -1626,7 +1629,7 @@ impl App {
                 }
             }
             Action::SdPrint(name) => match self.printer.start_sd_print(&name) {
-                Ok(()) => self.good(format!("Printing {name} from the SD card")),
+                Ok(_) => self.good(format!("Printing {name} from the SD card")),
                 Err(e) => self.error(format!("Cannot print {name}: {e}")),
             },
             Action::SdDelete(name) => {
@@ -2464,8 +2467,12 @@ impl App {
                 printer.set_fan(0, actions::fan_value(pct));
                 self.info(format!("Fan {}%", format::trimmed(f64::from(pct), 0)));
             }
-            Command::Speed(pct) => printer.set_feedrate_override(pct),
-            Command::Flow(pct) => printer.set_flow(self.view.active_tool, pct),
+            Command::Speed(pct) => {
+                printer.set_feedrate_override(pct);
+            }
+            Command::Flow(pct) => {
+                printer.set_flow(self.view.active_tool, pct);
+            }
             Command::Babystep(mm) => {
                 let warning = self.homing_warning(Axes::Z, actions::UNHOMED_BABYSTEP);
                 printer.babystep_z(mm);

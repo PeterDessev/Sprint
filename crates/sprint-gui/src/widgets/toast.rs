@@ -343,6 +343,11 @@ impl Toasts {
         for mut p in std::mem::take(&mut self.pending) {
             match p.tracked.poll() {
                 Delivery::Acknowledged => self.notice(ToastKind::Success, p.followup.done),
+                Delivery::Rejected(answer) => {
+                    let answer = crate::format::sanitize(answer.trim(), 200);
+                    let lost = p.followup.lost.message(format!("The printer answered: {answer}"));
+                    self.notice(ToastKind::Error, lost);
+                }
                 Delivery::Lost => self.notice(ToastKind::Error, p.followup.lost),
                 Delivery::Pending if printer_gone => {
                     self.notice(ToastKind::Error, p.followup.lost);
