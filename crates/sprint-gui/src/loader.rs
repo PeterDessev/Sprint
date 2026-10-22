@@ -83,6 +83,10 @@ pub enum LoadEvent {
         path: Option<PathBuf>,
         /// The same path was loaded before (a reload).
         reload: bool,
+        /// The file on disk just before it was read: the baseline a
+        /// [`FileWatch`] measures changes against (None for text in memory,
+        /// or when the disk does not tell).
+        stamp: Option<Stamp>,
     },
     /// Analysis progress.
     Progress(f32),
@@ -111,7 +115,7 @@ pub enum LoadEvent {
 
 /// Messages from a worker, tagged with the job id.
 enum Msg {
-    Opened(Arc<GcodeFile>),
+    Opened(Arc<GcodeFile>, Option<Stamp>),
     Progress(f32),
     Analyzed(Arc<Toolpath>, Option<Thumbnail>, f32),
     Failed(String),
@@ -174,13 +178,13 @@ impl FileLoader {
                 }
             };
             match read_gcode(&path) {
-                Ok(file) => {
+                Ok((file, stamp)) => {
                     if cancel.load(Ordering::Relaxed) {
                         send(Msg::Cancelled);
                         return;
                     }
                     let file = Arc::new(file);
-                    send(Msg::Opened(Arc::clone(&file)));
+                    send(Msg::Opened(Arc::clone(&file), stamp));
                     run_analysis(&file, &options, &cancel, &send);
                 }
                 Err(error) => send(Msg::Failed(error)),
@@ -209,7 +213,7 @@ impl FileLoader {
                     ctx.request_repaint();
                 }
             };
-            send(Msg::Opened(Arc::clone(&file)));
+            send(Msg::Opened(Arc::clone(&file), None));
             run_analysis(&file, &options, &cancel, &send);
         });
     }
@@ -295,13 +299,14 @@ impl FileLoader {
                 continue;
             }
             match msg {
-                Msg::Opened(file) => {
+                Msg::Opened(file, stamp) => {
                     job.stage = Stage::Analyzing;
                     job.progress = 0.0;
                     events.push(LoadEvent::Opened {
                         file,
                         path: job.path.clone(),
                         reload: job.reload,
+                        stamp,
                     });
                 }
                 Msg::Progress(p) => {
@@ -415,9 +420,11 @@ pub fn has_gcode_extension(path: &Path) -> bool {
 }
 
 /// Read a file for display and printing, refusing directories, huge files,
-/// 3D models and binary data with a readable message.
-fn read_gcode(path: &Path) -> Result<GcodeFile, String> {
+/// 3D models and binary data with a readable message. Also its state on
+/// disk before it was read: a change after that shows as one.
+fn read_gcode(path: &Path) -> Result<(GcodeFile, Option<Stamp>), String> {
     let meta = std::fs::metadata(path).map_err(|e| io_message(path, &e))?;
+    let stamp = meta.modified().ok().map(|modified| (modified, meta.len()));
     if meta.is_dir() {
         return Err(format!("{} is a folder, not a G-code file", path.display()));
     }
@@ -440,7 +447,8 @@ fn read_gcode(path: &Path) -> Result<GcodeFile, String> {
             kind.problem().unwrap_or_default()
         ));
     }
-    GcodeFile::load(path).map_err(|e| io_message(path, &e))
+    let file = GcodeFile::load(path).map_err(|e| io_message(path, &e))?;
+    Ok((file, stamp))
 }
 
 /// Content that is not even opened for viewing: 3D models, binary G-code
@@ -623,7 +631,7 @@ pub fn limits_from_firmware(m: &MotionLimits) -> KinematicLimits {
 }
 
 /// The state of a file on disk: modification time and size.
-type Stamp = (SystemTime, u64);
+pub type Stamp = (SystemTime, u64);
 
 /// What a [`FileWatch`] look at the disk is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -671,11 +679,12 @@ impl FileWatch {
         }
     }
 
-    /// Watch `path` (None stops watching); its state at the next
-    /// [`FileWatch::poll`] is the baseline.
-    pub fn watch(&mut self, path: Option<PathBuf>) {
+    /// Watch `path` (None stops watching) for changes from `baseline`
+    /// (the file as it was read, [`LoadEvent::Opened`]), or without one
+    /// from its state at the next [`FileWatch::poll`].
+    pub fn watch(&mut self, path: Option<PathBuf>, baseline: Option<Stamp>) {
+        self.stamp = baseline.filter(|_| path.is_some()).map(Some);
         self.path = path;
-        self.stamp = None;
         self.pending = None;
         self.changed = false;
         self.last_check = None;
@@ -854,7 +863,9 @@ mod tests {
         let events = drain(&mut loader, finished);
         assert!(!loader.is_busy());
         let opened = events.iter().find_map(|e| match e {
-            LoadEvent::Opened { file, path, reload } => Some((file, path, reload)),
+            LoadEvent::Opened {
+                file, path, reload, ..
+            } => Some((file, path, reload)),
             _ => None,
         });
         let (file, opened_path, reload) = opened.expect("opened");
@@ -1121,8 +1132,8 @@ mod tests {
         let wait = Duration::from_secs(10);
         let mut watch = FileWatch::default();
         assert!(!watch.poll(0.0));
-        watch.watch(Some(path.clone()));
-        // The first look takes the baseline (on a worker thread).
+        watch.watch(Some(path.clone()), None);
+        // Without a baseline the first look takes it (on a worker thread).
         assert!(!watch.poll(0.0));
         watch.finish_pending(wait);
         std::fs::write(
@@ -1160,10 +1171,29 @@ G1 X20
         )
         .expect("rewrite");
         assert!(!watch.poll(30.0));
-        watch.watch(None);
+        watch.watch(None, None);
         watch.finish_pending(wait);
         assert!(!watch.poll(40.0));
         assert!(!watch.is_changed());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_save_before_the_first_look_counts_against_the_file_as_read() {
+        let dir = temp_dir("watch-read");
+        let path = dir.join("read.gcode");
+        std::fs::write(&path, "G28
+").expect("write");
+        let (_, read) = read_gcode(&path).expect("read");
+        // Saved again before the watch ever looked at the disk.
+        std::fs::write(&path, "G28
+G1 X10
+").expect("rewrite");
+        let mut watch = FileWatch::default();
+        watch.watch(Some(path.clone()), read);
+        assert!(!watch.poll(0.0), "the check runs in the background");
+        watch.finish_pending(Duration::from_secs(10));
+        assert!(watch.poll(0.1));
         let _ = std::fs::remove_dir_all(dir);
     }
 }

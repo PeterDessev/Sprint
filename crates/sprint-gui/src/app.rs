@@ -834,7 +834,12 @@ impl SprintApp {
                 continue;
             }
             match event {
-                LoadEvent::Opened { file, path, reload } => {
+                LoadEvent::Opened {
+                    file,
+                    path,
+                    reload,
+                    stamp,
+                } => {
                     if self.reload_lands_on_a_print(&file, reload) {
                         self.loader.abandon();
                         abandoned = true;
@@ -843,7 +848,7 @@ impl SprintApp {
                             .warning("The file is printing")
                             .message("Reload it from disk after the print.");
                     } else {
-                        self.file_opened(file, path, reload);
+                        self.file_opened(file, path, reload, stamp);
                     }
                 }
                 LoadEvent::Progress(p) => {
@@ -903,7 +908,14 @@ impl SprintApp {
             && self.core.printing_loaded_file()
     }
 
-    fn file_opened(&mut self, file: Arc<GcodeFile>, path: Option<PathBuf>, reload: bool) {
+    /// `stamp`: the file on disk as it was read (the watch's baseline).
+    fn file_opened(
+        &mut self,
+        file: Arc<GcodeFile>,
+        path: Option<PathBuf>,
+        reload: bool,
+        stamp: Option<loader::Stamp>,
+    ) {
         // A re-analysis of the file shown keeps its toolpath until the new
         // one is ready.
         if let Some(current) = &mut self.core.file
@@ -920,7 +932,7 @@ impl SprintApp {
             self.core.config.push_recent(path.clone());
             self.core.config_dirty = true;
         }
-        self.watch.watch(path.clone());
+        self.watch.watch(path.clone(), stamp);
         // Text that is not G-code (and an empty file) opens for reading,
         // but every way to print it says why it cannot be (models and
         // binary data are not opened at all, see loader::refuses).
@@ -1334,7 +1346,7 @@ impl SprintApp {
         self.core.file = None;
         self.core.selected_line = None;
         self.thumbnail = None;
-        self.watch.watch(None);
+        self.watch.watch(None, None);
     }
 
     fn select_line(&mut self, line: u32) {
