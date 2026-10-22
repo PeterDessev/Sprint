@@ -10,6 +10,7 @@
 //! nothing could resume it any more.
 
 mod echo;
+mod follow;
 mod input;
 mod output;
 #[cfg(test)]
@@ -23,7 +24,7 @@ use crossbeam_channel::Receiver;
 use sprint_host::sprint_proto::{JobContext, gcode_doc, setting_def};
 use sprint_host::{
     AppConfig, Axes, Axis, ConnectTarget, ConnectionStatus, Delivery, Heater, JobKind, Printer,
-    PrinterProfile, list_ports,
+    PrinterProfile, Tracked, list_ports,
 };
 
 use crate::TuiOptions;
@@ -36,6 +37,7 @@ use crate::report::{self, ReportLine, Tone};
 use crate::session::{self, ConnectError, ResetError, WaitError};
 
 use echo::{Awaited, Echo};
+use follow::{Report, Reports, Style};
 use input::{LineSource, Read, Script, ShellHelper, Stdin, Terminal};
 use output::{Out, Sink, WriterSink};
 
@@ -164,6 +166,9 @@ pub(crate) struct Shell {
     file: Option<LoadedFile>,
     out: Out,
     echo: Echo,
+    /// Lines that follow commands the printer takes later (a busy
+    /// printer, at the prompt).
+    reports: Reports,
     interrupt: Interrupt,
     base_dir: PathBuf,
     /// How deep `source` files are nested.
@@ -190,6 +195,7 @@ impl Shell {
         let profile = config.active().clone();
         printer.set_profile(profile.clone());
         let echo = Echo::start(&printer, out.clone());
+        let reports = Reports::start(out.clone());
         Shell {
             printer,
             config,
@@ -198,6 +204,7 @@ impl Shell {
             file: None,
             out,
             echo,
+            reports,
             interrupt,
             base_dir: std::env::current_dir().unwrap_or_default(),
             sourcing: 0,
@@ -422,6 +429,47 @@ impl Shell {
             self.echo.cancel_expect();
         }
         result
+    }
+
+    /// Print `done` once the printer has taken `tracked`, or `failed` and
+    /// why when it rejects it or will not take it. A script waits for it
+    /// (Ctrl+C stops waiting; the command stays queued). At the prompt a
+    /// printer that is busy (a heat wait, a long move) answers later,
+    /// above the prompt.
+    fn after(
+        &self,
+        tracked: Tracked,
+        done: (Style, String),
+        failed: Option<&str>,
+        input: &dyn LineSource,
+    ) {
+        let mut report = Report {
+            tracked,
+            done,
+            failed: failed.map(str::to_string),
+        };
+        self.interrupt.reset();
+        let deadline = Instant::now() + follow::PROMPT_GRACE;
+        loop {
+            let delivery = report.tracked.poll();
+            if delivery != Delivery::Pending {
+                // The printer's own lines come first.
+                self.echo.settle();
+                report.print(&self.out, delivery);
+                return;
+            }
+            if input.interactive() && Instant::now() >= deadline {
+                self.out
+                    .dim("The printer finishes the commands sent before first; its answer follows");
+                self.reports.push(report);
+                return;
+            }
+            if self.interrupt.take() {
+                self.out.warn("Stopped waiting (the command stays queued)");
+                return;
+            }
+            std::thread::sleep(session::POLL);
+        }
     }
 
     /// Send a request and wait for its answer; false when there is nothing
@@ -1483,31 +1531,27 @@ impl Shell {
                 self.motion(Motion::Extrude { tool, mm, feedrate }, input);
             }
             Command::Fan(pct) => {
-                printer.set_fan(0, actions::fan_value(pct));
-                self.out
-                    .dim(format!("Fan {}%", format::trimmed(f64::from(pct), 0)));
+                let set = printer.set_fan(0, actions::fan_value(pct));
+                let done = format!("Fan {}%", format::trimmed(f64::from(pct), 0));
+                self.after(set, (Style::Dim, done), Some("Fan not set"), &*input);
             }
             Command::Speed(pct) => {
-                printer.set_feedrate_override(pct);
-                self.out
-                    .dim(format!("Speed {}%", format::trimmed(f64::from(pct), 1)));
+                let set = printer.set_feedrate_override(pct);
+                let done = format!("Speed {}%", format::trimmed(f64::from(pct), 1));
+                self.after(set, (Style::Dim, done), Some("Speed not set"), &*input);
             }
             Command::Flow(pct) => {
-                printer.set_flow(tool, pct);
-                self.out.dim(format!(
-                    "Flow of T{tool} {}%",
-                    format::trimmed(f64::from(pct), 1)
-                ));
+                let set = printer.set_flow(tool, pct);
+                let done = format!("Flow of T{tool} {}%", format::trimmed(f64::from(pct), 1));
+                self.after(set, (Style::Dim, done), Some("Flow not set"), &*input);
             }
             Command::Babystep(mm) => {
                 if let Some(warning) = self.homing_warning(Axes::Z, actions::UNHOMED_BABYSTEP) {
                     self.out.warn(warning);
                 }
-                printer.babystep_z(mm);
-                self.out.dim(format!(
-                    "Z nudged by {} mm",
-                    format::trimmed(f64::from(mm), 3)
-                ));
+                let nudged = printer.babystep_z(mm);
+                let done = format!("Z nudged by {} mm", format::trimmed(f64::from(mm), 3));
+                self.after(nudged, (Style::Dim, done), Some("Z not nudged"), &*input);
             }
             Command::Settings(filter) => {
                 if self.request(
@@ -1532,42 +1576,27 @@ impl Shell {
                     raw: false,
                 };
                 if self.safe_to_send(&gcode, &check, input) {
-                    printer.apply_setting(&merged);
-                    self.out.dim(format!("Sent {gcode} (eeprom save keeps it)"));
+                    let applied = printer.apply_setting(&merged);
+                    let done = (Style::Dim, format!("Set {gcode} (eeprom save keeps it)"));
+                    self.after(applied, done, Some(&format!("{gcode} not set")), &*input);
                 }
             }
             Command::Eeprom(Eeprom::Save) => {
-                let mut save = printer.save_settings();
-                self.out.dim("Saving the settings to EEPROM (M500)");
                 // Said once the printer has saved, which is later than now
                 // when it is busy (a heat wait, a long move).
-                let out = self.out.clone();
-                std::thread::spawn(move || {
-                    loop {
-                        match save.poll() {
-                            Delivery::Pending => std::thread::sleep(Duration::from_millis(50)),
-                            Delivery::Acknowledged => break out.good("Settings saved to EEPROM"),
-                            Delivery::Rejected(answer) => {
-                                break out.error(format!("Not saved to EEPROM: {}", answer.trim()));
-                            }
-                            Delivery::Lost => {
-                                break out
-                                    .warn("Not saved to EEPROM: the printer did not confirm M500");
-                            }
-                        }
-                    }
-                });
+                let save = printer.save_settings();
+                self.out.dim("Saving the settings to EEPROM (M500)");
+                let done = (Style::Good, "Settings saved to EEPROM".to_string());
+                self.after(save, done, Some("Not saved to EEPROM"), &*input);
             }
             Command::Eeprom(Eeprom::Load) => {
-                if self.request(
-                    Awaited::Settings,
-                    false,
-                    REPORT_TIMEOUT,
-                    |p| {
-                        p.load_settings();
-                    },
-                ) {
-                    self.out.good("Settings reloaded from EEPROM (M501)");
+                let mut load = None;
+                if self.request(Awaited::Settings, false, REPORT_TIMEOUT, |p| {
+                    load = Some(p.load_settings());
+                }) && let Some(load) = load
+                {
+                    let done = (Style::Good, "Settings reloaded from EEPROM (M501)".to_string());
+                    self.after(load, done, Some("Settings not reloaded from EEPROM"), &*input);
                 }
             }
             Command::Eeprom(Eeprom::Reset { confirmed }) => {
@@ -1586,17 +1615,19 @@ impl Shell {
                 };
                 if !go {
                     self.out.dim("Settings kept");
-                } else if self.request(
-                    Awaited::Settings,
-                    false,
-                    REPORT_TIMEOUT,
-                    |p| {
-                        p.factory_reset_settings();
-                    },
-                ) {
-                    self.out.warn(
-                        "Settings reset to the firmware defaults (M502); eeprom save keeps them",
-                    );
+                } else {
+                    let mut reset = None;
+                    if self.request(Awaited::Settings, false, REPORT_TIMEOUT, |p| {
+                        reset = Some(p.factory_reset_settings());
+                    }) && let Some(reset) = reset
+                    {
+                        let done = (
+                            Style::Warn,
+                            "Settings reset to the firmware defaults (M502); eeprom save keeps them"
+                                .to_string(),
+                        );
+                        self.after(reset, done, Some("Settings not reset"), &*input);
+                    }
                 }
             }
             Command::Firmware => {
@@ -1669,11 +1700,13 @@ impl Shell {
                         .lines(&printer.with_state(|s| report::sd_lines(&s.sd)));
                 }
             }
-            Command::Sd(SdCommand::Print(name)) => match printer
-                .start_sd_print(&name)
-                .inspect(|_| self.pause_asked = None)
-            {
-                Ok(_) => self.out.good(format!("Printing {name} from the SD card")),
+            // A start that fails fails the job, which says why.
+            Command::Sd(SdCommand::Print(name)) => match printer.start_sd_print(&name) {
+                Ok(started) => {
+                    self.pause_asked = None;
+                    let done = (Style::Good, format!("Printing {name} from the SD card"));
+                    self.after(started, done, None, &*input);
+                }
                 Err(e) => self.out.error(format!("Cannot print {name}: {e}")),
             },
             Command::Sd(SdCommand::Remove(name)) => {
@@ -1796,12 +1829,16 @@ impl Shell {
         if !self.safe_to_send(&gcode, &check, input) {
             return;
         }
-        for &(heater, celsius) in &targets {
-            self.printer.set_temperature(heater, celsius);
+        if targets.is_empty() {
+            return;
         }
-        if !targets.is_empty() {
-            self.out.dim(actions::targets_text(&targets));
-        }
+        let set = Tracked::all(
+            targets
+                .iter()
+                .map(|&(heater, celsius)| self.printer.set_temperature(heater, celsius)),
+        );
+        let done = (Style::Dim, actions::targets_text(&targets));
+        self.after(set, done, Some("Temperatures not set"), &*input);
     }
 
     fn upload(&self, file: Option<&Path>, name: Option<String>) {

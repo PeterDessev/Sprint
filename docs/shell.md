@@ -106,6 +106,13 @@ above the prompt as it arrives. The prompt shows the state:
 Moves use the profile's jog speeds unless a feedrate is given. Sprint warns
 when the axes are not known to be homed.
 
+The line after a setting or a target (`fan 50`, `temp 210`, `set ...`,
+`eeprom save`, `sd print ...`) is printed once the printer has taken the
+command; when it answers with an error, the line says what it answered
+instead. A script waits for it (Ctrl+C stops waiting; the command stays
+queued). At the prompt, a printer that is busy (heating with M190, for
+example) answers later, above the prompt.
+
 ### Printer settings and reports
 
 | Command | Does |

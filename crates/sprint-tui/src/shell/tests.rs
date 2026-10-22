@@ -2017,14 +2017,16 @@ fn a_macro_that_asks_shows_its_lines_with_the_placeholders_filled_in() {
 #[test]
 fn eeprom_save_says_saved_once_the_printer_has_saved() {
     let (mut shell, buffer) = connected_timed();
-    let mut input = Script::new(["M190 S35", "eeprom save"], false);
+    // At the prompt the answer follows in the background: the firmware
+    // waits for the bed before it takes M500.
+    let mut input = Script::new(["M190 S35", "eeprom save"], true);
     shell.run_lines_until_eof_without_leaving(&mut input);
-    // The firmware waits for the bed before it takes M500.
     let text = buffer.text();
     assert!(
         text.contains("Saving the settings to EEPROM (M500)"),
         "{text}"
     );
+    assert!(text.contains("its answer follows"), "{text}");
     assert!(!text.contains("Settings saved to EEPROM"), "{text}");
     let deadline = Instant::now() + PATIENCE;
     while !buffer.text().contains("Settings saved to EEPROM") {
@@ -2039,4 +2041,43 @@ fn eeprom_save_says_saved_once_the_printer_has_saved() {
         "saved before the bed was hot: {bed:?}"
     );
     shell.printer.send("M140 S0");
+}
+
+#[test]
+fn a_script_waits_for_the_save_it_reports() {
+    let (mut shell, buffer) = connected_timed();
+    let mut input = Script::new(["M190 S35", "eeprom save"], false);
+    shell.run_lines_until_eof_without_leaving(&mut input);
+    // Said in order, once the printer has saved.
+    let text = buffer.text();
+    let saving = text.find("Saving the settings to EEPROM (M500)");
+    let saved = text.find("Settings saved to EEPROM");
+    assert!(
+        saving.zip(saved).is_some_and(|(a, b)| a < b),
+        "{text}"
+    );
+    let bed = shell
+        .printer
+        .with_state(|s| s.temps.bed.as_ref().map(|b| b.current));
+    assert!(
+        bed.is_some_and(|t| t > 33.0),
+        "saved before the bed was hot: {bed:?}"
+    );
+    shell.printer.send("M140 S0");
+}
+
+#[test]
+fn a_setting_the_printer_rejects_is_not_reported_as_set() {
+    let (mut shell, buffer) = connected();
+    // The firmware keeps the junction deviation between 0.01 and 0.3.
+    let mut input = Script::new(["set M205 J0.5", "fan 50"], false);
+    shell.run_lines_until_eof_without_leaving(&mut input);
+    let text = buffer.text();
+    assert!(!text.contains("(eeprom save keeps it)"), "{text}");
+    assert!(
+        text.contains("J0.5 not set: ?J out of range (0.01 to 0.3)"),
+        "{text}"
+    );
+    // What the printer took is still said.
+    assert!(text.contains("Fan 50%"), "{text}");
 }
