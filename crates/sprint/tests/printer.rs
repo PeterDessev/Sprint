@@ -69,6 +69,20 @@ fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
+/// `word` as the CLI's hints write one argument: quoted unless it holds
+/// only letters, digits and `_-./:\@=,+`.
+fn shell_word(word: &str) -> String {
+    let plain = !word.is_empty()
+        && word
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_-./:\\@=,+".contains(c));
+    if plain {
+        word.to_string()
+    } else {
+        format!("\"{}\"", word.replace('"', "\\\""))
+    }
+}
+
 fn sample(name: &str) -> String {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../samples")
@@ -335,10 +349,11 @@ fn a_failed_print_turns_the_heaters_off_before_exiting() {
     assert!(err.contains("the heaters are off"), "{err}");
     // How to go on from where it stopped: the long M117, line 24. The
     // nozzle stayed there, and a board reset before resuming loses Z, so
-    // the command declares it.
+    // the command declares it. (The path is quoted when a shell would
+    // split or expand it: a temp dir such as `C:\Users\RUNNER~1\...`.)
     let resume = format!(
         "resume with: sprint print {} --start-line 24 --connect \"sim://",
-        path.display()
+        shell_word(&path.display().to_string())
     );
     assert!(err.contains(&resume), "{err}");
     let line = err
