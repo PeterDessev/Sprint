@@ -277,7 +277,7 @@ and options of each printer.
 
 ## Status
 
-Sprint [0.1.0](CHANGELOG.md) is the first release (2026-10-19). It is
+Sprint [0.1.1](CHANGELOG.md) is the current release (2026-10-22). It is
 developed and hardware-tested on Windows with Marlin, and CI builds and
 tests it on Linux and macOS as well. Only Marlin has been tried on a real
 printer so far, so reports from other firmware are welcome.

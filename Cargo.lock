@@ -4346,7 +4346,7 @@ dependencies = [
 
 [[package]]
 name = "sprint"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -4368,7 +4368,7 @@ dependencies = [
 
 [[package]]
 name = "sprint-gcode"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64",
  "image",
@@ -4379,7 +4379,7 @@ dependencies = [
 
 [[package]]
 name = "sprint-gui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
@@ -4405,7 +4405,7 @@ dependencies = [
 
 [[package]]
 name = "sprint-host"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "crossbeam-channel",
  "directories",
@@ -4422,7 +4422,7 @@ dependencies = [
 
 [[package]]
 name = "sprint-proto"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -4431,7 +4431,7 @@ dependencies = [
 
 [[package]]
 name = "sprint-sim"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "log",
  "serde",
@@ -4440,7 +4440,7 @@ dependencies = [
 
 [[package]]
 name = "sprint-tui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
@@ -4460,7 +4460,7 @@ dependencies = [
 
 [[package]]
 name = "sprint-viewer"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytemuck",
  "eframe",
