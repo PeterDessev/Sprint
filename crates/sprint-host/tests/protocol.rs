@@ -1367,7 +1367,8 @@ fn prusa_mesh_leveling_does_not_inflate_the_eta() {
 }
 
 /// Print a file starting with `start` (each taking 2 s on the firmware,
-/// every move exactly its estimated time) and check the ETA halfway.
+/// every move its estimated time, give or take the machine's overhead) and
+/// check the ETA halfway: it follows the moves' pace, not the start's.
 fn eta_after_slow_start(start: &'static [&'static str]) {
     use sprint_host::sprint_gcode::{AnalyzeOptions, analyze_simple};
     let mut text = start.join("\n");
@@ -1385,6 +1386,9 @@ fn eta_after_slow_start(start: &'static [&'static str]) {
     let log = Arc::new(Mutex::new(Vec::new()));
     let mut fw = Mini::new(Arc::clone(&log));
     let mut done_moves = 0;
+    // When the firmware began the start commands and the moves.
+    let began: Arc<Mutex<(Option<Instant>, Option<Instant>)>> = Arc::default();
+    let seen = Arc::clone(&began);
     let (link, _) = fake(
         |out| out.line("start"),
         move |line, out| {
@@ -1392,8 +1396,10 @@ fn eta_after_slow_start(start: &'static [&'static str]) {
                 return;
             };
             if start.contains(&cmd.as_str()) {
+                seen.lock().unwrap().0.get_or_insert_with(Instant::now);
                 thread::sleep(Duration::from_secs(2));
             } else if cmd.starts_with("G1") {
+                seen.lock().unwrap().1.get_or_insert_with(Instant::now);
                 let t = moves.get(done_moves).copied().unwrap_or(0.0);
                 done_moves += 1;
                 thread::sleep(Duration::from_secs_f64(t));
@@ -1426,12 +1432,26 @@ fn eta_after_slow_start(start: &'static [&'static str]) {
     let job = printer.with_state(|s| s.job.clone()).unwrap();
     let remaining =
         f64::from(toolpath.stats.estimated_time - toolpath.time_at_line(stop as u32 - 1));
-    let ratio = job.eta.unwrap().as_secs_f64() / remaining;
+    let done = f64::from(
+        toolpath.time_at_line(stop as u32 - 1) - toolpath.time_at_line(first_move as u32 - 1),
+    );
+    let (Some(starting), Some(moving)) = *began.lock().unwrap() else {
+        panic!("{start:?} or the moves never ran");
+    };
+    // A slow machine runs every move slower than estimated (overhead on
+    // top of each): the ETA follows the moves' own pace...
+    let elapsed = job.elapsed.as_secs_f64();
+    let start_secs = moving.duration_since(starting).as_secs_f64();
+    let honest = remaining * (elapsed - start_secs) / done;
+    // ...and must stay well below what counting the slow start as printing
+    // would give.
+    let inflated = remaining * elapsed / done;
+    let eta = job.eta.unwrap().as_secs_f64();
     assert!(
-        ratio < 1.8,
-        "{start:?}: ETA {:?} for {remaining:.2} s of estimated printing (ratio {ratio:.2}), elapsed {:?}",
-        job.eta,
-        job.elapsed
+        eta < (honest + inflated) / 2.0,
+        "{start:?}: ETA {eta:.2} s for {remaining:.2} s of estimated printing: the moves' pace \
+         gives {honest:.2} s, counting the {start_secs:.2} s start {inflated:.2} s (elapsed \
+         {elapsed:.2} s)"
     );
     printer.cancel();
 }
