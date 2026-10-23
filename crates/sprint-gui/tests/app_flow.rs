@@ -1418,6 +1418,13 @@ fn offline_page_tabs_all_show_their_header() {
 fn the_page_tabs_keep_off_the_side_panels() {
     let mut h = app(sim_options(), WINDOW);
     connect(&mut h);
+    // The tabs show their contents, not "Waiting for temperature reports"
+    // and the like, once the setup queries are answered and readings came
+    // in (a slow machine needs a moment).
+    expect(&mut h, "the firmware, settings and readings", |app| {
+        let s = app.state();
+        s.firmware.is_some() && s.settings_loaded && s.temp_history.len() >= 2
+    });
     // The central area between the controls (300 wide) and the console
     // (360 wide), below the tab strip.
     let (left, right) = (300.0, WINDOW.x - 360.0);
