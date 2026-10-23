@@ -234,12 +234,14 @@ fn printer_tab_queries_the_simulator() {
     );
 
     clear_received(&printer);
-    h.get_by_label("Load the print statistics (M78)").click();
+    h.get_by_label("Load the print statistics (M78)")
+        .click_accesskit();
     h.run_ok();
     wait_for_command(&printer, "M78");
     run_until(&mut h, "the statistics", |s| s.stats.is_some());
 
-    h.get_by_label("Query the endstops (M119)").click();
+    h.get_by_label("Query the endstops (M119)")
+        .click_accesskit();
     h.run_ok();
     wait_for_command(&printer, "M119");
     run_until(&mut h, "the endstops", |s| !s.endstops.is_empty());
@@ -247,13 +249,14 @@ fn printer_tab_queries_the_simulator() {
     assert!(h.query_by_label("X min").is_some());
 
     clear_received(&printer);
-    h.get_by_label("Report the position (M114)").click();
+    h.get_by_label("Report the position (M114)")
+        .click_accesskit();
     h.run_ok();
     wait_for_command(&printer, "M114");
 
     clear_received(&printer);
     h.get_by_label("Refresh everything (M115, M78, M119, M114, M503)")
-        .click();
+        .click_accesskit();
     h.run_ok();
     for cmd in ["M115", "M78", "M119", "M114", "M503"] {
         wait_for_command(&printer, cmd);
@@ -261,7 +264,7 @@ fn printer_tab_queries_the_simulator() {
 
     // Live endstops poll M119 while the tab is shown.
     clear_received(&printer);
-    h.get_by_label("Live").click();
+    h.get_by_label("Live").click_accesskit();
     h.run_ok();
     // The poll goes out from the next frames.
     step_until_command(&mut h, "M119");
@@ -284,7 +287,7 @@ fn live_endstops_do_not_pile_up_behind_a_long_command() {
     // A 5 s dwell holds the queue; ten seconds of UI time pass meanwhile.
     printer.send("G4 S5");
     wait_for(&printer, "the dwell", |s| s.link.in_flight > 0);
-    h.get_by_label("Live").click();
+    h.get_by_label("Live").click_accesskit();
     h.run_ok();
     let mut most = 0;
     for _ in 0..40 {

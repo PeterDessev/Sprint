@@ -532,7 +532,7 @@ fn tuning_tab_loads_applies_and_saves_on_the_simulator() {
     clear_received(&printer);
     h.state_mut().tab.stage(cmd("M92 X80 Y80 Z400 E95.4"));
     h.run_ok();
-    h.get_by_label("Apply change").click();
+    h.get_by_label("Apply change").click_accesskit();
     h.run_ok();
     assert_eq!(wait_for_command(&printer, "M92 "), "M92 X80 Y80 Z400 E95.4");
     wait_for_command(&printer, "M503");
@@ -543,7 +543,7 @@ fn tuning_tab_loads_applies_and_saves_on_the_simulator() {
 
     // Save to EEPROM, after confirming.
     clear_received(&printer);
-    h.get_by_label("Save to EEPROM").click();
+    h.get_by_label("Save to EEPROM").click_accesskit();
     h.run_ok();
     assert!(
         !received(&printer, "M500"),
@@ -552,31 +552,31 @@ fn tuning_tab_loads_applies_and_saves_on_the_simulator() {
     h.get_all_by_label("Save to EEPROM")
         .last()
         .expect("confirm button")
-        .click();
+        .click_accesskit();
     h.run_ok();
     wait_for_command(&printer, "M500");
 
     // Load from EEPROM.
     clear_received(&printer);
-    h.get_by_label("Load from EEPROM").click();
+    h.get_by_label("Load from EEPROM").click_accesskit();
     h.run_ok();
     h.get_all_by_label("Load from EEPROM")
         .last()
         .expect("confirm button")
-        .click();
+        .click_accesskit();
     h.run_ok();
     wait_for_command(&printer, "M501");
 
     // Factory reset asks first, and Cancel sends nothing.
     clear_received(&printer);
-    h.get_by_label("Factory reset").click();
+    h.get_by_label("Factory reset").click_accesskit();
     h.run_ok();
-    h.get_by_label("Cancel").click();
+    h.get_by_label("Cancel").click_accesskit();
     h.run_ok();
     assert!(!received(&printer, "M502"));
-    h.get_by_label("Factory reset").click();
+    h.get_by_label("Factory reset").click_accesskit();
     h.run_ok();
-    h.get_by_label("Reset to defaults").click();
+    h.get_by_label("Reset to defaults").click_accesskit();
     h.run_ok();
     wait_for_command(&printer, "M502");
     run_until(&mut h, "the defaults", |s| {
@@ -603,16 +603,16 @@ fn tuning_tab_imports_with_a_preview() {
     assert!(h.query_by_label("Import settings").is_some());
     assert!(h.query_by_label_contains("backup.gcode").is_some());
     snapshot(&mut h, "insight_tuning_import_light");
-    h.get_by_label("Stage 1 change").click();
+    h.get_by_label("Stage 1 change").click_accesskit();
     h.run_ok();
     assert_eq!(h.state().tab.pending_changes(), 1);
     assert!(h.query_by_label("Import settings").is_none());
     clear_received(&printer);
-    h.get_by_label("Apply change").click();
+    h.get_by_label("Apply change").click_accesskit();
     h.run_ok();
     assert_eq!(wait_for_command(&printer, "M92 "), "M92 X80 Y80 Z400 E415");
     // Copy as G-code confirms with a toast.
-    h.get_by_label("Copy all as G-code").click();
+    h.get_by_label("Copy all as G-code").click_accesskit();
     h.run_ok();
     assert!(
         h.state()
@@ -655,17 +655,17 @@ fn switching_a_driver_off_reaches_the_simulator() {
         |ui, host| host.frame(ui),
     );
     h.run_ok();
-    h.get_by_label("Drivers").click();
+    h.get_by_label("Drivers").click_accesskit();
     h.run_ok();
     // The simulator runs every driver in StealthChop: "M569 S1 X Y Z".
     // The first M569 instance (the second is the extruder's, "T0 E").
     h.get_all_by_role_and_label(egui::accesskit::Role::CheckBox, "Z driver")
         .next()
         .expect("Z driver switch")
-        .click();
+        .click_accesskit();
     h.run_ok();
     clear_received(&printer);
-    h.get_by_label("Apply change").click();
+    h.get_by_label("Apply change").click_accesskit();
     h.run_ok();
     assert_eq!(wait_for_command(&printer, "M569 S1"), "M569 S1 X Y");
     // Leaving Z out of the list does not change it: it is switched off.
@@ -690,7 +690,7 @@ fn a_change_the_printer_rejects_is_not_reported_as_applied() {
     limits.set('J', 0.5);
     h.state_mut().tab.stage(limits);
     h.run_ok();
-    h.get_by_label("Apply change").click();
+    h.get_by_label("Apply change").click_accesskit();
     h.run_ok();
     let toast = |h: &Harness<'_, Host<TuningTab>>, title: &str| {
         h.state()
@@ -741,12 +741,12 @@ fn saving_to_eeprom_waits_until_the_printer_has_saved() {
     wait_for(&printer, "the bed to heat", |s| {
         s.temps.bed.as_ref().is_some_and(|b| b.target == Some(60.0))
     });
-    h.get_by_label("Save to EEPROM").click();
+    h.get_by_label("Save to EEPROM").click_accesskit();
     h.run_ok();
     h.get_all_by_label("Save to EEPROM")
         .last()
         .expect("confirm button")
-        .click();
+        .click_accesskit();
     h.run_ok();
     let has = |h: &Harness<'_, Host<TuningTab>>, title: &str| {
         h.state().toasts.iter().any(|t| t.title() == title)

@@ -519,11 +519,12 @@ fn listing_printing_and_cancelling_on_the_simulator() {
     assert!(h.query_by_label("Print calibration_cube.gcode").is_some());
 
     // Print, after confirming.
-    h.get_by_label("Print calibration_cube.gcode").click();
+    h.get_by_label("Print calibration_cube.gcode")
+        .click_accesskit();
     h.run_ok();
     assert!(h.query_by_label("Print calibration_cube.gcode?").is_some());
     clear_received(&printer);
-    h.get_by_label("Start print").click();
+    h.get_by_label("Start print").click_accesskit();
     h.run_ok();
     assert!(wait_for_command(&printer, "M23").starts_with("M23 CALIBR"));
     wait_for_command(&printer, "M24");
@@ -534,10 +535,10 @@ fn listing_printing_and_cancelling_on_the_simulator() {
     });
     // Release is refused while printing from the card.
     assert!(h.get_by_label("Release").accesskit_node().is_disabled());
-    h.get_by_label("Cancel print").click();
+    h.get_by_label("Cancel print").click_accesskit();
     h.run_ok();
     clear_received(&printer);
-    h.get_by_label("Stop print").click();
+    h.get_by_label("Stop print").click_accesskit();
     h.run_ok();
     run_until(&mut h, "the end of the print", |s| {
         s.job.as_ref().is_some_and(|j| j.status.is_finished())
@@ -563,14 +564,16 @@ fn deleting_uploading_and_releasing_on_the_simulator() {
     run_until(&mut h, "the file list", |s| s.sd.files.len() >= 3);
 
     // Delete asks first; Cancel keeps the file.
-    h.get_by_label("Delete first layer test.gcode").click();
+    h.get_by_label("Delete first layer test.gcode")
+        .click_accesskit();
     h.run_ok();
-    h.get_by_label("Cancel").click();
+    h.get_by_label("Cancel").click_accesskit();
     h.run_ok();
     clear_received(&printer);
-    h.get_by_label("Delete first layer test.gcode").click();
+    h.get_by_label("Delete first layer test.gcode")
+        .click_accesskit();
     h.run_ok();
-    h.get_by_label("Delete").click();
+    h.get_by_label("Delete").click_accesskit();
     h.run_ok();
     assert!(wait_for_command(&printer, "M30").starts_with("M30 FIRSTL"));
     run_until(&mut h, "the file to go", |s| {
@@ -583,14 +586,15 @@ fn deleting_uploading_and_releasing_on_the_simulator() {
     // Upload the loaded file and print it when done.
     h.state_mut().file = Some(loaded("my test cube.gcode", &small_gcode()));
     h.run_ok();
-    h.get_by_label("Upload").click();
+    h.get_by_label("Upload").click_accesskit();
     h.run_ok();
     focus_name_field(&mut h);
     type_in_focused(&mut h, "test.gco");
-    h.get_by_label("Print it when the upload finishes").click();
+    h.get_by_label("Print it when the upload finishes")
+        .click_accesskit();
     h.run_ok();
     clear_received(&printer);
-    h.get_by_label("Upload as TEST.GCO").click();
+    h.get_by_label("Upload as TEST.GCO").click_accesskit();
     h.run_ok();
     assert_eq!(wait_for_command(&printer, "M28"), "M28 TEST.GCO");
     run_until(&mut h, "the upload", |s| {
@@ -606,14 +610,15 @@ fn deleting_uploading_and_releasing_on_the_simulator() {
 
     // "Print when done" only prints while the tab watches the upload end:
     // coming back to the tab later must not start a print out of the blue.
-    h.get_by_label("Upload").click();
+    h.get_by_label("Upload").click_accesskit();
     h.run_ok();
     focus_name_field(&mut h);
     type_in_focused(&mut h, "later.gco");
-    h.get_by_label("Print it when the upload finishes").click();
+    h.get_by_label("Print it when the upload finishes")
+        .click_accesskit();
     h.run_ok();
     clear_received(&printer);
-    h.get_by_label("Upload as LATER.GCO").click();
+    h.get_by_label("Upload as LATER.GCO").click_accesskit();
     // The click's frame starts the upload; then another tab is shown.
     h.step();
     h.state_mut().hidden = true;
@@ -642,12 +647,12 @@ fn deleting_uploading_and_releasing_on_the_simulator() {
 
     // Release and initialize the card.
     clear_received(&printer);
-    h.get_by_label("Release").click();
+    h.get_by_label("Release").click_accesskit();
     h.run_ok();
     wait_for_command(&printer, "M22");
     assert!(h.query_by_label("Card released").is_some());
     clear_received(&printer);
-    h.get_by_label("Initialize card").click();
+    h.get_by_label("Initialize card").click_accesskit();
     h.run_ok();
     wait_for_command(&printer, "M21");
     wait_for_command(&printer, "M20");

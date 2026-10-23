@@ -350,11 +350,12 @@ fn applying_the_home_offset_takes_the_babystep_back() {
         host.frame(ui)
     });
     h.run_ok();
-    h.get_by_label("Z offset").click();
+    h.get_by_label("Z offset").click_accesskit();
     h.run_ok();
     clear_received(&printer);
     for _ in 0..2 {
-        h.get_by_label("Lower the nozzle 0.025 mm").click();
+        h.get_by_label("Lower the nozzle 0.025 mm")
+            .click_accesskit();
         h.run_ok();
     }
     run_until(&mut h, "both babysteps", |s| {
@@ -365,7 +366,7 @@ fn applying_the_home_offset_takes_the_babystep_back() {
         h.query_by_label_contains("Home offset Z: 0.000 → 0.050 mm")
             .is_some()
     );
-    h.get_by_label("Apply to home offset").click();
+    h.get_by_label("Apply to home offset").click_accesskit();
     h.run_ok();
     assert_eq!(wait_for_command(&printer, "M206"), "M206 X0 Y0 Z0.05");
     // M206 moves the next moves 0.05 mm down at once; with the babystep

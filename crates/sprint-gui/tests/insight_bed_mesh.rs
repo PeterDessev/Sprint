@@ -378,10 +378,10 @@ fn probing_and_leveling_on_the_simulator() {
     h.get_all_by_label("Probe bed")
         .last()
         .expect("button")
-        .click();
+        .click_accesskit();
     h.run_ok();
     clear_received(&printer);
-    h.get_by_label("Home and probe").click();
+    h.get_by_label("Home and probe").click_accesskit();
     h.run_ok();
     wait_for_command(&printer, "G29");
     run_until(&mut h, "the probed mesh", |s| s.mesh.is_some());
@@ -396,7 +396,8 @@ fn probing_and_leveling_on_the_simulator() {
         s.settings.value("M420", 'S') == Some(1.0)
     });
     clear_received(&printer);
-    h.get_by_label("Apply the mesh while printing").click();
+    h.get_by_label("Apply the mesh while printing")
+        .click_accesskit();
     h.run_ok();
     assert_eq!(wait_for_command(&printer, "M420 S"), "M420 S0 Z10");
     run_until(&mut h, "leveling off", |s| {
@@ -407,7 +408,8 @@ fn probing_and_leveling_on_the_simulator() {
     clear_received(&printer);
     // The fade height is the only number field while the screw editor is
     // closed.
-    h.get_by_role(egui::accesskit::Role::SpinButton).click();
+    h.get_by_role(egui::accesskit::Role::SpinButton)
+        .click_accesskit();
     h.run_ok();
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
     h.run_ok();
@@ -418,7 +420,7 @@ fn probing_and_leveling_on_the_simulator() {
     h.run_ok();
     h.key_press(egui::Key::Enter);
     h.run_ok();
-    h.get_by_label("Set").click();
+    h.get_by_label("Set").click_accesskit();
     h.run_ok();
     assert_eq!(wait_for_command(&printer, "M420 S"), "M420 S0 Z5");
     run_until(&mut h, "the new fade height", |s| {
@@ -427,11 +429,11 @@ fn probing_and_leveling_on_the_simulator() {
 
     // Save and reload.
     clear_received(&printer);
-    h.get_by_label("Save to EEPROM").click();
+    h.get_by_label("Save to EEPROM").click_accesskit();
     h.run_ok();
     wait_for_command(&printer, "M500");
     clear_received(&printer);
-    h.get_by_label("Load").click();
+    h.get_by_label("Load").click_accesskit();
     h.run_ok();
     wait_for_command(&printer, "M420 V");
     printer.disconnect();
